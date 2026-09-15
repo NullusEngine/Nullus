@@ -5,6 +5,13 @@ namespace Nullus.EngineScripts;
 public sealed class TransformMover : Behaviour
 {
     [SerializeField]
+    [DisplayName("Movement Speed")]
+    [Tooltip("World units per second.")]
+    [Header("Motion")]
+    [Space(4.0f)]
+    [Range(0.0f, 20.0f)]
+    [Min(0.0f)]
+    [Max(100.0f)]
     public float Speed = 1.0f;
 
     [SerializeField]

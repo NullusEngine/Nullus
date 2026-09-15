@@ -36,6 +36,9 @@ public class Object : NativeObject
 
 public class Transform : Component
 {
+    /// <summary>Stable reflected native type name used by editor metadata.</summary>
+    public const string NativeTypeName = "NLS::Engine::Components::TransformComponent";
+
     internal Transform(NativeObjectHandle handle) : base(handle) { }
     internal Transform() { }
     public Vector3 LocalPosition
@@ -125,6 +128,9 @@ public enum Space
 
 public sealed class Camera : Component
 {
+    /// <summary>Stable reflected native type name used by editor metadata.</summary>
+    public const string NativeTypeName = "NLS::Engine::Components::CameraComponent";
+
     internal Camera(NativeObjectHandle handle) : base(handle) { }
     internal Camera() { }
     public float fieldOfView
@@ -161,6 +167,9 @@ public sealed class Camera : Component
 
 public sealed class Light : Component
 {
+    /// <summary>Stable reflected native type name used by editor metadata.</summary>
+    public const string NativeTypeName = "NLS::Engine::Components::LightComponent";
+
     internal Light(NativeObjectHandle handle) : base(handle) { }
     internal Light() { }
     public Vector3 color

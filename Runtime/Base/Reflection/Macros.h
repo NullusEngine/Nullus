@@ -15,6 +15,10 @@
     #define ENUM(typeDecl, ...) enum class META(Reflection __VA_OPT__(,) __VA_ARGS__) typeDecl
     #define PROPERTY(...) META_TEXT("Property" __VA_OPT__(", " #__VA_ARGS__))
     #define FUNCTION(...) META_TEXT("Function" __VA_OPT__(", " #__VA_ARGS__))
+    // PROPERTY may only annotate storage fields; FUNCTION may only annotate
+    // methods. A property binds its accessors through Getter(Name)/Setter(Name)
+    // arguments inside PROPERTY(...); the reflected property name is always the
+    // real member name, and DisplayName(...) controls the inspector label.
 
     #define __META_JOIN_INNER(left, right) left##right
     #define __META_JOIN(left, right) __META_JOIN_INNER(left, right)

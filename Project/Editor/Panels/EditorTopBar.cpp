@@ -132,6 +132,11 @@ void EditorTopBar::RegisterProjectSettingsPanel(ProjectSettings& p_panel)
     m_menuBar.RegisterProjectSettingsPanel(p_panel);
 }
 
+bool EditorTopBar::RegisterCommand(const std::string& p_menuPath, std::function<void()> p_execute)
+{
+    return m_menuBar.RegisterCommand(p_menuPath, std::move(p_execute));
+}
+
 void EditorTopBar::DrawDialogs()
 {
     m_menuBar.DrawDialogs();

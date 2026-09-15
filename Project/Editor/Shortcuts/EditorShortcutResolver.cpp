@@ -40,6 +40,22 @@ namespace NLS::Editor::Shortcuts
         const ShortcutBinding& p_pressedBinding,
         const std::vector<ShortcutContext>& p_contexts)
     {
+        return ResolveAny(
+            p_commands,
+            [&p_bindingProvider](const std::string& p_commandId)
+            {
+                return std::vector<ShortcutBinding> { p_bindingProvider(p_commandId) };
+            },
+            p_pressedBinding,
+            p_contexts);
+    }
+
+    const ShortcutCommand* EditorShortcutResolver::ResolveAny(
+        const std::vector<ShortcutCommand>& p_commands,
+        const std::function<std::vector<ShortcutBinding>(const std::string&)>& p_bindingProvider,
+        const ShortcutBinding& p_pressedBinding,
+        const std::vector<ShortcutContext>& p_contexts)
+    {
         if (!p_pressedBinding.IsValid())
             return nullptr;
 
@@ -54,8 +70,16 @@ namespace NLS::Editor::Shortcuts
             if (!command.IsAvailable())
                 continue;
 
-            const auto binding = p_bindingProvider(command.id);
-            if (!binding.IsValid() || binding != p_pressedBinding)
+            const auto bindings = p_bindingProvider(command.id);
+            const auto matchingBinding = std::find_if(
+                bindings.begin(),
+                bindings.end(),
+                [&p_pressedBinding](const ShortcutBinding& binding)
+                {
+                    return binding.IsValid() &&
+                        AreShortcutBindingsEquivalentForCurrentPlatform(binding, p_pressedBinding);
+                });
+            if (matchingBinding == bindings.end())
                 continue;
 
             const int priority = GetContextPriority(command.context, p_contexts);

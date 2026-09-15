@@ -192,7 +192,7 @@ namespace NLS::meta
             >::type*
         ) const
         {
-            // Unity-style Object is a runtime identity root. Reflection no longer
+            // engine-style Object is a runtime identity root. Reflection no longer
             // serializes Object values through virtual Object hooks.
         }
         
@@ -217,7 +217,7 @@ namespace NLS::meta
             >::type*
         ) 
         {
-            // Unity-style Object is a runtime identity root. Reflection no longer
+            // engine-style Object is a runtime identity root. Reflection no longer
             // deserializes Object values through virtual Object hooks.
         }
         

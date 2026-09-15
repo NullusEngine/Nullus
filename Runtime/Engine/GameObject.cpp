@@ -17,9 +17,9 @@ Event<GameObject&, GameObject&> GameObject::AttachEvent;
 Event<GameObject&> GameObject::DettachEvent;
 
 GameObject::GameObject(const std::string& p_name, const std::string& p_tag):
-m_name(p_name),
-m_tag(p_tag.empty() ? "Untagged" : p_tag),
-m_active(true),
+name(p_name),
+tag(p_tag.empty() ? "Untagged" : p_tag),
+active(true),
 m_transform(nullptr)
 {
     m_transform = AddComponent<Components::TransformComponent>();
@@ -31,9 +31,9 @@ m_transform(nullptr)
 }
 
 GameObject::GameObject(SilentCreationTag, const std::string& p_name, const std::string& p_tag):
-m_name(p_name),
-m_tag(p_tag.empty() ? "Untagged" : p_tag),
-m_active(true),
+name(p_name),
+tag(p_tag.empty() ? "Untagged" : p_tag),
+active(true),
 m_transform(nullptr)
 {
     m_transform = AddComponent<Components::TransformComponent>();
@@ -157,10 +157,10 @@ bool GameObject::MoveComponent(Component* component, size_t index)
 
 void GameObject::SetActive(bool p_active)
 {
-	if (p_active != m_active)
+	if (p_active != active)
 	{
 		RecursiveWasActiveUpdate();
-		m_active = p_active;
+		active = p_active;
         MarkRenderStateChanged();
 		RecursiveActiveUpdate();
 	}
@@ -199,12 +199,12 @@ GameObject* GameObject::CreatePrimitive(const std::string& p_typeName)
 
 bool GameObject::IsSelfActive() const
 {
-	return m_active;
+	return active;
 }
 
 bool GameObject::IsActive() const
 {
-	return m_active && (m_parent ? m_parent->IsActive() : true);
+	return active && (m_parent ? m_parent->IsActive() : true);
 }
 
 void NLS::Engine::GameObject::OnCollisionEnter(GameObject& p_otherObject)

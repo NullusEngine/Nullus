@@ -98,6 +98,9 @@ namespace NLS::Engine::UI
         [[nodiscard]] bool IsLayoutDirty() const { return m_layoutDirty; }
         [[nodiscard]] bool IsPaintDirty() const { return m_paintDirty; }
         void ClearDirtyFlags();
+        // External resources (the font atlas, for example) can make cached paint
+        // geometry stale, so hosts need to request a rebuild explicitly.
+        void MarkPaintDirty();
 
         UIVector2 Measure(UIVector2 availableSize);
         void Arrange(UIRect finalRect);
@@ -117,7 +120,6 @@ namespace NLS::Engine::UI
             const NLS::Render::UI::UIClipRect* inheritedClip,
             uint32_t depth) const;
         void MarkLayoutDirty();
-        void MarkPaintDirty();
         void ReplaceTextRange(size_t begin, size_t end, std::string_view replacement);
         static size_t EventIndex(UIEventType type);
 

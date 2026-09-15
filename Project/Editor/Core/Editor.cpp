@@ -17,7 +17,10 @@
 #include <unordered_map>
 #include <vector>
 #include <Debug/Logger.h>
+#include <Rendering/Context/DriverAccess.h>
+#include <UI/UIManager.h>
 #include <Assets/ArtifactLoadTelemetry.h>
+#include "Scripting/EditorScriptHost.h"
 #include <Jobs/BackgroundJobQueue.h>
 #include <Jobs/JobSystem.h>
 #include <Profiling/PerformanceStageStats.h>
@@ -50,20 +53,20 @@
 #include "Panels/Console.h"
 #include "Panels/Inspector.h"
 #include "Panels/Hierarchy.h"
+#include "Panels/HierarchyUndo.h"
 #include "Panels/SceneView.h"
 #include "Panels/GameView.h"
 #include "Panels/AssetView.h"
 #include "Panels/ViewFrameLifecycle.h"
-#include "Panels/MaterialEditor.h"
 #include "Panels/UIDocumentDesigner.h"
 #include "Panels/ProjectSettings.h"
-#include "Panels/AssetProperties.h"
 #include "Panels/ProfilerPanel.h"
 #include "Engine/PrimitiveType.h"
 #include "Rendering/Context/DriverAccess.h"
 #include "Rendering/Settings/GraphicsBackendUtils.h"
 #include "Shortcuts/EditorShortcutBinding.h"
 #include "Shortcuts/EditorShortcutContext.h"
+#include <Windowing/Inputs/EKey.h>
 #include <Windowing/Inputs/EMouseButton.h>
 #include <Windowing/Inputs/EMouseButtonState.h>
 using namespace NLS::Core::ResourceManagement;
@@ -999,14 +1002,34 @@ void Editor::Core::Editor::JobSystemLifetime::Shutdown()
 Editor::Core::Editor::Editor(Context& p_context)
     : m_context(p_context), m_panelsManager(m_canvas),
     m_jobSystemLifetime(),
+	  m_undoService(),
     m_editorActions(m_context, m_panelsManager)
 {
     NLS::Base::Profiling::Profiler::SetEnabled(false);
     NLS::Base::Profiling::Profiler::RegisterDestination(g_tracyProfiler);
 
+    const auto undoBlobStore = m_undoService.ConfigureBlobStore(
+        // ConfigureBlobStore owns the private per-Editor session segment. Keep
+        // this project-local base short enough for Windows blob staging paths.
+        std::filesystem::path(m_context.projectPath) / "Library" / "Editor" / "UndoBlobs");
+    if (!undoBlobStore.Succeeded())
+    {
+        NLS_LOG_WARNING(
+            "Editor Undo: large snapshot storage is unavailable; large edits will remain in memory. " +
+            undoBlobStore.message);
+    }
+
     NLS::Core::ServiceLocator::Provide<NLS::Editor::Core::Context>(m_context);
     NLS::Core::ServiceLocator::Provide<NLS::Editor::Core::Editor>(*this);
+	NLS::Core::ServiceLocator::Provide<NLS::Editor::Undo::EditorUndoService>(m_undoService);
     NLS::Core::ServiceLocator::Provide<NLS::Editor::Shortcuts::EditorShortcutService>(m_shortcutService);
+    if (m_context.uiManager)
+    {
+        m_context.uiManager->SetPostCanvasDrawCallback([this]
+        {
+            HandleGlobalShortcuts();
+        });
+    }
     m_context.SetDebugControlCallbacks(
         [this] { m_editorActions.StartPlaying(); },
         [this] { m_editorActions.PauseGame(); },
@@ -1045,6 +1068,28 @@ Editor::Core::Editor::Editor(Context& p_context)
     {
         RememberLastOpenedScene(p_scenePath);
     };
+	m_sceneLoadListener = m_context.sceneManager.SceneLoadSucceededEvent += [this]
+	{
+		m_undoService.ClearAll(Undo::UndoClearReason::SceneLoaded);
+	};
+	m_editorModeChangedListener = m_editorActions.EditorModeChangedEvent += [this](const EditorActions::EEditorMode mode)
+	{
+		if (mode == EditorActions::EEditorMode::EDIT)
+		{
+			if (m_historyFrozenForPlayMode)
+			{
+				m_undoService.Unfreeze(Undo::UndoFreezeReason::PlayMode);
+				m_historyFrozenForPlayMode = false;
+			}
+			return;
+		}
+
+		if (!m_historyFrozenForPlayMode)
+		{
+			m_undoService.Freeze(Undo::UndoFreezeReason::PlayMode);
+			m_historyFrozenForPlayMode = true;
+		}
+	};
 
     m_context.PresentStartupProgressFrame("Loading startup scene models and shaders", 0.65f);
 
@@ -1080,15 +1125,35 @@ Editor::Core::Editor::Editor(Context& p_context)
 
 Editor::Core::Editor::~Editor()
 {
+    if (m_context.uiManager)
+        m_context.uiManager->SetPostCanvasDrawCallback({});
+
+	if (m_sceneLoadListener != 0u)
+		m_context.sceneManager.SceneLoadSucceededEvent -= m_sceneLoadListener;
+	if (m_editorModeChangedListener != 0u)
+		m_editorActions.EditorModeChangedEvent -= m_editorModeChangedListener;
+	m_undoService.ClearAll(Undo::UndoClearReason::EditorShutdown);
+
     m_shortcutService.SaveProfile(std::filesystem::path(m_context.projectPath) / "UserSettings" / "shortcuts.json");
+    if (m_uiOverlaySupplementInstalled &&
+        NLS::Core::ServiceLocator::Contains<NLS::UI::UIManager>())
+    {
+        // The presenter outlives the overlay snapshot only within this object, so
+        // drop the hook before teardown to avoid a dangling capture.
+        NLS::Core::ServiceLocator::Get<NLS::UI::UIManager>().SetOverlaySnapshotSupplement({});
+        m_uiOverlaySupplementInstalled = false;
+    }
     m_editorActions.PromptSaveCurrentSceneIfDirty();
     WriteThumbnailTelemetrySummaryIfRequested(m_context);
     m_jobSystemLifetime.Shutdown();
     NLS::Base::Profiling::Profiler::UnregisterDestination(
         m_panelsManager.GetPanelAs<Panels::ProfilerPanel>("Profiler").GetTimelineSink());
     m_panelsManager.DestroyPanels();
-    m_context.sceneManager.CurrentSceneSourcePathChangedEvent -= m_sceneSourcePathChangedListener;
-    m_context.sceneManager.UnloadCurrentScene();
+	m_context.sceneManager.CurrentSceneSourcePathChangedEvent -= m_sceneSourcePathChangedListener;
+	NLS::Core::ServiceLocator::Remove<NLS::Editor::Undo::EditorUndoService>();
+	m_context.sceneManager.UnloadCurrentScene();
+	NLS::Core::ServiceLocator::Remove<NLS::Editor::Shortcuts::EditorShortcutService>();
+	NLS::Core::ServiceLocator::Remove<NLS::Editor::Core::Editor>();
 }
 
 void Editor::Core::Editor::SetupUI()
@@ -1145,15 +1210,11 @@ void Editor::Core::Editor::SetupUI()
     logSetupStep("GameView");
     m_panelsManager.CreatePanel<Panels::FrameInfo>("Frame Info", false, frameInfoSettings);
     logSetupStep("FrameInfo");
-    m_panelsManager.CreatePanel<Panels::MaterialEditor>("Material Editor", false, settings);
-    logSetupStep("MaterialEditor");
     m_panelsManager.CreatePanel<Panels::UIDocumentDesigner>("UI Designer", false, settings);
     logSetupStep("UIDocumentDesigner");
     m_panelsManager.CreatePanel<Panels::ProjectSettings>("Project Settings", false, settings);
     logSetupStep("ProjectSettings");
     m_panelsManager.GetPanelAs<Panels::ProjectSettings>("Project Settings").enabled = false;
-    m_panelsManager.CreatePanel<Panels::AssetProperties>("Asset Properties", false, settings);
-    logSetupStep("AssetProperties");
     auto& topBar = m_panelsManager.GetPanelAs<Panels::EditorTopBar>("Editor Top Bar");
     topBar.RegisterProjectSettingsPanel(m_panelsManager.GetPanelAs<Panels::ProjectSettings>("Project Settings"));
     topBar.RegisterWindowPanel("Asset Browser", m_panelsManager.GetPanelAs<Panels::AssetBrowser>("Asset Browser"));
@@ -1165,13 +1226,28 @@ void Editor::Core::Editor::SetupUI()
     topBar.RegisterWindowPanel("Inspector", m_panelsManager.GetPanelAs<Panels::Inspector>("Inspector"));
     topBar.RegisterWindowPanel("Scene View", m_panelsManager.GetPanelAs<Panels::SceneView>("Scene View"));
     topBar.RegisterWindowPanel("Game View", m_panelsManager.GetPanelAs<Panels::GameView>("Game View"));
-    topBar.RegisterWindowPanel("Material Editor", m_panelsManager.GetPanelAs<Panels::MaterialEditor>("Material Editor"));
     topBar.RegisterWindowPanel("UI Designer", m_panelsManager.GetPanelAs<Panels::UIDocumentDesigner>("UI Designer"));
-    topBar.RegisterWindowPanel("Asset Properties", m_panelsManager.GetPanelAs<Panels::AssetProperties>("Asset Properties"));
     logSetupStep("RegisterWindows");
     // Needs to be called after all panels got created, because some settings in this menu depend on other panels
     topBar.InitializeSettingsMenu();
     logSetupStep("InitializeSettingsMenu");
+    // Scripted editor windows register their menu entries through the script
+    // ABI; publish them once the top bar exists.
+    // Scripted editor menu entries are an extension point, never a startup
+    // dependency: a malformed descriptor must not abort editor construction.
+    try
+    {
+        NLS::Editor::Scripting::InstallScriptMenuEntries();
+    }
+    catch (const std::exception& exception)
+    {
+        NLS_LOG_ERROR("Scripted editor menu registration threw: " + std::string(exception.what()));
+    }
+    catch (...)
+    {
+        NLS_LOG_ERROR("Scripted editor menu registration threw an unknown exception.");
+    }
+    logSetupStep("InstallScriptMenuEntries");
     m_canvas.MakeDockspace(true);
     logSetupStep("MakeDockspace");
     m_context.uiManager->SetCanvas(m_canvas);
@@ -1184,6 +1260,7 @@ void Editor::Core::Editor::SetupUI()
 
 void Editor::Core::Editor::PreUpdate()
 {
+    static_cast<void>(m_undoService.DrainPendingCompletions());
     RefreshProfilerRecordingState();
     NLS_PROFILE_SCOPE();
     {
@@ -1328,10 +1405,24 @@ void Editor::Core::Editor::Update(float p_deltaTime)
     logUpdateStage("UpdateThumbnailTelemetrySummaryExport");
 
     {
-        NLS_PROFILE_NAMED_SCOPE("Editor::HandleGlobalShortcuts");
-        HandleGlobalShortcuts();
+        // Keep the engine font atlas resident as a UI texture and hook the
+        // retained game UI into the overlay snapshot the editor publishes.
+        if (auto* driver = NLS::Render::Context::TryGetLocatedDriver())
+            m_uiOverlayPresenter.PumpFontAtlas(*driver);
+
+        if (!m_uiOverlaySupplementInstalled &&
+            NLS::Core::ServiceLocator::Contains<NLS::UI::UIManager>())
+        {
+            NLS::Core::ServiceLocator::Get<NLS::UI::UIManager>().SetOverlaySnapshotSupplement(
+                [this](NLS::Render::UI::UiDrawDataSnapshot& snapshot)
+                {
+                    m_uiOverlayPresenter.AppendToOverlaySnapshot(snapshot);
+                });
+            m_uiOverlaySupplementInstalled = true;
+        }
     }
-    logUpdateStage("HandleGlobalShortcuts");
+    logUpdateStage("UiOverlayPresenter");
+
     {
         NLS_PROFILE_NAMED_SCOPE("Editor::PumpAssetFileWatchers");
         m_panelsManager.GetPanelAs<Panels::AssetBrowser>("Asset Browser").PumpFileWatchers();
@@ -1551,6 +1642,15 @@ const Render::Data::FrameInfo& Editor::Core::Editor::GetSceneViewCumulativeFrame
 
 void Editor::Core::Editor::HandleGlobalShortcuts()
 {
+	// Continuous edits own Escape until they have either committed or restored
+	// their before state. Text widgets retain their native editing behaviour.
+	if (m_undoService.HasActiveEditSession() && !ImGui::GetIO().WantTextInput &&
+		m_context.inputManager->IsKeyPressed(Windowing::Inputs::EKey::KEY_ESCAPE))
+	{
+		static_cast<void>(m_undoService.RequestUndo());
+		return;
+	}
+
     m_shortcutService.ExecutePressedShortcut(
         [this](Windowing::Inputs::EKey p_key)
         {
@@ -1661,6 +1761,31 @@ void Editor::Core::Editor::RegisterDefaultShortcuts()
         ShortcutContexts::Global,
         ShortcutBinding::FromKey(EKey::KEY_S, EShortcutModifier::Ctrl | EShortcutModifier::Shift),
         [this] { m_editorActions.SaveAs(); }));
+
+	// These are global timeline operations. They deliberately do not use the
+	// focused panel as a history domain: the top completed transaction always
+	// wins, regardless of which editor surface started it.
+	auto undoCommand = makeCommand(
+		"edit.undo",
+		"Undo",
+		"Edit",
+		ShortcutContexts::Global,
+		ShortcutBinding::FromKey(EKey::KEY_Z, EShortcutModifier::Primary),
+        [this] { static_cast<void>(m_undoService.RequestUndo()); });
+	undoCommand.availability = [this] { return m_undoService.CanUndo(); };
+	registerCommand(std::move(undoCommand));
+
+	auto redoCommand = makeCommand(
+		"edit.redo",
+		"Redo",
+		"Edit",
+		ShortcutContexts::Global,
+		ShortcutBinding::FromKey(EKey::KEY_Y, EShortcutModifier::Primary),
+		[this] { static_cast<void>(m_undoService.RequestRedo()); });
+	redoCommand.alternateBindings.push_back(
+		ShortcutBinding::FromKey(EKey::KEY_Z, EShortcutModifier::Primary | EShortcutModifier::Shift));
+	redoCommand.availability = [this] { return m_undoService.CanRedo(); };
+	registerCommand(std::move(redoCommand));
 
     registerCommand(makeCommand(
         "editor.play",
@@ -1811,16 +1936,34 @@ void Editor::Core::Editor::RegisterDefaultShortcuts()
         EKey::KEY_X,
         [](Panels::SceneView& p_sceneView) { p_sceneView.ToggleCurrentGizmoSpace(); });
 
+    const auto deleteSelectedGameObjectThroughUndo = [this]
+    {
+        auto* selected = m_editorActions.GetSelectedGameObject();
+        if (selected == nullptr || selected->GetScene() == nullptr)
+            return;
+
+        const auto scope = m_editorActions.GetUndoScopeForScene(*selected->GetScene());
+        if (!scope.IsValid())
+            return;
+
+        const auto result = Panels::HierarchyUndo::DeleteGameObject(m_undoService, *selected, scope);
+        if (!result.Succeeded())
+        {
+            NLS_LOG_WARNING(
+                "Delete Selected GameObject was rejected by the global Undo service: " +
+                (result.message.empty() ? std::string("Unknown error.") : result.message));
+        }
+    };
+
     registerCommand(makeCommand(
         "edit.delete-selected-gameobject",
         "Delete Selected GameObject",
         "Edit",
         ShortcutContexts::SceneView,
         ShortcutBinding::FromKey(EKey::KEY_DELETE),
-        [this]
+        [deleteSelectedGameObjectThroughUndo]
         {
-            if (m_editorActions.IsAnyGameObjectSelected())
-                m_editorActions.DestroyGameObject(*m_editorActions.GetSelectedGameObject());
+            deleteSelectedGameObjectThroughUndo();
         }));
 
     registerCommand(makeCommand(
@@ -1829,10 +1972,9 @@ void Editor::Core::Editor::RegisterDefaultShortcuts()
         "Edit",
         ShortcutContexts::Hierarchy,
         ShortcutBinding::FromKey(EKey::KEY_DELETE),
-        [this]
+        [deleteSelectedGameObjectThroughUndo]
         {
-            if (m_editorActions.IsAnyGameObjectSelected())
-                m_editorActions.DestroyGameObject(*m_editorActions.GetSelectedGameObject());
+            deleteSelectedGameObjectThroughUndo();
         }));
 
     m_shortcutService.LoadProfile(std::filesystem::path(m_context.projectPath) / "UserSettings" / "shortcuts.json");

@@ -60,9 +60,32 @@ internal static partial class MetaParserTool
             generatedSourceIncludes.Add($"{generatedBase}{manifest.Outputs.HeaderGeneratedSourceSuffix}".Replace('\\', '/'));
         }
 
-        var moduleModel = moduleSession with { GeneratedSourceIncludes = generatedSourceIncludes };
+        var editorExtensions = BuildEditorExtensionDescriptors(config, reflectionTypeCatalog);
+        var editorExtensionSourceInclude = string.Empty;
+        if (editorExtensions.Count > 0)
+        {
+            const string fileName = "EditorExtensionDescriptors.generated.cpp";
+            var extensionPath = Path.Combine(outputDir, fileName);
+            expectedSourceOutputs.Add(Path.GetFullPath(extensionPath));
+            var extensionModel = new EditorExtensionTemplateModel(
+                BuildEditorExtensionRegistrationFunctionName(moduleSession.SanitizedTargetName),
+                editorExtensions);
+            var extensionSourceText = MetaParserTemplateRenderer.Render(
+                MetaParserTemplateCatalog.ResolvePath(templateRoot, MetaParserTemplateCatalog.EditorExtensionDescriptorsSource),
+                CreateTemplateSession(extensionModel));
+            WriteAllTextIfChanged(extensionPath, extensionSourceText);
+            editorExtensionSourceInclude = fileName;
+        }
 
-        var moduleHeaderModel = new ModuleHeaderTemplateModel(moduleModel.LinkFunctionName);
+        var moduleModel = moduleSession with
+        {
+            GeneratedSourceIncludes = generatedSourceIncludes,
+            EditorExtensionSourceInclude = editorExtensionSourceInclude
+        };
+
+        var moduleHeaderModel = new ModuleHeaderTemplateModel(
+            moduleModel.LinkFunctionName,
+            BuildEditorExtensionRegistrationFunctionName(moduleModel.SanitizedTargetName));
 
         var moduleHeaderText = MetaParserTemplateRenderer.Render(
             MetaParserTemplateCatalog.ResolvePath(templateRoot, manifest.Templates.ModuleRule.HeaderTemplate),
@@ -126,7 +149,239 @@ internal static partial class MetaParserTool
         return new ModuleTemplateModel(
             sanitizedTargetName,
             $"LinkReflectionTypes_{sanitizedTargetName}",
-            []);
+            [],
+            string.Empty);
+    }
+
+    private static string BuildEditorExtensionRegistrationFunctionName(string sanitizedTargetName)
+        => $"RegisterEditorExtensions_{sanitizedTargetName}";
+
+    private static List<GeneratedEditorExtensionDescriptorTemplateModel> BuildEditorExtensionDescriptors(
+        PrecompileParams config,
+        ReflectionTypeCatalog reflectionTypeCatalog)
+    {
+        var declarations = new List<GeneratedEditorExtensionDescriptorTemplateModel>();
+        var usedFactoryNames = new HashSet<string>(StringComparer.Ordinal);
+
+        foreach (var headerPath in config.Headers
+                     .Where(static path => !string.IsNullOrWhiteSpace(path))
+                     .Select(Path.GetFullPath)
+                     .Distinct(OperatingSystem.IsWindows() ? StringComparer.OrdinalIgnoreCase : StringComparer.Ordinal))
+        {
+            if (!File.Exists(headerPath))
+                continue;
+
+            var text = StripCommentsAndDisabledPreprocessorBlocks(File.ReadAllText(headerPath));
+            foreach (var invocation in EnumerateEditorExtensionInvocations(text, "NLS_EDITOR_CUSTOM_EDITOR"))
+            {
+                if (invocation.Arguments.Count != 2)
+                    throw new InvalidOperationException(
+                        $"NLS_EDITOR_CUSTOM_EDITOR in '{headerPath}' requires target and editor type arguments.");
+                declarations.Add(CreateEditorExtensionDescriptor(
+                    config.RootDir,
+                    headerPath,
+                    reflectionTypeCatalog,
+                    invocation.Arguments[0],
+                    invocation.Arguments[1],
+                    false,
+                    false,
+                    false,
+                    0,
+                    usedFactoryNames));
+            }
+
+            foreach (var invocation in EnumerateEditorExtensionInvocations(text, "NLS_EDITOR_CUSTOM_EDITOR_WITH_OPTIONS"))
+            {
+                if (invocation.Arguments.Count != 6)
+                    throw new InvalidOperationException(
+                        $"NLS_EDITOR_CUSTOM_EDITOR_WITH_OPTIONS in '{headerPath}' requires six arguments.");
+                declarations.Add(CreateEditorExtensionDescriptor(
+                    config.RootDir,
+                    headerPath,
+                    reflectionTypeCatalog,
+                    invocation.Arguments[0],
+                    invocation.Arguments[1],
+                    ParseEditorExtensionBoolean(invocation.Arguments[2], headerPath),
+                    ParseEditorExtensionBoolean(invocation.Arguments[3], headerPath),
+                    ParseEditorExtensionBoolean(invocation.Arguments[4], headerPath),
+                    ParseEditorExtensionPriority(invocation.Arguments[5], headerPath),
+                    usedFactoryNames));
+            }
+        }
+
+        var registrationKeys = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var descriptor in declarations)
+        {
+            var key = descriptor.TargetTypeName + "|" +
+                (descriptor.EditorForChildClasses ? "children" : "exact") + "|" +
+                descriptor.Priority;
+            if (!registrationKeys.Add(key))
+            {
+                throw new InvalidOperationException(
+                    $"Duplicate editor extension declaration for target/inheritance/priority: {key}.");
+            }
+        }
+
+        return declarations
+            .OrderBy(static descriptor => descriptor.TargetTypeName, StringComparer.Ordinal)
+            .ThenBy(static descriptor => descriptor.EditorForChildClasses)
+            .ThenByDescending(static descriptor => descriptor.Priority)
+            .ThenBy(static descriptor => descriptor.Identifier, StringComparer.Ordinal)
+            .ToList();
+    }
+
+    private static GeneratedEditorExtensionDescriptorTemplateModel CreateEditorExtensionDescriptor(
+        string rootDir,
+        string headerPath,
+        ReflectionTypeCatalog reflectionTypeCatalog,
+        string targetTypeName,
+        string editorTypeName,
+        bool editorForChildClasses,
+        bool isFallback,
+        bool supportsMultiObject,
+        int priority,
+        HashSet<string> usedFactoryNames)
+    {
+        var resolvedTarget = ResolveEditorExtensionTypeName(targetTypeName, reflectionTypeCatalog, headerPath);
+        var resolvedEditor = ResolveEditorExtensionTypeName(editorTypeName, reflectionTypeCatalog, headerPath);
+        var baseFactoryName = "CreateEditorExtension_" + SanitizeIdentifier(
+            resolvedTarget.Replace("NLS::", string.Empty, StringComparison.Ordinal) + "_" +
+            resolvedEditor.Replace("NLS::", string.Empty, StringComparison.Ordinal));
+        var factoryName = baseFactoryName;
+        for (var suffix = 2; !usedFactoryNames.Add(factoryName); ++suffix)
+            factoryName = baseFactoryName + "_" + suffix;
+
+        return new GeneratedEditorExtensionDescriptorTemplateModel(
+            ToGeneratedIncludePath(rootDir, headerPath),
+            resolvedTarget,
+            resolvedEditor,
+            ExtractSimpleClassName(resolvedEditor),
+            editorForChildClasses,
+            isFallback,
+            supportsMultiObject,
+            priority,
+            factoryName);
+    }
+
+    private static string ResolveEditorExtensionTypeName(
+        string typeName,
+        ReflectionTypeCatalog reflectionTypeCatalog,
+        string headerPath)
+    {
+        var normalized = QualifyRootNamespaceType(NormalizeTypeName(typeName).TrimStart(':'));
+        var resolved = ResolveReflectedBaseTypeName(normalized, string.Empty, reflectionTypeCatalog.ReflectedBaseTypeNames);
+        if (!string.IsNullOrWhiteSpace(resolved))
+            return resolved;
+
+        throw new InvalidOperationException(
+            $"Editor extension type '{typeName}' in '{headerPath}' is not reflected. " +
+            "Declare both target and editor with reflection metadata before registering the extension.");
+    }
+
+    private static bool ParseEditorExtensionBoolean(string value, string headerPath)
+    {
+        if (bool.TryParse(value.Trim(), out var parsed))
+            return parsed;
+        throw new InvalidOperationException(
+            $"Editor extension boolean option '{value}' in '{headerPath}' must be true or false.");
+    }
+
+    private static int ParseEditorExtensionPriority(string value, string headerPath)
+    {
+        if (int.TryParse(value.Trim(), System.Globalization.NumberStyles.Integer,
+                System.Globalization.CultureInfo.InvariantCulture, out var parsed))
+        {
+            return parsed;
+        }
+        throw new InvalidOperationException(
+            $"Editor extension priority '{value}' in '{headerPath}' must be a signed integer.");
+    }
+
+    private sealed record EditorExtensionInvocation(List<string> Arguments);
+
+    private static IEnumerable<EditorExtensionInvocation> EnumerateEditorExtensionInvocations(
+        string text,
+        string macroName)
+    {
+        for (var start = 0; start < text.Length;)
+        {
+            var index = text.IndexOf(macroName, start, StringComparison.Ordinal);
+            if (index < 0)
+                yield break;
+            start = index + macroName.Length;
+
+            if ((index > 0 && (char.IsLetterOrDigit(text[index - 1]) || text[index - 1] == '_')) ||
+                (start < text.Length && (char.IsLetterOrDigit(text[start]) || text[start] == '_')) ||
+                IsEditorExtensionPreprocessorDefinition(text, index))
+            {
+                continue;
+            }
+
+            while (start < text.Length && char.IsWhiteSpace(text[start]))
+                ++start;
+            if (start >= text.Length || text[start] != '(')
+                continue;
+
+            var end = FindEditorExtensionInvocationEnd(text, start);
+            if (end < 0)
+                throw new InvalidOperationException($"Unterminated {macroName} invocation.");
+            yield return new EditorExtensionInvocation(SplitEditorExtensionArguments(text[(start + 1)..end]));
+            start = end + 1;
+        }
+    }
+
+    private static bool IsEditorExtensionPreprocessorDefinition(string text, int index)
+    {
+        var lineStart = text.LastIndexOf('\n', Math.Max(0, index - 1));
+        lineStart = lineStart < 0 ? 0 : lineStart + 1;
+        return text[lineStart..index].TrimStart().StartsWith("#define", StringComparison.Ordinal);
+    }
+
+    private static int FindEditorExtensionInvocationEnd(string text, int openingParenthesis)
+    {
+        var depth = 0;
+        for (var index = openingParenthesis; index < text.Length; ++index)
+        {
+            if (text[index] == '(')
+                ++depth;
+            else if (text[index] == ')' && --depth == 0)
+                return index;
+        }
+        return -1;
+    }
+
+    private static List<string> SplitEditorExtensionArguments(string text)
+    {
+        var arguments = new List<string>();
+        var depth = 0;
+        var start = 0;
+        for (var index = 0; index < text.Length; ++index)
+        {
+            switch (text[index])
+            {
+            case '(':
+            case '<':
+            case '[':
+            case '{':
+                ++depth;
+                break;
+            case ')':
+            case '>':
+            case ']':
+            case '}':
+                --depth;
+                break;
+            case ',':
+                if (depth == 0)
+                {
+                    arguments.Add(text[start..index].Trim());
+                    start = index + 1;
+                }
+                break;
+            }
+        }
+        arguments.Add(text[start..].Trim());
+        return arguments;
     }
 
     private static Dictionary<string, object?> BuildHeaderTemplateSession(
@@ -294,10 +549,10 @@ internal static partial class MetaParserTool
             return false;
 
         var visited = new HashSet<string>(StringComparer.Ordinal);
-        return InheritsFromUnityObject(type.QualifiedName, reflectionTypeCatalog.ReflectedDirectBaseTypeNames, visited);
+        return InheritsFromEngineObject(type.QualifiedName, reflectionTypeCatalog.ReflectedDirectBaseTypeNames, visited);
     }
 
-    private static bool InheritsFromUnityObject(
+    private static bool InheritsFromEngineObject(
         string typeName,
         IReadOnlyDictionary<string, List<string>> reflectedDirectBaseTypeNames,
         HashSet<string> visited)
@@ -316,7 +571,7 @@ internal static partial class MetaParserTool
                 return true;
             }
 
-            if (InheritsFromUnityObject(baseName, reflectedDirectBaseTypeNames, visited))
+            if (InheritsFromEngineObject(baseName, reflectedDirectBaseTypeNames, visited))
                 return true;
         }
 

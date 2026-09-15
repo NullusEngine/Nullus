@@ -29,7 +29,7 @@
 #include "Assets/ExternalAssetImporter.h"
 #include "Assets/ModelTextureReferenceResolver.h"
 #include "Assets/ModelTextureResolutionReport.h"
-#include "Panels/AssetProperties.h"
+#include "Inspector/ModelImporterSupport.h"
 #include "Assets/TextureEncoding/DirectXTexTextureEncoder.h"
 #include "Guid.h"
 #include "Profiling/PerformanceStageStats.h"
@@ -9661,7 +9661,7 @@ TEST(AssetImportPipelineTests, ModelImporterSettingsResolveMissingFbxReaderToAut
         NLS::Editor::Assets::FbxReaderSelection::AutodeskWithAssimpFallback);
 }
 
-TEST(AssetImportPipelineTests, ModelTextureResolutionSettingsUseUnityAlignedDefaults)
+TEST(AssetImportPipelineTests, ModelTextureResolutionSettingsUseEngineAlignedDefaults)
 {
     NLS::Core::Assets::AssetMeta meta;
 
@@ -10313,7 +10313,7 @@ TEST(AssetImportPipelineTests, ModelTextureResolutionReportEscapesSpecialCharact
     EXPECT_EQ(parsed->entries[0].diagnostics[0].message, "missing=A;B|C\nline2");
 }
 
-TEST(AssetImportPipelineTests, AssetPropertiesLODSettingsExposeRegistryChoicesAndPreserveValues)
+TEST(AssetImportPipelineTests, InspectorModelLODSettingsExposeRegistryChoicesAndPreserveValues)
 {
     const std::vector<std::string> expectedGroups {
         "None",
@@ -10330,7 +10330,7 @@ TEST(AssetImportPipelineTests, AssetPropertiesLODSettingsExposeRegistryChoicesAn
         {"MIN_LOD", "2"},
         {"AUTO_COMPUTE_LOD_SCREEN_SIZE", "false"}};
 
-    const auto view = NLS::Editor::Panels::BuildModelLODAssetPropertiesView(serialized);
+    const auto view = NLS::Editor::Inspector::BuildModelLODInspectorView(serialized);
 
     ASSERT_EQ(view.lodGroupChoices.size(), expectedGroups.size());
     for (size_t index = 0u; index < expectedGroups.size(); ++index)
@@ -10341,27 +10341,27 @@ TEST(AssetImportPipelineTests, AssetPropertiesLODSettingsExposeRegistryChoicesAn
     EXPECT_FALSE(view.autoComputeLODScreenSize);
 }
 
-TEST(AssetImportPipelineTests, AssetPropertiesLODSettingsNormalizeUnknownGroupToNone)
+TEST(AssetImportPipelineTests, InspectorModelLODSettingsNormalizeUnknownGroupToNone)
 {
     std::map<std::string, std::string> serialized {{"LOD_GROUP", "RemovedPreset"}};
 
-    const auto view = NLS::Editor::Panels::BuildModelLODAssetPropertiesView(serialized);
+    const auto view = NLS::Editor::Inspector::BuildModelLODInspectorView(serialized);
     EXPECT_EQ(view.selectedLODGroup, 0);
 
-    NLS::Editor::Panels::StoreModelLODAssetPropertiesSettings(serialized, view);
+    NLS::Editor::Inspector::StoreModelLODInspectorSettings(serialized, view);
     EXPECT_EQ(serialized.at("LOD_GROUP"), "None");
 }
 
-TEST(AssetImportPipelineTests, AssetPropertiesLODSettingsStoreSelectionAndClampMinLOD)
+TEST(AssetImportPipelineTests, InspectorModelLODSettingsStoreSelectionAndClampMinLOD)
 {
     std::map<std::string, std::string> serialized;
-    auto view = NLS::Editor::Panels::BuildModelLODAssetPropertiesView(serialized);
+    auto view = NLS::Editor::Inspector::BuildModelLODInspectorView(serialized);
     view.selectedLODGroup = 2;
     view.importMeshLODs = true;
     view.minLOD = -7;
     view.autoComputeLODScreenSize = false;
 
-    NLS::Editor::Panels::StoreModelLODAssetPropertiesSettings(serialized, view);
+    NLS::Editor::Inspector::StoreModelLODInspectorSettings(serialized, view);
 
     EXPECT_EQ(serialized.at("LOD_GROUP"), "SmallProp");
     EXPECT_EQ(serialized.at("IMPORT_MESH_LODS"), "true");
@@ -10369,22 +10369,22 @@ TEST(AssetImportPipelineTests, AssetPropertiesLODSettingsStoreSelectionAndClampM
     EXPECT_EQ(serialized.at("AUTO_COMPUTE_LOD_SCREEN_SIZE"), "false");
 }
 
-TEST(AssetImportPipelineTests, AssetPropertiesLODSettingsLoadNegativeMinLODAsZero)
+TEST(AssetImportPipelineTests, InspectorModelLODSettingsLoadNegativeMinLODAsZero)
 {
     const std::map<std::string, std::string> serialized {{"MIN_LOD", "-7"}};
 
-    const auto view = NLS::Editor::Panels::BuildModelLODAssetPropertiesView(serialized);
+    const auto view = NLS::Editor::Inspector::BuildModelLODInspectorView(serialized);
 
     EXPECT_EQ(view.minLOD, 0);
 }
 
-TEST(AssetImportPipelineTests, AssetPropertiesLODSettingsStoreInvalidSelectionAsNone)
+TEST(AssetImportPipelineTests, InspectorModelLODSettingsStoreInvalidSelectionAsNone)
 {
     std::map<std::string, std::string> serialized;
-    auto view = NLS::Editor::Panels::BuildModelLODAssetPropertiesView(serialized);
+    auto view = NLS::Editor::Inspector::BuildModelLODInspectorView(serialized);
     view.selectedLODGroup = 99;
 
-    NLS::Editor::Panels::StoreModelLODAssetPropertiesSettings(serialized, view);
+    NLS::Editor::Inspector::StoreModelLODInspectorSettings(serialized, view);
 
     EXPECT_EQ(serialized.at("LOD_GROUP"), "None");
 }
@@ -10398,7 +10398,7 @@ TEST(AssetImportPipelineTests, ModelImporterSettingsRejectNegativeMinLOD)
     EXPECT_EQ(parsed.minLOD, 0u);
 }
 
-TEST(AssetImportPipelineTests, AssetPropertiesModelTextureReportRowsHideMissingStaleAndMalformedReports)
+TEST(AssetImportPipelineTests, InspectorModelTextureReportRowsHideMissingStaleAndMalformedReports)
 {
     NLS::Core::Assets::AssetMeta modelMeta;
     modelMeta.id = NLS::Core::Assets::AssetId(
@@ -10409,7 +10409,7 @@ TEST(AssetImportPipelineTests, AssetPropertiesModelTextureReportRowsHideMissingS
 
     const auto currentFingerprint = NLS::Editor::Assets::ComputeModelTextureSettingsFingerprint(modelMeta);
 
-    const auto missing = NLS::Editor::Panels::BuildModelTextureAssetPropertiesView(
+    const auto missing = NLS::Editor::Inspector::BuildModelTextureInspectorView(
         modelMeta,
         "editor",
         std::nullopt);
@@ -10418,7 +10418,7 @@ TEST(AssetImportPipelineTests, AssetPropertiesModelTextureReportRowsHideMissingS
     EXPECT_FALSE(missing.reimportRequired);
     EXPECT_TRUE(missing.rows.empty());
 
-    const auto malformed = NLS::Editor::Panels::BuildModelTextureAssetPropertiesView(
+    const auto malformed = NLS::Editor::Inspector::BuildModelTextureInspectorView(
         modelMeta,
         "editor",
         std::optional<std::string>("not a texture report"));
@@ -10435,7 +10435,7 @@ TEST(AssetImportPipelineTests, AssetPropertiesModelTextureReportRowsHideMissingS
 
     auto staleReport = report;
     staleReport.settingsFingerprint = "stale-settings";
-    const auto stale = NLS::Editor::Panels::BuildModelTextureAssetPropertiesView(
+    const auto stale = NLS::Editor::Inspector::BuildModelTextureInspectorView(
         modelMeta,
         "editor",
         NLS::Editor::Assets::SerializeModelTextureResolutionReport(staleReport));
@@ -10446,7 +10446,7 @@ TEST(AssetImportPipelineTests, AssetPropertiesModelTextureReportRowsHideMissingS
     EXPECT_TRUE(stale.rows.empty());
 }
 
-TEST(AssetImportPipelineTests, AssetPropertiesModelTextureReportRowsExposeWarningsAndResolutionDetails)
+TEST(AssetImportPipelineTests, InspectorModelTextureReportRowsExposeWarningsAndResolutionDetails)
 {
     NLS::Core::Assets::AssetMeta modelMeta;
     modelMeta.id = NLS::Core::Assets::AssetId(
@@ -10514,7 +10514,7 @@ TEST(AssetImportPipelineTests, AssetPropertiesModelTextureReportRowsExposeWarnin
 
     report.entries = { invalidTarget, orderDerived, unsupportedEncoding, sourcePath };
 
-    const auto view = NLS::Editor::Panels::BuildModelTextureAssetPropertiesView(
+    const auto view = NLS::Editor::Inspector::BuildModelTextureInspectorView(
         modelMeta,
         "editor",
         NLS::Editor::Assets::SerializeModelTextureResolutionReport(report));
@@ -10533,7 +10533,7 @@ TEST(AssetImportPipelineTests, AssetPropertiesModelTextureReportRowsExposeWarnin
     EXPECT_EQ(view.rows[3].targetAssetId, "53535353-5353-4353-8353-535353535353");
 }
 
-TEST(AssetImportPipelineTests, AssetPropertiesModelTextureSettingAndRemapChangesRequireReimport)
+TEST(AssetImportPipelineTests, InspectorModelTextureSettingAndRemapChangesRequireReimport)
 {
     NLS::Core::Assets::AssetMeta modelMeta;
     modelMeta.id = NLS::Core::Assets::AssetId(
@@ -10548,7 +10548,7 @@ TEST(AssetImportPipelineTests, AssetPropertiesModelTextureSettingAndRemapChanges
     report.importerVersion = modelMeta.importerVersion;
     report.settingsFingerprint = NLS::Editor::Assets::ComputeModelTextureSettingsFingerprint(modelMeta);
 
-    const auto clean = NLS::Editor::Panels::BuildModelTextureAssetPropertiesView(
+    const auto clean = NLS::Editor::Inspector::BuildModelTextureInspectorView(
         modelMeta,
         "editor",
         NLS::Editor::Assets::SerializeModelTextureResolutionReport(report));
@@ -10556,10 +10556,10 @@ TEST(AssetImportPipelineTests, AssetPropertiesModelTextureSettingAndRemapChanges
 
     auto settings = clean.settings;
     settings.searchByName = false;
-    NLS::Editor::Panels::StoreModelTextureAssetPropertiesSettings(modelMeta, settings);
+    NLS::Editor::Inspector::StoreModelTextureInspectorSettings(modelMeta, settings);
     EXPECT_FALSE(NLS::Editor::Assets::LoadModelTextureResolutionSettings(modelMeta).searchByName);
 
-    const auto changedSettings = NLS::Editor::Panels::BuildModelTextureAssetPropertiesView(
+    const auto changedSettings = NLS::Editor::Inspector::BuildModelTextureInspectorView(
         modelMeta,
         "editor",
         NLS::Editor::Assets::SerializeModelTextureResolutionReport(report));
@@ -10568,7 +10568,7 @@ TEST(AssetImportPipelineTests, AssetPropertiesModelTextureSettingAndRemapChanges
     const std::string stableKey = "mtxsrc:v1:kind=ExternalFile;source=image/0;uri=Assets/Textures/A.png";
     const auto remapTargetId = NLS::Core::Assets::AssetId(
         NLS::Guid::Parse("55555555-5555-4555-8555-555555555555"));
-    NLS::Editor::Panels::StoreModelTextureAssetPropertiesRemap(
+    NLS::Editor::Inspector::StoreModelTextureInspectorRemap(
         modelMeta,
         stableKey,
         remapTargetId,
@@ -10581,7 +10581,7 @@ TEST(AssetImportPipelineTests, AssetPropertiesModelTextureSettingAndRemapChanges
     EXPECT_EQ(remaps[0].targetAssetId, remapTargetId);
     EXPECT_EQ(remaps[0].targetEditorPath, "Assets/Textures/A.png");
 
-    NLS::Editor::Panels::ClearModelTextureAssetPropertiesRemap(modelMeta, stableKey);
+    NLS::Editor::Inspector::ClearModelTextureInspectorRemap(modelMeta, stableKey);
     EXPECT_TRUE(NLS::Editor::Assets::LoadModelTextureRemapSettings(modelMeta).empty());
 }
 

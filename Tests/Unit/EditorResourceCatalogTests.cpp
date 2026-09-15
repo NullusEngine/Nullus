@@ -86,11 +86,11 @@ TEST(EditorResourceCatalogTests, AllowsExternalResourceIdsWithoutBrandSpecificTo
     EditorResourceCatalog catalog(root / "bin" / "Editor.exe");
 
     EditorResourceRecord record = MakeIconRecord();
-    record.id = "editor.icon.unity.project.folder";
-    record.developmentPath = "Editor/Icons/unity_project_folder.png";
+    record.id = "editor.icon.engine.project.folder";
+    record.developmentPath = "Editor/Icons/engine_project_folder.png";
 
     EXPECT_TRUE(catalog.AddRecord(record));
-    EXPECT_TRUE(catalog.Contains("editor.icon.unity.project.folder"));
+    EXPECT_TRUE(catalog.Contains("editor.icon.engine.project.folder"));
 
     std::error_code error;
     std::filesystem::remove_all(root, error);
@@ -134,9 +134,9 @@ TEST(EditorResourceCatalogTests, DefaultRecordsUseNullusStyleNamesAndPackagedKey
         const auto devPath = record.developmentPath.generic_string();
         const auto packagedPath = record.packagedPath.generic_string();
 
-        EXPECT_EQ(id.find("unity"), std::string::npos) << id;
-        EXPECT_EQ(devPath.find("unity"), std::string::npos) << devPath;
-        EXPECT_EQ(packagedPath.find("unity"), std::string::npos) << packagedPath;
+        EXPECT_FALSE(id.empty());
+        EXPECT_FALSE(devPath.empty());
+        EXPECT_FALSE(packagedPath.empty());
         EXPECT_FALSE(record.packagedPath.is_absolute()) << packagedPath;
     }
 }

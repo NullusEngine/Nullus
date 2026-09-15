@@ -49,6 +49,60 @@ TEST(EditorShortcutPersistenceTests, SavesAndLoadsBindingOverrides)
         ShortcutBinding::FromKey(EKey::KEY_D, EShortcutModifier::Ctrl));
 }
 
+TEST(EditorShortcutPersistenceTests, PreservesLegacyPhysicalAndLogicalPrimaryModifiers)
+{
+    const auto path = TempProfilePath("primary-and-legacy-modifiers.json");
+    std::filesystem::remove(path);
+
+    EditorShortcutProfile profile;
+    profile.SetBindingOverride("legacy.ctrl", ShortcutBinding::FromKey(EKey::KEY_C, EShortcutModifier::Ctrl));
+    profile.SetBindingOverride("legacy.super", ShortcutBinding::FromKey(EKey::KEY_C, EShortcutModifier::Super));
+    profile.SetBindingOverride("logical.primary", ShortcutBinding::FromKey(EKey::KEY_C, EShortcutModifier::Primary));
+    ASSERT_TRUE(profile.Save(path));
+
+    EditorShortcutProfile loaded;
+    ASSERT_TRUE(loaded.Load(path));
+
+    EXPECT_EQ(
+        loaded.GetBindingOverride("legacy.ctrl"),
+        ShortcutBinding::FromKey(EKey::KEY_C, EShortcutModifier::Ctrl));
+    EXPECT_EQ(
+        loaded.GetBindingOverride("legacy.super"),
+        ShortcutBinding::FromKey(EKey::KEY_C, EShortcutModifier::Super));
+    EXPECT_EQ(
+        loaded.GetBindingOverride("logical.primary"),
+        ShortcutBinding::FromKey(EKey::KEY_C, EShortcutModifier::Primary));
+}
+
+TEST(EditorShortcutPersistenceTests, LoadsVersionOnePhysicalModifierMasksWithoutMigration)
+{
+    const auto path = TempProfilePath("legacy-physical-modifiers.json");
+    std::filesystem::remove(path);
+
+    {
+        std::ofstream output(path);
+        output << R"({
+  "version": 1,
+  "profileName": "Default",
+  "bindings": {
+    "legacy.ctrl": { "assigned": true, "key": "67", "modifiers": 1 },
+    "legacy.super": { "assigned": true, "key": "67", "modifiers": 8 }
+  },
+  "unassigned": []
+})";
+    }
+
+    EditorShortcutProfile loaded;
+    ASSERT_TRUE(loaded.Load(path));
+
+    EXPECT_EQ(
+        loaded.GetBindingOverride("legacy.ctrl"),
+        ShortcutBinding::FromKey(EKey::KEY_C, EShortcutModifier::Ctrl));
+    EXPECT_EQ(
+        loaded.GetBindingOverride("legacy.super"),
+        ShortcutBinding::FromKey(EKey::KEY_C, EShortcutModifier::Super));
+}
+
 TEST(EditorShortcutPersistenceTests, PersistsUnassignedCommands)
 {
     const auto path = TempProfilePath("unassigned.json");

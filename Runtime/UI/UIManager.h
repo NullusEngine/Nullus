@@ -2,10 +2,12 @@
 
 #include <memory>
 #include <string>
+#include <functional>
 #include <unordered_map>
 
 #include "UI/InfiniteDragCursorLease.h"
 #include "Rendering/RHI/Utils/RHIUIBridge.h"
+#include "Rendering/UI/UiDrawDataSnapshot.h"
 #include "Rendering/RHI/RHITypes.h"
 #include "Rendering/Settings/EGraphicsBackend.h"
 #include "UI/Modules/Canvas.h"
@@ -156,6 +158,13 @@ public:
      */
     void Render();
 
+    /**
+     * Invoked after the current canvas has produced all ImGui widgets and
+     * before ImGui::Render(). Editor command routing uses this point so it
+     * observes the current frame's focused text input.
+     */
+    void SetPostCanvasDrawCallback(std::function<void()> p_callback);
+
     // Cumulative per-stage timings inside Render(), for low-overhead diagnostics.
     struct RenderStageCumulativeTotals
     {
@@ -217,9 +226,23 @@ public:
     bool BeginTooltip();
 
     void EndTooltip();
+
+    // Hosts may append engine-authored UI draw lists to the overlay snapshot that
+    // is published for the swapchain overlay pass. The editor uses this to present
+    // a retained game UI inside a viewport rect at the end of the ImGui frame
+    // without a second rendering path.
+    using OverlaySnapshotSupplement =
+        std::function<void(NLS::Render::UI::UiDrawDataSnapshot& snapshot)>;
+    void SetOverlaySnapshotSupplement(OverlaySnapshotSupplement supplement);
+    // Returns true when a supplement was applied and the snapshot signature must
+    // be recomputed before publication.
+    bool ApplyOverlaySnapshotSupplement(NLS::Render::UI::UiDrawDataSnapshot& snapshot);
+
 #pragma endregion
 
 private:
+    std::function<void()> m_postCanvasDrawCallback;
+    OverlaySnapshotSupplement m_overlaySnapshotSupplement;
     float ResolveWindowContentScale() const;
     void RefreshScale();
     void RebuildFonts();

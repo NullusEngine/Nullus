@@ -1,5 +1,7 @@
 #include "Core/Game.h"
 
+#include <Rendering/UI/UIFontAtlas.h>
+
 #include <algorithm>
 #include <filesystem>
 #include <fstream>
@@ -17,6 +19,7 @@
 #include <Rendering/Tooling/MaterialVisualEvidence.h>
 #include <Scripting/ScriptEngineApi.h>
 #include <Components/UICanvasComponent.h>
+#include <Engine/UI/UIDocumentSourceResolver.h>
 
 #include "Assembly.h"
 #include "Core/AssemblyCore.h"
@@ -85,38 +88,6 @@ void Game::Core::Game::PreUpdate()
 			return summaryPath.string();
 		}
 
-		std::filesystem::path ResolveProjectUIDocumentPath(
-			const std::string& projectAssetsPath,
-			const std::string& documentPath)
-		{
-			if (projectAssetsPath.empty() || documentPath.empty())
-				return {};
-
-			const std::filesystem::path sourcePath(documentPath);
-			if (sourcePath.is_absolute())
-				return sourcePath.lexically_normal();
-
-			const auto assetsPath = std::filesystem::path(projectAssetsPath).lexically_normal();
-			const auto normalizedSource = sourcePath.lexically_normal();
-			const auto genericSource = normalizedSource.generic_string();
-			const auto resolved = genericSource == "Assets" || genericSource.rfind("Assets/", 0u) == 0u
-				? (assetsPath.parent_path() / normalizedSource).lexically_normal()
-				: (assetsPath / normalizedSource).lexically_normal();
-
-			// A scene may only use a relative document reference below Assets.
-			// Absolute references remain useful for tools and explicit development
-			// workflows, but cannot be smuggled in through a relative ../ path.
-			const auto relativeToAssets = resolved.lexically_relative(assetsPath);
-			if (relativeToAssets.empty() || relativeToAssets.is_absolute())
-				return {};
-			for (const auto& part : relativeToAssets)
-			{
-				if (part == "..")
-					return {};
-			}
-			return resolved;
-		}
-
 		void ResolvePendingUIDocuments(
 			Engine::UI::UIRuntimeService& uiRuntimeService,
 			const std::string& projectAssetsPath)
@@ -126,7 +97,9 @@ void Game::Core::Game::PreUpdate()
 				if (canvas == nullptr || canvas->GetDocument() != nullptr || canvas->GetDocumentPath().empty())
 					continue;
 
-				const auto resolvedPath = ResolveProjectUIDocumentPath(
+				// The shared resolver owns the "Assets/..." mapping so the editor,
+				// the designer and the game host cannot disagree about it.
+				const auto resolvedPath = NLS::Engine::UI::ResolveProjectUIDocumentPath(
 					projectAssetsPath,
 					canvas->GetDocumentPath());
 				std::error_code error;
@@ -135,7 +108,7 @@ void Game::Core::Game::PreUpdate()
 
 				// Keep the scene's Assets/... reference intact. The resolved source
 				// path is development-time data and must never be serialized back.
-				(void)canvas->LoadDocumentResolvedPath(resolvedPath.string(), nullptr);
+				(void)canvas->LoadDocumentResolvedPath(resolvedPath, nullptr);
 			}
 		}
 
@@ -407,6 +380,11 @@ void Game::Core::Game::Update(float p_deltaTime)
 				NLS_LOG_WARNING("Script LateUpdate batch failed: " + flushStatus.message);
 		}
 		m_uiRuntimeService.Tick(delta, uiViewport, 1.0f, m_frameIndex);
+		// Publish the glyph atlas before the snapshot so text quads have pixels to
+		// sample; the upload itself completes on the render thread.
+		(void)m_uiFontAtlasUploader.Pump(
+			*m_context.driver,
+			NLS::Render::UI::GetSharedUIFontAtlas());
 		m_uiSnapshot = m_uiRuntimeService.GetLatestSnapshot();
 		// Publish only the immutable render snapshot. The RHI overlay keeps
 		// ownership until the corresponding frame has retired, so neither the

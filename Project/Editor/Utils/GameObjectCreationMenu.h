@@ -1,6 +1,7 @@
 #pragma once
 
 #include <functional>
+#include <optional>
 
 namespace NLS::UI::Widgets::Menu
 {

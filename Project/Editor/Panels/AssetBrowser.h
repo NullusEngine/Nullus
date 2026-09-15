@@ -1,6 +1,7 @@
 #pragma once
 
 #include <array>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
@@ -22,6 +23,7 @@
 #include <Rendering/Resources/Loaders/TextureLoader.h>
 #include <Rendering/RHI/RHITypes.h>
 #include "Assets/AssetBrowserPresentation.h"
+#include "Inspector/EditorSelectionService.h"
 #include "Assets/AssetThumbnailAtlas.h"
 #include "Assets/AssetThumbnailPool.h"
 #include "Assets/AssetThumbnailRenderScheduler.h"
@@ -115,7 +117,29 @@ void RecordAssetBrowserThumbnailCanonicalDrawTelemetry(std::string_view itemIden
 #if defined(NLS_ENABLE_TEST_HOOKS)
 void ClearAssetBrowserThumbnailDrawOutcomeTelemetryForTesting();
 void ExpireAssetBrowserThumbnailVisibleSetTelemetryForTesting();
+
+namespace TestHooks
+{
+void NotifyAssetBrowserReimportedForTesting(
+    const NLS::Editor::Assets::AssetBrowserItem& item);
+void NotifyAssetBrowserReloadedForTesting(
+    const NLS::Editor::Assets::AssetBrowserItem& item);
+void NotifyAssetBrowserExternalModificationForTesting(
+    const NLS::Editor::Assets::AssetBrowserItem& item);
+}
 #endif
+
+// Recorded after an Asset Browser Undo command has changed the filesystem.
+// The watcher commonly reports those writes one or more frames later; compare
+// the resulting state before classifying a notification as external.
+struct AssetBrowserWatcherSuppressionRecord
+{
+    bool exists = false;
+    bool directory = false;
+    std::uintmax_t size = 0u;
+    std::filesystem::file_time_type lastWriteTime {};
+    std::chrono::steady_clock::time_point expiresAt {};
+};
 
 /**
  * A panel that handle asset management
@@ -227,11 +251,19 @@ public:
     void CompleteWatcherStartupIfReady();
     void ConsumeWatcherChangesAndSchedulePreimport();
     void RequestRefresh();
-    void ScheduleProjectAssetPreimport(NLS::Editor::Assets::AssetPreimportRequest request);
+    void ScheduleProjectAssetPreimport(
+        NLS::Editor::Assets::AssetPreimportRequest request,
+        std::vector<std::string> externalWatcherScopeKeys = {});
     void RefreshPreservingExpandedFolders();
     void RebuildProjectFolderTreePresentation();
     void RebuildProjectAssetPresentation(NLS::Editor::Assets::AssetBrowserRefreshPlan refreshPlan);
-    void SelectProjectFolder(const std::string& projectRelativePath);
+	void SelectProjectFolder(const std::string& projectRelativePath);
+	// Reveals an asset selected elsewhere (for example by the Inspector object
+	// reference Ping button): switches to its folder, selects it and flashes a
+	// highlight. The request is retried until the folder listing is available.
+	void RequestAssetPing(std::string projectRelativePath);
+	void ProcessPendingAssetPing();
+	void HandleEditorSelectionChanged(const NLS::Editor::Inspector::InspectorTargetSet& targets);
     void DrawProjectAssetBrowser();
     bool DrawProjectFolderTree(const NLS::Editor::Assets::AssetBrowserFolderNode& node);
     bool IsAssetBrowserInteractive() const;
@@ -316,6 +348,10 @@ public:
     bool DuplicateProjectItem(const NLS::Editor::Assets::AssetBrowserItem& item);
     bool DeleteProjectItem(const NLS::Editor::Assets::AssetBrowserItem& item);
     bool RenameProjectItem(const NLS::Editor::Assets::AssetBrowserItem& item, const std::string& newName);
+    bool RenameProjectFileThroughUndo(
+        const std::filesystem::path& source,
+        const std::filesystem::path& destination,
+        std::string assetIdentifier = {});
     bool ImportExternalFilesIntoCurrentFolder(const std::vector<std::filesystem::path>& sourcePaths);
     bool MoveOrCopyProjectBrowserFolderIntoFolder(
         const std::string& receivedProjectRelativeFolder,
@@ -399,6 +435,10 @@ private:
     std::string m_editorAssetFolder;
     std::string m_selectedProjectFolder = "Assets";
     std::optional<NLS::Editor::Assets::AssetBrowserActionIdentity> m_selectedProjectItem;
+    NLS::ListenerID m_editorSelectionListener = NLS::InvalidListenerID;
+    std::optional<std::string> m_pendingPingProjectPath;
+    std::string m_pingedProjectPath;
+    double m_pingHighlightExpiresAt = 0.0;
     std::string m_projectSearchQuery;
     NLS::Editor::Assets::AssetBrowserItemType m_projectTypeFilter = NLS::Editor::Assets::AssetBrowserItemType::All;
     float m_thumbnailSize = 96.0f;
@@ -683,6 +723,7 @@ private:
     double m_projectDeleteActionSuppressedUntil = 0.0;
     NLS::Editor::Assets::AssetBrowserExternalDroppedFileQueue m_pendingExternalDroppedFiles;
     uint64_t m_windowDroppedFilesListener = 0u;
+    uint64_t m_assetUndoHistoryListener = 0u;
     std::unordered_set<std::string> m_expandedProjectFolders;
     std::unordered_set<std::string> m_expandedProjectAssetItems;
     Core::AssetFileWatcher m_engineAssetsWatcher;
@@ -698,5 +739,8 @@ private:
     uint64_t m_projectAssetPresentationGeneration = 0u;
     uint64_t m_projectFolderTreeRefreshGeneration = 0u;
     std::optional<NLS::Editor::Assets::AssetPreimportRequest> m_pendingProjectAssetPreimportRequest;
+    std::vector<std::string> m_pendingProjectAssetPreimportExternalWatcherScopeKeys;
+    std::unordered_map<std::string, AssetBrowserWatcherSuppressionRecord>
+        m_assetBrowserUndoWatcherSuppressions;
 };
 } // namespace NLS::Editor::Panels

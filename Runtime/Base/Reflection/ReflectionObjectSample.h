@@ -6,7 +6,7 @@
 
 namespace NLS::meta
 {
-    // 新写法：CLASS + 继承 Unity-style NLS::Object（解析器侧优先走 annotate）
+    // 新写法：CLASS + 继承 engine-style NLS::Object（解析器侧优先走 annotate）
     CLASS(ReflectionObjectSample) : public NLS::Object
     {
     public:

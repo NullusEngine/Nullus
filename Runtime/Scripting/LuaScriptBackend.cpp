@@ -6,6 +6,7 @@
 #include "Engine/Components/Component.h"
 #include "Engine/Components/CameraComponent.h"
 #include "Engine/Components/LightComponent.h"
+#include "Engine/Components/UICanvasComponent.h"
 #include "Engine/GameObject.h"
 #include "Engine/SceneSystem/Scene.h"
 #include "Engine/SceneSystem/SceneManager.h"
@@ -463,6 +464,9 @@ uint64_t LuaComponentTypeId(lua_State* state, int index)
         return StableScriptId("Nullus.Camera");
     if (name == "Light" || name == "Nullus.Light" || name == "NLS::Engine::Components::LightComponent")
         return StableScriptId("Nullus.Light");
+    if (name == "UICanvas" || name == "Nullus.UICanvas" ||
+        name == "NLS::Engine::Components::UICanvasComponent")
+        return StableScriptId("Nullus.UICanvas");
     if (const auto* runtime = GetActiveScriptRuntime())
     {
         if (const auto* descriptor = runtime->GetApi().FindType(std::string(name)))
@@ -484,6 +488,7 @@ int NativeGetComponent(lua_State* state)
     if (typeId == StableScriptId("Nullus.Transform")) component = gameObject->GetTransform();
     else if (typeId == StableScriptId("Nullus.Camera")) component = gameObject->GetComponent<NLS::Engine::Components::CameraComponent>();
     else if (typeId == StableScriptId("Nullus.Light")) component = gameObject->GetComponent<NLS::Engine::Components::LightComponent>();
+    else if (typeId == StableScriptId("Nullus.UICanvas")) component = gameObject->GetComponent<NLS::Engine::Components::UICanvasComponent>();
     else
     {
         for (const auto& candidate : gameObject->GetComponents())
@@ -771,6 +776,96 @@ int NativeGetLocalRotation(lua_State* state)
     return 1;
 }
 
+// Element handles are document-generation tagged 64-bit values, but this build
+// compiles Lua with LUA_USE_C89, so a Lua integer is only 32 bits wide. The Lua
+// surface therefore addresses elements by name and lets the component resolve
+// the generation-tagged handle internally.
+uint64_t NativeCanvasElementHandle(
+    NLS::Engine::Components::UICanvasComponent& canvas,
+    const char* name)
+{
+    return name != nullptr ? canvas.GetElementHandle(name) : 0u;
+}
+
+int NativeCanvasSetText(lua_State* state)
+{
+    auto* canvas = dynamic_cast<NLS::Engine::Components::UICanvasComponent*>(NativeObjectPointer(state, 1));
+    if (!canvas)
+        return luaL_error(state, "SetText requires a live UI Canvas.");
+    const auto* text = lua_tostring(state, 3);
+    const auto handle = NativeCanvasElementHandle(*canvas, lua_tostring(state, 2));
+    lua_pushboolean(state, handle != 0u && text != nullptr && canvas->SetElementText(handle, text) ? 1 : 0);
+    return 1;
+}
+
+int NativeCanvasGetText(lua_State* state)
+{
+    auto* canvas = dynamic_cast<NLS::Engine::Components::UICanvasComponent*>(NativeObjectPointer(state, 1));
+    if (!canvas)
+        return luaL_error(state, "GetText requires a live UI Canvas.");
+    lua_pushstring(state, canvas->GetElementText(NativeCanvasElementHandle(*canvas, lua_tostring(state, 2))).c_str());
+    return 1;
+}
+
+int NativeCanvasSetValue(lua_State* state)
+{
+    auto* canvas = dynamic_cast<NLS::Engine::Components::UICanvasComponent*>(NativeObjectPointer(state, 1));
+    if (!canvas)
+        return luaL_error(state, "SetValue requires a live UI Canvas.");
+    const auto handle = NativeCanvasElementHandle(*canvas, lua_tostring(state, 2));
+    lua_pushboolean(state, handle != 0u &&
+        canvas->SetElementValue(handle, static_cast<float>(lua_tonumber(state, 3))) ? 1 : 0);
+    return 1;
+}
+
+int NativeCanvasGetValue(lua_State* state)
+{
+    auto* canvas = dynamic_cast<NLS::Engine::Components::UICanvasComponent*>(NativeObjectPointer(state, 1));
+    if (!canvas)
+        return luaL_error(state, "GetValue requires a live UI Canvas.");
+    lua_pushnumber(state, canvas->GetElementValue(NativeCanvasElementHandle(*canvas, lua_tostring(state, 2))));
+    return 1;
+}
+
+int NativeCanvasSetChecked(lua_State* state)
+{
+    auto* canvas = dynamic_cast<NLS::Engine::Components::UICanvasComponent*>(NativeObjectPointer(state, 1));
+    if (!canvas)
+        return luaL_error(state, "SetChecked requires a live UI Canvas.");
+    const auto handle = NativeCanvasElementHandle(*canvas, lua_tostring(state, 2));
+    lua_pushboolean(state, handle != 0u &&
+        canvas->SetElementChecked(handle, lua_toboolean(state, 3) != 0) ? 1 : 0);
+    return 1;
+}
+
+int NativeCanvasGetChecked(lua_State* state)
+{
+    auto* canvas = dynamic_cast<NLS::Engine::Components::UICanvasComponent*>(NativeObjectPointer(state, 1));
+    if (!canvas)
+        return luaL_error(state, "GetChecked requires a live UI Canvas.");
+    lua_pushboolean(state, canvas->GetElementChecked(NativeCanvasElementHandle(*canvas, lua_tostring(state, 2))) ? 1 : 0);
+    return 1;
+}
+
+int NativeCanvasFocus(lua_State* state)
+{
+    auto* canvas = dynamic_cast<NLS::Engine::Components::UICanvasComponent*>(NativeObjectPointer(state, 1));
+    if (!canvas)
+        return luaL_error(state, "Focus requires a live UI Canvas.");
+    const auto handle = NativeCanvasElementHandle(*canvas, lua_tostring(state, 2));
+    lua_pushboolean(state, handle != 0u && canvas->FocusElement(handle) ? 1 : 0);
+    return 1;
+}
+
+int NativeCanvasGetDocumentGeneration(lua_State* state)
+{
+    auto* canvas = dynamic_cast<NLS::Engine::Components::UICanvasComponent*>(NativeObjectPointer(state, 1));
+    if (!canvas)
+        return luaL_error(state, "GetDocumentGeneration requires a live UI Canvas.");
+    lua_pushinteger(state, static_cast<lua_Integer>(canvas->GetDocumentGeneration()));
+    return 1;
+}
+
 int NativeObjectIndex(lua_State* state)
 {
     auto* userdata = TestNativeObject(state, 1);
@@ -780,6 +875,52 @@ int NativeObjectIndex(lua_State* state)
     auto* object = NLS::Object::IDToPointerNoThreadCheck(static_cast<NLS::InstanceID>(userdata->handle & 0xFFFFFFFFu));
     if (!object)
         return luaL_error(state, "Native object handle %llu is no longer alive.", static_cast<unsigned long long>(userdata->handle));
+    // UI Canvas members are exposed as methods on the component userdata and
+    // address elements by name; see NativeCanvasSetText for why the 64-bit
+    // element handle never crosses into Lua.
+    if (auto* canvas = dynamic_cast<NLS::Engine::Components::UICanvasComponent*>(object))
+    {
+        if (std::strcmp(key, "SetText") == 0)
+        {
+            lua_pushcfunction(state, &NativeCanvasSetText);
+            return 1;
+        }
+        if (std::strcmp(key, "GetText") == 0)
+        {
+            lua_pushcfunction(state, &NativeCanvasGetText);
+            return 1;
+        }
+        if (std::strcmp(key, "SetValue") == 0)
+        {
+            lua_pushcfunction(state, &NativeCanvasSetValue);
+            return 1;
+        }
+        if (std::strcmp(key, "GetValue") == 0)
+        {
+            lua_pushcfunction(state, &NativeCanvasGetValue);
+            return 1;
+        }
+        if (std::strcmp(key, "SetChecked") == 0)
+        {
+            lua_pushcfunction(state, &NativeCanvasSetChecked);
+            return 1;
+        }
+        if (std::strcmp(key, "GetChecked") == 0)
+        {
+            lua_pushcfunction(state, &NativeCanvasGetChecked);
+            return 1;
+        }
+        if (std::strcmp(key, "Focus") == 0)
+        {
+            lua_pushcfunction(state, &NativeCanvasFocus);
+            return 1;
+        }
+        if (std::strcmp(key, "GetDocumentGeneration") == 0)
+        {
+            lua_pushcfunction(state, &NativeCanvasGetDocumentGeneration);
+            return 1;
+        }
+    }
 
     if (std::strcmp(key, "setActive") == 0 || std::strcmp(key, "SetActive") == 0)
     {

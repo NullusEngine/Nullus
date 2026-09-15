@@ -1,5 +1,6 @@
 #include "Shortcuts/EditorShortcutRegistry.h"
 
+#include <algorithm>
 #include <sstream>
 
 namespace NLS::Editor::Shortcuts
@@ -75,6 +76,50 @@ namespace NLS::Editor::Shortcuts
         return ShortcutBinding::Unassigned();
     }
 
+    std::vector<ShortcutBinding> EditorShortcutRegistry::GetBindings(const std::string& p_id) const
+    {
+        const auto* command = FindCommand(p_id);
+        if (command == nullptr)
+            return {};
+
+        // A user assignment is an explicit replacement for the command's
+        // default gestures. This keeps rebinding deterministic and prevents a
+        // hidden alternate from continuing to fire after the user chose a new
+        // shortcut.
+        if (const auto overrideIt = m_bindingOverrides.find(p_id);
+            overrideIt != m_bindingOverrides.end())
+        {
+            return {overrideIt->second};
+        }
+
+        std::vector<ShortcutBinding> result;
+        result.reserve(1u + command->alternateBindings.size());
+        const auto appendDistinct = [&result](const ShortcutBinding& binding)
+        {
+            if (!binding.assigned)
+            {
+                if (result.empty())
+                    result.push_back(binding);
+                return;
+            }
+
+            const auto duplicate = std::find_if(
+                result.begin(),
+                result.end(),
+                [&binding](const ShortcutBinding& existing)
+                {
+                    return AreShortcutBindingsEquivalentForCurrentPlatform(existing, binding);
+                });
+            if (duplicate == result.end())
+                result.push_back(binding);
+        };
+
+        appendDistinct(command->defaultBinding);
+        for (const auto& alternate : command->alternateBindings)
+            appendDistinct(alternate);
+        return result;
+    }
+
     std::vector<ShortcutConflict> EditorShortcutRegistry::ValidateBinding(
         const std::string& p_id,
         const ShortcutBinding& p_binding,
@@ -117,8 +162,16 @@ namespace NLS::Editor::Shortcuts
             if (otherCommand.id == p_id)
                 continue;
 
-            const auto otherBinding = GetBinding(otherCommand.id);
-            if (!otherBinding.IsValid() || otherBinding != p_binding)
+            const auto otherBindings = GetBindings(otherCommand.id);
+            const auto duplicateBinding = std::find_if(
+                otherBindings.begin(),
+                otherBindings.end(),
+                [&p_binding](const ShortcutBinding& otherBinding)
+                {
+                    return otherBinding.IsValid() &&
+                        AreShortcutBindingsEquivalentForCurrentPlatform(otherBinding, p_binding);
+                });
+            if (duplicateBinding == otherBindings.end())
                 continue;
 
             const bool targetGlobal = targetCommand->context == ShortcutContexts::Global;

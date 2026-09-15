@@ -4,6 +4,9 @@
 
 #include <Debug/Logger.h>
 
+#include "Serialization/EditorSerializationManagedBridge.h"
+#include "Scripting/EditorScriptBridge.h"
+
 #include <cstdlib>
 #include <sstream>
 #include <utility>
@@ -145,7 +148,32 @@ void ManagedScriptDebugSession::Poll()
     if (!m_buildFuture.valid() || IsBuildInProgress())
         return;
 
-    m_lastBuild = m_buildFuture.get();
+    // The build runs on a worker; a throw inside it would otherwise escape
+    // through the frame loop, which sits outside the editor's startup guard.
+    try
+    {
+        m_lastBuild = m_buildFuture.get();
+    }
+    catch (const std::exception& exception)
+    {
+        m_lastBuild = {};
+        m_lastBuild.output = std::string("Managed script build threw: ") + exception.what();
+        NLS_LOG_ERROR(m_lastBuild.output);
+        m_lastStatus = NLS::Scripting::ScriptStatus::Error(
+            NLS::Scripting::ScriptStatusCode::Exception,
+            m_lastBuild.output);
+        return;
+    }
+    catch (...)
+    {
+        m_lastBuild = {};
+        m_lastBuild.output = "Managed script build threw an unknown exception.";
+        NLS_LOG_ERROR(m_lastBuild.output);
+        m_lastStatus = NLS::Scripting::ScriptStatus::Error(
+            NLS::Scripting::ScriptStatusCode::Exception,
+            m_lastBuild.output);
+        return;
+    }
     if (!m_lastBuild.succeeded)
     {
         NLS_LOG_ERROR("Managed C# Debug build failed: " + m_lastBuild.output);
@@ -225,6 +253,50 @@ NLS::Scripting::ScriptStatus ManagedScriptDebugSession::ApplyBuild(
         return NLS::Scripting::ScriptStatus::Ok();
     }
 
-    return backend->ReloadProjectAssembly(result.assembly, m_runtime->GetApi());
+    const auto reloadStatus = backend->ReloadProjectAssembly(result.assembly, m_runtime->GetApi());
+    if (reloadStatus.Succeeded())
+    {
+        // Editor-script reload is best effort: the runtime assembly is already
+        // active, so a failure here must not fail the whole transaction.
+        try
+        {
+            ReloadEditorScripts(*backend, result.assembly);
+        }
+        catch (const std::exception& exception)
+        {
+            NLS_LOG_ERROR(std::string("Managed editor script reload threw: ") + exception.what());
+        }
+        catch (...)
+        {
+            NLS_LOG_ERROR("Managed editor script reload threw an unknown exception.");
+        }
+    }
+    return reloadStatus;
+}
+
+void ManagedScriptDebugSession::ReloadEditorScripts(
+    NLS::Scripting::CoreClrScriptBackend& backend,
+    const std::filesystem::path& scriptingAssembly)
+{
+    // Project editor scripts are rebuilt into GameScriptsEditor.dll beside the
+    // scripting artifact. Reinstalling the bridge asks the managed editor host
+    // to unload the previous collectible context, load the freshly built
+    // assembly, and re-register its editors. Without this step an edited,
+    // added, or deleted script would keep contributing its old Inspector and
+    // windows for the rest of the session.
+    const auto managedEditorAssembly = NLS::Editor::Serialization::ResolveManagedEditorAssembly(scriptingAssembly);
+    if (managedEditorAssembly.empty())
+        return;
+
+    const auto editorScriptsAssembly =
+        NLS::Editor::Scripting::ResolveEditorScriptsAssembly(managedEditorAssembly.parent_path());
+    const auto result = NLS::Editor::Scripting::InstallEditorScriptBridge(
+        backend.GetHost(),
+        managedEditorAssembly,
+        editorScriptsAssembly);
+    if (result.installed)
+        NLS_LOG_INFO("Managed editor scripts reloaded after a script build.");
+    else
+        NLS_LOG_WARNING("Managed editor scripts were not reloaded: " + result.message);
 }
 }

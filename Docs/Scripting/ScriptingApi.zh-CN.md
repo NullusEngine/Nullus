@@ -42,7 +42,9 @@ end
 return Module
 ```
 
-脚本实例上的 `self.gameObject`、`self.transform` 和组件成员使用与 C# 相同的对象图。Lua 的全局表 `Nullus` 提供 `Find`、`FindWithTag`、`Instantiate`、`Destroy`、`GetComponent`、`AddComponent`、`Time`、`Input` 和 `SceneManager`。组件查询可以传入 `"Transform"`、`"Camera"`、`"Light"`，或清单中注册的脚本类型名。
+脚本实例上的 `self.gameObject`、`self.transform` 和组件成员使用与 C# 相同的对象图。Lua 的全局表 `Nullus` 提供 `Find`、`FindWithTag`、`Instantiate`、`Destroy`、`GetComponent`、`AddComponent`、`Time`、`Input` 和 `SceneManager`。组件查询可以传入 `"Transform"`、`"Camera"`、`"Light"`、`"UICanvas"`，或清单中注册的脚本类型名。
+
+需要一套可运行的自检界面时，把 `TestProject/Assets/ScriptTestPanel.ui` 指到 UI Canvas，并把 `TestProject/Assets/UiScriptTest.lua` 挂到同一个 GameObject：脚本会按名字更新计数文本、进度条和开关，`NullusUnitTests` 里的 `ScriptRuntimeTests.LuaUiScriptDrivesTheProjectUiCanvasDocument` 会用同一份文件和脚本跑一遍。
 
 Editor 的“创建 C# 脚本”和“创建 Lua 脚本”从 `Assets/Editor/ScriptTemplates` 读取模板。C# 模板使用 `#SCRIPTNAME#` 替换为文件名对应的类型名；模板文件缺失时创建操作会失败并记录诊断。
 
@@ -57,6 +59,9 @@ Editor 的“创建 C# 脚本”和“创建 Lua 脚本”从 `Assets/Editor/Scr
 | `Transform` | `position`、`rotation`、`localPosition`、`localRotation`、`localScale`、`parent`、`root`、`forward` / `right` / `up`、`Translate`、`Rotate`、`LookAt`、空间转换 |
 | `Camera` | `fieldOfView`、`orthographic`、`orthographicSize`、`nearClipPlane`、`farClipPlane`、`clearColor` |
 | `Light` | `color`、`intensity`、`range`、`spotAngle`、`type` |
+| `UICanvas` | `SetText(name, text)`、`GetText(name)`、`SetValue(name, value)`、`GetValue(name)`、`SetChecked(name, checked)`、`GetChecked(name)`、`Focus(name)`、`GetDocumentGeneration()` |
+
+UI 元素按**名字**寻址。原生元素句柄是带文档 generation 的 64 位值，而本仓库用 `LUA_USE_C89` 编译 Lua，Lua 整数只有 32 位，因此句柄不跨脚本边界；UI Canvas 的成员方法在内部完成名字到句柄的解析。
 
 `Vector2`、`Vector3`、`Vector4`、`Quaternion`、`Color`、`Ray` 和 `Mathf` 提供小写字段、常量、运算符和常用数学函数。角度使用度数；`Quaternion` 使用 `(x, y, z, w)` 分量。
 
@@ -76,6 +81,76 @@ C# 使用 `Debug.Log`、`Debug.LogWarning`、`Debug.LogError`、`Debug.LogExcept
 - `Instantiate(GameObject)` 克隆对象层级、Transform、脚本组件和已序列化字段。
 - `SceneManager.LoadScene(path)` 是单活动场景的同步请求，在当前脚本帧结束后切换；`GetActiveScene()` 返回场景的 `name`、`path`、`buildIndex` 和 `isLoaded`。
 - 失效或已销毁对象继续访问会抛出失效引用错误；不要缓存并复用已销毁对象。
+
+## 用脚本编写编辑器界面
+
+项目里的 `Assets/**/Editor/**/*.cs` 会编译成独立的 `GameScriptsEditor.dll`，只被编辑器加载，不会进入玩家构建；其余 `.cs` 仍然进入 `GameScripts.dll`。编辑器脚本可以引用 `Nullus.Editor`，用声明式方式扩展现有编辑器界面。
+
+自定义组件 Inspector：
+
+```csharp
+using Nullus;
+using Nullus.Editor;
+
+namespace Nullus.GameScriptsEditor;
+
+[CustomEditor(typeof(UICanvasComponent))]
+[CanEditMultipleObjects]
+public sealed class UiCanvasInspector : ComponentEditor
+{
+    public override void OnInspectorGUI()
+    {
+        EditorGUILayout.HelpBox("脚本绘制", MessageType.Info);
+        EditorGUILayout.PropertyField(serializedObject.FindProperty("document"));
+
+        if (EditorGUILayout.Button("重置像素比"))
+        {
+            var pixelsPerUnit = serializedObject.FindProperty("pixelsPerUnit");
+            if (pixelsPerUnit is not null)
+            {
+                pixelsPerUnit.floatValue = 100.0f;
+                ApplyModifiedProperties();
+            }
+        }
+    }
+}
+```
+
+自定义工具窗口：
+
+```csharp
+using Nullus.Editor;
+
+namespace Nullus.GameScriptsEditor;
+
+public sealed class AssetAuditWindow : EditorWindow
+{
+    [EditorMenuItem("Window/Asset Audit")]
+    public static void ShowWindow()
+    {
+        var window = GetWindow<AssetAuditWindow>() ?? new AssetAuditWindow();
+        window.Open();
+    }
+
+    public override void OnGUI()
+    {
+        EditorGUILayout.Label("Hello from a project editor script");
+    }
+}
+```
+
+约束与语义：
+
+- 目标类型可以是两种：有 `NativeTypeName` 的反射引擎组件（生成器会为每个原生组件产出这样的 C# 类型，因此 `typeof(UICanvasComponent)` 始终可用），或项目里的脚本组件（`Nullus.Behaviour` 子类，例如 `[CustomEditor(typeof(RotatingCube))]`）。
+- 所有脚本组件在原生侧共享同一个 `ScriptComponent` 反射类型，因此脚本组件的编辑器按**脚本自身的类型名**匹配（C# 全名）；一个脚本的编辑器不会影响其他脚本组件。脚本组件之间暂不支持 `editorForChildClasses` 的基类匹配。
+- 脚本不能直接写组件对象。所有取值/写值都通过 `serializedObject` / `SerializedProperty`，提交时走 `ApplyModifiedProperties()`，共享同一套 Undo、Prefab override 和多对象语义。
+- `EditorGUILayout` 提供 `Label`、`Space`、`Toggle`、`IntField`、`FloatField`、`Slider`、`TextField`、`Button`、`HelpBox`、`PropertyField` 以及 `BeginHorizontal/EndHorizontal`、`BeginVertical/EndVertical`。
+- 脚本编辑器默认优先级高于内置编辑器，因此同名目标会覆盖内置实现；重复的 `(目标类型, 继承规则, 优先级)` 会直接报错。
+- 菜单项只能挂在 `Window` 和 `Tools` 两个顶层菜单下。
+- 脚本或编辑器抛出的异常会被捕获：该 Inspector 回退为通用绘制并显示错误，连续失败超过阈值后停用该脚本编辑器，不会影响其他面板。
+- 脚本重新编译后会自动重扫注册表并重建已打开的编辑器与窗口实例。
+
+当前 v1 不开放脚本 `CustomPropertyDrawer` 注册，也不提供任意 ImGui 直通：控件集合固定为上面列出的受控 API。
 
 ## 清单和边界
 

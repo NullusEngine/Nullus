@@ -2,6 +2,7 @@
 #include <algorithm>
 #include "ImGui/imgui.h"
 #include <any>
+#include <exception>
 #include <iostream>
 #include <fstream>
 #include <sstream>
@@ -13,6 +14,7 @@
 #include <atomic>
 #include <optional>
 #include <queue>
+#include <stdexcept>
 #include <string_view>
 #include <unordered_map>
 #include <unordered_set>
@@ -25,6 +27,7 @@
 
 #include <Components/MeshRenderer.h>
 #include <Components/MeshFilter.h>
+#include <Object/Object.h>
 #include <Rendering/Resources/Material.h>
 #include <Rendering/Resources/Texture2D.h>
 #include <Rendering/Resources/Shader.h>
@@ -42,6 +45,8 @@
 #include <Utils/SystemCalls.h>
 
 #include "Core/EditorActions.h"
+#include "Undo/EditorUndoService.h"
+#include "Undo/EditorUndoMutationContext.h"
 #include "Core/PrefabInstanceResourceLifetime.h"
 #include "Core/RendererResourceStreamingBudget.h"
 #include "Assets/ArtifactDatabase.h"
@@ -60,6 +65,7 @@
 #include "Engine/Assets/PrefabAsset.h"
 #include "Engine/PrimitiveFactory.h"
 #include "Components/TransformComponent.h"
+#include "Inspector/EditorSelectionService.h"
 #include "Panels/Inspector.h"
 #include "Panels/SceneView.h"
 #include "Panels/AssetBrowser.h"
@@ -72,7 +78,6 @@
 #include "Panels/GameView.h"
 #include "Panels/FrameInfo.h"
 #include "Panels/Hierarchy.h"
-#include "Panels/MaterialEditor.h"
 #include "Panels/SceneView.h"
 #include "Reflection/Type.h"
 #include "Serialize/ObjectGraphDocument.h"
@@ -96,7 +101,6 @@
 // #include "Panels/GameView.h"
 // #include "Panels/Inspector.h"
 // #include "Panels/ProjectSettings.h"
-// #include "Panels/MaterialEditor.h"
 
 using namespace NLS;
 
@@ -4610,9 +4614,20 @@ Editor::Core::EditorActions::EditorActions(Context& p_context, PanelsManager& p_
         RefreshWindowTitle();
     };
 
+    // SceneLoadEvent covers every visible-scene activation, including Play
+    // sandbox swaps. Transient async work must be invalidated for each swap
+    // so it cannot mutate a scene that is no longer current.
     m_sceneLoadListener = m_context.sceneManager.SceneLoadEvent += [this]
     {
         ++m_mainSceneGeneration;
+    };
+    // Only a successful real Edit-scene replacement advances the durable
+    // identity embedded in Scene Undo scopes. Entering or leaving Play uses
+    // SceneLoadEvent only and therefore keeps the suspended Edit history live.
+    m_sceneLoadSucceededListener = m_context.sceneManager.SceneLoadSucceededEvent += [this]
+    {
+        ++m_editSceneUndoGeneration;
+        m_editSceneUndoDocumentKey = "edit-scene:" + std::to_string(m_editSceneUndoGeneration);
     };
     m_sceneUnloadListener = m_context.sceneManager.SceneUnloadEvent += [this]
     {
@@ -4641,6 +4656,8 @@ Editor::Core::EditorActions::~EditorActions()
         m_context.sceneManager.CurrentSceneDirtyStateChangedEvent -= m_sceneDirtyStateChangedListener;
     if (m_sceneLoadListener != InvalidListenerID)
         m_context.sceneManager.SceneLoadEvent -= m_sceneLoadListener;
+    if (m_sceneLoadSucceededListener != InvalidListenerID)
+        m_context.sceneManager.SceneLoadSucceededEvent -= m_sceneLoadSucceededListener;
     if (m_sceneUnloadListener != InvalidListenerID)
         m_context.sceneManager.SceneUnloadEvent -= m_sceneUnloadListener;
     if (m_gameObjectMarkedDestroyListener != InvalidListenerID)
@@ -4684,6 +4701,7 @@ bool Editor::Core::EditorActions::SaveCurrentSceneTo(const std::string& p_path)
     const auto currentScene = m_context.sceneManager.GetCurrentScene();
     if (!currentScene)
         return false;
+    const auto previousUndoScope = GetUndoScopeForScene(*currentScene);
 
     auto document = NLS::Engine::Serialize::ObjectGraphSerializer::SerializeScene(*currentScene);
     NLS::Editor::Assets::PrefabUtilityFacade prefabFacade;
@@ -4699,6 +4717,12 @@ bool Editor::Core::EditorActions::SaveCurrentSceneTo(const std::string& p_path)
     {
         m_context.sceneManager.StoreCurrentSceneSourcePath(scenePath.string());
         m_context.sceneManager.MarkCurrentSceneClean();
+        if (NLS::Core::ServiceLocator::Contains<NLS::Editor::Undo::EditorUndoService>())
+        {
+            auto& undo = NLS::Core::ServiceLocator::Get<NLS::Editor::Undo::EditorUndoService>();
+            undo.MarkSaved(previousUndoScope);
+            undo.MarkSaved(GetUndoScopeForScene(*currentScene));
+        }
         DelayAction([this]
         {
             m_panelsManager.GetPanelAs<Panels::AssetBrowser>("Asset Browser").Refresh();
@@ -5118,6 +5142,16 @@ bool Editor::Core::EditorActions::SaveActivePrefabStage()
     auto& stage = *m_context.activePrefabStage;
     if (!stage.loaded)
     {
+        if (NLS::Core::ServiceLocator::Contains<NLS::Editor::Undo::EditorUndoService>())
+        {
+            const auto scope = GetActivePrefabStageUndoScope();
+            if (scope.IsValid())
+            {
+                NLS::Core::ServiceLocator::Get<NLS::Editor::Undo::EditorUndoService>().InvalidateScope(
+                    scope,
+                    NLS::Editor::Undo::UndoInvalidationReason::ScopeClosed);
+            }
+        }
         ++m_prefabStageGeneration;
         m_context.activePrefabStage.reset();
         return false;
@@ -5156,15 +5190,30 @@ bool Editor::Core::EditorActions::SaveActivePrefabStage()
         return true;
     }
 
-    NLS_LOG_INFO("Active prefab stage saved.");
+    bool sourceWritten = true;
     if (!assetPath.empty() && !result.prefabSourceText.empty())
     {
-        if (!RewriteTextAssetPreservingMeta(database, projectRoot, assetPath, result.prefabSourceText))
+        sourceWritten = RewriteTextAssetPreservingMeta(database, projectRoot, assetPath, result.prefabSourceText);
+        if (!sourceWritten)
         {
             stage.dirty = true;
             NLS_LOG_ERROR("Failed to write active prefab stage source asset: " + assetPath);
         }
     }
+
+    if (!sourceWritten)
+    {
+        m_context.sceneManager.MarkCurrentSceneDirty();
+        return true;
+    }
+
+    if (NLS::Core::ServiceLocator::Contains<NLS::Editor::Undo::EditorUndoService>())
+    {
+        NLS::Core::ServiceLocator::Get<NLS::Editor::Undo::EditorUndoService>().MarkSaved(
+            GetActivePrefabStageUndoScope());
+    }
+
+    NLS_LOG_INFO("Active prefab stage saved.");
 
     m_context.sceneManager.MarkCurrentSceneDirty();
     return true;
@@ -5178,6 +5227,16 @@ bool Editor::Core::EditorActions::CloseActivePrefabStage(bool saveBeforeClose)
     if (saveBeforeClose && !SaveActivePrefabStage())
         return false;
 
+    if (NLS::Core::ServiceLocator::Contains<NLS::Editor::Undo::EditorUndoService>())
+    {
+        const auto scope = GetActivePrefabStageUndoScope();
+        if (scope.IsValid())
+        {
+            NLS::Core::ServiceLocator::Get<NLS::Editor::Undo::EditorUndoService>().InvalidateScope(
+                scope,
+                NLS::Editor::Undo::UndoInvalidationReason::ScopeClosed);
+        }
+    }
     ++m_prefabStageGeneration;
     m_context.activePrefabStage.reset();
     m_panelsManager.GetPanelAs<Panels::Hierarchy>("Hierarchy").RebuildFromCurrentScene();
@@ -5462,6 +5521,42 @@ Editor::Core::EditorActions::SceneMutationToken Editor::Core::EditorActions::Cap
     return {m_mainSceneGeneration, m_prefabStageGeneration};
 }
 
+NLS::Editor::Undo::UndoScopeId Editor::Core::EditorActions::GetUndoScopeForScene(
+    const Engine::SceneSystem::Scene& scene) const
+{
+    if (m_context.activePrefabStage.has_value() &&
+        m_context.activePrefabStage->stageScene.get() == &scene)
+    {
+        return GetActivePrefabStageUndoScope();
+    }
+
+    if (m_context.sceneManager.GetCurrentScene() != &scene)
+        return {};
+
+    return {
+        NLS::Editor::Undo::UndoScopeKind::Scene,
+        m_editSceneUndoDocumentKey,
+        m_editSceneUndoGeneration};
+}
+
+NLS::Editor::Undo::UndoScopeId Editor::Core::EditorActions::GetActivePrefabStageUndoScope() const
+{
+    if (!m_context.activePrefabStage.has_value())
+        return {};
+
+    const auto& stage = *m_context.activePrefabStage;
+    auto stableKey = stage.prefabAssetPath;
+    if (stableKey.empty() && stage.prefabAssetId.IsValid())
+        stableKey = "asset:" + stage.prefabAssetId.ToString();
+    if (stableKey.empty())
+        return {};
+
+    return {
+        NLS::Editor::Undo::UndoScopeKind::PrefabStage,
+        std::move(stableKey),
+        m_prefabStageGeneration};
+}
+
 void Editor::Core::EditorActions::NotifyPrefabStageOpened()
 {
     ++m_prefabStageGeneration;
@@ -5665,18 +5760,156 @@ void Editor::Core::EditorActions::StartPlaying()
 {
     if (m_editorMode == EEditorMode::EDIT)
     {
-        auto* scene = m_context.sceneManager.GetCurrentScene();
-        if (!scene)
+        if (m_context.activePrefabStage.has_value())
+        {
+            NLS_LOG_WARNING("Cannot enter Play mode while a Prefab Stage is open.");
+            return;
+        }
+
+        auto* undo = NLS::Core::ServiceLocator::Contains<NLS::Editor::Undo::EditorUndoService>()
+            ? &NLS::Core::ServiceLocator::Get<NLS::Editor::Undo::EditorUndoService>()
+            : nullptr;
+        if (undo && (undo->IsPending() || undo->IsPoisoned() || undo->IsFrozen()))
+        {
+            NLS_LOG_WARNING("Cannot enter Play mode while global Undo history is unavailable.");
+            return;
+        }
+
+        // A preview owns mutable edit-scene state. It must be restored before
+        // the scene starts running so Play never observes a half-committed edit.
+        if (undo)
+        {
+            if (undo->HasActiveEditSession())
+            {
+                const auto result = undo->RequestUndo();
+                if (result.state != NLS::Editor::Undo::UndoRequestState::Completed ||
+                    undo->HasActiveEditSession())
+                {
+                    NLS_LOG_WARNING(
+                        "Cannot enter Play mode while the active editor edit could not be cancelled: " +
+                        (result.message.empty() ? std::string("Unknown error.") : result.message));
+                    return;
+                }
+            }
+        }
+
+        if (!m_context.sceneManager.GetCurrentScene())
         {
             NLS_LOG_ERROR("Cannot enter Play mode because no scene is loaded.");
             return;
         }
 
-        // Play the current in-memory scene so unsaved editor changes are
-        // visible to scripts, matching the runtime SceneManager path.
-        PlayEvent.Invoke();
-        scene->Play();
-        SetEditorMode(EEditorMode::PLAY);
+        // Freeze before any Play listeners run. The Editor's mode listener
+        // acquires the lasting PlayMode freeze when the mode changes below;
+        // this temporary acquisition closes the activation window.
+        if (undo)
+            undo->Freeze(NLS::Editor::Undo::UndoFreezeReason::PlayMode);
+
+        // Edit-scene instance handles cannot address the ObjectGraph clone.
+        // Clear them before SceneLoadEvent rebuilds the Hierarchy for Play.
+        UnselectGameObject();
+
+        Engine::SceneSystem::Scene* scene = m_context.sceneManager.GetCurrentScene();
+        try
+        {
+            std::string sandboxError;
+            if (!m_context.sceneManager.BeginPlaySandbox(&sandboxError))
+            {
+                // BeginPlaySandbox builds the clone before publishing it. A
+                // false result therefore leaves the Edit scene authoritative,
+                // so release only this activation guard. If publication did
+                // happen and restoration later fails, the exception paths
+                // below deliberately keep the lasting PlayMode freeze.
+                if (undo && !m_context.sceneManager.IsPlaySandboxActive())
+                    undo->Unfreeze(NLS::Editor::Undo::UndoFreezeReason::PlayMode);
+                NLS_LOG_ERROR(
+                    "Editor failed to create the Play scene sandbox; Edit history remains available: " +
+                    (sandboxError.empty() ? std::string("Unknown error.") : sandboxError));
+                return;
+            }
+
+            scene = m_context.sceneManager.GetCurrentScene();
+            if (!scene)
+                throw std::runtime_error("Play scene sandbox was activated without a current scene.");
+
+            // The current scene is now an ObjectGraph clone. Unsaved Edit
+            // changes are visible to scripts, but runtime mutations are
+            // isolated and discarded when Play stops.
+            PlayEvent.Invoke();
+            scene->Play();
+            SetEditorMode(EEditorMode::PLAY);
+        }
+        catch (const std::exception& exception)
+        {
+            if (scene && scene->IsPlaying())
+                scene->Stop();
+
+            std::string restoreError;
+            bool restored = false;
+            try
+            {
+                restored = !m_context.sceneManager.IsPlaySandboxActive() ||
+                    m_context.sceneManager.DiscardPlaySandbox(&restoreError);
+            }
+            catch (const std::exception& restoreException)
+            {
+                restoreError = restoreException.what();
+            }
+
+            // If the clone cannot be discarded, the current scene may not be
+            // the suspended Edit scene. Do not switch back to Edit or release
+            // its Undo freeze in that unsafe state.
+            if (!restored)
+            {
+                NLS_LOG_ERROR(
+                    "Editor failed to restore the Edit scene after Play activation failed; Undo remains frozen: " +
+                    (restoreError.empty() ? std::string("Unknown error.") : restoreError));
+                return;
+            }
+
+            if (m_editorMode != EEditorMode::EDIT)
+                SetEditorMode(EEditorMode::EDIT);
+            if (undo)
+                undo->Unfreeze(NLS::Editor::Undo::UndoFreezeReason::PlayMode);
+            NLS_LOG_ERROR(std::string("Editor failed to enter Play mode: ") + exception.what());
+            return;
+        }
+        catch (...)
+        {
+            if (scene && scene->IsPlaying())
+                scene->Stop();
+
+            std::string restoreError;
+            bool restored = false;
+            try
+            {
+                restored = !m_context.sceneManager.IsPlaySandboxActive() ||
+                    m_context.sceneManager.DiscardPlaySandbox(&restoreError);
+            }
+            catch (...)
+            {
+                restoreError = "Unknown restore error.";
+            }
+
+            if (!restored)
+            {
+                NLS_LOG_ERROR(
+                    "Editor failed to restore the Edit scene after Play activation failed; Undo remains frozen: " +
+                    (restoreError.empty() ? std::string("Unknown error.") : restoreError));
+                return;
+            }
+
+            if (m_editorMode != EEditorMode::EDIT)
+                SetEditorMode(EEditorMode::EDIT);
+            if (undo)
+                undo->Unfreeze(NLS::Editor::Undo::UndoFreezeReason::PlayMode);
+            NLS_LOG_ERROR("Editor failed to enter Play mode with an unknown exception.");
+            return;
+        }
+
+        // Keep the mode listener's freeze, but release the activation guard.
+        if (undo)
+            undo->Unfreeze(NLS::Editor::Undo::UndoFreezeReason::PlayMode);
         NLS_LOG_INFO("Editor entered Play mode.");
     }
     else
@@ -5696,8 +5929,42 @@ void Editor::Core::EditorActions::StopPlaying()
     if (m_editorMode == EEditorMode::EDIT)
         return;
 
-    if (auto* scene = m_context.sceneManager.GetCurrentScene())
-        scene->Stop();
+    auto* scene = m_context.sceneManager.GetCurrentScene();
+    try
+    {
+        if (scene)
+            scene->Stop();
+
+        if (m_context.sceneManager.IsPlaySandboxActive())
+        {
+            // Never invalidate a live sandbox selection after its objects have
+            // been destroyed; the restored Edit scene will publish a clean
+            // hierarchy activation below.
+            UnselectGameObject();
+
+            std::string restoreError;
+            if (!m_context.sceneManager.DiscardPlaySandbox(&restoreError))
+            {
+                NLS_LOG_ERROR(
+                    "Editor could not restore the Edit scene after Play; Undo remains frozen: " +
+                    (restoreError.empty() ? std::string("Unknown error.") : restoreError));
+                return;
+            }
+        }
+    }
+    catch (const std::exception& exception)
+    {
+        NLS_LOG_ERROR(
+            std::string("Editor could not restore the Edit scene after Play; Undo remains frozen: ") +
+            exception.what());
+        return;
+    }
+    catch (...)
+    {
+        NLS_LOG_ERROR("Editor could not restore the Edit scene after Play; Undo remains frozen.");
+        return;
+    }
+
     SetEditorMode(EEditorMode::EDIT);
     NLS_LOG_INFO("Editor exited Play mode.");
 }
@@ -5986,6 +6253,64 @@ Engine::GameObject* NLS::Editor::Core::EditorActions::CreateGameObjectFromAssetN
         return nullptr;
     }
     return CreateGameObjectFromAsset(resourcePath, focusOnCreation, p_parent, placementOverride);
+}
+
+Engine::GameObject* NLS::Editor::Core::EditorActions::CreateGameObjectFromAssetBlocking(
+    const std::string& path,
+    bool focusOnCreation,
+    Engine::GameObject* p_parent,
+    std::optional<Maths::Vector3> placementOverride)
+{
+    auto* creationScene = ResolveGameObjectCreationScene(m_context, p_parent);
+    if (!creationScene)
+    {
+        NLS_LOG_ERROR("Failed to synchronously create GameObject from asset without an active scene: " + path);
+        return nullptr;
+    }
+
+    if (NLS::Editor::Assets::IsBuiltInResourcePath(path))
+        return CreateGameObjectFromAsset(path, focusOnCreation, p_parent, placementOverride);
+
+    NLS::Editor::Assets::EditorAssetDragDropBridge bridge(m_context.projectAssetsPath);
+    auto result = bridge.DropModelAssetIntoHierarchy(
+        path,
+        *creationScene,
+        {},
+        &m_context.prefabInstanceRegistry,
+        p_parent,
+        &m_context.importProgressTracker);
+    if (!result.handled || result.dragDrop.status != NLS::Editor::Assets::DragDropOperationStatus::Committed ||
+        !result.dragDrop.instance.has_value() || !result.dragDrop.instance->instanceRoot)
+    {
+        auto message = "Failed to synchronously create GameObject from asset: " + path;
+        if (const auto diagnostics = FormatDragDropDiagnosticsForLog(result); !diagnostics.empty())
+            message += " diagnostics=[" + diagnostics + "]";
+        NLS_LOG_ERROR(message);
+        return nullptr;
+    }
+
+    auto& instance = *result.dragDrop.instance->instanceRoot;
+    if (placementOverride.has_value())
+        instance.GetTransform()->SetWorldPosition(*placementOverride);
+    else if (m_gameObjectSpawnMode == EGameObjectSpawnMode::FRONT)
+        instance.GetTransform()->SetLocalPosition(CalculateGameObjectSpawnPoint(10.0f));
+
+    if (result.dragDrop.deferredAssetReferenceResolutionRequested)
+    {
+        QueuePrefabInstanceAssetResolution(
+            result.dragDrop.instance ? &*result.dragDrop.instance : nullptr,
+            result.dragDrop.sharedArtifact
+                ? result.dragDrop.sharedArtifact.get()
+                : (result.dragDrop.artifact ? &*result.dragDrop.artifact : nullptr),
+            path,
+            {},
+            MakeDragDropPrefabInstanceAssetResolutionOptions(result.dragDrop));
+    }
+    if (focusOnCreation)
+        SelectGameObject(instance);
+    RefreshHierarchyAfterPrefabInstanceRegistration(m_panelsManager);
+    MarkGameObjectCreationSceneDirty(m_context, *creationScene);
+    return &instance;
 }
 
 Engine::GameObject* NLS::Editor::Core::EditorActions::CreateGameObjectFromAssetBlocking(
@@ -6568,6 +6893,7 @@ void NLS::Editor::Core::EditorActions::QueuePrefabInstanceAssetResolution(
 
 bool Editor::Core::EditorActions::DestroyGameObject(Engine::GameObject& p_actor)
 {
+    NLS_EDITOR_UNDO_REQUIRE_MUTATION_CONTEXT("destroying a GameObject through EditorActions");
     if (GetSelectedGameObject() == &p_actor)
         UnselectGameObject();
 
@@ -6631,22 +6957,37 @@ void Editor::Core::EditorActions::DuplicateGameObject(Engine::GameObject& p_toDu
 
 void Editor::Core::EditorActions::SelectGameObject(Engine::GameObject& p_target)
 {
-    EDITOR_PANEL(Panels::Inspector, "Inspector").FocusGameObject(p_target);
+    auto* previous = GetSelectedGameObject();
+    if (previous == &p_target)
+        return;
+
+    if (previous != nullptr)
+        GameObjectUnselectedEvent.Invoke(*previous);
+
+    Inspector::EditorSelectionService::Get().Select(
+        Inspector::InspectorTargetHandle::FromObject(p_target, Inspector::InspectorTargetKind::GameObject));
+    GameObjectSelectedEvent.Invoke(p_target);
 }
 
 void Editor::Core::EditorActions::UnselectGameObject()
 {
-    EDITOR_PANEL(Panels::Inspector, "Inspector").UnFocus();
+    if (auto* selected = GetSelectedGameObject())
+        GameObjectUnselectedEvent.Invoke(*selected);
+    Inspector::EditorSelectionService::Get().Clear();
 }
 
 bool Editor::Core::EditorActions::IsAnyGameObjectSelected() const
 {
-    return EDITOR_PANEL(Panels::Inspector, "Inspector").GetTargetGameObject();
+    return GetSelectedGameObject() != nullptr;
 }
 
 Engine::GameObject* Editor::Core::EditorActions::GetSelectedGameObject() const
 {
-    return EDITOR_PANEL(Panels::Inspector, "Inspector").GetTargetGameObject();
+    const auto* target = Inspector::EditorSelectionService::Get().GetSelection().Primary();
+    if (target == nullptr || target->kind != Inspector::InspectorTargetKind::GameObject)
+        return nullptr;
+
+    return NLS::Object::IDToPointer<Engine::GameObject>(target->instanceId);
 }
 
 void Editor::Core::EditorActions::MoveToTarget(Engine::GameObject& p_target)
@@ -6865,11 +7206,9 @@ void Editor::Core::EditorActions::PropagateFileRename(std::string p_previousName
              NLS::Core::ServiceLocator::Get<NLS::Core::ResourceManagement::TextureManager>().UnloadResource(p_previousName);
          }
  
-         if (auto shader = NLS::Core::ServiceLocator::Get<NLS::Core::ResourceManagement::ShaderManager>().GetResource(p_previousName, false))
-         {
-             auto& materialEditor = EDITOR_PANEL(Panels::MaterialEditor, "Material Editor");
- 
-             for (auto [name, instance] : NLS::Core::ServiceLocator::Get<NLS::Core::ResourceManagement::MaterialManager>().GetResources())
+		if (auto shader = NLS::Core::ServiceLocator::Get<NLS::Core::ResourceManagement::ShaderManager>().GetResource(p_previousName, false))
+		{
+			for (auto [name, instance] : NLS::Core::ServiceLocator::Get<NLS::Core::ResourceManagement::MaterialManager>().GetResources())
                  if (instance && instance->GetShader() == shader)
                      instance->SetShader(nullptr);
  
@@ -6896,14 +7235,9 @@ void Editor::Core::EditorActions::PropagateFileRename(std::string p_previousName
              NLS::Core::ServiceLocator::Get<NLS::Core::ResourceManagement::MeshManager>().UnloadResource(p_previousName);
          }
  
-         if (auto material = NLS::Core::ServiceLocator::Get<NLS::Core::ResourceManagement::MaterialManager>().GetResource(p_previousName, false))
-         {
-             auto& materialEditor = EDITOR_PANEL(Panels::MaterialEditor, "Material Editor");
- 
-             if (materialEditor.GetTarget() == material)
-                 materialEditor.RemoveTarget();
- 
-             auto& assetView = EDITOR_PANEL(Panels::AssetView, "Asset View");
+		if (auto material = NLS::Core::ServiceLocator::Get<NLS::Core::ResourceManagement::MaterialManager>().GetResource(p_previousName, false))
+		{
+			auto& assetView = EDITOR_PANEL(Panels::AssetView, "Asset View");
              auto assetViewRes = assetView.GetResource();
              if (auto pval = std::get_if<NLS::Render::Resources::Material*>(&assetViewRes); pval && *pval)
                  assetView.ClearResource();
@@ -6941,8 +7275,7 @@ void Editor::Core::EditorActions::PropagateFileRename(std::string p_previousName
              break;
      }
  
-     EDITOR_PANEL(Panels::Inspector, "Inspector").Refresh();
-     EDITOR_PANEL(Panels::MaterialEditor, "Material Editor").Refresh();
+	EDITOR_PANEL(Panels::Inspector, "Inspector").Refresh();
 }
 
 void Editor::Core::EditorActions::PropagateFileRenameThroughSavedFilesOfType(const std::string& p_previousName, const std::string& p_newName, Utils::PathParser::EFileType p_fileType)

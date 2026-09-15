@@ -1,5 +1,7 @@
 #include "Components/UICanvasComponent.h"
 
+#include "Engine/UI/UIDocumentSourceResolver.h"
+
 #include <cmath>
 #include <utility>
 
@@ -24,7 +26,7 @@ namespace NLS::Engine::Components
 
     uint32_t UICanvasComponent::GetRenderModeValue() const
     {
-        return static_cast<uint32_t>(m_renderMode);
+        return static_cast<uint32_t>(renderModeValue);
     }
 
     void UICanvasComponent::SetWorldRenderPathValue(const uint32_t value)
@@ -35,7 +37,7 @@ namespace NLS::Engine::Components
 
     uint32_t UICanvasComponent::GetWorldRenderPathValue() const
     {
-        return static_cast<uint32_t>(m_worldRenderPath);
+        return static_cast<uint32_t>(worldRenderPathValue);
     }
 
     uint32_t UICanvasComponent::GetDocumentGeneration() const
@@ -165,24 +167,24 @@ namespace NLS::Engine::Components
         const float dpiScale) const
     {
         const float baseScale = dpiScale > 0.0f ? dpiScale : 1.0f;
-        if (m_dpiScaleMode != DpiScaleMode::ScaleWithScreenSize ||
-            m_referenceResolution.x <= 0.0f || m_referenceResolution.y <= 0.0f ||
+        if (dpiScaleMode != DpiScaleMode::ScaleWithScreenSize ||
+            referenceResolution.x <= 0.0f || referenceResolution.y <= 0.0f ||
             viewportSize.x <= 0.0f || viewportSize.y <= 0.0f)
         {
             return baseScale;
         }
 
-        const float widthScale = std::max(0.0001f, viewportSize.x / m_referenceResolution.x);
-        const float heightScale = std::max(0.0001f, viewportSize.y / m_referenceResolution.y);
-        const float match = std::clamp(m_dpiMatch, 0.0f, 1.0f);
+        const float widthScale = std::max(0.0001f, viewportSize.x / referenceResolution.x);
+        const float heightScale = std::max(0.0001f, viewportSize.y / referenceResolution.y);
+        const float match = std::clamp(dpiMatch, 0.0f, 1.0f);
         return baseScale * std::exp(
             std::log(widthScale) * (1.0f - match) + std::log(heightScale) * match);
     }
 
     void UICanvasComponent::OnCreate()
     {
-        if (!m_document && !m_documentPath.empty())
-            (void)LoadDocument(m_documentPath, nullptr);
+        if (!m_document && !document.GetResourcePath().empty())
+            (void)LoadDocument(document.GetResourcePath(), nullptr);
         m_inputRouter.SetRoot(m_instance ? m_instance->GetRoot() : nullptr);
     }
 
@@ -207,50 +209,111 @@ namespace NLS::Engine::Components
         return LoadDocumentFile(path, false, diagnostics);
     }
 
+    bool UICanvasComponent::LoadDocumentResolvedPathAsReference(
+        const std::string& resolvedPath,
+        UI::UIDocumentReference reference,
+        std::vector<UI::UIDocumentDiagnostic>* diagnostics)
+    {
+        if (reference.IsNull())
+            return false;
+
+        // LoadDocumentFile updates the live document only after parsing has
+        // succeeded. Commit the serialized reference afterwards so a failed
+        // picker assignment leaves both the old document and old path intact.
+        if (!LoadDocumentFile(resolvedPath, false, diagnostics))
+            return false;
+
+        document = std::move(reference);
+        return true;
+    }
+
+    bool UICanvasComponent::LoadDocumentResolvedPathAsReference(
+        const std::string& resolvedPath,
+        const std::string& logicalPath,
+        std::vector<UI::UIDocumentDiagnostic>* diagnostics)
+    {
+        return LoadDocumentResolvedPathAsReference(
+            resolvedPath,
+            UI::UIDocumentReference({}, logicalPath),
+            diagnostics);
+    }
+
+    bool UICanvasComponent::LoadDocumentReference(
+        const UI::UIDocumentReference& reference,
+        std::vector<UI::UIDocumentDiagnostic>* diagnostics)
+    {
+        const auto sourcePath = UI::ResolveUIDocumentSourcePath(reference);
+        if (sourcePath.empty())
+        {
+            if (diagnostics != nullptr)
+            {
+                UI::UIDocumentDiagnostic diagnostic;
+                diagnostic.path = reference.GetResourcePath();
+                diagnostic.message =
+                    "UI document source could not be resolved; the reference is kept for a later reload";
+                diagnostics->push_back(std::move(diagnostic));
+            }
+            return false;
+        }
+
+        auto loadedDocument = UI::UIDocument::LoadFromFile(sourcePath, diagnostics);
+        if (!loadedDocument.has_value())
+            return false;
+        SetDocument(std::make_shared<UI::UIDocument>(std::move(*loadedDocument)));
+        return true;
+    }
+
     bool UICanvasComponent::LoadDocumentFile(
         const std::string& path,
         const bool updateSerializedPath,
         std::vector<UI::UIDocumentDiagnostic>* diagnostics)
     {
-        auto document = UI::UIDocument::LoadFromFile(path, diagnostics);
-        if (!document.has_value())
+        if (!LoadDocumentReference(UI::UIDocumentReference({}, path), diagnostics))
             return false;
         if (updateSerializedPath)
-            m_documentPath = path;
-        SetDocument(std::make_shared<UI::UIDocument>(std::move(*document)));
+            document = UI::UIDocumentReference({}, path);
         return true;
     }
 
     void UICanvasComponent::SetDocumentPath(std::string path)
     {
-        if (path.empty())
+        SetDocumentReference(UI::UIDocumentReference({}, std::move(path)));
+    }
+
+    void UICanvasComponent::SetDocumentReference(UI::UIDocumentReference reference)
+    {
+        if (reference.IsNull())
         {
-            m_documentPath.clear();
+            document.Reset();
             SetDocument(nullptr);
             return;
         }
 
-        if (path == m_documentPath && m_document)
+        if (reference == document && m_document)
             return;
 
-        // Preserve the reference even when a source asset is temporarily
-        // unavailable. This lets asset import/reload restore the Canvas later.
-        if (!LoadDocument(path, nullptr))
+        // An import or asset database rebuild can temporarily leave the source
+        // unavailable. Preserve the stable reference and only clear the live
+        // document in that case so a later reload can restore it.
+        if (LoadDocumentReference(reference, nullptr))
         {
-            m_documentPath = std::move(path);
-            SetDocument(nullptr);
+            document = std::move(reference);
+            return;
         }
+
+        document = std::move(reference);
+        SetDocument(nullptr);
     }
 
     bool UICanvasComponent::LoadDocumentArtifact(
         const std::string& path,
         std::vector<UI::UIDocumentDiagnostic>* diagnostics)
     {
-        auto document = UI::UIDocument::LoadFromArtifactFile(path, diagnostics);
-        if (!document.has_value())
+        auto loadedDocument = UI::UIDocument::LoadFromArtifactFile(path, diagnostics);
+        if (!loadedDocument.has_value())
             return false;
-        m_documentPath = path;
-        SetDocument(std::make_shared<UI::UIDocument>(std::move(*document)));
+        document = UI::UIDocumentReference({}, path);
+        SetDocument(std::make_shared<UI::UIDocument>(std::move(*loadedDocument)));
         return true;
     }
 
@@ -258,11 +321,11 @@ namespace NLS::Engine::Components
         const std::string_view json,
         std::vector<UI::UIDocumentDiagnostic>* diagnostics)
     {
-        auto document = UI::UIDocument::LoadFromJson(json, diagnostics);
-        if (!document.has_value())
+        auto loadedDocument = UI::UIDocument::LoadFromJson(json, diagnostics);
+        if (!loadedDocument.has_value())
             return false;
-        m_documentPath.clear();
-        SetDocument(std::make_shared<UI::UIDocument>(std::move(*document)));
+        document.Reset();
+        SetDocument(std::make_shared<UI::UIDocument>(std::move(*loadedDocument)));
         return true;
     }
 
@@ -309,8 +372,8 @@ namespace NLS::Engine::Components
 
     UICanvasComponent::WorldRenderPath UICanvasComponent::GetResolvedWorldRenderPath() const
     {
-        if (m_worldRenderPath != WorldRenderPath::Auto)
-            return m_worldRenderPath;
+        if (worldRenderPathValue != WorldRenderPath::Auto)
+            return worldRenderPathValue;
         return m_instance && m_instance->RequiresRenderTarget()
             ? WorldRenderPath::RenderTarget
             : WorldRenderPath::Direct;
@@ -327,9 +390,9 @@ namespace NLS::Engine::Components
         m_lastViewport = viewportSize;
         m_lastDpiScale = dpiScale > 0.0f ? dpiScale : 1.0f;
         m_lastFrameId = frameId;
-        if (m_updatePolicy != UpdatePolicy::Manual)
+        if (updatePolicy != UpdatePolicy::Manual)
             m_instance->UpdateLayout(viewportSize, m_lastDpiScale);
-        if (m_updatePolicy == UpdatePolicy::EveryFrame)
+        if (updatePolicy == UpdatePolicy::EveryFrame)
             m_instance->Tick(deltaSeconds);
     }
 

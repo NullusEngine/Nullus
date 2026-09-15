@@ -21,6 +21,9 @@
     <NullusScriptGeneratorPath Condition="'$(NullusScriptGeneratorPath)' == ''">$(MSBuildProjectDirectory)\..\..\build-scripting-vs5\Managed\Debug\Nullus.ScriptGenerator.dll</NullusScriptGeneratorPath>
   </PropertyGroup>
   <ItemGroup>
+    <!-- SerializedObject/SerializedProperty belong to the editor host and are
+         compiled into Nullus.Editor, never into the Player scripting assembly. -->
+    <Compile Remove="EditorSerializedObject.cs" />
     <ProjectReference Include="..\Nullus.ScriptAnalysis\Nullus.ScriptAnalysis.csproj"
                       OutputItemType="Analyzer"
                       ReferenceOutputAssembly="false"

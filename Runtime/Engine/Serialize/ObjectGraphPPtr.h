@@ -1,6 +1,7 @@
 #pragma once
 
 #include <array>
+#include <optional>
 #include <stdexcept>
 #include <string>
 
@@ -23,6 +24,7 @@ namespace NLS::Engine::Serialize
         {
             NLS::meta::Type valueType;
             PropertyValue (*serializeValue)(const NLS::meta::Variant& value);
+            std::optional<NLS::meta::Variant> (*deserializeValue)(const ObjectIdentifier& identifier);
             PPtrApplyResult (*applyValue)(
                 NLS::meta::Variant& instance,
                 const NLS::meta::Field& field,
@@ -46,7 +48,7 @@ namespace NLS::Engine::Serialize
 
             ObjectIdentifier identifier;
             if (!PersistentManager::Instance().InstanceIDToObjectIdentifier(instanceID, identifier))
-                // Unity-style transient object references can be visible at runtime but have no persistent fileID.
+                // engine-style transient object references can be visible at runtime but have no persistent fileID.
                 return {};
             return identifier;
         }
@@ -65,6 +67,20 @@ namespace NLS::Engine::Serialize
                 "Reflected PPtr object references require Object-derived targets.");
             const auto& reference = value.GetValue<PPtr<T>>();
             return PropertyValue::ObjectReference(ToObjectIdentifier(reference.GetInstanceID()));
+        }
+
+        template <typename T>
+        std::optional<NLS::meta::Variant> DeserializePPtrValue(const ObjectIdentifier& identifier)
+        {
+            static_assert(
+                Detail::IsCompleteObjectTargetV<T>,
+                "Reflected PPtr object references require Object-derived targets.");
+            if (!identifier.IsValid())
+                return NLS::meta::Variant(PPtr<T> {});
+            const auto instanceID = PersistentManager::Instance().ObjectIdentifierToInstanceID(identifier);
+            if (instanceID == InstanceID_None)
+                return std::nullopt;
+            return NLS::meta::Variant(PPtr<T>(instanceID));
         }
 
         template <typename T>
@@ -126,6 +142,7 @@ namespace NLS::Engine::Serialize
             return {
                 valueType,
                 &SerializePPtrValue<T>,
+                &DeserializePPtrValue<T>,
                 &ApplyPPtrValue<T>,
                 &ApplyPPtrArray<T>
             };

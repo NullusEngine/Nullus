@@ -283,6 +283,12 @@ public:
         NLS::Engine::Assets::PrefabArtifact& prefab,
         const std::vector<PrefabOverrideDescriptor>& overrides,
         bool targetGeneratedReadOnly = false) const;
+    // Materializes overrides into an in-memory prefab view. This never writes
+    // an asset and deliberately remains available for generated prefabs so an
+    // Inspector Undo operation can reconstruct the pre-revert live state.
+    PrefabOperationResult MaterializeOverrideView(
+        NLS::Engine::Assets::PrefabArtifact& prefab,
+        const std::vector<PrefabOverrideDescriptor>& overrides) const;
     PrefabOperationResult ApplyPrefabInstance(
         NLS::Engine::Assets::PrefabArtifact& prefab,
         const std::vector<PrefabOverrideDescriptor>& overrides,
@@ -297,6 +303,9 @@ public:
         PrefabInstanceRecord& instance,
         const std::vector<PrefabOverrideDescriptor>& overrides) const;
     PrefabOperationResult RevertPrefabInstance(PrefabInstanceRecord& instance) const;
+    PrefabOperationResult RefreshConnectedInstance(
+        PrefabInstanceRecord& instance,
+        const NLS::Engine::Assets::PrefabArtifact& prefab) const;
     std::optional<NLS::Engine::Serialize::ObjectId> GetCorrespondingObjectFromSource(
         const PrefabInstanceRecord& instance,
         const NLS::Engine::GameObject& instanceObject) const;

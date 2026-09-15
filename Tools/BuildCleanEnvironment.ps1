@@ -62,13 +62,31 @@ if ($isCMakeBuild) {
     $separatorIndex = [System.Array]::IndexOf($normalizedArguments, "--")
     if ($separatorIndex -ge 0) {
         $cmakeArguments = @($normalizedArguments[0..($separatorIndex - 1)])
-        $buildArguments = @($normalizedArguments[($separatorIndex + 1)..($normalizedArguments.Count - 1)]) |
-            Where-Object { $_ -notmatch "^(?:/|-)(?:m|maxcpucount)(?::|=)?\d*$" }
+        $buildArguments = @($normalizedArguments[($separatorIndex + 1)..($normalizedArguments.Count - 1)])
     }
     else {
-        $cmakeArguments = $normalizedArguments
+        # PowerShell 7 treats a bare "--" as its own end-of-parameters marker
+        # and removes it before this script sees the arguments, so native
+        # switches can arrive blended into the CMake list.  MSBuild switches
+        # start with "/" (or "-m"/"-maxcpucount"); CMake options never do.
+        # Split them apart so exactly one separator is injected below.
+        $cmakeArguments = @()
         $buildArguments = @()
+        foreach ($argument in $normalizedArguments) {
+            if ($argument.StartsWith('/') -or
+                $argument -match "^-m(?::|=)?\d*$" -or
+                $argument -ieq "-maxcpucount") {
+                $buildArguments += $argument
+            }
+            else {
+                $cmakeArguments += $argument
+            }
+        }
     }
+    # /m is normalized to the deterministic single node the wrapper needs; the
+    # remaining native switches are forwarded untouched.
+    $buildArguments = @($buildArguments) |
+        Where-Object { $_ -notmatch "^(?:/|-)(?:m|maxcpucount)(?::|=)?\d*$" }
     $normalizedArguments = @($cmakeArguments + "--" + "/m:1" + $buildArguments)
 }
 

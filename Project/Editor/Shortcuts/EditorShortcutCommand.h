@@ -16,6 +16,11 @@ namespace NLS::Editor::Shortcuts
         std::string category;
         ShortcutContextId context = ShortcutContexts::Global;
         ShortcutBinding defaultBinding = ShortcutBinding::Unassigned();
+        // Commands may expose more than one default gesture.  The first
+        // binding remains the primary/rebindable gesture; alternates are
+        // active while no user override exists (for example Redo supports
+        // both Primary+Y and Primary+Shift+Z).
+        std::vector<ShortcutBinding> alternateBindings;
         bool requiredBinding = false;
         bool allowDuringTextInput = false;
         bool allowContextOverride = false;

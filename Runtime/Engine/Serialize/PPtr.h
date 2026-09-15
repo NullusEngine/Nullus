@@ -144,7 +144,22 @@ namespace NLS::Engine::Serialize
         InstanceID RegisterObjectIdentifier(const ObjectIdentifier& identifier);
         void RegisterInstanceID(InstanceID instanceID, const ObjectIdentifier& identifier);
         InstanceID BindObjectIdentifier(NLS::Object& object, const ObjectIdentifier& identifier);
+        // Runtime scene objects are not asset-backed, but editor commands still
+        // need an identifier that outlives a panel frame.  This allocates a
+        // process-unique local identifier through the existing persistence map
+        // without retaining an object pointer.
+        [[nodiscard]] ObjectIdentifier GetOrCreateLocalObjectIdentifier(NLS::Object& object);
         bool InstanceIDToObjectIdentifier(InstanceID instanceID, ObjectIdentifier& identifier) const;
+        // Unlike ObjectIdentifierToInstanceID, this is a pure lookup.  Undo
+        // validation must not reserve a new InstanceID for a stale target.
+        [[nodiscard]] bool TryGetInstanceID(
+            const ObjectIdentifier& identifier,
+            InstanceID& instanceID) const;
+        // Hold the transient runtime slot currently associated with an
+        // identifier while an editor Undo command reconstructs an object
+        // graph. Callers retain the identifier, never the InstanceID.
+        [[nodiscard]] bool ReserveObjectIdentifier(const ObjectIdentifier& identifier);
+        void ReleaseReservedObjectIdentifier(const ObjectIdentifier& identifier);
         bool InstanceIDToSerializedObjectIdentifier(InstanceID instanceID, SerializedObjectIdentifier& identifier) const;
         InstanceID ObjectIdentifierToInstanceID(const ObjectIdentifier& identifier);
         void InstanceIDToLocalSerializedObjectIdentifier(InstanceID instanceID, LocalSerializedObjectIdentifier& identifier) const;
@@ -195,6 +210,10 @@ namespace NLS::Engine::Serialize
         mutable std::unordered_map<FileIdentifier, int32_t, FileIdentifierHash> m_serializedFileIndexByFileIdentifier;
         mutable std::unordered_map<int32_t, FileIdentifier> m_fileIdentifierBySerializedFileIndex;
         mutable int32_t m_nextSerializedFileIndex = 1;
+        // Negative values cannot collide with ObjectGraph's hashed file IDs,
+        // which are always positive.  Do not reset this on Clear(): stale
+        // handles must never become aliases for a later runtime object.
+        int64_t m_nextRuntimeLocalIdentifier = -1;
         mutable std::mutex m_mutex;
     };
 

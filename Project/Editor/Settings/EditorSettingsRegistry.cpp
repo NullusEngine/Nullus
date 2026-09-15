@@ -4,7 +4,7 @@
 #include <cctype>
 #include <set>
 
-#include "Panels/ReflectedPropertyDrawer.h"
+#include "Inspector/PropertyTypeTraits.h"
 
 namespace NLS::Editor::Settings
 {
@@ -77,8 +77,14 @@ std::vector<const EditorSettingObject*> EditorSettingsRegistry::Search(std::stri
 
         if (!matches && object.type.IsValid())
         {
-            for (const auto& label : Panels::GetReflectedPropertyLabels(object.type))
+            for (const auto& field : object.type.GetFields())
             {
+                if (!field.IsValid())
+                    continue;
+                const auto metadata = NLS::Editor::Inspector::BuildEditorPropertyMetadata(field);
+                const auto label = metadata.displayName.empty()
+                    ? NLS::Editor::Inspector::FormatInspectorDisplayName(field.GetName())
+                    : metadata.displayName;
                 if (NormalizeSettingsSearchText(label).find(normalizedQuery) != std::string::npos)
                 {
                     matches = true;

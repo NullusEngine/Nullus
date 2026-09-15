@@ -19,7 +19,7 @@ namespace NLS::Engine::Components
 	/**
 	* A MeshRenderer makes a MeshFilter renderable and owns material/culling state.
 	*/
-	CLASS(NLS_ENGINE_API MeshRenderer, ComponentMenu("Rendering/Mesh Renderer")) : public Component
+	CLASS(NLS_ENGINE_API MeshRenderer, ComponentMenu("Rendering/Mesh Renderer"), DisallowMultipleComponent, RequireComponent("NLS::Engine::Components::MeshFilter")) : public Component
 	{
     public:
 
@@ -56,13 +56,13 @@ namespace NLS::Engine::Components
 		* @param p_boundingMode
 		*/
         FUNCTION()
-		void SetFrustumBehaviour(EFrustumBehaviour p_boundingMode);
+        void SetFrustumBehaviour(EFrustumBehaviour p_boundingMode);
 
 		/**
 		* Returns the current bounding mode
 		*/
         FUNCTION()
-		EFrustumBehaviour GetFrustumBehaviour() const;
+        EFrustumBehaviour GetFrustumBehaviour() const;
 
 		/**
 		* Returns the custom bounding sphere
@@ -96,11 +96,9 @@ namespace NLS::Engine::Components
         FUNCTION()
         const Maths::Matrix4& GetUserMatrix() const;
 
-        PROPERTY(materials)
         FUNCTION()
         NLS::Array<NLS::Engine::Serialize::PPtr<Material>> GetMaterialReferences() const;
 
-        PROPERTY(materials)
         FUNCTION()
         void SetMaterialReferences(const NLS::Array<NLS::Engine::Serialize::PPtr<Material>>& p_references);
         void SetMaterialObjectIdentifiers(const NLS::Array<NLS::Engine::Serialize::ObjectIdentifier>& p_identifiers);
@@ -131,14 +129,18 @@ namespace NLS::Engine::Components
         bool EnsureMaterialSlot(size_t p_index);
         Material* ResolveMaterialSlot(size_t p_index);
 
+        PROPERTY(DisplayName("Materials"), Getter(GetMaterialReferences), Setter(SetMaterialReferences))
         NLS::Array<NLS::Engine::Serialize::PPtr<Material>> materials;
         MaterialList m_materials;
         std::vector<std::string> m_materialPaths;
         std::vector<std::string> m_failedMaterialPaths;
         std::vector<std::string> m_materialNames;
-        Maths::Matrix4 m_userMatrix;
-        Render::Geometry::BoundingSphere m_customBoundingSphere = {{}, 1.0f};
-		EFrustumBehaviour m_frustumBehaviour = EFrustumBehaviour::CULL_MODEL;
+        PROPERTY(DisplayName("User Matrix"), Getter(GetUserMatrixValues), Setter(SetUserMatrixValues))
+        Maths::Matrix4 userMatrixValues;
+        PROPERTY(DisplayName("Custom Bounding Sphere"), Getter(GetCustomBoundingSphere), Setter(SetCustomBoundingSphere))
+        Render::Geometry::BoundingSphere customBoundingSphere = {{}, 1.0f};
+				PROPERTY(DisplayName("Frustum Behaviour"), Getter(GetFrustumBehaviour), Setter(SetFrustumBehaviour))
+				EFrustumBehaviour frustumBehaviour = EFrustumBehaviour::CULL_MODEL;
         bool m_transientRenderingSuppressed = false;
         uint64_t m_renderRevision = 1u;
 	};

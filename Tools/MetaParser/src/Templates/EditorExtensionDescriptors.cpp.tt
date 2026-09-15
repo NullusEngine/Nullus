@@ -1,0 +1,59 @@
+<#@ template language="C#" hostspecific="true" #>
+<#@ import namespace="System.Collections.Generic" #>
+<#
+    dynamic model = Session["Model"];
+    string registrationFunctionName = model.RegistrationFunctionName;
+    var descriptors = new List<dynamic>();
+    foreach (var descriptor in (System.Collections.IEnumerable)model.Descriptors)
+        descriptors.Add(descriptor);
+    var headers = new List<string>();
+    foreach (dynamic descriptor in descriptors)
+    {
+        string header = descriptor.HeaderIncludePath;
+        if (!headers.Contains(header))
+            headers.Add(header);
+    }
+#>
+// Auto-generated editor extension declarations. Do not edit.
+#include <array>
+#include <memory>
+
+#include "Inspector/EditorExtensionRegistry.h"
+<# foreach (var header in headers) { #>
+#include "<#= header #>"
+<# } #>
+
+namespace NLS::meta_generated
+{
+namespace
+{
+<# foreach (dynamic descriptor in descriptors) { #>
+std::unique_ptr<::NLS::Editor::Inspector::ComponentEditor> <#= descriptor.FactoryFunctionName #>()
+{
+    return std::make_unique<<#= descriptor.EditorTypeName #>>();
+}
+
+<# } #>
+constexpr std::array<::NLS::Editor::Inspector::EditorExtensionDescriptor, <#= descriptors.Count #>> kEditorExtensionDescriptors {{
+<# foreach (dynamic descriptor in descriptors) { #>
+    ::NLS::Editor::Inspector::EditorExtensionDescriptor {
+        ::NLS::Editor::Inspector::EditorExtensionKind::ComponentEditor,
+        ::NLS::meta::HashTypeKey("<#= descriptor.TargetTypeName #>"),
+        "<#= descriptor.TargetTypeName #>",
+        ::NLS::meta::HashTypeKey("<#= descriptor.EditorTypeName #>"),
+        "<#= descriptor.EditorTypeName #>",
+        "<#= descriptor.Identifier #>",
+        <#= descriptor.EditorForChildClasses ? "true" : "false" #>,
+        <#= descriptor.IsFallback ? "true" : "false" #>,
+        <#= descriptor.SupportsMultiObject ? "true" : "false" #>,
+        <#= descriptor.Priority #>,
+        &<#= descriptor.FactoryFunctionName #>},
+<# } #>
+}};
+} // namespace
+
+void <#= registrationFunctionName #>(::NLS::Editor::Inspector::InspectorRegistry& registry)
+{
+    ::NLS::Editor::Inspector::RegisterEditorExtensionDescriptors(registry, kEditorExtensionDescriptors);
+}
+} // namespace NLS::meta_generated

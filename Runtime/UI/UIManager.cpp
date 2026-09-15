@@ -107,6 +107,18 @@ void PublishCurrentUiSnapshotToFrameGraph()
 
     const auto frameId = static_cast<uint64_t>(ImGui::GetFrameCount());
     auto snapshot = NLS::Render::UI::CaptureUiDrawDataSnapshot(ImGui::GetDrawData(), frameId);
+    bool supplementApplied = false;
+    if (snapshot != nullptr && NLS::Core::ServiceLocator::Contains<NLS::UI::UIManager>())
+    {
+        supplementApplied =
+            NLS::Core::ServiceLocator::Get<NLS::UI::UIManager>().ApplyOverlaySnapshotSupplement(*snapshot);
+    }
+    if (supplementApplied)
+    {
+        // The supplement changed draw content, so the published signature must
+        // reflect the merged frame instead of the ImGui-only capture.
+        snapshot->contentSignature = NLS::Render::UI::ComputeUiDrawDataContentSignature(*snapshot);
+    }
     NLS::Render::Context::DriverUIAccess::PublishUiDrawDataSnapshot(*driver, std::move(snapshot));
 }
 
@@ -689,6 +701,11 @@ void UIManager::RemoveCanvas()
     m_currentCanvas = nullptr;
 }
 
+void UIManager::SetPostCanvasDrawCallback(std::function<void()> p_callback)
+{
+    m_postCanvasDrawCallback = std::move(p_callback);
+}
+
 void UIManager::Render()
 {
     NLS_PROFILE_SCOPE();
@@ -749,6 +766,10 @@ void UIManager::Render()
         accumulateStageNs(m_renderStageTotals.drawCanvasNs, m_renderStageTotals.maxDrawCanvasNs, stageBegin);
     }
     logStartupRenderStage("DrawCanvas");
+
+    if (m_postCanvasDrawCallback)
+        m_postCanvasDrawCallback();
+
     ReleaseUnrequestedInfiniteDragCursor();
     logStartupRenderStage("ReleaseUnrequestedInfiniteDragCursor");
 
@@ -1122,6 +1143,20 @@ bool UIManager::BeginTooltip()
 void UIManager::EndTooltip()
 {
     return ImGui::EndTooltip();
+}
+
+void UIManager::SetOverlaySnapshotSupplement(OverlaySnapshotSupplement supplement)
+{
+    m_overlaySnapshotSupplement = std::move(supplement);
+}
+
+bool UIManager::ApplyOverlaySnapshotSupplement(NLS::Render::UI::UiDrawDataSnapshot& snapshot)
+{
+    if (!m_overlaySnapshotSupplement)
+        return false;
+
+    m_overlaySnapshotSupplement(snapshot);
+    return true;
 }
 
 } // namespace NLS::UI

@@ -195,6 +195,19 @@ void Object::AssignInstanceIDNoLock(Object* object, const InstanceID instanceID)
     if (object == nullptr || instanceID == InstanceID_None)
         return;
 
+    auto& registry = Registry();
+    const auto existing = registry.objectByInstanceID.find(instanceID);
+    if (existing != registry.objectByInstanceID.end() && existing->second != object)
+        return;
+
+    // A restored editor snapshot reserves its original ID before constructing
+    // a replacement object. Remove the constructor-assigned registry entry
+    // before publishing that original ID; otherwise the stale temporary ID
+    // would keep a dangling pointer after the replacement is destroyed.
+    const auto previous = registry.objectByInstanceID.find(object->m_instanceID);
+    if (previous != registry.objectByInstanceID.end() && previous->second == object)
+        registry.objectByInstanceID.erase(previous);
+
     object->SetInstanceID(instanceID);
     RegisterInstanceIDNoLock(object);
 }

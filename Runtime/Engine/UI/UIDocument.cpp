@@ -1,5 +1,8 @@
 #include "UIDocument.h"
 
+#include "Rendering/UI/UIFontTextShaper.h"
+#include "Rendering/UI/UIFontAtlas.h"
+
 #include "Assets/NativeArtifactContainer.h"
 #include "Rendering/UI/UIDrawSnapshot.h"
 
@@ -431,7 +434,12 @@ namespace NLS::Engine::UI
             std::abs(m_cachedDpiScale - normalizedDpiScale) <= 0.0001f &&
             m_root != nullptr &&
             !m_root->IsLayoutDirty() &&
-            !m_root->IsPaintDirty();
+            !m_root->IsPaintDirty() &&
+            m_cachedFontAtlasTextureId == NLS::Render::UI::GetUiFontAtlasTextureId() &&
+            m_cachedFontAtlasTextureGeneration ==
+                NLS::Render::UI::GetUiFontAtlasTextureGeneration() &&
+            m_cachedFontAtlasContentGeneration ==
+                NLS::Render::UI::GetSharedUIFontAtlas().GetContentGeneration();
 
         if (cacheMatches)
         {
@@ -453,9 +461,17 @@ namespace NLS::Engine::UI
             m_root->BuildDrawSnapshot(*snapshot);
             m_root->ClearDirtyFlags();
         }
+        // Text runs stay in the snapshot for tooling, but the renderer consumes
+        // vertices, so real glyph quads are appended here.
+        NLS::Render::UI::AppendTextQuadGeometry(*snapshot, frameId);
         m_cachedSnapshot = snapshot;
         m_cachedViewport = viewport;
         m_cachedDpiScale = normalizedDpiScale;
+        m_cachedFontAtlasTextureId = NLS::Render::UI::GetUiFontAtlasTextureId();
+        m_cachedFontAtlasTextureGeneration =
+            NLS::Render::UI::GetUiFontAtlasTextureGeneration();
+        m_cachedFontAtlasContentGeneration =
+            NLS::Render::UI::GetSharedUIFontAtlas().GetContentGeneration();
         return snapshot;
     }
 

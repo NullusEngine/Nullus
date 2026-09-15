@@ -5,7 +5,7 @@
 #include "GameObject.h"
 #include "Settings/TagLayerSettings.h"
 
-TEST(TagLayerSettingsTests, ProvidesUnityStyleDefaultTagsAndLayers)
+TEST(TagLayerSettingsTests, ProvidesEngineStyleDefaultTagsAndLayers)
 {
     const auto& tags = NLS::Editor::Settings::TagLayerSettings::GetTags();
     const auto& layers = NLS::Editor::Settings::TagLayerSettings::GetLayers();

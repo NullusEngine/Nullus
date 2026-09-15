@@ -129,6 +129,11 @@ namespace NLS::Engine::UI
         mutable std::shared_ptr<NLS::Render::UI::UIDrawSnapshot> m_cachedSnapshot;
         mutable UIVector2 m_cachedViewport;
         mutable float m_cachedDpiScale = 1.0f;
+        // Text geometry is resolved against the live font atlas, so the cache is
+        // only valid for the atlas layout and texture identity it was built with.
+        mutable uint64_t m_cachedFontAtlasTextureId = 0u;
+        mutable uint32_t m_cachedFontAtlasTextureGeneration = 0u;
+        mutable uint64_t m_cachedFontAtlasContentGeneration = 0u;
         bool m_requiresRenderTarget = false;
         UISignalBus m_signals;
     };

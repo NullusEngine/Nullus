@@ -202,6 +202,27 @@ using ScriptFieldId = uint64_t;
 using ScriptTypeId = uint64_t;
 using ScriptMemberId = uint64_t;
 
+// Declarative Inspector information shared by every script backend. This is
+// intentionally data-only: language runtimes describe a field, while the
+// Editor decides how to render it through the common drawer registry.
+struct NLS_SCRIPTING_API ScriptFieldMetadata
+{
+    std::string displayName;
+    std::string tooltip;
+    std::string header;
+    float spaceBefore = 0.0f;
+    std::optional<float> rangeMin;
+    std::optional<float> rangeMax;
+    std::optional<float> min;
+    std::optional<float> max;
+    bool multiline = false;
+    bool readOnly = false;
+    bool hideInInspector = false;
+    bool flags = false;
+    bool colorUsage = false;
+    std::string referenceTypeConstraint;
+};
+
 struct NLS_SCRIPTING_API ScriptFieldDescriptor
 {
     ScriptFieldId id = 0;
@@ -210,6 +231,7 @@ struct NLS_SCRIPTING_API ScriptFieldDescriptor
     bool serialized = true;
     std::vector<std::string> aliases;
     std::optional<ScriptValue> defaultValue;
+    ScriptFieldMetadata metadata;
 };
 
 struct NLS_SCRIPTING_API ScriptParameterDescriptor

@@ -3,9 +3,12 @@
 #include "Components/UICanvasComponent.h"
 #include "Engine/UI/UIDocument.h"
 #include "Guid.h"
-#include "Panels/Inspector.h"
+#include "ServiceLocator.h"
 #include "UI/UIDocumentDesignerModel.h"
+#include "Undo/UndoBlobStore.h"
+#include "Undo/EditorUndoService.h"
 
+#include <algorithm>
 #include <array>
 #include <filesystem>
 #include <fstream>
@@ -50,6 +53,27 @@ public:
 private:
     std::filesystem::path m_path;
 };
+
+class ScopedEditorUndoService final
+{
+public:
+    ScopedEditorUndoService()
+    {
+        NLS::Core::ServiceLocator::Remove<NLS::Editor::Undo::EditorUndoService>();
+        NLS::Core::ServiceLocator::Provide(m_service);
+    }
+
+    ~ScopedEditorUndoService()
+    {
+        NLS::Core::ServiceLocator::Remove<NLS::Editor::Undo::EditorUndoService>();
+    }
+
+    [[nodiscard]] NLS::Editor::Undo::EditorUndoService& Get() { return m_service; }
+
+private:
+    NLS::Editor::Undo::EditorUndoService m_service;
+};
+
 }
 
 TEST(UIDocumentDesignerModelTests, NewDocumentIsRuntimeValidAndEmpty)
@@ -72,6 +96,7 @@ TEST(UIDocumentDesignerModelTests, EditsUndoRedoAndSaveKeepStableIdentifiers)
     using NLS::Editor::UIDocumentTools::UIDocumentDesignerModel;
 
     ScopedUIDocumentTestDirectory directory;
+    ScopedEditorUndoService undo;
     const auto sourcePath = directory.Write(
         "Assets/UI/Hud.ui",
         UIDocumentDesignerModel::CreateDocumentSource("Hud"));
@@ -86,9 +111,9 @@ TEST(UIDocumentDesignerModelTests, EditsUndoRedoAndSaveKeepStableIdentifiers)
     ASSERT_FALSE(childGuid.empty());
     ASSERT_NE(model.FindNode(childGuid), nullptr);
 
-    ASSERT_TRUE(model.Undo());
+    ASSERT_TRUE(undo.Get().RequestUndo().Succeeded());
     EXPECT_EQ(model.FindNode(childGuid), nullptr);
-    ASSERT_TRUE(model.Redo());
+    ASSERT_TRUE(undo.Get().RequestRedo().Succeeded());
     ASSERT_NE(model.FindNode(childGuid), nullptr);
     EXPECT_EQ(model.GetDocument().at("documentId").get<std::string>(), documentId);
 
@@ -103,6 +128,293 @@ TEST(UIDocumentDesignerModelTests, EditsUndoRedoAndSaveKeepStableIdentifiers)
     std::vector<NLS::Engine::UI::UIDocumentDiagnostic> diagnostics;
     EXPECT_TRUE(reloaded.BuildRuntimeDocument(runtimeDocument, &diagnostics));
     EXPECT_TRUE(diagnostics.empty());
+}
+
+TEST(UIDocumentDesignerModelTests, LargeSnapshotUsesGlobalUndoRedoAndClearAllReleasesBlob)
+{
+    using NLS::Editor::UIDocumentTools::UIDocumentDesignerModel;
+    using NLS::Editor::Undo::UndoBlobStoreOptions;
+    using NLS::Editor::Undo::UndoClearReason;
+
+    ScopedUIDocumentTestDirectory directory;
+    ScopedEditorUndoService undo;
+    ASSERT_TRUE(undo.Get().ConfigureBlobStore(directory.GetPath() / "Library/Editor/UndoBlobs").Succeeded());
+    const auto blobStore = undo.Get().GetSnapshotBlobStore();
+    ASSERT_NE(blobStore, nullptr);
+
+    const auto sourcePath = directory.Write(
+        "Assets/UI/Hud.ui",
+        UIDocumentDesignerModel::CreateDocumentSource("Hud"));
+
+    UIDocumentDesignerModel model;
+    ASSERT_TRUE(model.Load(sourcePath));
+    const auto rootGuid = model.GetDocument().at("root").at("nodeGuid").get<std::string>();
+    ASSERT_TRUE(model.AddChild(rootGuid, "Text"));
+    const auto textGuid = model.GetSelectedNodeGuid();
+    const auto beforeText = model.FindNode(textGuid)->value("text", std::string {});
+
+    const auto spillThreshold = UndoBlobStoreOptions {}.spillThresholdBytes;
+    const std::string afterText(spillThreshold + 4096u, 'x');
+    ASSERT_TRUE(model.SetNodeText(textGuid, afterText));
+
+    const auto retained = blobStore->GetStatistics();
+    EXPECT_GE(retained.blobCount, 1u);
+    EXPECT_GE(retained.totalReferenceCount, 1u);
+    EXPECT_GT(retained.referencedByteCount, spillThreshold);
+    EXPECT_GT(undo.Get().GetHistoryState().retainedBlobBytes, spillThreshold);
+
+    ASSERT_TRUE(undo.Get().RequestUndo().Succeeded());
+    EXPECT_EQ(model.FindNode(textGuid)->value("text", std::string {}), beforeText);
+    ASSERT_TRUE(undo.Get().RequestRedo().Succeeded());
+    EXPECT_EQ(model.FindNode(textGuid)->value("text", std::string {}), afterText);
+
+    undo.Get().ClearAll(UndoClearReason::UserRequested);
+    EXPECT_EQ(undo.Get().GetTransactionCount(), 0u);
+    EXPECT_EQ(undo.Get().GetCursor(), 0u);
+    EXPECT_EQ(undo.Get().GetHistoryState().retainedBlobBytes, 0u);
+
+    const auto cleaned = blobStore->GetStatistics();
+    EXPECT_EQ(cleaned.blobCount, 0u);
+    EXPECT_EQ(cleaned.referencedBlobCount, 0u);
+    EXPECT_EQ(cleaned.totalReferenceCount, 0u);
+    EXPECT_EQ(cleaned.storedByteCount, 0u);
+}
+
+TEST(UIDocumentDesignerModelTests, MergedLargeSnapshotsKeepBlobBudgetAndReleaseSupersededPayload)
+{
+    using NLS::Editor::UIDocumentTools::UIDocumentDesignerModel;
+    using NLS::Editor::Undo::UndoBlobStoreOptions;
+    using NLS::Editor::Undo::UndoClearReason;
+
+    ScopedUIDocumentTestDirectory directory;
+    ScopedEditorUndoService undo;
+    ASSERT_TRUE(undo.Get().ConfigureBlobStore(directory.GetPath() / "Library/Editor/UndoBlobs").Succeeded());
+    const auto blobStore = undo.Get().GetSnapshotBlobStore();
+    ASSERT_NE(blobStore, nullptr);
+
+    const auto sourcePath = directory.Write(
+        "Assets/UI/Hud.ui",
+        UIDocumentDesignerModel::CreateDocumentSource("Hud"));
+
+    UIDocumentDesignerModel model;
+    ASSERT_TRUE(model.Load(sourcePath));
+    const auto rootGuid = model.GetDocument().at("root").at("nodeGuid").get<std::string>();
+    ASSERT_TRUE(model.AddChild(rootGuid, "Text"));
+    const auto textGuid = model.GetSelectedNodeGuid();
+    const auto beforeText = model.FindNode(textGuid)->value("text", std::string {});
+    undo.Get().ClearAll(UndoClearReason::UserRequested);
+
+    const auto spillThreshold = UndoBlobStoreOptions {}.spillThresholdBytes;
+    const std::string firstText(spillThreshold + 4096u, 'a');
+    const std::string finalText(spillThreshold + 8192u, 'b');
+    ASSERT_TRUE(model.SetNodeText(textGuid, firstText));
+    ASSERT_TRUE(model.SetNodeText(textGuid, finalText));
+
+    ASSERT_EQ(undo.Get().GetTransactionCount(), 1u);
+    const auto history = undo.Get().GetHistoryState();
+    const auto storage = blobStore->GetStatistics();
+    EXPECT_EQ(storage.blobCount, 1u);
+    EXPECT_EQ(storage.referencedBlobCount, 1u);
+    EXPECT_EQ(storage.totalReferenceCount, 1u);
+    EXPECT_EQ(history.retainedBlobBytes, storage.logicalRetainedByteCount);
+
+    ASSERT_TRUE(undo.Get().RequestUndo().Succeeded());
+    EXPECT_EQ(model.FindNode(textGuid)->value("text", std::string {}), beforeText);
+    ASSERT_TRUE(undo.Get().RequestRedo().Succeeded());
+    EXPECT_EQ(model.FindNode(textGuid)->value("text", std::string {}), finalText);
+}
+
+TEST(UIDocumentDesignerModelTests, GlobalHistoryUsesScopeSavePointsAndReloadInvalidation)
+{
+    using NLS::Editor::UIDocumentTools::UIDocumentDesignerModel;
+
+    ScopedUIDocumentTestDirectory directory;
+    ScopedEditorUndoService undo;
+    const auto sourcePath = directory.Write(
+        "Assets/UI/Hud.ui",
+        UIDocumentDesignerModel::CreateDocumentSource("Hud"));
+
+    UIDocumentDesignerModel model;
+    ASSERT_TRUE(model.Load(sourcePath));
+    const auto rootGuid = model.GetDocument().at("root").at("nodeGuid").get<std::string>();
+    const auto originalScope = model.GetUndoScope();
+
+    ASSERT_TRUE(model.SetNodeName(rootGuid, "Updated Hud"));
+    EXPECT_TRUE(undo.Get().CanUndo());
+    EXPECT_TRUE(model.IsDirty());
+    ASSERT_TRUE(model.Save());
+    EXPECT_FALSE(model.IsDirty());
+    EXPECT_FALSE(undo.Get().GetScopeState(originalScope).IsDirty());
+
+    ASSERT_TRUE(undo.Get().RequestUndo().Succeeded());
+    EXPECT_TRUE(model.IsDirty());
+    ASSERT_TRUE(undo.Get().RequestRedo().Succeeded());
+    EXPECT_FALSE(model.IsDirty());
+
+    ASSERT_TRUE(model.Reload());
+    EXPECT_NE(model.GetUndoScope().generation, originalScope.generation);
+    EXPECT_FALSE(undo.Get().CanUndo());
+    EXPECT_FALSE(model.IsDirty());
+}
+
+TEST(UIDocumentDesignerModelTests, ActiveDesignerEditIsCancelledBeforeGlobalHistoryMoves)
+{
+    using NLS::Editor::UIDocumentTools::UIDocumentDesignerModel;
+
+    ScopedUIDocumentTestDirectory directory;
+    ScopedEditorUndoService undo;
+    const auto sourcePath = directory.Write(
+        "Assets/UI/Hud.ui",
+        UIDocumentDesignerModel::CreateDocumentSource("Hud"));
+
+    UIDocumentDesignerModel model;
+    ASSERT_TRUE(model.Load(sourcePath));
+    const auto rootGuid = model.GetDocument().at("root").at("nodeGuid").get<std::string>();
+    const auto originalName = model.GetDocument().at("root").at("name").get<std::string>();
+
+    model.BeginTransaction("Rename UI Element");
+    ASSERT_TRUE(model.SetNodeName(rootGuid, "Previewed Name", false));
+    EXPECT_EQ(model.FindNode(rootGuid)->at("name").get<std::string>(), "Previewed Name");
+
+    ASSERT_TRUE(undo.Get().RequestUndo().Succeeded());
+    EXPECT_EQ(model.FindNode(rootGuid)->at("name").get<std::string>(), originalName);
+    EXPECT_FALSE(model.IsDirty());
+
+    model.EndTransaction();
+    EXPECT_FALSE(undo.Get().CanUndo());
+}
+
+TEST(UIDocumentDesignerModelTests, TransactionBatchesMultiplePreviewUpdatesIntoOneGlobalCommand)
+{
+    using NLS::Editor::UIDocumentTools::UIDocumentDesignerModel;
+
+    ScopedUIDocumentTestDirectory directory;
+    ScopedEditorUndoService undo;
+    const auto sourcePath = directory.Write(
+        "Assets/UI/Hud.ui",
+        UIDocumentDesignerModel::CreateDocumentSource("Hud"));
+
+    UIDocumentDesignerModel model;
+    ASSERT_TRUE(model.Load(sourcePath));
+    const auto rootGuid = model.GetDocument().at("root").at("nodeGuid").get<std::string>();
+    const auto before = model.GetDocument();
+
+    model.BeginTransaction("Edit HUD");
+    ASSERT_TRUE(model.SetNodeName(rootGuid, "Edited HUD", false));
+    ASSERT_TRUE(model.SetNodeLayoutSize(rootGuid, 320.0f, 180.0f, false));
+    EXPECT_TRUE(undo.Get().HasActiveEditSession());
+    model.EndTransaction();
+
+    EXPECT_FALSE(undo.Get().HasActiveEditSession());
+    ASSERT_EQ(undo.Get().GetTransactionCount(), 1u);
+    EXPECT_EQ(model.FindNode(rootGuid)->at("name").get<std::string>(), "Edited HUD");
+    EXPECT_FLOAT_EQ(model.FindNode(rootGuid)->at("layout").at("size").at(0).get<float>(), 320.0f);
+    EXPECT_FLOAT_EQ(model.FindNode(rootGuid)->at("layout").at("size").at(1).get<float>(), 180.0f);
+
+    ASSERT_TRUE(undo.Get().RequestUndo().Succeeded());
+    EXPECT_EQ(model.GetDocument(), before);
+
+    ASSERT_TRUE(undo.Get().RequestRedo().Succeeded());
+    EXPECT_EQ(model.FindNode(rootGuid)->at("name").get<std::string>(), "Edited HUD");
+    EXPECT_FLOAT_EQ(model.FindNode(rootGuid)->at("layout").at("size").at(0).get<float>(), 320.0f);
+    EXPECT_FLOAT_EQ(model.FindNode(rootGuid)->at("layout").at("size").at(1).get<float>(), 180.0f);
+}
+
+TEST(UIDocumentDesignerModelTests, GlobalUndoRejectionsRestoreDocumentSelectionAndDirtyState)
+{
+    using NLS::Editor::UIDocumentTools::UIDocumentDesignerModel;
+    using NLS::Editor::Undo::UndoFreezeReason;
+
+    ScopedUIDocumentTestDirectory directory;
+    ScopedEditorUndoService undo;
+    const auto sourcePath = directory.Write(
+        "Assets/UI/Hud.ui",
+        UIDocumentDesignerModel::CreateDocumentSource("Hud"));
+
+    UIDocumentDesignerModel model;
+    ASSERT_TRUE(model.Load(sourcePath));
+    const auto rootGuid = model.GetDocument().at("root").at("nodeGuid").get<std::string>();
+    ASSERT_TRUE(model.AddChild(rootGuid, "Button"));
+    const auto childGuid = model.GetSelectedNodeGuid();
+    ASSERT_TRUE(model.Save());
+    const auto historyCount = undo.Get().GetTransactionCount();
+
+    const auto expectRestored = [&]
+    {
+        EXPECT_NE(model.FindNode(childGuid), nullptr);
+        EXPECT_EQ(model.GetSelectedNodeGuid(), childGuid);
+        EXPECT_FALSE(model.IsDirty());
+        EXPECT_EQ(undo.Get().GetTransactionCount(), historyCount);
+        EXPECT_FALSE(undo.Get().HasActiveEditSession());
+    };
+
+    // BeginEditSession rejected.
+    undo.Get().Freeze(UndoFreezeReason::User);
+    model.BeginTransaction("Delete UI Element");
+    EXPECT_FALSE(model.RemoveNode(childGuid));
+    expectRestored();
+    model.EndTransaction();
+    undo.Get().Unfreeze(UndoFreezeReason::User);
+
+    // PreviewEditSession rejected after the model has applied its first value.
+    model.BeginTransaction("Delete UI Element");
+    ASSERT_TRUE(undo.Get().HasActiveEditSession());
+    undo.Get().Freeze(UndoFreezeReason::User);
+    EXPECT_FALSE(model.RemoveNode(childGuid));
+    expectRestored();
+    model.EndTransaction();
+    undo.Get().Unfreeze(UndoFreezeReason::User);
+
+    // CommitEditSession rejected after a successful preview.
+    model.BeginTransaction("Delete UI Element");
+    ASSERT_TRUE(model.RemoveNode(childGuid));
+    undo.Get().Freeze(UndoFreezeReason::User);
+    model.EndTransaction();
+    expectRestored();
+    undo.Get().Unfreeze(UndoFreezeReason::User);
+
+    // RecordApplied rejected for a discrete edit outside a transaction.
+    undo.Get().Freeze(UndoFreezeReason::User);
+    EXPECT_FALSE(model.RemoveNode(childGuid));
+    expectRestored();
+    undo.Get().Unfreeze(UndoFreezeReason::User);
+}
+
+TEST(UIDocumentDesignerModelTests, IsolatedModelRejectsMutationsWhenUndoServiceIsAbsent)
+{
+    using NLS::Editor::UIDocumentTools::UIDocumentDesignerModel;
+
+    NLS::Core::ServiceLocator::Remove<NLS::Editor::Undo::EditorUndoService>();
+    ScopedUIDocumentTestDirectory directory;
+    const auto sourcePath = directory.Write(
+        "Assets/UI/Hud.ui",
+        UIDocumentDesignerModel::CreateDocumentSource("Hud"));
+
+    UIDocumentDesignerModel model;
+    ASSERT_TRUE(model.Load(sourcePath));
+    const auto rootGuid = model.GetDocument().at("root").at("nodeGuid").get<std::string>();
+    const auto documentBefore = model.GetDocument();
+    const auto selectionBefore = model.GetSelectedNodeGuid();
+    const auto revisionBefore = model.GetDocumentRevision();
+
+    const auto expectRestored = [&]
+    {
+        EXPECT_EQ(model.GetDocument(), documentBefore);
+        EXPECT_EQ(model.GetSelectedNodeGuid(), selectionBefore);
+        EXPECT_EQ(model.GetDocumentRevision(), revisionBefore);
+        EXPECT_FALSE(model.IsDirty());
+    };
+
+    EXPECT_FALSE(model.SetNodeName(rootGuid, "Rejected discrete edit"));
+    expectRestored();
+
+    EXPECT_FALSE(model.AddChild(rootGuid, "Text"));
+    expectRestored();
+
+    model.BeginTransaction("Rejected preview edit");
+    EXPECT_FALSE(model.SetNodeName(rootGuid, "Rejected preview edit", false));
+    model.EndTransaction();
+    expectRestored();
 }
 
 TEST(UIDocumentDesignerModelTests, LoadNormalizesMissingIdentifiersBeforeSaving)
@@ -151,58 +463,30 @@ TEST(UIDocumentDesignerModelTests, CanvasResolvedLoadKeepsLogicalDocumentReferen
     EXPECT_NE(canvas.GetDocument(), nullptr);
 }
 
-TEST(UIDocumentDesignerModelTests, CanvasInspectorDocumentPickerKeepsAssignedDocumentVisible)
+TEST(UIDocumentDesignerModelTests, CanvasDocumentReferenceAssignmentIsAtomicOnParseFailure)
 {
-#if !defined(NLS_ENABLE_TEST_HOOKS)
-    GTEST_SKIP() << "NLS_ENABLE_TEST_HOOKS is required to inspect the Canvas document picker.";
-#else
     ScopedUIDocumentTestDirectory directory;
-    const auto sourcePath = directory.Write(
+    const auto validPath = directory.Write(
         "Assets/UI/Hud.ui",
         R"json({
             "version": 1,
             "documentId": "11111111-1111-4111-8111-111111111111",
             "root": { "type": "Panel", "name": "Root" }
         })json");
-    const auto projectAssetsPath = directory.GetPath() / "Assets";
-
+    const auto invalidPath = directory.Write("Assets/UI/Broken.ui", "{}");
     NLS::Engine::Components::UICanvasComponent canvas;
-    ASSERT_TRUE(NLS::Editor::Panels::TestHooks::AssignUICanvasDocumentReferenceForTesting(
-        canvas,
-        projectAssetsPath,
-        sourcePath.string()));
+    const auto validReference = NLS::Engine::UI::UIDocumentReference(
+        NLS::Core::Assets::AssetId(NLS::Guid::Parse("0f3f794e-7578-4bcb-92cb-b3afb43ee861")),
+        "Assets/UI/Hud.ui");
+    ASSERT_TRUE(canvas.LoadDocumentResolvedPathAsReference(validPath.string(), validReference));
+    ASSERT_NE(canvas.GetDocument(), nullptr);
+    const auto* originalDocument = canvas.GetDocument();
+
+    const auto invalidReference = NLS::Engine::UI::UIDocumentReference(
+        NLS::Core::Assets::AssetId(NLS::Guid::Parse("861b35f8-3170-4d0b-9fdb-111b8e089a3d")),
+        "Assets/UI/Broken.ui");
+    EXPECT_FALSE(canvas.LoadDocumentResolvedPathAsReference(invalidPath.string(), invalidReference));
     EXPECT_EQ(canvas.GetDocumentPath(), "Assets/UI/Hud.ui");
-    EXPECT_NE(canvas.GetDocument(), nullptr);
-
-    const auto choices = NLS::Editor::Panels::TestHooks::BuildUICanvasDocumentChoicesForTesting(
-        projectAssetsPath,
-        canvas.GetDocumentPath());
-    const auto selectedChoice = NLS::Editor::Panels::TestHooks::FindUICanvasDocumentChoiceForTesting(
-        choices,
-        projectAssetsPath,
-        canvas.GetDocumentPath());
-    ASSERT_NE(selectedChoice, 0);
-    EXPECT_EQ(choices.at(selectedChoice), "Assets/UI/Hud.ui");
-
-    // The Asset Browser can publish a replacement index while the menu is
-    // open. The click must resolve through the displayed choice snapshot.
-    NLS::Engine::Components::UICanvasComponent choiceCanvas;
-    ASSERT_TRUE(NLS::Editor::Panels::TestHooks::AssignUICanvasDocumentChoiceForTesting(
-        choiceCanvas,
-        projectAssetsPath,
-        choices,
-        selectedChoice));
-    EXPECT_EQ(choiceCanvas.GetDocumentPath(), "Assets/UI/Hud.ui");
-    EXPECT_NE(choiceCanvas.GetDocument(), nullptr);
-
-    ASSERT_TRUE(NLS::Editor::Panels::TestHooks::AssignUICanvasDocumentReferenceForTesting(
-        canvas,
-        projectAssetsPath,
-        "Assets\\UI\\Hud.ui"));
-    EXPECT_EQ(canvas.GetDocumentPath(), "Assets/UI/Hud.ui");
-    EXPECT_NE(NLS::Editor::Panels::TestHooks::FindUICanvasDocumentChoiceForTesting(
-        choices,
-        projectAssetsPath,
-        canvas.GetDocumentPath()), 0);
-#endif
+    EXPECT_EQ(canvas.GetDocumentReference(), validReference);
+    EXPECT_EQ(canvas.GetDocument(), originalDocument);
 }

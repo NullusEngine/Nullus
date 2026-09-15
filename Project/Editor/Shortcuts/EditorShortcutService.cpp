@@ -22,13 +22,14 @@ namespace NLS::Editor::Shortcuts
             const KeyStateProvider& p_getKeyState)
         {
             using Windowing::Inputs::EKey;
-            return HasModifier(p_binding.modifiers, EShortcutModifier::Ctrl) ==
+            const auto modifiers = NormalizeShortcutModifiersForCurrentPlatform(p_binding.modifiers);
+            return HasModifier(modifiers, EShortcutModifier::Ctrl) ==
                     IsModifierDown(p_getKeyState, EKey::KEY_LEFT_CONTROL, EKey::KEY_RIGHT_CONTROL) &&
-                HasModifier(p_binding.modifiers, EShortcutModifier::Shift) ==
+                HasModifier(modifiers, EShortcutModifier::Shift) ==
                     IsModifierDown(p_getKeyState, EKey::KEY_LEFT_SHIFT, EKey::KEY_RIGHT_SHIFT) &&
-                HasModifier(p_binding.modifiers, EShortcutModifier::Alt) ==
+                HasModifier(modifiers, EShortcutModifier::Alt) ==
                     IsModifierDown(p_getKeyState, EKey::KEY_LEFT_ALT, EKey::KEY_RIGHT_ALT) &&
-                HasModifier(p_binding.modifiers, EShortcutModifier::Super) ==
+                HasModifier(modifiers, EShortcutModifier::Super) ==
                     IsModifierDown(p_getKeyState, EKey::KEY_LEFT_SUPER, EKey::KEY_RIGHT_SUPER);
         }
     }
@@ -45,11 +46,11 @@ namespace NLS::Editor::Shortcuts
 
     bool EditorShortcutService::ExecuteShortcut(const ShortcutBinding& p_binding)
     {
-        const auto* command = EditorShortcutResolver::Resolve(
+        const auto* command = EditorShortcutResolver::ResolveAny(
             m_registry.GetCommands(),
             [this](const std::string& p_commandId)
             {
-                return m_registry.GetBinding(p_commandId);
+                return m_registry.GetBindings(p_commandId);
             },
             p_binding,
             m_contexts);
@@ -67,15 +68,22 @@ namespace NLS::Editor::Shortcuts
     {
         for (const auto& command : m_registry.GetCommands())
         {
-            const auto binding = m_registry.GetBinding(command.id);
-            if (!binding.IsValid() ||
-                !p_isKeyPressed(binding.primaryKey) ||
-                !ModifiersMatch(binding, p_getKeyState))
+            const auto bindings = m_registry.GetBindings(command.id);
+            const auto pressedBinding = std::find_if(
+                bindings.begin(),
+                bindings.end(),
+                [&p_isKeyPressed, &p_getKeyState](const ShortcutBinding& binding)
+                {
+                    return binding.IsValid() &&
+                        p_isKeyPressed(binding.primaryKey) &&
+                        ModifiersMatch(binding, p_getKeyState);
+                });
+            if (pressedBinding == bindings.end())
             {
                 continue;
             }
 
-            return ExecuteShortcut(binding);
+            return ExecuteShortcut(*pressedBinding);
         }
 
         return false;
@@ -191,7 +199,18 @@ namespace NLS::Editor::Shortcuts
 
     std::string EditorShortcutService::GetBindingDisplayText(const std::string& p_commandId) const
     {
-        return ToDisplayString(m_registry.GetBinding(p_commandId));
+        const auto bindings = m_registry.GetBindings(p_commandId);
+        if (bindings.empty())
+            return "Unassigned";
+
+        std::string result;
+        for (const auto& binding : bindings)
+        {
+            if (!result.empty())
+                result += " / ";
+            result += ToDisplayString(binding);
+        }
+        return result;
     }
 
     ShortcutBinding EditorShortcutService::GetBinding(const std::string& p_commandId) const

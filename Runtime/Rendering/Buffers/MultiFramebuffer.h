@@ -2,6 +2,7 @@
 
 #include <deque>
 #include <memory>
+#include <mutex>
 #include <cstdint>
 #include <string>
 #include <vector>
@@ -62,9 +63,9 @@ namespace NLS::Render::Buffers
         void Resize(uint16_t width, uint16_t height);
         bool IsInitialized() const;
 
-        const std::vector<std::shared_ptr<NLS::Render::RHI::RHITexture>>& GetExplicitColorTextureHandles() const { return m_explicitColorTextures; }
+        std::vector<std::shared_ptr<NLS::Render::RHI::RHITexture>> GetExplicitColorTextureHandles() const;
         std::shared_ptr<NLS::Render::RHI::RHITextureView> GetOrCreateExplicitColorView(size_t index, const std::string& debugName = {}) const;
-        const std::shared_ptr<NLS::Render::RHI::RHITexture>& GetExplicitDepthTextureHandle() const { return m_explicitDepthTexture; }
+        std::shared_ptr<NLS::Render::RHI::RHITexture> GetExplicitDepthTextureHandle() const;
         std::shared_ptr<NLS::Render::RHI::RHITextureView> GetOrCreateExplicitDepthView(const std::string& debugName = {}) const;
 
     private:
@@ -80,12 +81,22 @@ namespace NLS::Render::Buffers
         };
 
         void Release();
+        void InitLocked(
+            uint16_t width,
+            uint16_t height,
+            const std::vector<AttachmentDesc>& colorAttachments,
+            bool withDepth,
+            DepthAttachmentDesc depthAttachment);
+        void ResizeLocked(uint16_t width, uint16_t height);
+        void ReleaseLocked();
         void ResetCurrentResources();
         void RetireCurrentResources();
         void PruneRetiredResources();
-        bool Allocate(uint16_t width, uint16_t height);
+        bool AllocateLocked(uint16_t width, uint16_t height);
 
     private:
+        // A framebuffer's textures and cached views are one snapshot-owned resource set.
+        mutable std::mutex m_resourceMutex;
         uint16_t m_width = 0;
         uint16_t m_height = 0;
         bool m_withDepth = true;

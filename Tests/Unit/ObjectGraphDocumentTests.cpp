@@ -104,7 +104,7 @@ TEST(ObjectGraphDocumentTests, EmptyStrongIdsAreInvalid)
     EXPECT_FALSE(NLS::Engine::Serialize::AssetId().IsValid());
 }
 
-TEST(ObjectGraphDocumentTests, ObjectIdentifierUsesUnityLikeIdentifierShape)
+TEST(ObjectGraphDocumentTests, ObjectIdentifierUsesEngineLikeIdentifierShape)
 {
     using namespace NLS::Engine::Serialize;
 
@@ -126,7 +126,7 @@ TEST(ObjectGraphDocumentTests, ObjectIdentifierUsesUnityLikeIdentifierShape)
     EXPECT_EQ(asset.ToAssetId().GetGuid().ToString(), "dddddddd-dddd-4ddd-9ddd-dddddddddddd");
 }
 
-TEST(ObjectGraphDocumentTests, ObjectIdentifierValidityRequiresCompleteUnityIdentifierShape)
+TEST(ObjectGraphDocumentTests, ObjectIdentifierValidityRequiresCompleteEngineIdentifierShape)
 {
     using namespace NLS::Engine::Serialize;
 
@@ -452,7 +452,7 @@ TEST(ObjectGraphDocumentTests, WritesDeterministicObjectGraphJsonWithReferenceSh
     EXPECT_EQ(first.find("SerializedComponentData"), std::string::npos);
 }
 
-TEST(ObjectGraphDocumentTests, ReflectedPPtrSerializesAsUnityObjectReference)
+TEST(ObjectGraphDocumentTests, ReflectedPPtrSerializesAsEngineObjectReference)
 {
     using namespace NLS::Engine::Serialize;
 

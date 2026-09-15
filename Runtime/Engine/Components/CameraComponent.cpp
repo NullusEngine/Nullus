@@ -11,108 +11,133 @@ CameraComponent::CameraComponent()
 
 void CameraComponent::OnCreate()
 {
-	m_camera = new Render::Entities::Camera(&m_owner->GetTransform()->GetTransform());
-	/* Default clear color for the CCamera (Different from Camera default clear color) */
-	SetClearColor({ 0.1921569f, 0.3019608f, 0.4745098f });
+		m_camera = new Render::Entities::Camera(&m_owner->GetTransform()->GetTransform());
+		SetFov(fov);
+		SetSize(size);
+		SetNear(nearClip);
+		SetFar(farClip);
+		SetClearColor(clearColor);
+		SetFrustumGeometryCulling(frustumGeometryCulling);
+		SetFrustumLightCulling(frustumLightCulling);
+		SetProjectionMode(projectionMode);
+		SetVisibleLayers(visibleLayers);
 }
 
 void CameraComponent::SetFov(float p_value)
 {
-	m_camera->SetFov(p_value);
+		fov = p_value;
+		if (m_camera)
+			m_camera->SetFov(p_value);
 	MarkRenderStateChanged();
 }
 
 void CameraComponent::SetSize(float p_value)
 {
-    m_camera->SetSize(p_value);
+		size = p_value;
+		if (m_camera)
+            m_camera->SetSize(p_value);
 	MarkRenderStateChanged();
 }
 
 void CameraComponent::SetNear(float p_value)
 {
-	m_camera->SetNear(p_value);
+		nearClip = p_value;
+		if (m_camera)
+			m_camera->SetNear(p_value);
 	MarkRenderStateChanged();
 }
 
 void CameraComponent::SetFar(float p_value)
 {
-	m_camera->SetFar(p_value);
+		farClip = p_value;
+		if (m_camera)
+			m_camera->SetFar(p_value);
 	MarkRenderStateChanged();
 }
 
 void CameraComponent::SetFrustumGeometryCulling(bool p_enable)
 {
-	m_camera->SetFrustumGeometryCulling(p_enable);
+		frustumGeometryCulling = p_enable;
+		if (m_camera)
+			m_camera->SetFrustumGeometryCulling(p_enable);
 	MarkRenderStateChanged();
 }
 
 void CameraComponent::SetFrustumLightCulling(bool p_enable)
 {
-	m_camera->SetFrustumLightCulling(p_enable);
+		frustumLightCulling = p_enable;
+		if (m_camera)
+			m_camera->SetFrustumLightCulling(p_enable);
 	MarkRenderStateChanged();
 }
 
 void CameraComponent::SetProjectionMode(Render::Settings::EProjectionMode p_projectionMode)
 {
-    m_camera->SetProjectionMode(p_projectionMode);
+		projectionMode = p_projectionMode;
+		if (m_camera)
+            m_camera->SetProjectionMode(p_projectionMode);
 	MarkRenderStateChanged();
 }
 
 void CameraComponent::SetVisibleLayers(const NLS::Engine::LayerMask p_visibleLayers)
 {
-	m_camera->SetVisibleLayerMask(p_visibleLayers.GetMask());
+		visibleLayers = p_visibleLayers;
+		if (m_camera)
+			m_camera->SetVisibleLayerMask(p_visibleLayers.GetMask());
 	MarkRenderStateChanged();
 }
 
 float CameraComponent::GetFov() const
 {
-	return m_camera->GetFov();
+		return fov;
 }
 
 float CameraComponent::GetSize() const
 {
-    return m_camera->GetSize();
+		return size;
 }
 
 float CameraComponent::GetNear() const
 {
-	return m_camera->GetNear();
+		return nearClip;
 }
 
 float CameraComponent::GetFar() const
 {
-	return m_camera->GetFar();
+		return farClip;
 }
 
 const Maths::Vector3 & CameraComponent::GetClearColor() const
 {
-	return m_camera->GetClearColor();
+		return clearColor;
 }
 
 bool CameraComponent::HasFrustumGeometryCulling() const
 {
-	return m_camera->HasFrustumGeometryCulling();
+		return frustumGeometryCulling;
 }
 
 void CameraComponent::SetClearColor(const Maths::Vector3 & p_clearColor)
 {
-	m_camera->SetClearColor(p_clearColor);
+		clearColor = p_clearColor;
+		if (m_camera)
+			m_camera->SetClearColor(p_clearColor);
 	MarkRenderStateChanged();
 }
 
 bool CameraComponent::HasFrustumLightCulling() const
 {
-	return m_camera->HasFrustumLightCulling();
+		return frustumLightCulling;
 }
 
 Render::Settings::EProjectionMode CameraComponent::GetProjectionMode() const
 {
-    return m_camera->GetProjectionMode();
+		return projectionMode;
 }
 
 NLS::Engine::LayerMask CameraComponent::GetVisibleLayers() const
 {
-	return NLS::Engine::LayerMask(m_camera->GetVisibleLayerMask());
+		return visibleLayers;
 }
 
 Render::Entities::Camera* CameraComponent::GetCamera()

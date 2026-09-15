@@ -1044,7 +1044,7 @@ void RemoveSceneLocalAddedObjectMappings(
     }
 }
 
-void AddUnityStylePrefabInstanceRecord(
+void AddEngineStylePrefabInstanceRecord(
     NLS::Engine::Serialize::ObjectGraphDocument& sceneDocument,
     const PrefabInstanceRecord& instance,
     const std::unordered_map<const NLS::Engine::GameObject*, NLS::Engine::Serialize::ObjectId>& sceneObjectIdsByObject)
@@ -1394,7 +1394,7 @@ PrefabOperationResult InstantiateStrippedPrefabInstance(
     return instantiate;
 }
 
-PrefabOperationResult RestoreUnityStylePrefabInstancesFromSceneDocument(
+PrefabOperationResult RestoreEngineStylePrefabInstancesFromSceneDocument(
     const NLS::Engine::Serialize::ObjectGraphDocument& sceneDocument,
     NLS::Engine::SceneSystem::Scene& scene,
     NLS::Core::Assets::AssetId sceneAssetId,
@@ -1916,7 +1916,7 @@ void PrefabUtilityFacade::AnnotateSceneDocumentWithPrefabInstances(
         }
 
         if (emittedInstances.insert(instance).second)
-            AddUnityStylePrefabInstanceRecord(sceneDocument, *instance, sceneObjectIdsByObject);
+            AddEngineStylePrefabInstanceRecord(sceneDocument, *instance, sceneObjectIdsByObject);
     }
 }
 
@@ -1994,18 +1994,18 @@ PrefabOperationResult PrefabUtilityFacade::RestorePrefabInstancesFromSceneDocume
 
     if (!sceneDocument.prefabInstances.empty())
     {
-        auto unityStyleRestore = RestoreUnityStylePrefabInstancesFromSceneDocument(
+        auto engineStyleRestore = RestoreEngineStylePrefabInstancesFromSceneDocument(
             sceneDocument,
             scene,
             sceneAssetId,
             instanceRegistry,
             prefabResolver,
             rootValues);
-        result.status = unityStyleRestore.status;
+        result.status = engineStyleRestore.status;
         result.diagnostics.insert(
             result.diagnostics.end(),
-            unityStyleRestore.diagnostics.begin(),
-            unityStyleRestore.diagnostics.end());
+            engineStyleRestore.diagnostics.begin(),
+            engineStyleRestore.diagnostics.end());
     }
 
     for (const auto& rootValue : rootValues)
@@ -2162,6 +2162,13 @@ PrefabOperationResult PrefabUtilityFacade::ApplyOverrideGroup(
     return ConvertResult(PrefabEditorWorkflow().ApplyAllOverrides(prefab, ToEditorOverrides(overrides)));
 }
 
+PrefabOperationResult PrefabUtilityFacade::MaterializeOverrideView(
+    PrefabArtifact& prefab,
+    const std::vector<PrefabOverrideDescriptor>& overrides) const
+{
+    return ConvertResult(PrefabEditorWorkflow().ApplyAllOverrides(prefab, ToEditorOverrides(overrides)));
+}
+
 PrefabOperationResult PrefabUtilityFacade::ApplyPrefabInstance(
     PrefabArtifact& prefab,
     const std::vector<PrefabOverrideDescriptor>& overrides,
@@ -2227,6 +2234,13 @@ PrefabOperationResult PrefabUtilityFacade::RevertPrefabInstance(
     PrefabInstanceRecord& instance) const
 {
     return ConvertResult(PrefabEditorWorkflow().RevertAllOverrides(instance));
+}
+
+PrefabOperationResult PrefabUtilityFacade::RefreshConnectedInstance(
+    PrefabInstanceRecord& instance,
+    const NLS::Engine::Assets::PrefabArtifact& prefab) const
+{
+    return ConvertResult(PrefabEditorWorkflow().RefreshConnectedInstance(instance, prefab));
 }
 
 std::optional<NLS::Engine::Serialize::ObjectId> PrefabUtilityFacade::GetCorrespondingObjectFromSource(

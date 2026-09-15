@@ -12,9 +12,13 @@
 
 #include "../Core/Context.h"
 #include "Core/EditorInteractionBlocker.h"
-#include "Panels/ReflectedPropertyDrawer.h"
+#include "Inspector/InspectorUndo.h"
+#include "Inspector/InspectorTypes.h"
+#include "Inspector/InspectorView.h"
+#include "Inspector/ProjectSettingsTargetAdapter.h"
 #include "Settings/EditorSettings.h"
 #include "Settings/EditorSettingsPersistence.h"
+#include "Undo/EditorUndoService.h"
 
 namespace
 {
@@ -34,6 +38,32 @@ bool RequiresRestart(const NLS::meta::Field& p_field)
 {
     return p_field.GetMeta().GetProperty<NLS::meta::RequiresRestart>() != nullptr;
 }
+
+NLS::Editor::Undo::EditorUndoService* TryGetUndoService()
+{
+    return NLS::Core::ServiceLocator::Contains<NLS::Editor::Undo::EditorUndoService>()
+        ? &NLS::Core::ServiceLocator::Get<NLS::Editor::Undo::EditorUndoService>()
+        : nullptr;
+}
+
+NLS::Editor::Undo::UndoScopeId MakeProjectSettingsUndoScope(const std::string& p_settingId)
+{
+    return NLS::Editor::Inspector::MakeInspectorUndoScope(
+        NLS::Editor::Inspector::InspectorTargetHandle::FromAsset(
+            NLS::Editor::Inspector::InspectorTargetKind::ProjectSettings,
+            p_settingId));
+}
+
+bool AffectsProjectSettings(const NLS::Editor::Undo::UndoHistoryEvent& p_event)
+{
+    return std::any_of(
+        p_event.scopes.begin(),
+        p_event.scopes.end(),
+        [](const NLS::Editor::Undo::UndoScopeId& scope)
+        {
+            return scope.kind == NLS::Editor::Undo::UndoScopeKind::ProjectSettings;
+        });
+}
 }
 
 namespace NLS::Editor::Panels
@@ -45,6 +75,44 @@ ProjectSettings::ProjectSettings(
     : UI::PanelWindow(p_title, false, p_windowSettings),
       m_opened(p_opened)
 {
+    NLS::Editor::Inspector::ProjectSettingsTargetAdapter::BindRegistry(m_registry);
+    m_inspectorView = &CreateWidget<NLS::Editor::Inspector::InspectorView>();
+    m_inspectorView->SetLocked(true);
+    m_inspectorView->SetToolbarVisible(false);
+    m_propertyChangedListener = m_inspectorView->PropertyChangedEvent += [this](const NLS::Editor::Inspector::PropertyNode& property)
+    {
+        if (property.target.kind != NLS::Editor::Inspector::InspectorTargetKind::ProjectSettings)
+            return;
+
+        const auto* setting = m_registry.Find(property.target.resourcePath);
+        if (setting == nullptr)
+            return;
+
+        m_dirtySettings.insert(setting->id);
+        const auto field = setting->type.GetField(property.fieldName);
+        if (field.IsValid() && RequiresRestart(field))
+            m_restartRequiredFields.insert(setting->id + "." + property.fieldName);
+        ApplyLiveSettings();
+    };
+    if (auto* undo = TryGetUndoService())
+    {
+        m_undoHistoryListener = undo->SubscribeHistoryChanged([this](const Undo::UndoHistoryEvent& event)
+        {
+            HandleUndoHistoryEvent(event);
+        });
+    }
+}
+
+ProjectSettings::~ProjectSettings()
+{
+    if (m_undoHistoryListener != 0u)
+    {
+        if (auto* undo = TryGetUndoService())
+            undo->UnsubscribeHistoryChanged(m_undoHistoryListener);
+    }
+    if (m_inspectorView != nullptr)
+        m_inspectorView->PropertyChangedEvent -= m_propertyChangedListener;
+    NLS::Editor::Inspector::ProjectSettingsTargetAdapter::UnbindRegistry(m_registry);
 }
 
 void ProjectSettings::Open()
@@ -199,9 +267,6 @@ void ProjectSettings::DrawSelectedSettings()
     auto* selected = m_registry.Find(m_selectedSettingId);
     if (selected == nullptr)
     {
-        RemoveAllWidgets();
-        m_reflectedWidgetsSelectionId.clear();
-        m_reflectedWidgetsSearchText.clear();
         ImGui::TextUnformatted("No settings selected");
         return;
     }
@@ -209,41 +274,14 @@ void ProjectSettings::DrawSelectedSettings()
     ImGui::TextUnformatted(selected->displayName.c_str());
     ImGui::Separator();
 
-    const bool needsRebuild =
-        m_reflectedWidgetsSelectionId != selected->id
-        || m_reflectedWidgetsSearchText != m_searchText
-        || GetWidgets().empty();
-
-    if (needsRebuild)
-    {
-        RemoveAllWidgets();
-
-        ReflectedPropertyDrawerOptions options;
-        options.labelWidth = 180.0f;
-        options.searchText = m_searchText;
-        options.fieldBadgeProvider = [](const meta::Field& field)
-        {
-            return RequiresRestart(field) ? std::string("Requires restart") : std::string{};
-        };
-        options.onFieldChanged = [this, id = selected->id](const meta::Field& field)
-        {
-            m_dirtySettings.insert(id);
-            if (RequiresRestart(field))
-                m_restartRequiredFields.insert(id + "." + field.GetName());
-            ApplyLiveSettings();
-        };
-        options.onFieldLayoutChanged = [this, id = selected->id](const meta::Field& field)
-        {
-            m_dirtySettings.insert(id);
-            if (RequiresRestart(field))
-                m_restartRequiredFields.insert(id + "." + field.GetName());
-            m_reflectedWidgetsSelectionId.clear();
-            ApplyLiveSettings();
-        };
-        DrawReflectedObject(*this, selected->makeVariant(), options);
-        m_reflectedWidgetsSelectionId = selected->id;
-        m_reflectedWidgetsSearchText = m_searchText;
-    }
+    NLS::Editor::Inspector::InspectorTargetSet targets;
+    targets.targets.push_back(NLS::Editor::Inspector::InspectorTargetHandle::FromAsset(
+        NLS::Editor::Inspector::InspectorTargetKind::ProjectSettings,
+        selected->id,
+        {},
+        selected->type.GetName()));
+    m_inspectorView->SetSearchText(m_searchText);
+    m_inspectorView->SetTargets(std::move(targets));
 
     DrawWidgets();
 
@@ -263,13 +301,69 @@ void ProjectSettings::ApplyLiveSettings()
         NLS::Core::ServiceLocator::Get<NLS::Editor::Core::Context>().ApplyEditorSettings();
 }
 
-void ProjectSettings::SaveIfDirty()
+void ProjectSettings::HandleUndoHistoryEvent(const Undo::UndoHistoryEvent& p_event)
 {
-    if (m_dirtySettings.empty())
+    if (p_event.kind != Undo::UndoHistoryEventKind::CommandApplied || !AffectsProjectSettings(p_event))
         return;
 
-    Settings::EditorSettingsPersistence::Save(GetSettingsPath(), m_registry);
+    // Inspector property commands already restored the reflected values. Apply
+    // the derived runtime state after an initial edit, Undo, or Redo.
+    ApplyLiveSettings();
+    SynchronizeDirtySettingsFromUndo();
+    if (m_inspectorView != nullptr)
+        m_inspectorView->Refresh();
+}
+
+void ProjectSettings::SynchronizeDirtySettingsFromUndo()
+{
+    const auto* undo = TryGetUndoService();
+    if (undo == nullptr)
+        return;
+
+    for (const auto& setting : m_registry.GetObjects())
+    {
+        const auto scope = MakeProjectSettingsUndoScope(setting.id);
+        if (undo->GetScopeState(scope).IsDirty())
+            m_dirtySettings.insert(setting.id);
+        else
+            m_dirtySettings.erase(setting.id);
+    }
+}
+
+bool ProjectSettings::HasUnsavedSettings() const
+{
+    if (!m_dirtySettings.empty())
+        return true;
+
+    const auto* undo = TryGetUndoService();
+    if (undo == nullptr)
+        return false;
+
+    return std::any_of(
+        m_registry.GetObjects().begin(),
+        m_registry.GetObjects().end(),
+        [undo](const Settings::EditorSettingObject& setting)
+        {
+            return undo->GetScopeState(MakeProjectSettingsUndoScope(setting.id)).IsDirty();
+        });
+}
+
+void ProjectSettings::SaveIfDirty()
+{
+    if (!HasUnsavedSettings())
+        return;
+
+    if (!Settings::EditorSettingsPersistence::Save(GetSettingsPath(), m_registry))
+        return;
+
     m_dirtySettings.clear();
+    if (auto* undo = TryGetUndoService())
+    {
+        // The persistence file is a complete snapshot of the registry, so a
+        // successful write establishes save points for every included setting.
+        for (const auto& setting : m_registry.GetObjects())
+            undo->MarkSaved(MakeProjectSettingsUndoScope(setting.id));
+    }
 }
 
 std::filesystem::path ProjectSettings::GetSettingsPath() const

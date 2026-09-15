@@ -48,7 +48,14 @@ TEST_F(ReflectionRuntimeTestFixture, RegistersBaseReflectionTypes)
 {
     const std::vector<TypeExpectation> expectations = {
         {"NLS::NamedObject", {}, {}, {}, "NLS::Object"},
-        {"NLS::meta::MetaParserFieldMethodSample", {"GetValue", "SetValue"}, {}, {"value"}, ""},
+        {"NLS::meta::MetaParserFieldMethodSample", {"GetValue", "SetValue"}, {}, {
+            "value",
+            "inspectorMetadataValue",
+            "inspectorNotes",
+            "inspectorHiddenValue",
+            "inspectorFlagValue",
+            "inspectorColorValue",
+            "inspectorReferenceValue"}, ""},
         {"NLS::meta::MetaProperty", {}, {}, {}, ""},
         {"NLS::meta::ReflectionObjectSample", {}, {}, {}, "NLS::Object"},
         {"NLS::meta::TestObject", {}, {}, {}, "NLS::Object"},
@@ -56,6 +63,55 @@ TEST_F(ReflectionRuntimeTestFixture, RegistersBaseReflectionTypes)
 
     for (const TypeExpectation& expectation : expectations)
         ExpectReflectedType(expectation);
+}
+
+TEST_F(ReflectionRuntimeTestFixture, GeneratedNativeInspectorMetadataIsAvailableOnFields)
+{
+    const auto sampleType = NLS::meta::Type::GetFromName("NLS::meta::MetaParserFieldMethodSample");
+    const auto value = sampleType.GetField("inspectorMetadataValue");
+    const auto notes = sampleType.GetField("inspectorNotes");
+    const auto hidden = sampleType.GetField("inspectorHiddenValue");
+    const auto flags = sampleType.GetField("inspectorFlagValue");
+    const auto color = sampleType.GetField("inspectorColorValue");
+    const auto reference = sampleType.GetField("inspectorReferenceValue");
+
+    ASSERT_TRUE(value.IsValid());
+    const auto* displayName = value.GetMeta().GetProperty<NLS::meta::DisplayName>();
+    const auto* tooltip = value.GetMeta().GetProperty<NLS::meta::Tooltip>();
+    const auto* header = value.GetMeta().GetProperty<NLS::meta::Header>();
+    const auto* space = value.GetMeta().GetProperty<NLS::meta::Space>();
+    const auto* range = value.GetMeta().GetProperty<NLS::meta::Range>();
+    const auto* minimum = value.GetMeta().GetProperty<NLS::meta::Min>();
+    const auto* maximum = value.GetMeta().GetProperty<NLS::meta::Max>();
+    ASSERT_NE(displayName, nullptr);
+    ASSERT_NE(tooltip, nullptr);
+    ASSERT_NE(header, nullptr);
+    ASSERT_NE(space, nullptr);
+    ASSERT_NE(range, nullptr);
+    ASSERT_NE(minimum, nullptr);
+    ASSERT_NE(maximum, nullptr);
+    EXPECT_EQ(displayName->value, "Inspector Value");
+    EXPECT_EQ(tooltip->value, "Exercises generated native Inspector metadata.");
+    EXPECT_EQ(header->value, "Inspector Metadata");
+    EXPECT_FLOAT_EQ(space->value, 4.0f);
+    EXPECT_FLOAT_EQ(range->min, -2.5f);
+    EXPECT_FLOAT_EQ(range->max, 3.25f);
+    EXPECT_FLOAT_EQ(minimum->value, -5.0f);
+    EXPECT_FLOAT_EQ(maximum->value, 5.0f);
+    EXPECT_NE(value.GetMeta().GetProperty<NLS::meta::ReadOnly>(), nullptr);
+
+    ASSERT_TRUE(notes.IsValid());
+    EXPECT_NE(notes.GetMeta().GetProperty<NLS::meta::Multiline>(), nullptr);
+    ASSERT_TRUE(hidden.IsValid());
+    EXPECT_NE(hidden.GetMeta().GetProperty<NLS::meta::HideInInspector>(), nullptr);
+    ASSERT_TRUE(flags.IsValid());
+    EXPECT_NE(flags.GetMeta().GetProperty<NLS::meta::Flags>(), nullptr);
+    ASSERT_TRUE(color.IsValid());
+    EXPECT_NE(color.GetMeta().GetProperty<NLS::meta::ColorUsage>(), nullptr);
+    ASSERT_TRUE(reference.IsValid());
+    const auto* constraint = reference.GetMeta().GetProperty<NLS::meta::ReferenceTypeConstraint>();
+    ASSERT_NE(constraint, nullptr);
+    EXPECT_EQ(constraint->value, "NLS::Object");
 }
 
 TEST_F(ReflectionRuntimeTestFixture, FixedWidthIntegerAliasesResolveToCanonicalReflectionTypes)

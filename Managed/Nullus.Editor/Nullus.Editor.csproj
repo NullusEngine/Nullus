@@ -1,0 +1,18 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <LangVersion>latest</LangVersion>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <AssemblyName>Nullus.Editor</AssemblyName>
+    <RootNamespace>Nullus.Editor</RootNamespace>
+    <Deterministic>true</Deterministic>
+    <DebugType>portable</DebugType>
+    <DebugSymbols>true</DebugSymbols>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\Nullus.Managed\Nullus.Managed.csproj" />
+    <Compile Include="..\Nullus.Managed\EditorSerializedObject.cs" Link="SerializedObject.cs" />
+  </ItemGroup>
+</Project>

@@ -3,6 +3,7 @@
 #include "Core/ResourceManagement/ShaderManager.h"
 #include "Core/ServiceLocator.h"
 #include "Profiling/Profiler.h"
+#include "Debug/Logger.h"
 #include "Rendering/RHI/Core/RHICommand.h"
 #include "Rendering/RHI/Core/RHIBinding.h"
 #include "Rendering/RHI/Core/RHIDevice.h"
@@ -134,8 +135,23 @@ namespace NLS::Render::UI
         }
 
         const auto telemetryBefore = m_dynamicBufferTelemetry;
-        const size_t vertexBytes = static_cast<size_t>(snapshot.totalVertexCount) * sizeof(UiDrawVertex);
-        const size_t indexBytes = static_cast<size_t>(snapshot.totalIndexCount) * sizeof(uint32_t);
+        // The snapshot's totals describe the captured draw data. Hosts may append
+        // geometry afterwards (the editor merges the retained in-game UI into the
+        // ImGui overlay), so sizing the dynamic buffers from the declared totals
+        // alone under-allocates and the upload writes past the end.
+        size_t drawListVertexCount = 0u;
+        size_t drawListIndexCount = 0u;
+        for (const auto& drawList : snapshot.drawLists)
+        {
+            drawListVertexCount += drawList.vertices.size();
+            drawListIndexCount += drawList.indices.size();
+        }
+        const size_t vertexBytes =
+            (std::max)(drawListVertexCount, static_cast<size_t>(snapshot.totalVertexCount)) *
+            sizeof(UiDrawVertex);
+        const size_t indexBytes =
+            (std::max)(drawListIndexCount, static_cast<size_t>(snapshot.totalIndexCount)) *
+            sizeof(uint32_t);
         const uint64_t contentSignature = ResolveUiDrawDataContentSignature(snapshot);
         const bool fontAtlasWasUploaded = m_fontAtlas.IsUploaded();
         {
@@ -451,6 +467,21 @@ namespace NLS::Render::UI
         return true;
     }
 
+    void RHIImGuiOverlayRenderer::ReportUnresolvedDrawTexture(
+        const uint64_t packedTextureId,
+        const uint32_t elementCount)
+    {
+        if (!m_reportedUnresolvedTextures.insert(packedTextureId).second)
+            return;
+        NLS_LOG_WARNING(
+            "[UIOverlay] draw command skipped: UI texture id " +
+            std::to_string(packedTextureId >> 32u) + "/" +
+            std::to_string(packedTextureId & 0xffffffffu) +
+            " (elementCount=" + std::to_string(elementCount) +
+            ") is not sampled this frame; the command that looks it up is dropped "
+            "before recording, so the geometry it carries never reaches the GPU.");
+    }
+
     bool RHIImGuiOverlayRenderer::PrepareDrawCommands(
         const UiDrawDataSnapshot& snapshot,
         const size_t frameResourceSlot,
@@ -578,7 +609,10 @@ namespace NLS::Render::UI
                 const auto resolved =
                     m_textureRegistry->ResolveForFrame(preparedCommand.textureId, snapshot.frameId);
                 if (!resolved.has_value())
+                {
+                    ReportUnresolvedDrawTexture(packedTextureId, preparedCommand.elementCount);
                     continue;
+                }
                 resolvedIt = resolvedTextureEntries.emplace(packedTextureId, *resolved).first;
             }
 

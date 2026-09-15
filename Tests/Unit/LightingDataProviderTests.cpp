@@ -226,7 +226,7 @@ TEST(LightingDataProviderTests, LightGridCaptureNormalizesNonFiniteRangeFromPubl
     EXPECT_FLOAT_EQ(capturedInputs.lights.front().range, 0.0f);
 }
 
-TEST(LightingDataProviderTests, PointLightComponentDefaultsToUnityStyleRange)
+TEST(LightingDataProviderTests, PointLightComponentDefaultsToEngineStyleRange)
 {
     NLS::Engine::SceneSystem::Scene scene;
 

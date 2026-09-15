@@ -102,8 +102,15 @@ namespace NLS::Editor::Shortcuts
         try
         {
             std::ifstream input(p_path);
-            json root;
-            input >> root;
+            if (!input.is_open())
+                return false;
+
+            // Parse without throwing so malformed user profiles remain a
+            // recoverable configuration error even in builds where the JSON
+            // library is compiled with exceptions disabled.
+            const json root = json::parse(input, nullptr, false);
+            if (root.is_discarded())
+                return false;
 
             if (const auto bindingsIt = root.find("bindings");
                 bindingsIt != root.end() && bindingsIt->is_object())

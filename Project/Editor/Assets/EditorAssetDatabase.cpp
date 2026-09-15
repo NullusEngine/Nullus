@@ -330,7 +330,13 @@ bool IsPreimportableAsset(const std::string& assetPath)
         assetType == NLS::Core::Assets::AssetType::Prefab ||
         assetType == NLS::Core::Assets::AssetType::Material ||
         assetType == NLS::Core::Assets::AssetType::Texture ||
-        assetType == NLS::Core::Assets::AssetType::Shader;
+        assetType == NLS::Core::Assets::AssetType::Shader ||
+        // UI documents, styles and localization tables own importers too. They
+        // must reach the preimport plan or an authored .ui file never produces
+        // an artifact manifest, which also leaves the Inspector picker empty.
+        assetType == NLS::Core::Assets::AssetType::UIDocument ||
+        assetType == NLS::Core::Assets::AssetType::UIStyleSheet ||
+        assetType == NLS::Core::Assets::AssetType::LocalizationTable;
 }
 
 int PreimportAssetPriority(const std::string& assetPath)
@@ -378,6 +384,12 @@ std::vector<std::string> CollectPreimportableAssets(AssetDatabaseFacade& databas
     assets.insert(assets.end(), textures.begin(), textures.end());
     auto shaders = database.FindAssets("type:shader", {});
     assets.insert(assets.end(), shaders.begin(), shaders.end());
+    auto uiDocuments = database.FindAssets("type:ui-document", {});
+    assets.insert(assets.end(), uiDocuments.begin(), uiDocuments.end());
+    auto uiStyleSheets = database.FindAssets("type:ui-style-sheet", {});
+    assets.insert(assets.end(), uiStyleSheets.begin(), uiStyleSheets.end());
+    auto localizationTables = database.FindAssets("type:localization", {});
+    assets.insert(assets.end(), localizationTables.begin(), localizationTables.end());
     assets.erase(
         std::remove_if(
             assets.begin(),
@@ -432,6 +444,25 @@ bool IsWarmPreimportableAsset(
         return NLS::Render::Assets::ReadTextureArtifactHeaderPreview(
             physicalArtifactPath,
             64u * 1024u).has_value();
+    }
+
+    if (assetType == NLS::Core::Assets::AssetType::UIDocument ||
+        assetType == NLS::Core::Assets::AssetType::UIStyleSheet ||
+        assetType == NLS::Core::Assets::AssetType::LocalizationTable)
+    {
+        const auto artifactType = assetType == NLS::Core::Assets::AssetType::UIDocument
+            ? NLS::Core::Assets::ArtifactType::UIDocument
+            : assetType == NLS::Core::Assets::AssetType::UIStyleSheet
+                ? NLS::Core::Assets::ArtifactType::UIStyleSheet
+                : NLS::Core::Assets::ArtifactType::LocalizationTable;
+        // UI payloads are text documents, so a current manifest plus a readable
+        // container prefix is enough to treat them as already warm.
+        return NLS::Core::Assets::ReadNativeArtifactPayloadPrefixFromFile(
+            physicalArtifactPath,
+            artifactType,
+            1u,
+            0u,
+            512u * 1024u).has_value();
     }
 
     if (assetType != NLS::Core::Assets::AssetType::Shader)

@@ -15,7 +15,7 @@ namespace NLS::Engine::Components
 	/**
 	* A MeshRenderer makes a mesh renderable in the world.
 	*/
-	CLASS(NLS_ENGINE_API SkyBoxComponent) : public Component
+	CLASS(NLS_ENGINE_API SkyBoxComponent, DisallowMultipleComponent) : public Component
 	{
     public:
 		GENERATED_BODY()
@@ -40,11 +40,9 @@ namespace NLS::Engine::Components
         FUNCTION()
 		void SetCubeMap(TextureCube* cubmap);
 
-        PROPERTY(skyMode)
         FUNCTION()
-        SkyMode GetSkyMode() const { return mSkyMode; }
+        SkyMode GetSkyMode() const { return skyMode; }
 
-        PROPERTY(skyMode)
         FUNCTION()
         void SetSkyMode(SkyMode mode);
 
@@ -67,6 +65,7 @@ namespace NLS::Engine::Components
 		Mesh* mMesh = nullptr;
 		Material* mMaterial = nullptr;
         TextureCube* mCubeMap = nullptr;
-        SkyMode mSkyMode = SkyMode::Procedural;
+        PROPERTY(DisplayName("Sky Mode"), Getter(GetSkyMode), Setter(SetSkyMode))
+        SkyMode skyMode = SkyMode::Procedural;
 	};
 }

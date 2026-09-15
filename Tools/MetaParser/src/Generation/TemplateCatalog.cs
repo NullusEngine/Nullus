@@ -10,6 +10,9 @@ internal static class MetaParserTemplateCatalog
     public static readonly TemplateAsset HeaderGeneratedSource = new("header-generated-source", "HeaderGenerated.cpp.tt");
     public static readonly TemplateAsset MetaGeneratedHeader = new("meta-generated-header", "MetaGenerated.h.tt");
     public static readonly TemplateAsset MetaGeneratedSource = new("meta-generated-source", "MetaGenerated.cpp.tt");
+    public static readonly TemplateAsset EditorExtensionDescriptorsSource = new(
+        "editor-extension-descriptors-source",
+        "EditorExtensionDescriptors.cpp.tt");
 
     public static readonly HeaderGenerationRule ReflectedHeaderRule = new(
         "reflected-header",

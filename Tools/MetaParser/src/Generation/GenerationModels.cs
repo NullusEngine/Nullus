@@ -68,7 +68,24 @@ public sealed record HeaderTemplateModel(
 public sealed record ModuleTemplateModel(
     string SanitizedTargetName,
     string LinkFunctionName,
-    List<string> GeneratedSourceIncludes);
+    List<string> GeneratedSourceIncludes,
+    string EditorExtensionSourceInclude);
 
 public sealed record ModuleHeaderTemplateModel(
-    string LinkFunctionName);
+    string LinkFunctionName,
+    string EditorExtensionRegistrationFunctionName);
+
+public sealed record GeneratedEditorExtensionDescriptorTemplateModel(
+    string HeaderIncludePath,
+    string TargetTypeName,
+    string EditorTypeName,
+    string Identifier,
+    bool EditorForChildClasses,
+    bool IsFallback,
+    bool SupportsMultiObject,
+    int Priority,
+    string FactoryFunctionName);
+
+public sealed record EditorExtensionTemplateModel(
+    string RegistrationFunctionName,
+    List<GeneratedEditorExtensionDescriptorTemplateModel> Descriptors);

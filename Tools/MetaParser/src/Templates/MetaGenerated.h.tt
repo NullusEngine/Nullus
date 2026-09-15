@@ -2,12 +2,21 @@
 <#
     dynamic model = Session["Model"];
     string linkFunctionName = model.LinkFunctionName;
+    string editorExtensionRegistrationFunctionName = model.EditorExtensionRegistrationFunctionName;
 #>
 #pragma once
+
+namespace NLS::Editor::Inspector
+{
+class InspectorRegistry;
+}
 
 namespace NLS::meta_generated
 {
 void <#= linkFunctionName #>();
+void <#= editorExtensionRegistrationFunctionName #>(::NLS::Editor::Inspector::InspectorRegistry& registry);
 }
 
 #define NLS_META_GENERATED_LINK_FUNCTION ::NLS::meta_generated::<#= linkFunctionName #>
+#define NLS_META_GENERATED_REGISTER_EDITOR_EXTENSIONS(registry) \
+    ::NLS::meta_generated::<#= editorExtensionRegistrationFunctionName #>(registry)

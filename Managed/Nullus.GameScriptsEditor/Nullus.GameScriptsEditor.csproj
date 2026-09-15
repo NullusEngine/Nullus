@@ -1,0 +1,36 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <AssemblyName>GameScriptsEditor</AssemblyName>
+    <RootNamespace>Nullus.GameScriptsEditor</RootNamespace>
+    <LangVersion>latest</LangVersion>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <DebugType>portable</DebugType>
+    <DebugSymbols>true</DebugSymbols>
+    <Optimize Condition="'$(Configuration)' == 'Debug'">false</Optimize>
+    <Deterministic>true</Deterministic>
+    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+    <!-- Editor scripts live beside their runtime counterparts in the project
+         but are only ever loaded by the editor, exactly like an Editor folder
+         in the external editor.  The runtime assembly never references this
+         one, so an editor script cannot leak into a player build. -->
+    <NullusProjectAssets Condition="'$(NullusProjectAssets)' == ''">$(MSBuildProjectDirectory)/../../TestProject/Assets</NullusProjectAssets>
+    <NullusGameScriptsPath Condition="'$(NullusGameScriptsPath)' == ''">$(MSBuildProjectDirectory)/../../build/Managed/$(Configuration)/GameScripts.dll</NullusGameScriptsPath>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="EditorScriptsMarker.cs" />
+    <Compile Include="$(NullusProjectAssets)/**/Editor/**/*.cs"
+             Condition="Exists('$(NullusProjectAssets)')"
+             Link="Assets\%(RecursiveDir)%(Filename)%(Extension)" />
+    <ProjectReference Include="..\Nullus.Managed\Nullus.Managed.csproj" />
+    <ProjectReference Include="..\Nullus.Editor\Nullus.Editor.csproj" />
+    <!-- Editor scripts frequently customise a project Behaviour, so the
+         runtime assembly is a reference rather than a project dependency. -->
+    <Reference Include="GameScripts"
+               HintPath="$(NullusGameScriptsPath)"
+               Private="false"
+               Condition="Exists('$(NullusGameScriptsPath)')" />
+  </ItemGroup>
+</Project>

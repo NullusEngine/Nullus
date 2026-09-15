@@ -2,7 +2,6 @@
 #include "Scripting/ScriptRuntime.h"
 #include "Scripting/ScriptApiManifest.h"
 #include "Scripting/ScriptFieldSerialization.h"
-#include "Scripting/SerializedObject.h"
 #include "Scripting/ScriptErrorConsole.h"
 #include "Scripting/FakeScriptBackend.h"
 #include "Scripting/LuaScriptBackend.h"
@@ -16,15 +15,21 @@
 #include "Debug/VSCodeConfigurationGenerator.h"
 #include "Debug/VisualStudioConfigurationGenerator.h"
 #include "Scripting/ManagedScriptBuildService.h"
+#include "Serialization/EditorSerializationManagedBridge.h"
 #include "Engine/GameObject.h"
 #include "Engine/Components/CameraComponent.h"
 #include "Engine/Components/LightComponent.h"
 #include "Engine/Components/TransformComponent.h"
+#include "Engine/Components/UICanvasComponent.h"
 #include "Serialize/ObjectGraphInstantiator.h"
 #include "Serialize/ObjectGraphSerializer.h"
 #include "Serialize/PrefabDocument.h"
 #include "SceneSystem/Scene.h"
 #include "Engine/UI/UIInputRouter.h"
+#include "Inspector/InspectorTypes.h"
+#include "Inspector/ScriptSerializedAdapter.h"
+#include "Serialization/SerializedObject.h"
+#include "Serialization/AccessorSerializedBackend.h"
 
 #include <gtest/gtest.h>
 #include <Json/json.hpp>
@@ -762,6 +767,16 @@ ScriptAsset MakePersistenceAsset(const ScriptApiDatabase& api)
     asset.contentHash = MakeScriptContentHash(asset.sourceText);
     return asset;
 }
+
+NLS::Editor::Serialization::SerializedTargetSet BuildCanonicalScriptTargets(
+    ScriptComponent& component)
+{
+    using namespace NLS::Editor::Inspector;
+    InspectorTargetSet targets;
+    targets.targets = {InspectorTargetHandle::FromObject(component, InspectorTargetKind::NativeObject)};
+    targets.Normalize();
+    return targets;
+}
 }
 
 TEST(ScriptRuntimeTests, SerializedObjectFindsFieldsAndAppliesOnlyOnCommit)
@@ -776,16 +791,16 @@ TEST(ScriptRuntimeTests, SerializedObjectFindsFieldsAndAppliesOnlyOnCommit)
     ScriptComponent component;
     component.SetRuntime(&runtime);
     component.SetScriptAsset(MakeInspectableAsset(api));
-    SerializedObject serialized(component);
-    auto* property = serialized.FindProperty("speed");
-    ASSERT_NE(property, nullptr);
-    ASSERT_TRUE(property->IsValid());
-    ASSERT_TRUE(std::holds_alternative<int32_t>(property->GetValue()));
-    EXPECT_EQ(std::get<int32_t>(property->GetValue()), 3);
-    ASSERT_TRUE(property->SetValue(int32_t{9}));
+    NLS::Editor::Serialization::SerializedObject serialized(
+        BuildCanonicalScriptTargets(component),
+        NLS::Editor::Serialization::AccessorSerializedBackend::Create());
+    const auto property = serialized.FindProperty("speed");
+    ASSERT_TRUE(property);
+    EXPECT_EQ(property.GetLongValue(), 3);
+    ASSERT_TRUE(property.SetLongValue(9));
     EXPECT_TRUE(serialized.HasModifiedProperties());
     EXPECT_EQ(component.FindSerializedField(42), nullptr);
-    EXPECT_TRUE(serialized.ApplyModifiedProperties());
+    EXPECT_TRUE(serialized.ApplyModifiedPropertiesWithoutUndo());
     ASSERT_NE(component.FindSerializedField(42), nullptr);
     EXPECT_EQ(std::get<int32_t>(*component.FindSerializedField(42)), 9);
     EXPECT_FALSE(serialized.HasModifiedProperties());
@@ -802,15 +817,15 @@ TEST(ScriptRuntimeTests, SerializedObjectUpdateInvalidatesOldPropertyAndDiscards
     component.SetRuntime(&runtime);
     component.SetScriptAsset(MakeInspectableAsset(api));
 
-    SerializedObject serialized(component);
-    auto* oldProperty = serialized.FindProperty(42);
-    ASSERT_NE(oldProperty, nullptr);
-    ASSERT_TRUE(oldProperty->SetValue(int32_t{11}));
+    NLS::Editor::Serialization::SerializedObject serialized(
+        BuildCanonicalScriptTargets(component),
+        NLS::Editor::Serialization::AccessorSerializedBackend::Create());
+    const auto oldProperty = serialized.FindProperty("speed");
+    ASSERT_TRUE(oldProperty);
+    ASSERT_TRUE(oldProperty.SetLongValue(11));
     serialized.Update();
-    EXPECT_FALSE(oldProperty->IsValid());
-    auto* currentProperty = serialized.FindProperty("speed");
-    ASSERT_NE(currentProperty, nullptr);
-    EXPECT_EQ(std::get<int32_t>(currentProperty->GetValue()), 3);
+    EXPECT_TRUE(oldProperty);
+    EXPECT_EQ(oldProperty.GetLongValue(), 3);
     EXPECT_FALSE(serialized.HasModifiedProperties());
 }
 
@@ -839,14 +854,20 @@ TEST(ScriptRuntimeTests, SerializedObjectIteratorWalksVisibleFields)
     ScriptComponent component;
     component.SetRuntime(&runtime);
     component.SetScriptAsset(MakeInspectableAsset(api));
-    SerializedObject serialized(component);
-    auto* iterator = serialized.GetIterator();
-    ASSERT_NE(iterator, nullptr);
-    EXPECT_EQ(iterator->GetPropertyPath(), "first");
-    iterator = iterator->NextVisible(false);
-    ASSERT_NE(iterator, nullptr);
-    EXPECT_EQ(iterator->GetPropertyPath(), "second");
-    EXPECT_EQ(iterator->NextVisible(false), nullptr);
+    NLS::Editor::Serialization::SerializedObject serialized(
+        BuildCanonicalScriptTargets(component),
+        NLS::Editor::Serialization::AccessorSerializedBackend::Create());
+    auto iterator = serialized.GetIterator();
+    ASSERT_TRUE(iterator);
+    std::vector<std::string> paths;
+    bool enterChildren = true;
+    while (iterator.NextVisible(enterChildren))
+    {
+        paths.push_back(std::string(iterator.GetPropertyPath()));
+        enterChildren = false;
+    }
+    EXPECT_NE(std::find(paths.begin(), paths.end(), "first"), paths.end());
+    EXPECT_NE(std::find(paths.begin(), paths.end(), "second"), paths.end());
 }
 
 TEST(ScriptRuntimeTests, SerializedPropertyChecksTypeDefaultsAndRuntimeHandlePersistence)
@@ -869,14 +890,15 @@ TEST(ScriptRuntimeTests, SerializedPropertyChecksTypeDefaultsAndRuntimeHandlePer
     ScriptComponent component;
     component.SetRuntime(&runtime);
     component.SetScriptAsset(MakeInspectableAsset(api));
-    SerializedObject serialized(component);
-    auto* property = serialized.FindProperty(7);
-    ASSERT_NE(property, nullptr);
-    EXPECT_FALSE(property->SetValue(std::string("wrong")));
-    EXPECT_TRUE(property->SetValue(int32_t{23}));
-    EXPECT_TRUE(property->ResetToDefault());
-    EXPECT_EQ(std::get<int32_t>(property->GetValue()), 17);
-    EXPECT_FALSE(property->SetValue(NativeObjectHandle::FromInstanceId(12)));
+    NLS::Editor::Serialization::SerializedObject serialized(
+        BuildCanonicalScriptTargets(component),
+        NLS::Editor::Serialization::AccessorSerializedBackend::Create());
+    const auto property = serialized.FindProperty("value");
+    ASSERT_TRUE(property);
+    EXPECT_FALSE(property.SetValue(NLS::meta::Variant(std::string("wrong"))));
+    EXPECT_TRUE(property.SetLongValue(23));
+    EXPECT_EQ(property.GetLongValue(), 23);
+    EXPECT_FALSE(property.SetValue(NLS::meta::Variant(NativeObjectHandle::FromInstanceId(12))));
 }
 
 TEST(ScriptRuntimeTests, SerializedObjectApplyUpdatesLiveScriptInstance)
@@ -892,9 +914,13 @@ TEST(ScriptRuntimeTests, SerializedObjectApplyUpdatesLiveScriptInstance)
     component.SetRuntime(&runtime);
     component.SetScriptAsset(MakeInspectableAsset(api));
     component.OnAwake();
-    SerializedObject serialized(component);
-    ASSERT_TRUE(serialized.FindProperty(42)->SetValue(int32_t{31}));
-    ASSERT_TRUE(serialized.ApplyModifiedProperties());
+    NLS::Editor::Serialization::SerializedObject serialized(
+        BuildCanonicalScriptTargets(component),
+        NLS::Editor::Serialization::AccessorSerializedBackend::Create());
+    const auto property = serialized.FindProperty("speed");
+    ASSERT_TRUE(property);
+    ASSERT_TRUE(property.SetLongValue(31));
+    ASSERT_TRUE(serialized.ApplyModifiedPropertiesWithoutUndo());
     ASSERT_NE(backendPtr->fields.find(42), backendPtr->fields.end());
     EXPECT_EQ(std::get<int32_t>(backendPtr->fields.at(42)), 31);
     component.OnDestroy();
@@ -913,21 +939,25 @@ TEST(ScriptRuntimeTests, SerializedObjectReadsLiveRuntimeValueWithoutPersistingP
     component.SetRuntime(&runtime);
     component.SetScriptAsset(MakeInspectableAsset(api));
     component.OnAwake();
-    SerializedObject serialized(component);
-    auto* property = serialized.FindProperty("speed");
-    ASSERT_NE(property, nullptr);
+    NLS::Editor::Serialization::SerializedObject serialized(
+        BuildCanonicalScriptTargets(component),
+        NLS::Editor::Serialization::AccessorSerializedBackend::Create());
+    const auto property = serialized.FindProperty("speed");
+    ASSERT_TRUE(property);
 
     // Simulate a script changing its field during Play.  Inspector reads must
     // observe it, while the scene override map remains untouched.
     backendPtr->fields[42] = int32_t{17};
-    EXPECT_EQ(std::get<int32_t>(property->GetValue()), 17);
+    serialized.Update();
+    EXPECT_EQ(property.GetLongValue(), 17);
     EXPECT_EQ(component.FindSerializedField(42), nullptr);
     EXPECT_FALSE(serialized.HasModifiedProperties());
 
     // Stopping Play invalidates the live instance; the Inspector must return
     // to the schema default rather than retaining the transient value.
     component.OnDestroy();
-    EXPECT_EQ(std::get<int32_t>(property->GetValue()), 3);
+    serialized.Update();
+    EXPECT_EQ(property.GetLongValue(), 3);
     EXPECT_EQ(component.FindSerializedField(42), nullptr);
 
     component.OnCreate();
@@ -935,10 +965,10 @@ TEST(ScriptRuntimeTests, SerializedObjectReadsLiveRuntimeValueWithoutPersistingP
 
     // A value currently being edited in Inspector must not be overwritten by
     // a subsequent script tick until the edit is committed.
-    ASSERT_TRUE(property->SetValue(int32_t{23}));
+    ASSERT_TRUE(property.SetLongValue(23));
     backendPtr->fields[42] = int32_t{31};
-    EXPECT_EQ(std::get<int32_t>(property->GetValue()), 23);
-    ASSERT_TRUE(serialized.ApplyModifiedProperties());
+    EXPECT_EQ(property.GetLongValue(), 23);
+    ASSERT_TRUE(serialized.ApplyModifiedPropertiesWithoutUndo());
     EXPECT_EQ(std::get<int32_t>(backendPtr->fields.at(42)), 23);
     EXPECT_EQ(std::get<int32_t>(*component.FindSerializedField(42)), 23);
 
@@ -1357,6 +1387,11 @@ TEST(ScriptRuntimeTests, ManifestRoundTripsFieldDefaults)
     ScriptTypeDescriptor descriptor;
     descriptor.name = "NLS::Scripts::Defaults";
     descriptor.fields.push_back({21, "speed", {0, ScriptValueKind::Float, "float", 4, 4, true}, true, {}, 1.25f});
+    descriptor.fields.back().metadata.displayName = "Speed";
+    descriptor.fields.back().metadata.tooltip = "Units per second.";
+    descriptor.fields.back().metadata.rangeMin = 0.0f;
+    descriptor.fields.back().metadata.rangeMax = 50.0f;
+    descriptor.fields.back().metadata.readOnly = true;
     ASSERT_TRUE(database.RegisterType(descriptor));
 
     ScriptApiDatabase restored;
@@ -1367,6 +1402,11 @@ TEST(ScriptRuntimeTests, ManifestRoundTripsFieldDefaults)
     ASSERT_TRUE(type->fields[0].defaultValue.has_value());
     ASSERT_TRUE(std::holds_alternative<float>(*type->fields[0].defaultValue));
     EXPECT_FLOAT_EQ(std::get<float>(*type->fields[0].defaultValue), 1.25f);
+    EXPECT_EQ(type->fields[0].metadata.displayName, "Speed");
+    EXPECT_EQ(type->fields[0].metadata.tooltip, "Units per second.");
+    EXPECT_EQ(type->fields[0].metadata.rangeMin, std::optional<float>(0.0f));
+    EXPECT_EQ(type->fields[0].metadata.rangeMax, std::optional<float>(50.0f));
+    EXPECT_TRUE(type->fields[0].metadata.readOnly);
 }
 
 TEST(ScriptRuntimeTests, RejectsInconsistentPropertyAccessors)
@@ -1712,6 +1752,48 @@ TEST(ScriptRuntimeTests, RuntimeSetupUsesRepositoryLocalSchemaAndDotnetArtifacts
 
 #if NLS_ENABLE_CSHARP_SCRIPTING
 
+TEST(ScriptRuntimeTests, ManagedEditorSerializationBridgeInstallsIntoTheEditorAssembly)
+{
+    const auto root = FindNullusRoot();
+    ASSERT_FALSE(root.empty()) << "Could not locate the Nullus checkout from the test working directory.";
+
+    ScriptApiDatabase api;
+    const auto manifest = ReadTextFile(root / "Library" / "ScriptApi" / "ScriptApi.json");
+    ASSERT_FALSE(manifest.empty());
+    ASSERT_TRUE(ScriptApiManifest::FromJson(manifest, api).Succeeded());
+
+    const auto managedOutput = ResolveManagedOutput(root);
+    ASSERT_FALSE(managedOutput.empty());
+    const auto runtimeConfig = managedOutput / "GameScripts.runtimeconfig.json";
+    const auto assembly = managedOutput / "GameScripts.dll";
+    const auto dotnetRoot = ResolveDotnetRoot(root);
+    ASSERT_TRUE(std::filesystem::exists(runtimeConfig)) << runtimeConfig.string();
+    ASSERT_TRUE(std::filesystem::exists(assembly)) << assembly.string();
+
+    auto backend = std::make_unique<CoreClrScriptBackend>(ScriptBackendId{47});
+    auto* backendPtr = backend.get();
+    backendPtr->SetDotnetRoot(dotnetRoot);
+    backendPtr->SetHostArtifacts(runtimeConfig, assembly);
+    const auto initializeStatus = backendPtr->Initialize(api);
+    ASSERT_TRUE(initializeStatus.Succeeded()) << initializeStatus.message;
+
+    // The managed editor assembly must sit beside the project scripting
+    // assembly; that is where the CMake managed rule writes it.
+    const auto editorAssembly =
+        NLS::Editor::Serialization::ResolveManagedEditorAssembly(assembly);
+    ASSERT_FALSE(editorAssembly.empty())
+        << "Nullus.Editor.dll is missing from " << managedOutput.string();
+
+    const auto bridge = NLS::Editor::Serialization::InstallManagedSerializationBridge(
+        backendPtr->GetHost(),
+        editorAssembly);
+    EXPECT_TRUE(bridge.installed) << bridge.message;
+
+    NLS::Editor::Serialization::UninstallManagedSerializationBridge(
+        backendPtr->GetHost(),
+        editorAssembly);
+}
+
 TEST(ScriptRuntimeTests, CoreClrExecutesGeneratedCSharpBehaviourAgainstNativeTransform)
 {
     const auto root = FindNullusRoot();
@@ -1752,10 +1834,38 @@ TEST(ScriptRuntimeTests, CoreClrExecutesGeneratedCSharpBehaviourAgainstNativeTra
         EXPECT_EQ(transformManifestEntry->typeName, "global::Nullus.EngineScripts.TransformMover");
     EXPECT_TRUE(transformManifestEntry->isPublic);
     EXPECT_TRUE(transformManifestEntry->isConcrete);
-        // Generated factories use the parameterless Unity-style constructor
+        // Generated factories use the parameterless engine-style constructor
         // and bind the native handle after construction.
-        EXPECT_FALSE(transformManifestEntry->hasNativeObjectHandleConstructor);
+    EXPECT_FALSE(transformManifestEntry->hasNativeObjectHandleConstructor);
     EXPECT_TRUE(transformManifestEntry->isComponent);
+    const auto speedManifestField = std::find_if(
+        transformManifestEntry->fields.begin(),
+        transformManifestEntry->fields.end(),
+        [](const ManagedBehaviourManifestEntry::Field& field)
+        {
+            return field.name == "Speed";
+        });
+    ASSERT_NE(speedManifestField, transformManifestEntry->fields.end());
+    EXPECT_EQ(speedManifestField->metadata.displayName, "Movement Speed");
+    EXPECT_EQ(speedManifestField->metadata.tooltip, "World units per second.");
+    EXPECT_EQ(speedManifestField->metadata.header, "Motion");
+    EXPECT_FLOAT_EQ(speedManifestField->metadata.spaceBefore, 4.0f);
+    EXPECT_EQ(speedManifestField->metadata.rangeMin, std::optional<float>(0.0f));
+    EXPECT_EQ(speedManifestField->metadata.rangeMax, std::optional<float>(20.0f));
+    EXPECT_EQ(speedManifestField->metadata.min, std::optional<float>(0.0f));
+    EXPECT_EQ(speedManifestField->metadata.max, std::optional<float>(100.0f));
+
+    const auto* transformDescriptor = backendPtr->FindScriptType(transformManifestEntry->scriptTypeId);
+    ASSERT_NE(transformDescriptor, nullptr);
+    const auto speedDescriptorField = std::find_if(
+        transformDescriptor->fields.begin(),
+        transformDescriptor->fields.end(),
+        [](const ScriptFieldDescriptor& field)
+        {
+            return field.name == "Speed";
+        });
+    ASSERT_NE(speedDescriptorField, transformDescriptor->fields.end());
+    EXPECT_EQ(speedDescriptorField->metadata.displayName, "Movement Speed");
     const auto manifestComponent = backendPtr->IsComponentAsset("Assets/TransformMover.cs");
     ASSERT_TRUE(manifestComponent.has_value());
     EXPECT_TRUE(*manifestComponent);
@@ -2283,10 +2393,12 @@ TEST(ScriptRuntimeTests, CSharpAndLuaComponentsShareOwnerLifecycleAndIsolateErro
     // This is the same descriptor path consumed by the Editor Inspector.
     // Public C# instance fields must be visible without an explicit
     // [SerializeField] attribute.
-    SerializedObject inspectorObject(*csharpComponent);
+    NLS::Editor::Serialization::SerializedObject inspectorObject(
+        BuildCanonicalScriptTargets(*csharpComponent),
+        NLS::Editor::Serialization::AccessorSerializedBackend::Create());
     ASSERT_TRUE(inspectorObject.IsValid());
-    ASSERT_NE(inspectorObject.FindProperty("AutoSerializedCount"), nullptr);
-    ASSERT_NE(inspectorObject.FindProperty("Speed"), nullptr);
+    ASSERT_TRUE(inspectorObject.FindProperty("AutoSerializedCount"));
+    ASSERT_TRUE(inspectorObject.FindProperty("Speed"));
 
     const auto owner = NativeObjectHandle::FromInstanceId(gameObject.GetInstanceID());
     EXPECT_EQ(NativeObjectHandle::FromInstanceId(csharpComponent->gameobject()->GetInstanceID()), owner);
@@ -2571,6 +2683,74 @@ TEST(ScriptRuntimeTests, LuaRotatingCubeScriptCreatesAndRotatesScenePrimitive)
     ASSERT_TRUE(backend.Invoke(instance, ScriptCallback::Update, update).Succeeded());
     ASSERT_NE(cube->GetTransform(), nullptr);
     EXPECT_NE(cube->GetTransform()->GetLocalRotation().y, 0.0f);
+
+    ASSERT_TRUE(backend.DestroyInstance(instance).Succeeded());
+    backend.Shutdown();
+}
+
+TEST(ScriptRuntimeTests, LuaUiScriptDrivesTheProjectUiCanvasDocument)
+{
+    const auto root = FindNullusRoot();
+    ASSERT_FALSE(root.empty()) << "Could not locate the Nullus checkout from the test working directory.";
+    const auto documentPath = root / "TestProject" / "Assets" / "ScriptTestPanel.ui";
+    const auto scriptPath = root / "TestProject" / "Assets" / "UiScriptTest.lua";
+    ASSERT_TRUE(std::filesystem::exists(documentPath)) << documentPath.string();
+    ASSERT_TRUE(std::filesystem::exists(scriptPath)) << scriptPath.string();
+
+    LuaScriptBackend backend;
+    ASSERT_TRUE(backend.Initialize({}).Succeeded());
+
+    // The canvas owns the document; the script only drives named elements.
+    NLS::Engine::SceneSystem::Scene scene;
+    auto& owner = scene.CreateGameObject("LuaUiScriptRoot");
+    auto* canvas = owner.AddComponent<NLS::Engine::Components::UICanvasComponent>();
+    ASSERT_NE(canvas, nullptr);
+    std::vector<NLS::Engine::UI::UIDocumentDiagnostic> diagnostics;
+    ASSERT_TRUE(canvas->LoadDocument(documentPath.string(), &diagnostics))
+        << (diagnostics.empty() ? std::string {} : diagnostics.front().message);
+
+    ScriptAsset asset;
+    asset.assetId = NLS::Core::Assets::AssetId::New();
+    asset.language = ScriptLanguage::Lua;
+    asset.sourcePath = "Assets/UiScriptTest.lua";
+    asset.sourceText = ReadTextFile(scriptPath);
+    ASSERT_FALSE(asset.sourceText.empty());
+    ASSERT_TRUE(backend.LoadScript(asset).Succeeded());
+
+    ScriptInstanceHandle instance;
+    ASSERT_TRUE(backend.CreateInstance(
+        asset,
+        NativeObjectHandle::FromInstanceId(owner.GetInstanceID()),
+        instance)
+                    .Succeeded());
+    ASSERT_TRUE(backend.Invoke(instance, ScriptCallback::Awake, {}).Succeeded());
+
+    // Resolving every name proves the document and the script agree on them.
+    const auto counter = canvas->GetElementHandle("Counter");
+    const auto status = canvas->GetElementHandle("Status");
+    const auto progress = canvas->GetElementHandle("Progress");
+    const auto toggle = canvas->GetElementHandle("Auto");
+    ASSERT_NE(counter, 0u);
+    ASSERT_NE(status, 0u);
+    ASSERT_NE(progress, 0u);
+    ASSERT_NE(toggle, 0u);
+
+    ScriptInvocationContext update;
+    update.frame.deltaTime = 0.25f;
+    ASSERT_TRUE(backend.Invoke(instance, ScriptCallback::Update, update).Succeeded());
+    EXPECT_EQ(canvas->GetElementText(counter), "Frames: 1");
+    EXPECT_NE(canvas->GetElementText(status).find("doc gen "), std::string::npos);
+    EXPECT_GT(canvas->GetElementValue(progress), 0.0f);
+    EXPECT_FALSE(canvas->GetElementChecked(toggle));
+
+    ASSERT_TRUE(backend.Invoke(instance, ScriptCallback::Update, update).Succeeded());
+    EXPECT_EQ(canvas->GetElementText(counter), "Frames: 2");
+
+    // Elapsed time crosses one full sweep, so the script flips the toggle.
+    update.frame.deltaTime = 4.0f;
+    ASSERT_TRUE(backend.Invoke(instance, ScriptCallback::Update, update).Succeeded());
+    EXPECT_EQ(canvas->GetElementText(counter), "Frames: 3");
+    EXPECT_TRUE(canvas->GetElementChecked(toggle));
 
     ASSERT_TRUE(backend.DestroyInstance(instance).Succeeded());
     backend.Shutdown();

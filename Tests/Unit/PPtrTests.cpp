@@ -129,7 +129,7 @@ TEST(PPtrTests, ResourcePPtrMetaTypeNamesDoNotDependOnExternalReflectionIncludes
         "NLS::Engine::Serialize::PPtr<NLS::Render::Resources::TextureCube>");
 }
 
-TEST(PPtrTests, SerializedIdentifierKeepsUnityFieldsSeparateFromRuntimePointer)
+TEST(PPtrTests, SerializedIdentifierKeepsEngineFieldsSeparateFromRuntimePointer)
 {
     NLS::Engine::Serialize::SerializedObjectIdentifier identifier;
     identifier.serializedFileIndex = 1;

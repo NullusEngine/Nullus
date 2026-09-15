@@ -149,6 +149,12 @@ namespace NLS::Editor::Panels
             std::optional<Maths::Vector2> GetLocalViewPosition(const Maths::Vector2& mousePosition) const;
             void RequestSkipNextRenderFrame();
 
+            // View geometry of the last drawn viewport image, in screen space.
+            // Overlay presenters need it to place content into the view.
+            bool HasViewportImageBounds() const;
+            Maths::Vector2 GetViewportImageMin() const;
+            Maths::Vector2 GetViewportImageMax() const;
+
 	protected:
 		void OnBeforeDrawWidgets() override;
 		void OnAfterDrawWidgets() override;
@@ -193,9 +199,6 @@ namespace NLS::Editor::Panels
         Maths::Vector2 GetCurrentViewportImageMin() const;
         Maths::Vector2 GetCurrentViewportImageMax() const;
         ViewOverlayCameraMatrices GetViewportOverlayCameraMatrices() const;
-        bool HasViewportImageBounds() const;
-        Maths::Vector2 GetViewportImageMin() const;
-        Maths::Vector2 GetViewportImageMax() const;
 
 	protected:
 		UI::Widgets::Image* m_image;

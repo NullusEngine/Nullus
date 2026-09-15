@@ -12,11 +12,13 @@
 
 #include "GameObject.h"
 #include "Components/LightComponent.h"
+#include "Components/CameraComponent.h"
 #include "Components/MeshRenderer.h"
 #include "Components/MeshFilter.h"
 #include "Components/MeshRenderer.h"
 #include "Components/TransformComponent.h"
 #include "Debug/Logger.h"
+#include "Components/UICanvasComponent.h"
 #include "Engine/Assets/RuntimeAssetDatabase.h"
 #include "Core/Assets/ArtifactManifest.h"
 #include "Core/ServiceLocator.h"
@@ -572,6 +574,60 @@ TEST(SceneObjectGraphSerializationTests, SceneRoundTripsGameObjectsComponentsPar
     EXPECT_EQ(fastAccess.lights[0], loadedLight);
 }
 
+TEST(SceneObjectGraphSerializationTests, ComponentEnabledStateRoundTripsInObjectGraphV2AndV1DefaultsToEnabled)
+{
+    using namespace NLS::Engine;
+    using namespace NLS::Engine::Components;
+    using namespace NLS::Engine::Serialize;
+
+    SceneSystem::Scene source;
+    auto& actor = source.CreateGameObject("Disabled Light");
+    auto* light = actor.AddComponent<LightComponent>();
+    ASSERT_NE(light, nullptr);
+    light->SetEnabled(false);
+
+    const auto v2 = ObjectGraphSerializer::SerializeScene(source);
+    EXPECT_EQ(v2.version, 2);
+
+    const auto lightRecord = std::find_if(v2.objects.begin(), v2.objects.end(), [](const ObjectRecord& record)
+    {
+        return record.typeName == NLS_TYPEOF(LightComponent).GetName();
+    });
+    ASSERT_NE(lightRecord, v2.objects.end());
+    const auto* enabled = FindProperty(*lightRecord, "enabled");
+    ASSERT_NE(enabled, nullptr);
+    ASSERT_EQ(enabled->value.GetKind(), PropertyValue::Kind::Bool);
+    EXPECT_FALSE(enabled->value.GetBool());
+
+    auto loadedV2 = ObjectGraphInstantiator::InstantiateScene(v2);
+    ASSERT_NE(loadedV2, nullptr);
+    auto* loadedV2Actor = loadedV2->FindGameObjectByName("Disabled Light");
+    ASSERT_NE(loadedV2Actor, nullptr);
+    auto* loadedV2Light = loadedV2Actor->GetComponent<LightComponent>();
+    ASSERT_NE(loadedV2Light, nullptr);
+    EXPECT_FALSE(loadedV2Light->IsSelfEnabled());
+
+    auto v1 = v2;
+    v1.version = 1;
+    for (auto& record : v1.objects)
+    {
+        if (record.typeName != NLS_TYPEOF(LightComponent).GetName())
+            continue;
+        record.properties.erase(std::remove_if(record.properties.begin(), record.properties.end(), [](const PropertyRecord& property)
+        {
+            return property.name == "enabled";
+        }), record.properties.end());
+    }
+
+    auto loadedV1 = ObjectGraphInstantiator::InstantiateScene(v1);
+    ASSERT_NE(loadedV1, nullptr);
+    auto* loadedV1Actor = loadedV1->FindGameObjectByName("Disabled Light");
+    ASSERT_NE(loadedV1Actor, nullptr);
+    auto* loadedV1Light = loadedV1Actor->GetComponent<LightComponent>();
+    ASSERT_NE(loadedV1Light, nullptr);
+    EXPECT_TRUE(loadedV1Light->IsSelfEnabled());
+}
+
 TEST(SceneObjectGraphSerializationTests, SceneSerializationAssignsUniqueComponentIdsForDuplicateNamedGameObjects)
 {
     using namespace NLS::Engine::Components;
@@ -595,13 +651,50 @@ TEST(SceneObjectGraphSerializationTests, ObjectGraphSerializerWritesOrdinaryFiel
         object,
         NLS::Engine::Serialize::ObjectId(NLS::Guid::NewDeterministic("Reflected.Serializable.Object")));
 
-    ASSERT_EQ(record.properties.size(), 1u);
-    EXPECT_EQ(record.properties[0].name, "value");
-    ASSERT_EQ(record.properties[0].value.GetKind(), NLS::Engine::Serialize::PropertyValue::Kind::Integer);
-    EXPECT_EQ(record.properties[0].value.GetInteger(), 42);
+    const auto* valueProperty = FindProperty(record, "value");
+    ASSERT_NE(valueProperty, nullptr);
+    ASSERT_EQ(valueProperty->value.GetKind(), NLS::Engine::Serialize::PropertyValue::Kind::Integer);
+    EXPECT_EQ(valueProperty->value.GetInteger(), 42);
 }
 
-TEST(SceneObjectGraphSerializationTests, ResourceRendererReferencesSerializeAsUnityObjectReferences)
+TEST(SceneObjectGraphSerializationTests, FormerlySerializedAsAliasResolvesToTheRenamedReflectedField)
+{
+    const auto cameraType = NLS::meta::Type::GetFromName("NLS::Engine::Components::CameraComponent");
+    ASSERT_TRUE(cameraType.IsValid());
+
+    const auto canonicalNear = cameraType.GetField("nearClip");
+    const auto legacyNear = cameraType.GetField("near");
+    ASSERT_TRUE(canonicalNear.IsValid());
+    ASSERT_TRUE(legacyNear.IsValid());
+    EXPECT_EQ(legacyNear.GetName(), "nearClip");
+    EXPECT_EQ(legacyNear.GetType().GetName(), canonicalNear.GetType().GetName());
+
+    const auto legacyFar = cameraType.GetField("far");
+    ASSERT_TRUE(legacyFar.IsValid());
+    EXPECT_EQ(legacyFar.GetName(), "farClip");
+
+    NLS::Engine::Components::CameraComponent camera;
+    auto instance = NLS::meta::Variant(&camera, NLS::meta::variant_policy::WrapObject {});
+    ASSERT_TRUE(canonicalNear.SetValue(instance, NLS::meta::Variant(3.5f)));
+    EXPECT_FLOAT_EQ(camera.GetNear(), 3.5f);
+    EXPECT_FLOAT_EQ(legacyNear.GetValue(instance).GetValue<float>(), 3.5f);
+}
+
+TEST(SceneObjectGraphSerializationTests, ObjectGraphSerializerWritesRenamedFieldNamesForRenamedMembers)
+{
+    NLS::Engine::Components::CameraComponent camera;
+
+    const auto record = NLS::Engine::Serialize::ObjectGraphSerializer::SerializeObjectRecord(
+        camera,
+        NLS::Engine::Serialize::ObjectId(NLS::Guid::NewDeterministic("Reflected.Renamed.Field.Object")));
+
+    ASSERT_NE(FindProperty(record, "nearClip"), nullptr);
+    ASSERT_NE(FindProperty(record, "farClip"), nullptr);
+    EXPECT_EQ(FindProperty(record, "near"), nullptr);
+    EXPECT_EQ(FindProperty(record, "far"), nullptr);
+}
+
+TEST(SceneObjectGraphSerializationTests, ResourceRendererReferencesSerializeAsEngineObjectReferences)
 {
     using namespace NLS::Engine::Components;
     using namespace NLS::Engine::Serialize;
@@ -1084,7 +1177,7 @@ TEST(SceneObjectGraphSerializationTests, ReflectedMaterialReferencesWriteClearsR
     EXPECT_TRUE(renderer.GetMaterialReferences().empty());
 }
 
-TEST(SceneObjectGraphSerializationTests, MeshFilterLazyResolutionPreservesUnityReferenceIdentity)
+TEST(SceneObjectGraphSerializationTests, MeshFilterLazyResolutionPreservesEngineReferenceIdentity)
 {
     using namespace NLS::Engine::Components;
     using namespace NLS::Engine::Serialize;
@@ -1350,7 +1443,7 @@ TEST(SceneObjectGraphSerializationTests, MeshFilterStillWarnsOnceForMissingColdM
     EXPECT_FALSE(meshManager.IsResourceRegistered(meshPath));
 }
 
-TEST(SceneObjectGraphSerializationTests, MeshRendererKeepsUnityReferenceIdentityWithoutPathHint)
+TEST(SceneObjectGraphSerializationTests, MeshRendererKeepsEngineReferenceIdentityWithoutPathHint)
 {
     using namespace NLS::Engine::Components;
     using namespace NLS::Engine::Serialize;
@@ -1867,6 +1960,74 @@ TEST(SceneObjectGraphSerializationTests, SceneManagerTracksDirtyStateAroundScene
     EXPECT_FALSE(sceneManager.HasUnsavedSceneChanges());
 }
 
+TEST(SceneObjectGraphSerializationTests, SceneManagerReportsOnlyCommittedSceneLoadsAsSuccessful)
+{
+    using namespace NLS::Engine::Serialize;
+
+    const auto scenePath =
+        std::filesystem::temp_directory_path() /
+        ("nullus_scene_manager_successful_load_" + NLS::Guid::New().ToString() + ".scene");
+    const auto missingPath =
+        std::filesystem::temp_directory_path() /
+        ("nullus_scene_manager_missing_load_" + NLS::Guid::New().ToString() + ".scene");
+    const auto failedInstantiationPath =
+        std::filesystem::temp_directory_path() /
+        ("nullus_scene_manager_failed_instantiation_" + NLS::Guid::New().ToString() + ".scene");
+
+    NLS::Engine::SceneSystem::SceneManager sceneManager;
+    size_t successfulLoadCount = 0u;
+    size_t sceneLoadCount = 0u;
+    const auto listener = sceneManager.SceneLoadSucceededEvent += [&successfulLoadCount]
+    {
+        ++successfulLoadCount;
+    };
+    const auto sceneLoadListener = sceneManager.SceneLoadEvent += [&sceneLoadCount]
+    {
+        ++sceneLoadCount;
+    };
+
+    sceneManager.LoadEmptyScene();
+    EXPECT_EQ(successfulLoadCount, 1u);
+    EXPECT_EQ(sceneLoadCount, 1u);
+
+    EXPECT_FALSE(sceneManager.LoadScene(missingPath.string(), true));
+    EXPECT_EQ(successfulLoadCount, 1u);
+    EXPECT_EQ(sceneLoadCount, 1u);
+
+    auto invalidDocument = MakeSimpleSceneDocument();
+    const auto sceneRecord = std::find_if(
+        invalidDocument.objects.begin(),
+        invalidDocument.objects.end(),
+        [](const ObjectRecord& record)
+        {
+            return record.typeName == "NLS::Engine::SceneSystem::Scene";
+        });
+    ASSERT_NE(sceneRecord, invalidDocument.objects.end());
+    sceneRecord->typeName = "NLS::Engine::SceneSystem::UnknownScene";
+    {
+        std::ofstream output(failedInstantiationPath);
+        output << ObjectGraphWriter::Write(invalidDocument);
+    }
+    EXPECT_FALSE(sceneManager.LoadScene(failedInstantiationPath.string(), true));
+    EXPECT_EQ(successfulLoadCount, 1u);
+    EXPECT_EQ(sceneLoadCount, 2u);
+
+    {
+        std::ofstream output(scenePath);
+        output << ObjectGraphWriter::Write(MakeSimpleSceneDocument());
+    }
+    ASSERT_TRUE(sceneManager.LoadScene(scenePath.string(), true));
+    EXPECT_EQ(successfulLoadCount, 2u);
+    EXPECT_EQ(sceneLoadCount, 3u);
+
+    sceneManager.SceneLoadSucceededEvent -= listener;
+    sceneManager.SceneLoadEvent -= sceneLoadListener;
+    std::filesystem::remove(scenePath);
+    std::filesystem::remove(failedInstantiationPath);
+    std::error_code cacheCleanupError;
+    std::filesystem::remove_all(scenePath.parent_path() / ".nullus_scene_cache", cacheCleanupError);
+}
+
 TEST(SceneObjectGraphSerializationTests, SceneManagerDirtyMarksAdvanceRenderContentRevisionEveryTime)
 {
     NLS::Engine::SceneSystem::SceneManager sceneManager;
@@ -1912,7 +2073,14 @@ TEST(SceneObjectGraphSerializationTests, LoadEmptyLightedSceneDoesNotCreateValid
     const ScopedServiceOverride<NLS::Core::ResourceManagement::ShaderManager> shaderManagerScope(shaderManager);
 
     NLS::Engine::SceneSystem::SceneManager sceneManager;
+    size_t successfulLoadCount = 0u;
+    const auto successfulLoadListener = sceneManager.SceneLoadSucceededEvent += [&successfulLoadCount]
+    {
+        ++successfulLoadCount;
+    };
     sceneManager.LoadEmptyLightedScene();
+    EXPECT_EQ(successfulLoadCount, 1u);
+    sceneManager.SceneLoadSucceededEvent -= successfulLoadListener;
 
     auto* scene = sceneManager.GetCurrentScene();
     ASSERT_NE(scene, nullptr);
@@ -2468,4 +2636,252 @@ TEST(SceneObjectGraphSerializationTests, SceneManagerUnloadsCurrentSceneBeforeLo
     ASSERT_GE(events.size(), 2u);
     EXPECT_EQ(events[0], "unload");
     EXPECT_EQ(events[1], "created");
+}
+
+TEST(SceneObjectGraphSerializationTests, SceneManagerPlaySandboxClonesAndRestoresTheEditScene)
+{
+    using namespace NLS::Engine;
+
+    SceneSystem::SceneManager manager;
+    auto* editScene = manager.GetCurrentScene();
+    ASSERT_NE(editScene, nullptr);
+    auto& editActor = editScene->CreateGameObject("Edit Actor", "Editor");
+
+    manager.StoreCurrentSceneSourcePath("Assets/Scenes/PlaySandbox.scene");
+    manager.MarkCurrentSceneClean();
+    ASSERT_FALSE(manager.HasUnsavedSceneChanges());
+
+    size_t activationCount = 0u;
+    size_t successfulLoadCount = 0u;
+    size_t unloadCount = 0u;
+    const auto activationListener = manager.SceneLoadEvent += [&activationCount]
+    {
+        ++activationCount;
+    };
+    const auto successfulLoadListener = manager.SceneLoadSucceededEvent += [&successfulLoadCount]
+    {
+        ++successfulLoadCount;
+    };
+    const auto unloadListener = manager.SceneUnloadEvent += [&unloadCount]
+    {
+        ++unloadCount;
+    };
+
+    std::string error;
+    ASSERT_TRUE(manager.BeginPlaySandbox(&error)) << error;
+    ASSERT_TRUE(manager.IsPlaySandboxActive());
+    auto* playScene = manager.GetCurrentScene();
+    ASSERT_NE(playScene, nullptr);
+    EXPECT_NE(playScene, editScene);
+    EXPECT_EQ(manager.GetCurrentSceneSourcePath(), "Assets/Scenes/PlaySandbox.scene");
+    EXPECT_FALSE(manager.HasUnsavedSceneChanges());
+
+    auto* playActor = playScene->FindGameObjectByName("Edit Actor");
+    ASSERT_NE(playActor, nullptr);
+    EXPECT_NE(playActor, &editActor);
+    playActor->SetName("Play Mutation");
+    manager.MarkCurrentSceneDirty();
+    EXPECT_FALSE(manager.HasUnsavedSceneChanges());
+
+    ASSERT_TRUE(manager.DiscardPlaySandbox(&error)) << error;
+    EXPECT_FALSE(manager.IsPlaySandboxActive());
+    EXPECT_EQ(manager.GetCurrentScene(), editScene);
+    EXPECT_EQ(editActor.GetName(), "Edit Actor");
+    EXPECT_EQ(editScene->FindGameObjectByName("Play Mutation"), nullptr);
+    EXPECT_EQ(manager.GetCurrentSceneSourcePath(), "Assets/Scenes/PlaySandbox.scene");
+    EXPECT_FALSE(manager.HasUnsavedSceneChanges());
+    EXPECT_EQ(activationCount, 2u);
+    EXPECT_EQ(successfulLoadCount, 0u);
+    EXPECT_EQ(unloadCount, 0u);
+
+    manager.SceneLoadEvent -= activationListener;
+    manager.SceneLoadSucceededEvent -= successfulLoadListener;
+    manager.SceneUnloadEvent -= unloadListener;
+}
+
+TEST(SceneObjectGraphSerializationTests, SceneManagerPlaySandboxLoadSceneRetainsTheSuspendedEditScene)
+{
+    using namespace NLS::Engine;
+
+    const auto editScenePath =
+        std::filesystem::temp_directory_path() /
+        ("nullus_play_sandbox_edit_" + NLS::Guid::New().ToString() + ".scene");
+    const auto replacementScenePath =
+        std::filesystem::temp_directory_path() /
+        ("nullus_play_sandbox_replacement_" + NLS::Guid::New().ToString() + ".scene");
+    const auto invalidReplacementScenePath =
+        std::filesystem::temp_directory_path() /
+        ("nullus_play_sandbox_invalid_" + NLS::Guid::New().ToString() + ".scene");
+
+    SceneSystem::Scene editSource;
+    editSource.CreateGameObject("Edit Actor", "Editor");
+    {
+        std::ofstream output(editScenePath);
+        output << Serialize::ObjectGraphWriter::Write(Serialize::ObjectGraphSerializer::SerializeScene(editSource));
+    }
+
+    SceneSystem::Scene replacementSource;
+    replacementSource.CreateGameObject("Replacement Play Actor", "Gameplay");
+    {
+        std::ofstream output(replacementScenePath);
+        output << Serialize::ObjectGraphWriter::Write(Serialize::ObjectGraphSerializer::SerializeScene(replacementSource));
+    }
+    auto invalidReplacement = Serialize::ObjectGraphSerializer::SerializeScene(replacementSource);
+    const auto invalidRoot = std::find_if(
+        invalidReplacement.objects.begin(),
+        invalidReplacement.objects.end(),
+        [&invalidReplacement](const Serialize::ObjectRecord& record)
+        {
+            return record.id == invalidReplacement.root;
+        });
+    ASSERT_NE(invalidRoot, invalidReplacement.objects.end());
+    invalidRoot->typeName = "NLS::Engine::SceneSystem::UnknownPlayScene";
+    {
+        std::ofstream output(invalidReplacementScenePath);
+        output << Serialize::ObjectGraphWriter::Write(invalidReplacement);
+    }
+
+    SceneSystem::SceneManager manager;
+    ASSERT_TRUE(manager.LoadScene(editScenePath.string(), true));
+    auto* editScene = manager.GetCurrentScene();
+    ASSERT_NE(editScene, nullptr);
+    auto* editActor = editScene->FindGameObjectByName("Edit Actor");
+    ASSERT_NE(editActor, nullptr);
+    const auto* editDocument = manager.GetLastLoadedSceneDocument();
+    ASSERT_NE(editDocument, nullptr);
+    manager.MarkCurrentSceneDirty();
+    ASSERT_TRUE(manager.HasUnsavedSceneChanges());
+
+    size_t activationCount = 0u;
+    size_t successfulLoadCount = 0u;
+    size_t unloadCount = 0u;
+    const auto activationListener = manager.SceneLoadEvent += [&activationCount]
+    {
+        ++activationCount;
+    };
+    const auto successfulLoadListener = manager.SceneLoadSucceededEvent += [&successfulLoadCount]
+    {
+        ++successfulLoadCount;
+    };
+    const auto unloadListener = manager.SceneUnloadEvent += [&unloadCount]
+    {
+        ++unloadCount;
+    };
+
+    std::string error;
+    ASSERT_TRUE(manager.BeginPlaySandbox(&error)) << error;
+    auto* initialPlayScene = manager.GetCurrentScene();
+    ASSERT_NE(initialPlayScene, nullptr);
+    ASSERT_NE(initialPlayScene, editScene);
+
+    EXPECT_FALSE(manager.LoadScene(invalidReplacementScenePath.string(), true));
+    EXPECT_TRUE(manager.IsPlaySandboxActive());
+    EXPECT_EQ(manager.GetCurrentScene(), initialPlayScene);
+    EXPECT_EQ(editScene->FindGameObjectByName("Edit Actor"), editActor);
+    EXPECT_EQ(manager.GetCurrentSceneSourcePath(), editScenePath.string());
+    EXPECT_TRUE(manager.HasUnsavedSceneChanges());
+    EXPECT_EQ(manager.GetLastLoadedSceneDocument(), editDocument);
+
+    ASSERT_TRUE(manager.LoadScene(replacementScenePath.string(), true));
+    ASSERT_TRUE(manager.IsPlaySandboxActive());
+    EXPECT_NE(manager.GetCurrentScene(), initialPlayScene);
+    EXPECT_NE(manager.GetCurrentScene(), editScene);
+    EXPECT_NE(manager.GetCurrentScene()->FindGameObjectByName("Replacement Play Actor"), nullptr);
+    EXPECT_EQ(editScene->FindGameObjectByName("Replacement Play Actor"), nullptr);
+    EXPECT_EQ(editScene->FindGameObjectByName("Edit Actor"), editActor);
+    EXPECT_EQ(manager.GetCurrentSceneSourcePath(), editScenePath.string());
+    EXPECT_TRUE(manager.IsCurrentSceneLoadedFromDisk());
+    EXPECT_TRUE(manager.HasUnsavedSceneChanges());
+    EXPECT_EQ(manager.GetLastLoadedSceneDocument(), editDocument);
+
+    ASSERT_TRUE(manager.DiscardPlaySandbox(&error)) << error;
+    EXPECT_FALSE(manager.IsPlaySandboxActive());
+    EXPECT_EQ(manager.GetCurrentScene(), editScene);
+    EXPECT_EQ(manager.GetCurrentScene()->FindGameObjectByName("Edit Actor"), editActor);
+    EXPECT_EQ(manager.GetCurrentSceneSourcePath(), editScenePath.string());
+    EXPECT_TRUE(manager.IsCurrentSceneLoadedFromDisk());
+    EXPECT_TRUE(manager.HasUnsavedSceneChanges());
+    EXPECT_EQ(manager.GetLastLoadedSceneDocument(), editDocument);
+    EXPECT_EQ(activationCount, 3u);
+    EXPECT_EQ(successfulLoadCount, 0u);
+    EXPECT_EQ(unloadCount, 0u);
+
+    manager.SceneLoadEvent -= activationListener;
+    manager.SceneLoadSucceededEvent -= successfulLoadListener;
+    manager.SceneUnloadEvent -= unloadListener;
+    std::filesystem::remove(editScenePath);
+    std::filesystem::remove(replacementScenePath);
+    std::filesystem::remove(invalidReplacementScenePath);
+}
+
+TEST(SceneObjectGraphSerializationTests, CanvasDocumentReferenceWritesStructuredDataAndMigratesLegacyPath)
+{
+    using namespace NLS::Engine::Components;
+    using namespace NLS::Engine::Serialize;
+
+    const auto documentAssetId = NLS::Core::Assets::AssetId(
+        NLS::Guid::Parse("42ae0b18-ca58-46f0-8b9f-a5e653efe7f6"));
+    UICanvasComponent source;
+    source.SetDocumentReference(NLS::Engine::UI::UIDocumentReference(documentAssetId, "Assets/UI/Hud.ui"));
+
+    const auto record = ObjectGraphSerializer::SerializeObjectRecord(
+        source,
+        ObjectId(NLS::Guid::Parse("f2c1bc0b-d452-4b40-aaba-c895c914f59e")));
+    const auto* document = FindProperty(record, "document");
+    ASSERT_NE(document, nullptr);
+    ASSERT_EQ(document->value.GetKind(), PropertyValue::Kind::Object);
+    const auto findMember = [](const auto& members, const std::string_view name) -> const PropertyValue*
+    {
+        const auto found = std::find_if(members.begin(), members.end(), [name](const auto& member)
+        {
+            return member.first == name;
+        });
+        return found == members.end() ? nullptr : &found->second;
+    };
+    const auto* assetId = findMember(document->value.GetObject(), "assetId");
+    ASSERT_NE(assetId, nullptr);
+    EXPECT_EQ(assetId->GetString(), documentAssetId.ToString());
+    const auto* resourcePath = findMember(document->value.GetObject(), "resourcePath");
+    ASSERT_NE(resourcePath, nullptr);
+    EXPECT_EQ(resourcePath->GetString(), "Assets/UI/Hud.ui");
+    EXPECT_EQ(FindProperty(record, "documentPath"), nullptr);
+
+    auto legacy = MakeSimpleSceneDocument();
+    const auto canvasId = ObjectId(NLS::Guid::Parse("983a0591-dab0-4ab5-8518-3fa701178b9d"));
+    const auto gameObject = std::find_if(legacy.objects.begin(), legacy.objects.end(), [](const ObjectRecord& item)
+    {
+        return item.typeName == "NLS::Engine::GameObject";
+    });
+    ASSERT_NE(gameObject, legacy.objects.end());
+    auto* components = FindMutableProperty(*gameObject, "components");
+    ASSERT_NE(components, nullptr);
+    auto componentReferences = components->value.GetArray();
+    componentReferences.push_back(PropertyValue::OwnedReference(canvasId));
+    components->value = PropertyValue::Array(std::move(componentReferences));
+
+    ObjectRecord legacyCanvas;
+    legacyCanvas.id = canvasId;
+    legacyCanvas.localIdentifierInFile = MakeLocalIdentifierInFile(canvasId);
+    legacyCanvas.typeName = NLS_TYPEOF(UICanvasComponent).GetName();
+    legacyCanvas.debugName = "Canvas";
+    legacyCanvas.properties.push_back({"documentPath", PropertyValue::String("Assets/UI/LegacyHud.ui")});
+    legacy.objects.push_back(std::move(legacyCanvas));
+
+    auto loaded = ObjectGraphInstantiator::InstantiateScene(legacy);
+    ASSERT_NE(loaded, nullptr);
+    auto* loadedOwner = loaded->FindGameObjectByName("Player");
+    ASSERT_NE(loadedOwner, nullptr);
+    auto* loadedCanvas = loadedOwner->GetComponent<UICanvasComponent>();
+    ASSERT_NE(loadedCanvas, nullptr);
+    EXPECT_FALSE(loadedCanvas->GetDocumentReference().GetAssetId().IsValid());
+    EXPECT_EQ(loadedCanvas->GetDocumentReference().GetResourcePath(), "Assets/UI/LegacyHud.ui");
+
+    const auto rewritten = ObjectGraphSerializer::SerializeScene(*loaded);
+    const auto rewrittenCanvas = std::find_if(rewritten.objects.begin(), rewritten.objects.end(), [](const ObjectRecord& item)
+    {
+        return item.typeName == NLS_TYPEOF(UICanvasComponent).GetName();
+    });
+    ASSERT_NE(rewrittenCanvas, rewritten.objects.end());
+    EXPECT_NE(FindProperty(*rewrittenCanvas, "document"), nullptr);
+    EXPECT_EQ(FindProperty(*rewrittenCanvas, "documentPath"), nullptr);
 }

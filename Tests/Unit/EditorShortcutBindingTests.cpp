@@ -14,6 +14,37 @@ TEST(EditorShortcutBindingTests, FormatsModifiersInStableDisplayOrder)
     EXPECT_EQ(ToDisplayString(binding), "Ctrl + Shift + Alt + S");
 }
 
+TEST(EditorShortcutBindingTests, FormatsLogicalPrimaryForTheCurrentPlatform)
+{
+    const auto binding = ShortcutBinding::FromKey(
+        EKey::KEY_S,
+        EShortcutModifier::Primary | EShortcutModifier::Shift);
+
+#if defined(__APPLE__)
+    EXPECT_EQ(ToDisplayString(binding), "Cmd + Shift + S");
+#else
+    EXPECT_EQ(ToDisplayString(binding), "Ctrl + Shift + S");
+#endif
+}
+
+TEST(EditorShortcutBindingTests, KeepsPhysicalModifierBindingsDistinctInStorage)
+{
+    const auto primary = ShortcutBinding::FromKey(EKey::KEY_S, EShortcutModifier::Primary);
+    const auto ctrl = ShortcutBinding::FromKey(EKey::KEY_S, EShortcutModifier::Ctrl);
+    const auto super = ShortcutBinding::FromKey(EKey::KEY_S, EShortcutModifier::Super);
+
+    EXPECT_NE(primary, ctrl);
+    EXPECT_NE(primary, super);
+
+#if defined(__APPLE__)
+    EXPECT_TRUE(AreShortcutBindingsEquivalentForCurrentPlatform(primary, super));
+    EXPECT_FALSE(AreShortcutBindingsEquivalentForCurrentPlatform(primary, ctrl));
+#else
+    EXPECT_TRUE(AreShortcutBindingsEquivalentForCurrentPlatform(primary, ctrl));
+    EXPECT_FALSE(AreShortcutBindingsEquivalentForCurrentPlatform(primary, super));
+#endif
+}
+
 TEST(EditorShortcutBindingTests, RejectsUnassignedAndModifierOnlyBindings)
 {
     EXPECT_FALSE(ShortcutBinding::Unassigned().IsValid());

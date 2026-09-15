@@ -256,10 +256,13 @@ namespace NLS::Render::FrameGraph
         if (framebuffer == nullptr)
             return;
 
-        frame.outputColorTexture = framebuffer->GetExplicitTextureHandle();
-        frame.outputDepthStencilTexture = framebuffer->GetExplicitDepthStencilTextureHandle();
-        frame.outputColorView = framebuffer->GetOrCreateExplicitColorView("SceneOutputColorView");
-        frame.outputDepthStencilView = framebuffer->GetOrCreateExplicitDepthStencilView("SceneOutputDepthView");
+        const auto resources = framebuffer->CaptureExplicitResourceSnapshot(
+            "SceneOutputColorView",
+            "SceneOutputDepthView");
+        frame.outputColorTexture = resources.colorTexture;
+        frame.outputDepthStencilTexture = resources.depthStencilTexture;
+        frame.outputColorView = resources.colorView;
+        frame.outputDepthStencilView = resources.depthStencilView;
     }
 
     NLS::Render::Data::FrameDescriptor CaptureExternalSceneOutputSnapshot(
@@ -280,10 +283,13 @@ namespace NLS::Render::FrameGraph
             return snapshot;
         }
 
-        snapshot.outputColorTexture = outputBuffer->GetExplicitTextureHandle();
-        snapshot.outputDepthStencilTexture = outputBuffer->GetExplicitDepthStencilTextureHandle();
-        snapshot.outputColorView = outputBuffer->GetOrCreateExplicitColorView("SceneOutputColorView");
-        snapshot.outputDepthStencilView = outputBuffer->GetOrCreateExplicitDepthStencilView("SceneOutputDepthView");
+        const auto resources = outputBuffer->CaptureExplicitResourceSnapshot(
+            "SceneOutputColorView",
+            "SceneOutputDepthView");
+        snapshot.outputColorTexture = resources.colorTexture;
+        snapshot.outputDepthStencilTexture = resources.depthStencilTexture;
+        snapshot.outputColorView = resources.colorView;
+        snapshot.outputDepthStencilView = resources.depthStencilView;
         return snapshot;
     }
 

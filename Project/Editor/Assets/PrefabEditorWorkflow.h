@@ -245,6 +245,13 @@ public:
         PrefabInstanceRecord& instance,
         const NLS::Engine::Serialize::PatchOperation& patch) const;
     PrefabEditorOperationResult RevertAllOverrides(PrefabInstanceRecord& instance) const;
+    // Rebuild a connected instance from a freshly imported source while
+    // preserving and replaying its local override patches. Inspector Undo
+    // uses this instead of retaining pointers to components that a structural
+    // override may replace.
+    PrefabEditorOperationResult RefreshConnectedInstance(
+        PrefabInstanceRecord& instance,
+        const NLS::Engine::Assets::PrefabArtifact& prefab) const;
     PrefabEditorOperationResult OpenPrefabStage(const OpenPrefabStageRequest& request) const;
     void MarkStageDirty(PrefabStageState& stage) const;
     PrefabEditorOperationResult SavePrefabStage(

@@ -17,6 +17,7 @@
 #include <thread>
 
 #include <Core/ServiceLocator.h>
+#include <Engine/UI/UIDocumentSourceResolver.h>
 #include "Assets/ArtifactDatabase.h"
 #include "Assets/AssetBrowserPresentation.h"
 #include "Assets/BuiltInScriptRegistry.h"
@@ -37,8 +38,12 @@
 #include "Settings/EditorSettingsPersistence.h"
 #include "Utils/PathParser.h"
 #include <Scripting/ScriptComponent.h>
+#include <Scripting/CoreClrScriptBackend.h>
 #include <Scripting/ScriptRuntimeSetup.h>
+
+#include "Scripting/EditorScriptBridge.h"
 #include "Scripting/ManagedScriptDebugSession.h"
+#include "Serialization/EditorSerializationManagedBridge.h"
 #include "Debug/ExternalCodeEditor.h"
 #include "Debug/ProjectDebugWorkspace.h"
 #include "Debug/EditorDebugEndpoint.h"
@@ -986,6 +991,17 @@ Editor::Core::Context::Context(const std::string& p_projectPath, const std::stri
     ShaderManager::ProvideAssetPaths(projectAssetsPath, engineAssetsPath);
     MaterialManager::ProvideAssetPaths(projectAssetsPath, engineAssetsPath);
 
+    // UI document references are authored as "Assets/..." project paths. The
+    // canvas resolves them through this hook so assigning a document in the
+    // Inspector loads a live instance instead of opening the path verbatim.
+    Engine::UI::SetUIDocumentSourcePathResolver(
+        [assetsPath = std::string(projectAssetsPath)](const Engine::UI::UIDocumentReference& reference)
+        {
+            return Engine::UI::ResolveProjectUIDocumentPath(
+                assetsPath,
+                reference.GetResourcePath());
+        });
+
 	if (!IsProjectSettingsIntegrityVerified())
 	{
 		NLS_LOG_WARNING("Project settings file is missing keys or empty. Restoring editor defaults in " + projectFilePath);
@@ -1335,7 +1351,7 @@ Editor::Core::Context::Context(const std::string& p_projectPath, const std::stri
             scriptRuntime,
             std::filesystem::path(projectPath));
 #if NLS_ENABLE_CSHARP_SCRIPTING
-        // Editor C# compilation follows source imports, like Unity's script
+        // Editor C# compilation follows source imports, like the external editor's script
         // compilation. Debugger attachment remains opt-in, but PDB-producing
         // Debug builds are prepared automatically so saving a .cs file never
         // requires opening a debug menu first.
@@ -1352,6 +1368,75 @@ Editor::Core::Context::Context(const std::string& p_projectPath, const std::stri
             std::string(scriptingSetup.luaRegistered ? "on" : "off") +
             ", C#=" + std::string(scriptingSetup.csharpRegistered ? "on" : "off") +
             ", schema=" + scriptRuntime.GetApi().GetSchemaHashHex() + ").");
+
+        // The managed editor assembly hosts SerializedObject/SerializedProperty.
+        // Publish the native ABI table now that CoreCLR is up so editor scripts
+        // share the same canonical snapshot/apply boundary as the native
+        // Inspector. A build without the managed editor assembly keeps running
+        // with the native-only surface.
+        if (const auto* csharpBackend = dynamic_cast<const NLS::Scripting::CoreClrScriptBackend*>(
+                scriptRuntime.GetBackend(NLS::Scripting::ScriptLanguage::CSharp)))
+        {
+            const auto managedEditorAssembly =
+                NLS::Editor::Serialization::ResolveManagedEditorAssembly(scriptingSetup.managedAssembly);
+            if (!managedEditorAssembly.empty())
+            {
+                const auto bridge = NLS::Editor::Serialization::InstallManagedSerializationBridge(
+                    csharpBackend->GetHost(),
+                    managedEditorAssembly);
+                if (bridge.installed)
+                {
+                    NLS_LOG_INFO(
+                        "Managed editor serialization bridge installed (" +
+                        managedEditorAssembly.filename().string() + ").");
+                }
+                else
+                {
+                    NLS_LOG_WARNING(
+                        "Managed editor serialization bridge was not installed: " + bridge.message);
+                }
+
+                // Project editor scripts (Assets/**/Editor/**/*.cs) are a
+                // separate assembly.  Publish the scripted-editor ABI so a
+                // CustomEditor/EditorWindow registered there can drive the
+                // Inspector and create tool windows.  A project without an
+                // Editor directory simply keeps the native-only surface.
+                const auto editorScriptsAssembly = NLS::Editor::Scripting::ResolveEditorScriptsAssembly(
+                    managedEditorAssembly.parent_path());
+                if (!editorScriptsAssembly.empty())
+                {
+                    // Scripted editor plumbing must never take the editor down:
+                    // a failure here degrades to the native-only surface.
+                    try
+                    {
+                        const auto scriptBridge = NLS::Editor::Scripting::InstallEditorScriptBridge(
+                            csharpBackend->GetHost(),
+                            managedEditorAssembly,
+                            editorScriptsAssembly);
+                        if (scriptBridge.installed)
+                        {
+                            NLS_LOG_INFO(
+                                "Managed editor script bridge installed (" +
+                                editorScriptsAssembly.filename().string() + ").");
+                        }
+                        else
+                        {
+                            NLS_LOG_WARNING(
+                                "Managed editor script bridge was not installed: " + scriptBridge.message);
+                        }
+                    }
+                    catch (const std::exception& exception)
+                    {
+                        NLS_LOG_ERROR(
+                            "Managed editor script bridge threw: " + std::string(exception.what()));
+                    }
+                    catch (...)
+                    {
+                        NLS_LOG_ERROR("Managed editor script bridge threw an unknown exception.");
+                    }
+                }
+            }
+        }
     }
 
     const auto editorExecutable = NLS::Platform::Process::GetCurrentExecutablePath();

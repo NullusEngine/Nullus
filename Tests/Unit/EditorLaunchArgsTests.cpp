@@ -978,7 +978,7 @@ TEST(EditorLaunchArgsTests, EditorWritesPrefabDragProxyValidationSummaryWhenConf
     EXPECT_NE(editorSource.find("sceneViewDragLoopExercised=true"), std::string::npos)
         << "The validation summary must prove the Scene View drag/drop target path itself drives the proxy.";
     EXPECT_NE(editorSource.find("sceneViewDragLoopPayloadAcceptedBeforeDelivery=true"), std::string::npos)
-        << "Unity-level drag feel depends on AcceptBeforeDelivery updates before mouse release.";
+        << "editor-level drag feel depends on AcceptBeforeDelivery updates before mouse release.";
     EXPECT_NE(editorSource.find("sceneViewDragLoopProxyDescriptorCount="), std::string::npos)
         << "The summary must report how many proxy descriptors came from SceneView active-drag state.";
 
@@ -1500,7 +1500,7 @@ TEST(EditorLaunchArgsTests, AssetBrowserHoveredPrefabPrewarmsBeforeDragStarts)
         std::filesystem::path(NLS_ROOT_DIR) / "Project/Editor/Panels/AssetBrowser.cpp");
 
     EXPECT_NE(header.find("SchedulePrefabHotCachePreloadForHoveredItem"), std::string::npos)
-        << "Unity-feel prefab drags need a hover/dwell prewarm hook before the user starts dragging.";
+        << "editor-feel prefab drags need a hover/dwell prewarm hook before the user starts dragging.";
 
     const auto functionStart = source.find("void Editor::Panels::AssetBrowser::DrawCurrentFolderGrid()");
     ASSERT_NE(functionStart, std::string::npos);
@@ -1672,8 +1672,16 @@ TEST(EditorLaunchArgsTests, SceneViewPendingPrefabCommitUsesSnapshottedPlacement
         << "Commit must verify the transient root's scene token before dereferencing the root.";
     EXPECT_LT(commitBody.find("m_activeDraggedPrefabRootSceneToken.has_value()"), commitBody.find("root->IsAlive()"))
         << "Commit must check the scene generation before dereferencing a root that may have belonged to an unloaded scene.";
-    EXPECT_NE(commitBody.find("EDITOR_EXEC(MarkOwningSceneDirty(*root))"), std::string::npos)
-        << "Committing should dirty the root's owning scene, including an active Prefab Stage.";
+    EXPECT_NE(commitBody.find("BuildSceneViewUndoScope(*root)"), std::string::npos)
+        << "The final drop must retain the Scene or Prefab Stage scope captured from the transient root.";
+    EXPECT_NE(commitBody.find("HierarchyUndo::CreateGameObjectFromAsset"), std::string::npos)
+        << "Committing a prefab drop must create the persistent instance through the global Undo command.";
+    EXPECT_NE(commitBody.find("EditorUndoService"), std::string::npos)
+        << "Scene View must reject a permanent drop when the global Undo service is unavailable.";
+    EXPECT_EQ(commitBody.find("root->SetEditorTransient(false)"), std::string::npos)
+        << "The transient hover root must never be permanentized outside the Undo timeline.";
+    EXPECT_EQ(commitBody.find("MarkOwningSceneDirty(*root)"), std::string::npos)
+        << "The hierarchy command owns persistent scene dirtying after it records the creation snapshot.";
 }
 
 TEST(EditorLaunchArgsTests, EditorObjectMutationInvalidatesOwningPrefabStageRenderRevision)
@@ -1696,6 +1704,29 @@ TEST(EditorLaunchArgsTests, EditorObjectMutationInvalidatesOwningPrefabStageRend
         << "Prefab Stage mutations must invalidate the render revision used by Scene View's trusted sync fast path.";
     EXPECT_NE(helperBody.find("activePrefabStage->dirty = true"), std::string::npos)
         << "Prefab Stage mutations must remain persistently dirty after render invalidation.";
+}
+
+TEST(EditorLaunchArgsTests, InspectorUndoMarksResolvedOwnersWithoutUsingCurrentSelection)
+{
+    const auto panelSource = ReadTextFile("Project/Editor/Panels/Inspector.cpp");
+    EXPECT_EQ(panelSource.find("EditorSelectionService"), std::string::npos)
+        << "Inspector dirty tracking must not guess an owner from the global selection.";
+    EXPECT_EQ(panelSource.find("PropertyChangedEvent +="), std::string::npos)
+        << "Property commands own their persistent dirty-state side effect.";
+    EXPECT_EQ(panelSource.find("StructureChangedEvent +="), std::string::npos)
+        << "Structure commands own their persistent dirty-state side effect.";
+
+    const auto serializedUndoSource = ReadTextFile("Project/Editor/Serialization/SerializedObject.cpp");
+    EXPECT_NE(serializedUndoSource.find("MakeDurableTarget(change.target)"), std::string::npos)
+        << "Serialized history must retain durable targets instead of transient UI state.";
+    EXPECT_NE(serializedUndoSource.find("m_backend->DeserializeTarget(change.target"), std::string::npos)
+        << "Property history replay must resolve the command target through its backend.";
+    EXPECT_NE(serializedUndoSource.find("MakeScope(target)"), std::string::npos)
+        << "Serialized history must report the affected durable scope to the global Undo service.";
+
+    const auto structureUndoSource = ReadTextFile("Project/Editor/Inspector/ComponentStructureUndo.cpp");
+    EXPECT_NE(structureUndoSource.find("MarkComponentStructureOwnerDirty(*owner)"), std::string::npos)
+        << "Component Preview, Undo, and Redo must mark their resolved owner through the command path.";
 }
 
 TEST(EditorLaunchArgsTests, SceneViewCancelUsesRootSceneTokenBeforeTouchingTransientRoot)
@@ -1933,6 +1964,131 @@ TEST(EditorLaunchArgsTests, SceneViewValidationReadbackCloseBypassesUnsavedScene
         << "Automated Scene View readback validation must close without showing an unsaved-scene dialog.";
 }
 
+TEST(EditorLaunchArgsTests, PlayModeCancelsPreviewAndFreezesUndoBeforeSceneActivation)
+{
+    const auto actionsSource = ReadTextFile("Project/Editor/Core/EditorActions.cpp");
+    const auto functionStart = actionsSource.find("void Editor::Core::EditorActions::StartPlaying()");
+    ASSERT_NE(functionStart, std::string::npos);
+    const auto functionEnd = actionsSource.find("void Editor::Core::EditorActions::PauseGame()", functionStart);
+    ASSERT_NE(functionEnd, std::string::npos);
+    const auto body = actionsSource.substr(functionStart, functionEnd - functionStart);
+
+    const auto cancelPreview = body.find("undo->RequestUndo()");
+    const auto freeze = body.find("undo->Freeze(NLS::Editor::Undo::UndoFreezeReason::PlayMode)");
+    const auto playEvent = body.find("PlayEvent.Invoke()");
+    const auto scenePlay = body.find("scene->Play()", playEvent);
+    const auto setMode = body.find("SetEditorMode(EEditorMode::PLAY)", scenePlay);
+    const auto releaseFreeze = body.rfind("undo->Unfreeze(NLS::Editor::Undo::UndoFreezeReason::PlayMode)");
+
+    ASSERT_NE(cancelPreview, std::string::npos);
+    ASSERT_NE(freeze, std::string::npos);
+    ASSERT_NE(playEvent, std::string::npos);
+    ASSERT_NE(scenePlay, std::string::npos);
+    ASSERT_NE(setMode, std::string::npos);
+    ASSERT_NE(releaseFreeze, std::string::npos);
+    EXPECT_NE(body.find("undo->IsPending()"), std::string::npos);
+    EXPECT_NE(body.find("undo->IsPoisoned()"), std::string::npos);
+    EXPECT_NE(body.find("undo->IsFrozen()"), std::string::npos);
+    EXPECT_LT(cancelPreview, freeze);
+    EXPECT_LT(freeze, playEvent);
+    EXPECT_LT(playEvent, scenePlay);
+    EXPECT_LT(scenePlay, setMode);
+    EXPECT_LT(setMode, releaseFreeze);
+    EXPECT_EQ(body.find("result.state != NLS::Editor::Undo::UndoRequestState::Stale"), std::string::npos)
+        << "A stale preview was not restored, so Play must reject it rather than start with mutable edit state.";
+    EXPECT_NE(body.find("catch (const std::exception& exception)"), std::string::npos);
+    const auto rollbackStop = body.find("scene->IsPlaying()");
+    ASSERT_NE(rollbackStop, std::string::npos);
+    EXPECT_NE(body.find("scene->Stop()", rollbackStop), std::string::npos)
+        << "A failed Play activation must stop a partially started scene before releasing the temporary freeze.";
+}
+
+TEST(EditorLaunchArgsTests, UndoSceneScopeSurvivesPlaySandboxButRotatesForRealSceneLoads)
+{
+    const auto source = ReadTextFile("Project/Editor/Core/EditorActions.cpp");
+    const auto constructorStart = source.find("Editor::Core::EditorActions::EditorActions(");
+    ASSERT_NE(constructorStart, std::string::npos);
+    const auto constructorEnd = source.find("Editor::Core::EditorActions::~EditorActions()", constructorStart);
+    ASSERT_NE(constructorEnd, std::string::npos);
+    const auto constructor = source.substr(constructorStart, constructorEnd - constructorStart);
+
+    const auto activationListener = constructor.find("m_sceneLoadListener = m_context.sceneManager.SceneLoadEvent += [this]");
+    const auto successfulLoadListener = constructor.find(
+        "m_sceneLoadSucceededListener = m_context.sceneManager.SceneLoadSucceededEvent += [this]");
+    ASSERT_NE(activationListener, std::string::npos)
+        << "SceneLoadEvent must continue to invalidate transient async Scene mutation tokens.";
+    ASSERT_NE(successfulLoadListener, std::string::npos)
+        << "Successful real scene loads must advance the durable Edit-scene Undo generation.";
+    EXPECT_NE(constructor.find("++m_mainSceneGeneration", activationListener), std::string::npos);
+    EXPECT_NE(constructor.find("++m_editSceneUndoGeneration", successfulLoadListener), std::string::npos);
+    EXPECT_NE(constructor.find("m_editSceneUndoDocumentKey = \"edit-scene:\"", successfulLoadListener), std::string::npos);
+
+    const auto scopeStart = source.find("NLS::Editor::Undo::UndoScopeId Editor::Core::EditorActions::GetUndoScopeForScene(");
+    ASSERT_NE(scopeStart, std::string::npos);
+    const auto scopeEnd = source.find("NLS::Editor::Undo::UndoScopeId Editor::Core::EditorActions::GetActivePrefabStageUndoScope()", scopeStart);
+    ASSERT_NE(scopeEnd, std::string::npos);
+    const auto scopeBody = source.substr(scopeStart, scopeEnd - scopeStart);
+    EXPECT_NE(scopeBody.find("m_editSceneUndoGeneration"), std::string::npos);
+    EXPECT_NE(scopeBody.find("m_editSceneUndoDocumentKey"), std::string::npos)
+        << "Scene history must be keyed by its durable document identity, not its current file path.";
+    EXPECT_EQ(scopeBody.find("GetCurrentSceneSourcePath"), std::string::npos)
+        << "Save As must not re-key existing Scene Undo history.";
+    EXPECT_NE(scopeBody.find("GetActivePrefabStageUndoScope()"), std::string::npos);
+
+    const auto saveStart = source.find("bool Editor::Core::EditorActions::SaveCurrentSceneTo(");
+    ASSERT_NE(saveStart, std::string::npos);
+    const auto saveEnd = source.find("bool Editor::Core::EditorActions::RestorePrefabInstancesForCurrentSceneFromDisk(", saveStart);
+    ASSERT_NE(saveEnd, std::string::npos);
+    const auto saveBody = source.substr(saveStart, saveEnd - saveStart);
+    EXPECT_NE(saveBody.find("const auto previousUndoScope = GetUndoScopeForScene(*currentScene)"), std::string::npos);
+    EXPECT_NE(saveBody.find("StoreCurrentSceneSourcePath(scenePath.string())"), std::string::npos);
+    EXPECT_NE(saveBody.find("undo.MarkSaved(previousUndoScope)"), std::string::npos)
+        << "Saving, including Save As, must move the existing Scene scope's save point.";
+    EXPECT_EQ(saveBody.find("m_editSceneUndoDocumentKey ="), std::string::npos);
+    EXPECT_EQ(saveBody.find("++m_editSceneUndoGeneration"), std::string::npos);
+}
+
+TEST(EditorLaunchArgsTests, ClosingPrefabStageInvalidatesItsCurrentUndoGeneration)
+{
+    const auto source = ReadTextFile("Project/Editor/Core/EditorActions.cpp");
+    const auto functionStart = source.find("bool Editor::Core::EditorActions::CloseActivePrefabStage(bool saveBeforeClose)");
+    ASSERT_NE(functionStart, std::string::npos);
+    const auto functionEnd = source.find("void Editor::Core::EditorActions::SaveAs()", functionStart);
+    ASSERT_NE(functionEnd, std::string::npos);
+    const auto body = source.substr(functionStart, functionEnd - functionStart);
+
+    const auto scope = body.find("GetActivePrefabStageUndoScope()");
+    const auto invalidate = body.find("InvalidateScope(", scope);
+    const auto rotate = body.find("++m_prefabStageGeneration");
+    const auto close = body.find("m_context.activePrefabStage.reset()");
+    ASSERT_NE(scope, std::string::npos);
+    ASSERT_NE(invalidate, std::string::npos);
+    ASSERT_NE(rotate, std::string::npos);
+    ASSERT_NE(close, std::string::npos);
+    EXPECT_LT(scope, invalidate);
+    EXPECT_LT(invalidate, rotate);
+    EXPECT_LT(rotate, close);
+}
+
+TEST(EditorLaunchArgsTests, ReplacingPrefabStageUsesTheSameUndoInvalidationPath)
+{
+    const auto source = ReadTextFile("Project/Editor/Panels/AssetBrowser.cpp");
+    const auto prefabBranch = source.find("if (item.type == AssetBrowserItemType::Prefab)");
+    ASSERT_NE(prefabBranch, std::string::npos);
+    const auto materialBranch = source.find("if (item.kind == AssetBrowserItemKind::SourceAsset &&", prefabBranch);
+    ASSERT_NE(materialBranch, std::string::npos);
+    const auto body = source.substr(prefabBranch, materialBranch - prefabBranch);
+
+    const auto close = body.find("CloseActivePrefabStage(false)");
+    const auto assign = body.find("activePrefabStage = std::move(stage.stage)");
+    const auto opened = body.find("NotifyPrefabStageOpened()", assign);
+    ASSERT_NE(close, std::string::npos);
+    ASSERT_NE(assign, std::string::npos);
+    ASSERT_NE(opened, std::string::npos);
+    EXPECT_LT(close, assign);
+    EXPECT_LT(assign, opened);
+}
+
 TEST(EditorLaunchArgsTests, SceneLoadMeshArtifactLoadsAreOpportunistic)
 {
     const auto actionsSource = ReadTextFile("Project/Editor/Core/EditorActions.cpp");
@@ -2148,7 +2304,7 @@ TEST(EditorLaunchArgsTests, BridgePrefabHotCacheKeyCurrentCheckUsesCurrentFinalD
         << "Graph-only preview keys are transient and must not satisfy final-drop freshness.";
 }
 
-TEST(EditorLaunchArgsTests, SceneViewCommitRejectsGraphOnlyPreviewKeyBeforeFinalizing)
+TEST(EditorLaunchArgsTests, SceneViewCommitRoutesPersistentPrefabDropThroughGlobalUndo)
 {
     const auto source = ReadTextFile("Project/Editor/Panels/SceneView.cpp");
     const auto functionStart = source.find("bool Editor::Panels::SceneView::CommitActivePrefabDragInstance()");
@@ -2162,16 +2318,90 @@ TEST(EditorLaunchArgsTests, SceneViewCommitRejectsGraphOnlyPreviewKeyBeforeFinal
         << "Scene View final release must not convert graph-only hover previews into permanent scene objects.";
     const auto cancelAfterGuard = body.find("CancelActivePrefabDragInstance()", graphOnlyGuard);
     ASSERT_NE(cancelAfterGuard, std::string::npos)
-        << "A graph-only preview without a renderer-ready replacement should be removed on final release.";
-    const auto formalDropAfterCancel = body.find("TryDropImportedAssetHandleFromHotCacheIntoHierarchy", cancelAfterGuard);
-    ASSERT_NE(formalDropAfterCancel, std::string::npos)
-        << "If renderer-ready data exists, Scene View must create a formal instance instead of permanentizing the graph-only preview root.";
-    EXPECT_NE(body.find("rendererReadyHotCacheKey"), std::string::npos)
-        << "The renderer-ready key used for formal commit must be kept separate from the graph-only preview key.";
-    const auto finalize = body.find("root->SetEditorTransient(false)");
-    ASSERT_NE(finalize, std::string::npos);
-    EXPECT_LT(formalDropAfterCancel, finalize)
-        << "Graph-only preview rejection must happen before clearing the transient flag.";
+        << "A graph-only preview must be removed before the persistent Undo command is executed.";
+    const auto undoCreateAfterCancel = body.find("HierarchyUndo::CreateGameObjectFromAsset", cancelAfterGuard);
+    ASSERT_NE(undoCreateAfterCancel, std::string::npos)
+        << "The final asset creation must be represented by a global Undo command after preview cleanup.";
+    EXPECT_NE(body.find("BuildSceneViewUndoScope(*root)"), std::string::npos)
+        << "The command must retain the Scene or Prefab Stage scope rather than relying on current selection.";
+    EXPECT_NE(body.find("placement"), std::string::npos)
+        << "The release placement must be captured by the persistent creation command.";
+    EXPECT_EQ(body.find("TryDropImportedAssetHandleFromHotCacheIntoHierarchy"), std::string::npos)
+        << "Scene View must not bypass the global timeline by directly inserting the final prefab instance.";
+    EXPECT_EQ(body.find("root->SetEditorTransient(false)"), std::string::npos)
+        << "The preview root must never become persistent directly.";
+}
+
+TEST(EditorLaunchArgsTests, SceneViewLegacyBuiltinAssetDropRoutesThroughGlobalUndo)
+{
+    const auto source = ReadTextFile("Project/Editor/Panels/SceneView.cpp");
+    const auto functionStart = source.find("void Editor::Panels::SceneView::HandleViewportAssetDragDrop()");
+    ASSERT_NE(functionStart, std::string::npos);
+    const auto functionEnd = source.find("void Editor::Panels::SceneView::UpdateActivePrefabDragInstance", functionStart);
+    ASSERT_NE(functionEnd, std::string::npos);
+    const auto body = source.substr(functionStart, functionEnd - functionStart);
+
+    const auto legacyDrop = body.find("AcceptDragDropPayload(\"File\"");
+    ASSERT_NE(legacyDrop, std::string::npos);
+    const auto legacyBody = body.substr(legacyDrop);
+
+    EXPECT_NE(legacyBody.find("EditorUndoService"), std::string::npos)
+        << "Legacy built-in asset drops must be rejected when the global Undo service is unavailable.";
+    EXPECT_NE(legacyBody.find("HierarchyUndo::CreateGameObjectFromAsset"), std::string::npos)
+        << "Legacy built-in asset drops must execute through the reusable hierarchy Undo command.";
+    EXPECT_NE(legacyBody.find("BuildSceneViewUndoScope(*scene)"), std::string::npos)
+        << "The persistent command must capture the active Scene or Prefab Stage scope.";
+    EXPECT_EQ(legacyBody.find("EDITOR_EXEC(CreateGameObjectFromAsset(path, true))"), std::string::npos)
+        << "Legacy built-in asset drops must not mutate the Scene directly outside the global timeline.";
+}
+
+TEST(EditorLaunchArgsTests, SceneViewGizmoPreviewWritesOnlyInsideTheUndoEdit)
+{
+    const auto source = ReadTextFile("Project/Editor/Panels/SceneView.cpp");
+    const auto editStart = source.find("class SceneViewTransformEdit final");
+    ASSERT_NE(editStart, std::string::npos);
+    const auto editEnd = source.find("Editor::Undo::UndoScopeId BuildSceneViewUndoScope", editStart);
+    ASSERT_NE(editEnd, std::string::npos);
+    const auto editBody = source.substr(editStart, editEnd - editStart);
+
+    EXPECT_NE(editBody.find("Core::ApplyGameObjectWorldGizmoMatrix"), std::string::npos)
+        << "The continuous edit must own the transform write performed under PreviewEditSession's mutation context.";
+    EXPECT_NE(editBody.find("pendingModelMatrix"), std::string::npos)
+        << "The edit must consume a durable per-session matrix snapshot rather than a SceneView pointer.";
+
+    const auto overlayStart = source.find("void Editor::Panels::SceneView::DrawViewportOverlay()");
+    ASSERT_NE(overlayStart, std::string::npos);
+    const auto overlayEnd = source.find("void Editor::Panels::SceneView::ApplyValidationCameraForwardStep", overlayStart);
+    ASSERT_NE(overlayEnd, std::string::npos);
+    const auto overlayBody = source.substr(overlayStart, overlayEnd - overlayStart);
+
+    EXPECT_NE(overlayBody.find("m_gizmoEditState->pendingModelMatrix = modelMatrix"), std::string::npos)
+        << "The panel should only stage ImGuizmo's matrix before requesting Preview.";
+    EXPECT_NE(overlayBody.find("PreviewEditSession"), std::string::npos);
+    EXPECT_EQ(overlayBody.find("Core::ApplyGameObjectWorldGizmoMatrix"), std::string::npos)
+        << "SceneView must not mutate a GameObject before the Undo service establishes a mutation context.";
+}
+
+TEST(EditorLaunchArgsTests, HierarchyUndoAssetCreateRetainsSceneViewReleasePlacement)
+{
+    const auto header = ReadTextFile("Project/Editor/Panels/HierarchyUndo.h");
+    const auto source = ReadTextFile("Project/Editor/Panels/HierarchyUndo.cpp");
+
+    EXPECT_NE(header.find("std::optional<Maths::Vector3> placementOverride"), std::string::npos)
+        << "The reusable hierarchy creation command must accept a durable placement snapshot.";
+
+    const auto commandStart = source.find("class SubtreeUndoCommand final");
+    ASSERT_NE(commandStart, std::string::npos);
+    const auto commandEnd = source.find("class AddScriptComponentCommand", commandStart);
+    ASSERT_NE(commandEnd, std::string::npos);
+    const auto commandBody = source.substr(commandStart, commandEnd - commandStart);
+
+    EXPECT_NE(commandBody.find("m_placementOverride"), std::string::npos)
+        << "The command must retain the release placement until its stable post-create snapshot is available.";
+    EXPECT_NE(commandBody.find("CreateGameObjectFromAssetBlocking(m_payload, true, parent, m_placementOverride)"), std::string::npos)
+        << "Initial prefab creation must apply the snapshotted placement inside the undo mutation context.";
+    EXPECT_NE(commandBody.find("m_snapshot = std::move(snapshot)"), std::string::npos)
+        << "Redo must restore the captured result rather than calculating a new drop position.";
 }
 
 TEST(EditorLaunchArgsTests, UnifiedPrefabRuntimeCacheIdentitySeparatesRendererReadinessMode)
@@ -2365,7 +2595,7 @@ TEST(EditorLaunchArgsTests, SceneRestoreGeneratedModelPrefabInstantiationPrewarm
     const auto instantiateStart = facadeSource.find("PrefabOperationResult InstantiateStrippedPrefabInstance(");
     ASSERT_NE(instantiateStart, std::string::npos);
     const auto instantiateEnd = facadeSource.find(
-        "PrefabOperationResult RestoreUnityStylePrefabInstancesFromSceneDocument(",
+        "PrefabOperationResult RestoreEngineStylePrefabInstancesFromSceneDocument(",
         instantiateStart);
     ASSERT_NE(instantiateEnd, std::string::npos);
     const auto instantiateBody = facadeSource.substr(instantiateStart, instantiateEnd - instantiateStart);

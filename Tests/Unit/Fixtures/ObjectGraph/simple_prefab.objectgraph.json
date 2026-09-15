@@ -13,6 +13,7 @@
                     "z": 1.0
                 },
                 "cutoff": 12.0,
+                "enabled": true,
                 "intensity": 2.0,
                 "lightType": "POINT",
                 "outerCutoff": 15.0,
@@ -55,6 +56,7 @@
             "fileID": 7857195377552477357,
             "id": "c7a286ad-1388-4447-8c26-7c16b7350f41",
             "properties": {
+                "enabled": true,
                 "localPosition": {
                     "x": 0.0,
                     "y": 0.0,
@@ -77,5 +79,5 @@
         }
     ],
     "root": "31cbedb2-f20b-4d89-8522-11f642eecceb",
-    "version": 1
+    "version": 2
 }

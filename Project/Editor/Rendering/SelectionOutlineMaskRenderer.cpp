@@ -800,7 +800,7 @@ namespace NLS::Editor::Rendering
 
         if (enableVisibleDepthRefinement)
         {
-            // Unity uses max blending plus ColorMask GBA for this contribution. Nullus
+            // external editor uses max blending plus ColorMask GBA for this contribution. Nullus
             // recorded helper commands do not expose that RHI override yet, so capture
             // selected coverage first and let a bounded visible pass overwrite front pixels.
             CaptureMaskDrawCommandsForGroups(

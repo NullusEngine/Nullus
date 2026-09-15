@@ -917,8 +917,8 @@ TEST(AssetBrowserPresentationTests, AssetTypeIconOverridesUseCatalogedNullusReso
             continue;
         }
 
-        EXPECT_EQ(record.id.find("unity"), std::string::npos) << record.id;
-        EXPECT_EQ(record.developmentPath.generic_string().find("unity"), std::string::npos)
+        EXPECT_EQ(record.id.find("engine"), std::string::npos) << record.id;
+        EXPECT_EQ(record.developmentPath.generic_string().find("engine"), std::string::npos)
             << record.developmentPath.generic_string();
         const auto iconPath =
             std::filesystem::path(NLS_ROOT_DIR) / "App" / "Assets" / record.developmentPath;
@@ -9368,10 +9368,122 @@ TEST(AssetBrowserPresentationTests, UiDocumentCanBeSelectedOrDraggedAsAnObjectRe
     sourceItem.type = AssetBrowserItemType::Other;
     sourceItem.assetId = documentAssetId;
     sourceItem.dragResourcePath = "Assets/UI/Hud.ui";
+    EXPECT_TRUE(ShouldUseEditorAssetDragPayload(sourceItem));
     const auto dragPayload = MakeAssetBrowserItemDragPayload(sourceItem, nullptr);
     ASSERT_TRUE(dragPayload.has_value());
     EXPECT_EQ(GetEditorAssetDragPayloadArtifactType(*dragPayload), ArtifactType::UIDocument);
     EXPECT_EQ(GetEditorAssetDragPayloadSubAssetKey(*dragPayload), "ui-document:Hud");
+
+    // A source .ui file can be visible and draggable while its importer is
+    // still waiting to publish .meta/AssetId data. The path remains a stable
+    // reference for the Canvas picker and must not fall back to a generic File
+    // payload.
+    sourceItem.assetId = AssetId {};
+    const auto pathOnlyPayload = MakeAssetBrowserItemDragPayload(sourceItem, nullptr);
+    ASSERT_TRUE(pathOnlyPayload.has_value());
+    EXPECT_EQ(GetEditorAssetDragPayloadPath(*pathOnlyPayload), "Assets/UI/Hud.ui");
+    EXPECT_FALSE(GetEditorAssetDragPayloadAssetId(*pathOnlyPayload).IsValid());
+    EXPECT_EQ(GetEditorAssetDragPayloadArtifactType(*pathOnlyPayload), ArtifactType::UIDocument);
+    EXPECT_EQ(GetEditorAssetDragPayloadSubAssetKey(*pathOnlyPayload), "ui-document:Hud");
+}
+
+TEST(AssetBrowserPresentationTests, UiDocumentPickerEntriesComeFromAssetRootsBeforeImport)
+{
+    using namespace NLS::Editor::Assets;
+
+    const auto projectRoot = std::filesystem::temp_directory_path() /
+        ("nullus_ui_picker_roots_" + NLS::Guid::New().ToString());
+    const auto assetsPath = projectRoot / "Assets";
+    std::filesystem::create_directories(assetsPath / "UI");
+    std::filesystem::create_directories(assetsPath / "Library");
+    {
+        std::ofstream document(assetsPath / "UI" / "Hud.ui", std::ios::binary | std::ios::trunc);
+        document << R"json({"version":1,"root":{"type":"Panel","name":"HUD"}})json";
+    }
+    {
+        std::ofstream meta(assetsPath / "UI" / "Hud.ui.meta", std::ios::binary | std::ios::trunc);
+        meta << "GUID=a3030303-0303-4303-8303-030303030303\n"
+                "IMPORTER_ID=ui-document\n"
+                "IMPORTER_VERSION=1\n"
+                "ASSET_TYPE=ui-document\n";
+    }
+    {
+        // Generated data under Library must never become a picker candidate.
+        std::ofstream stale(assetsPath / "Library" / "Stale.ui", std::ios::binary | std::ios::trunc);
+        stale << "{}";
+    }
+
+    const EditorAssetRoot assetRoot { assetsPath, false, "Assets", projectRoot / "Library" };
+    const auto entries = BuildObjectReferencePickerEntriesFromAssetRoots({ assetRoot });
+
+    ASSERT_EQ(entries.size(), 1u);
+    EXPECT_EQ(entries[0].displayName, "Assets/UI/Hud.ui / ui-document:Hud");
+    EXPECT_EQ(GetEditorAssetDragPayloadPath(entries[0].payload), "Assets/UI/Hud.ui");
+    EXPECT_EQ(GetEditorAssetDragPayloadSubAssetKey(entries[0].payload), "ui-document:Hud");
+    EXPECT_EQ(
+        GetEditorAssetDragPayloadArtifactType(entries[0].payload),
+        NLS::Core::Assets::ArtifactType::UIDocument);
+    EXPECT_EQ(
+        GetEditorAssetDragPayloadAssetId(entries[0].payload).ToString(),
+        ParseAssetId("a3030303-0303-4303-8303-030303030303").ToString());
+    EXPECT_FALSE(IsEditorAssetDragPayloadGeneratedBrowserSubAsset(entries[0].payload));
+
+    std::filesystem::remove_all(projectRoot);
+}
+
+TEST(AssetBrowserPresentationTests, ObjectReferencePickerKeepsAuthoringDocumentsWhenTheCatalogPublishes)
+{
+    using namespace NLS::Editor::Assets;
+
+    const auto projectRoot = std::filesystem::temp_directory_path() /
+        ("nullus_ui_picker_merge_" + NLS::Guid::New().ToString());
+    const auto assetsPath = projectRoot / "Assets";
+    std::filesystem::create_directories(assetsPath / "UI");
+    {
+        std::ofstream document(assetsPath / "UI" / "Menu.ui", std::ios::binary | std::ios::trunc);
+        document << R"json({"version":1,"root":{"type":"Panel","name":"Menu"}})json";
+    }
+    {
+        std::ofstream meta(assetsPath / "UI" / "Menu.ui.meta", std::ios::binary | std::ios::trunc);
+        meta << "GUID=a4040404-0404-4404-8404-040404040404\n"
+                "IMPORTER_ID=ui-document\n"
+                "IMPORTER_VERSION=1\n"
+                "ASSET_TYPE=ui-document\n";
+    }
+
+    SetObjectReferencePickerAssetRoots(
+        {EditorAssetRoot { assetsPath, false, "Assets", projectRoot / "Library" }});
+
+    ObjectReferencePickerEntry databaseEntry;
+    databaseEntry.displayName = "Assets/Models/Hero.gltf / mesh:Body";
+    std::strncpy(
+        databaseEntry.payload.assetPath,
+        "Assets/Models/Hero.gltf",
+        sizeof(databaseEntry.payload.assetPath) - 1u);
+    std::strncpy(
+        databaseEntry.payload.subAssetKey,
+        "mesh:Body",
+        sizeof(databaseEntry.payload.subAssetKey) - 1u);
+
+    // This is exactly what the asset browser publishes once its database
+    // snapshot is ready: imported artifacts plus the authoring documents.
+    SetObjectReferencePickerEntries(
+        AppendObjectReferencePickerEntriesFromAssetRoots({databaseEntry}));
+
+    std::vector<std::string> displayNames;
+    for (const auto& entry : GetObjectReferencePickerEntries())
+        displayNames.push_back(entry.displayName);
+
+    EXPECT_NE(
+        std::find(displayNames.begin(), displayNames.end(), "Assets/Models/Hero.gltf / mesh:Body"),
+        displayNames.end());
+    EXPECT_NE(
+        std::find(displayNames.begin(), displayNames.end(), "Assets/UI/Menu.ui / ui-document:Menu"),
+        displayNames.end());
+
+    SetObjectReferencePickerAssetRoots({});
+    SetObjectReferencePickerEntries({});
+    std::filesystem::remove_all(projectRoot);
 }
 
 TEST(AssetBrowserPresentationTests, ObjectReferencePickerReadsSnapshotWithoutRebuildingOnOpen)

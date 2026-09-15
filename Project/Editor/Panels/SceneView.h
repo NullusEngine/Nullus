@@ -12,11 +12,13 @@
 #include "Assets/EditorAssetDragPayload.h"
 #include "Core/EditorActions.h"
 #include "Core/SceneCameraFocus.h"
+#include "Undo/EditorUndoService.h"
 #include "Engine/Assets/PrefabAsset.h"
 #include "Panels/AViewControllable.h"
 #include "Rendering/DebugSceneRenderer.h"
 #include "Panels/SceneViewPickingPolicy.h"
 #include "Core/SceneViewImGuizmo.h"
+#include "Undo/SceneObjectUndoTarget.h"
 
 namespace NLS::Editor::Core
 {
@@ -24,6 +26,8 @@ namespace NLS::Editor::Core
 
 namespace NLS::Editor::Panels
 {
+	struct SceneViewGizmoEditState;
+
             std::optional<Editor::Rendering::DebugSceneRenderer::PrefabDragProxyDescriptor>
             BuildSceneViewPrefabDragProxyDescriptor(
                 const std::optional<Maths::Vector3>& placement,
@@ -145,6 +149,7 @@ namespace NLS::Editor::Panels
 		private:
             class ViewportDragDropTarget;
 
+			void CancelGizmoEditSession();
 			void HandleGameObjectPicking();
         void EnsureCameraFocus();
         bool IsCameraControlActive() const;
@@ -170,7 +175,10 @@ namespace NLS::Editor::Panels
 		Engine::GameObject* m_highlightedGameObject = nullptr;
 		uint64_t m_destroyedListener = 0;
         bool m_validationCameraMotionActive = false;
-        Editor::Core::SceneViewGizmoInteraction m_gizmoInteraction;
+		Editor::Core::SceneViewGizmoInteraction m_gizmoInteraction;
+		std::optional<Editor::Undo::UndoEditSession> m_gizmoEditSession;
+		std::optional<Editor::Undo::SceneObjectUndoTarget> m_gizmoEditTarget;
+		std::shared_ptr<SceneViewGizmoEditState> m_gizmoEditState;
         Editor::Core::SceneCameraFocusState m_cameraFocus;
         Maths::Vector2 m_lastPickingMousePos { -10000.0f, -10000.0f };
         std::optional<Maths::Vector2> m_pendingClickPickRenderPos;

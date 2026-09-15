@@ -19,7 +19,7 @@ namespace NLS::Engine::Components
 	/**
 	* Represents a camera entity. Its position will determine its view matrix
 	*/
-	CLASS(NLS_ENGINE_API CameraComponent, Scriptable, ComponentMenu("Rendering/Camera")) : public Component
+	CLASS(NLS_ENGINE_API CameraComponent, Scriptable, ComponentMenu("Rendering/Camera"), DisallowMultipleComponent) : public Component
 	{
     public:
 		GENERATED_BODY()
@@ -74,14 +74,14 @@ namespace NLS::Engine::Components
 		* @param p_enable
 		*/
         FUNCTION()
-		void SetFrustumGeometryCulling(bool p_enable);
+			 void SetFrustumGeometryCulling(bool p_enable);
 
 		/**
 		* Defines if the camera should apply frustum light culling in rendering
 		* @param p_enable
 		*/
         FUNCTION()
-		void SetFrustumLightCulling(bool p_enable);
+			 void SetFrustumLightCulling(bool p_enable);
 
         /**
         * Defines the projection mode the camera should adopt
@@ -94,8 +94,8 @@ namespace NLS::Engine::Components
 		* Defines which object layers this camera should render.
 		* @param p_visibleLayers
 		*/
-		FUNCTION()
-		void SetVisibleLayers(NLS::Engine::LayerMask p_visibleLayers);
+		 FUNCTION()
+		 void SetVisibleLayers(NLS::Engine::LayerMask p_visibleLayers);
 
 		/**
 		* Returns the fov of the camera
@@ -131,13 +131,13 @@ namespace NLS::Engine::Components
 		* Returns true if the frustum geometry culling is enabled
 		*/
         FUNCTION()
-		bool HasFrustumGeometryCulling() const;
+			 bool HasFrustumGeometryCulling() const;
 
 		/**
 		* Returns true if the frustum light culling is enabled
 		*/
         FUNCTION()
-		bool HasFrustumLightCulling() const;
+			 bool HasFrustumLightCulling() const;
 
         /**
         * Returns the current projection mode
@@ -148,8 +148,8 @@ namespace NLS::Engine::Components
 		/**
 		* Returns which object layers this camera renders.
 		*/
-		FUNCTION()
-		NLS::Engine::LayerMask GetVisibleLayers() const;
+		 FUNCTION()
+		 NLS::Engine::LayerMask GetVisibleLayers() const;
 
 		/**
 		* Returns the Rendering camera instance attached to this component
@@ -158,7 +158,27 @@ namespace NLS::Engine::Components
 		Render::Entities::Camera* GetCamera();
 
 
-	private:
-		Render::Entities::Camera* m_camera = nullptr;
+		private:
+			PROPERTY(DisplayName("Field Of View"), Getter(GetFov), Setter(SetFov))
+			float fov = 45.0f;
+			PROPERTY(DisplayName("Orthographic Size"), Getter(GetSize), Setter(SetSize))
+			float size = 5.0f;
+			// near/far are legacy preprocessor macros on Windows, so the backing
+			// members keep a distinct name and map the historical keys.
+			PROPERTY(DisplayName("Near Clip"), FormerlySerializedAs("near"), Getter(GetNear), Setter(SetNear))
+			float nearClip = 0.1f;
+			PROPERTY(DisplayName("Far Clip"), FormerlySerializedAs("far"), Getter(GetFar), Setter(SetFar))
+			float farClip = 100.0f;
+			PROPERTY(DisplayName("Clear Color"), Getter(GetClearColor), Setter(SetClearColor))
+			Maths::Vector3 clearColor = {0.1921569f, 0.3019608f, 0.4745098f};
+			PROPERTY(DisplayName("Frustum Geometry Culling"), Getter(HasFrustumGeometryCulling), Setter(SetFrustumGeometryCulling))
+			bool frustumGeometryCulling = false;
+			PROPERTY(DisplayName("Frustum Light Culling"), Getter(HasFrustumLightCulling), Setter(SetFrustumLightCulling))
+			bool frustumLightCulling = false;
+			PROPERTY(DisplayName("Projection Mode"), Getter(GetProjectionMode), Setter(SetProjectionMode))
+			NLS::Render::Settings::EProjectionMode projectionMode = NLS::Render::Settings::EProjectionMode::PERSPECTIVE;
+			PROPERTY(DisplayName("Visible Layers"), Getter(GetVisibleLayers), Setter(SetVisibleLayers))
+			NLS::Engine::LayerMask visibleLayers = NLS::Engine::LayerMask{0xFFFFFFFFu};
+			Render::Entities::Camera* m_camera = nullptr;
 	};
 }

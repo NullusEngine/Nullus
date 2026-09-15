@@ -36,9 +36,16 @@ public sealed class ScriptApiGenerator : IIncrementalGenerator
         ulong Id,
         string Name,
         ImmutableArray<ManifestMember> Members,
-        ImmutableArray<ManifestMember> Fields);
+        ImmutableArray<ManifestMember> Fields,
+        bool IsComponent,
+        string BaseTypeName);
 
-    private sealed record ManifestMember(ulong Id, string Name, string Signature);
+    private sealed record ManifestMember(
+        ulong Id,
+        string Name,
+        string Signature,
+        string ReturnTypeName,
+        ImmutableArray<string> ParameterTypeNames);
 
     private sealed record BehaviourInfo(
         string TypeName,
@@ -57,7 +64,24 @@ public sealed class ScriptApiGenerator : IIncrementalGenerator
         string ValueKind,
         ImmutableArray<string> Aliases,
         bool DirectlyAccessible,
-        bool Writable);
+        bool Writable,
+        InspectorFieldMetadataInfo Metadata);
+
+    private sealed record InspectorFieldMetadataInfo(
+        string DisplayName,
+        string Tooltip,
+        string Header,
+        float? SpaceBefore,
+        float? RangeMin,
+        float? RangeMax,
+        float? Min,
+        float? Max,
+        bool Multiline,
+        bool ReadOnly,
+        bool HideInInspector,
+        bool Flags,
+        bool ColorUsage,
+        string ReferenceTypeConstraint);
 
     public void Initialize(IncrementalGeneratorInitializationContext context)
     {
@@ -99,6 +123,171 @@ public sealed class ScriptApiGenerator : IIncrementalGenerator
                 input.Right));
     }
 
+    // Native components that already ship a hand-written C# binding in
+    // Nullus.Managed keep their existing public name.  They are not emitted
+    // again; they only carry a NativeTypeName constant so editor metadata can
+    // map typeof(Camera) back to the reflected component type.
+    private static readonly Dictionary<string, string> ExistingComponentBindings = new(StringComparer.Ordinal)
+    {
+        ["NLS::Engine::Components::CameraComponent"] = "Camera",
+        ["NLS::Engine::Components::LightComponent"] = "Light",
+        ["NLS::Engine::Components::TransformComponent"] = "Transform"
+    };
+
+    private static readonly HashSet<string> ReservedComponentMemberNames = new(StringComparer.Ordinal)
+    {
+        "gameObject", "transform", "tag", "name", "enabled", "handle", "NativeTypeName"
+    };
+
+    private static readonly Dictionary<string, (string CSharp, string Getter, string Setter)> BindableScalarTypes = new(StringComparer.Ordinal)
+    {
+        ["bool"] = ("bool", "GetBool", "SetBool"),
+        ["int"] = ("int", "GetInt32", "SetInt32"),
+        ["int32_t"] = ("int", "GetInt32", "SetInt32"),
+        ["float"] = ("float", "GetFloat", "SetFloat"),
+        ["std::string"] = ("string", "GetString", "SetString"),
+        ["NLS::Maths::Vector3"] = ("Vector3", "GetVector3", "SetVector3"),
+        ["NLS::Maths::Quaternion"] = ("Quaternion", "GetQuaternion", "SetQuaternion")
+    };
+
+    /// <summary>
+    /// Emits one C# identity type per reflected engine component so editor
+    /// scripts can declare [CustomEditor(typeof(UICanvasComponent))] instead of
+    /// a raw native type name string.  Unambiguous Get/Set pairs are also
+    /// surfaced as properties.
+    /// </summary>
+    private static void AppendComponentBindings(StringBuilder builder, Manifest manifest)
+    {
+        var registrations = new StringBuilder();
+        var declaredNames = new HashSet<string>(StringComparer.Ordinal);
+        var emittedAny = false;
+        foreach (var type in manifest.Types
+                     .Where(static value => value.IsComponent)
+                     .OrderBy(static value => value.Name, StringComparer.Ordinal))
+        {
+            if (ExistingComponentBindings.ContainsKey(type.Name))
+                continue;
+
+            var simpleName = SimpleTypeName(type.Name);
+            if (!IsValidIdentifier(simpleName) || !declaredNames.Add(simpleName))
+                continue;
+
+            emittedAny = true;
+            registrations
+                .Append("        NativeObject.RegisterFactory<").Append(simpleName)
+                .Append(">(handle => new ").Append(simpleName).AppendLine("(handle));");
+
+            builder.AppendLine();
+            builder.Append("/// <summary>Generated binding for the reflected native component ").Append(type.Name).AppendLine(".</summary>");
+            builder.Append("public partial class ").Append(simpleName).AppendLine(" : Component");
+            builder.AppendLine("{");
+            builder.AppendLine("    /// <summary>Stable reflected native type name used by editor metadata.</summary>");
+            builder.Append("    public const string NativeTypeName = ").Append(SymbolDisplay.FormatLiteral(type.Name, quote: true)).AppendLine(";");
+            builder.AppendLine();
+            builder.Append("    internal ").Append(simpleName).AppendLine("(NativeObjectHandle handle) : base(handle) { }");
+            builder.Append("    internal ").Append(simpleName).AppendLine("() { }");
+
+            var declaredMembers = new HashSet<string>(ReservedComponentMemberNames, StringComparer.Ordinal);
+            foreach (var accessor in BuildComponentAccessors(type))
+            {
+                if (!declaredMembers.Add(accessor.PropertyName))
+                    continue;
+                builder.AppendLine();
+                builder.Append("    public ").Append(accessor.CSharpType).Append(' ').Append(accessor.PropertyName).AppendLine();
+                builder.AppendLine("    {");
+                builder.Append("        get { ThrowIfDestroyed(); return NativeBindingStore.")
+                    .Append(accessor.Getter).Append("(Handle, ScriptApiManifest.StableId(")
+                    .Append(SymbolDisplay.FormatLiteral(accessor.GetterId, quote: true)).AppendLine(")); }");
+                builder.Append("        set { ThrowIfDestroyed(); NativeBindingStore.")
+                    .Append(accessor.Setter).Append("(Handle, ScriptApiManifest.StableId(")
+                    .Append(SymbolDisplay.FormatLiteral(accessor.SetterId, quote: true)).AppendLine("), value); }");
+                builder.AppendLine("    }");
+            }
+            builder.AppendLine("}");
+        }
+
+        if (!emittedAny)
+            return;
+
+        builder.AppendLine();
+        builder.AppendLine("internal static class GeneratedComponentFactories");
+        builder.AppendLine("{");
+        builder.AppendLine("    [System.Runtime.CompilerServices.ModuleInitializer]");
+        builder.AppendLine("    internal static void Register()");
+        builder.AppendLine("    {");
+        builder.Append(registrations);
+        builder.AppendLine("    }");
+        builder.AppendLine("}");
+        builder.AppendLine();
+    }
+
+    private sealed record ComponentAccessor(string PropertyName, string CSharpType, string Getter, string Setter, string GetterId, string SetterId);
+
+    private static List<ComponentAccessor> BuildComponentAccessors(ManifestType type)
+    {
+        var accessors = new List<ComponentAccessor>();
+        var setters = new Dictionary<string, ManifestMember>(StringComparer.Ordinal);
+        foreach (var member in type.Members)
+        {
+            if (!member.Name.StartsWith("Set", StringComparison.Ordinal) || member.Name.Length <= 3)
+                continue;
+            if (member.ParameterTypeNames.Length != 1 || !string.IsNullOrEmpty(member.ReturnTypeName) && member.ReturnTypeName != "void")
+                continue;
+            setters[member.Name[3..]] = member;
+        }
+
+        foreach (var member in type.Members)
+        {
+            if (!member.Name.StartsWith("Get", StringComparison.Ordinal) || member.Name.Length <= 3)
+                continue;
+            if (member.ParameterTypeNames.Length != 0)
+                continue;
+            var suffix = member.Name[3..];
+            if (!setters.TryGetValue(suffix, out var setter))
+                continue;
+            if (!BindableScalarTypes.TryGetValue(member.ReturnTypeName, out var mapping))
+                continue;
+            if (!BindableScalarTypes.TryGetValue(setter.ParameterTypeNames[0], out var setterMapping))
+                continue;
+            if (!string.Equals(mapping.CSharp, setterMapping.CSharp, StringComparison.Ordinal))
+                continue;
+
+            var propertyName = char.ToLowerInvariant(suffix[0]) + suffix[1..];
+            if (!IsValidIdentifier(propertyName))
+                continue;
+            accessors.Add(new ComponentAccessor(
+                propertyName,
+                mapping.CSharp,
+                mapping.Getter,
+                mapping.Setter,
+                $"{type.Name}::{member.Signature}",
+                $"{type.Name}::{setter.Signature}"));
+        }
+        return accessors;
+    }
+
+    private static string SimpleTypeName(string qualifiedName)
+    {
+        var separator = qualifiedName.LastIndexOf("::", StringComparison.Ordinal);
+        var simple = separator >= 0 ? qualifiedName[(separator + 2)..] : qualifiedName;
+        return simple.Trim();
+    }
+
+    private static bool IsValidIdentifier(string value)
+    {
+        if (string.IsNullOrEmpty(value))
+            return false;
+        if (!char.IsLetter(value[0]) && value[0] != '_')
+            return false;
+        foreach (var character in value)
+        {
+            if (!char.IsLetterOrDigit(character) && character != '_')
+                return false;
+        }
+        return SyntaxFacts.GetKeywordKind(value) == SyntaxKind.None
+            && SyntaxFacts.GetContextualKeywordKind(value) == SyntaxKind.None;
+    }
+
     private static Manifest ParseManifest(string? source)
     {
         if (string.IsNullOrWhiteSpace(source))
@@ -130,7 +319,13 @@ public sealed class ScriptApiGenerator : IIncrementalGenerator
                     var members = ReadMembers(type, "methods", typeName, ids, errors);
                     members = members.AddRange(ReadMembers(type, "properties", typeName, ids, errors));
                     var fields = ReadMembers(type, "fields", typeName, ids, errors);
-                    types.Add(new ManifestType(typeId, typeName, members, fields));
+                    types.Add(new ManifestType(
+                        typeId,
+                        typeName,
+                        members,
+                        fields,
+                        type.TryGetProperty("isComponent", out var componentFlag) && componentFlag.ValueKind == JsonValueKind.True,
+                        ReadString(type, "baseType")));
                 }
             }
 
@@ -160,8 +355,23 @@ public sealed class ScriptApiGenerator : IIncrementalGenerator
             var signature = member.TryGetProperty("signature", out var signatureElement)
                 ? signatureElement.GetString() ?? name
                 : name;
+            var returnType = member.TryGetProperty("returnType", out var returnTypeElement)
+                ? ReadString(returnTypeElement, "name")
+                : member.TryGetProperty("type", out var declaredTypeElement)
+                    ? ReadString(declaredTypeElement, "name")
+                    : string.Empty;
+            var parameterTypes = ImmutableArray.CreateBuilder<string>();
+            if (member.TryGetProperty("parameters", out var parameterArray) && parameterArray.ValueKind == JsonValueKind.Array)
+            {
+                foreach (var parameter in parameterArray.EnumerateArray())
+                {
+                    parameterTypes.Add(parameter.TryGetProperty("type", out var parameterType)
+                        ? ReadString(parameterType, "name")
+                        : string.Empty);
+                }
+            }
             AddId(ids, id, $"{owner}::{signature}", errors);
-            result.Add(new ManifestMember(id, name, signature));
+            result.Add(new ManifestMember(id, name, signature, returnType, parameterTypes.ToImmutable()));
         }
         return result.ToImmutable();
     }
@@ -282,13 +492,15 @@ public sealed class ScriptApiGenerator : IIncrementalGenerator
                 .Select(static alias => alias!)
                 .Distinct(StringComparer.Ordinal)
                 .ToImmutableArray();
+            var metadata = BuildInspectorFieldMetadata(field, diagnostics);
             fields.Add(new SerializedFieldInfo(
                 field.Name,
                 field.Type.ToDisplayString(),
                 PortableValueKind(field.Type),
                 aliases,
                 directlyAccessible,
-                !field.IsReadOnly));
+                !field.IsReadOnly,
+                metadata));
         }
 
         return new BehaviourInfo(
@@ -324,6 +536,74 @@ public sealed class ScriptApiGenerator : IIncrementalGenerator
         => field.GetAttributes().Any(attribute =>
             attribute.AttributeClass?.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat)
             == fullyQualifiedMetadataName);
+
+    private static InspectorFieldMetadataInfo BuildInspectorFieldMetadata(
+        IFieldSymbol field,
+        ImmutableArray<string>.Builder diagnostics)
+    {
+        const string prefix = "global::Nullus.";
+        var range = FindAttribute(field, prefix + "RangeAttribute");
+        var spaceBefore = ReadFloatAttribute(field, prefix + "SpaceAttribute");
+        var rangeMin = ReadFloatArgument(range, 0);
+        var rangeMax = ReadFloatArgument(range, 1);
+        var minimum = ReadFloatAttribute(field, prefix + "MinAttribute");
+        var maximum = ReadFloatAttribute(field, prefix + "MaxAttribute");
+
+        if (spaceBefore is < 0.0f)
+            diagnostics.Add($"Inspector Space on serialized field '{field.Name}' must not be negative.");
+        if (rangeMin.HasValue && rangeMax.HasValue && rangeMin.Value > rangeMax.Value)
+            diagnostics.Add($"Inspector Range on serialized field '{field.Name}' must have a minimum less than or equal to its maximum.");
+        if (minimum.HasValue && maximum.HasValue && minimum.Value > maximum.Value)
+            diagnostics.Add($"Inspector Min/Max on serialized field '{field.Name}' must not be inverted.");
+
+        return new InspectorFieldMetadataInfo(
+            ReadStringAttribute(field, prefix + "DisplayNameAttribute"),
+            ReadStringAttribute(field, prefix + "TooltipAttribute"),
+            ReadStringAttribute(field, prefix + "HeaderAttribute"),
+            spaceBefore,
+            rangeMin,
+            rangeMax,
+            minimum,
+            maximum,
+            HasAttribute(field, prefix + "MultilineAttribute"),
+            HasAttribute(field, prefix + "ReadOnlyAttribute"),
+            HasAttribute(field, prefix + "HideInInspectorAttribute"),
+            HasAttribute(field, prefix + "FlagsAttribute"),
+            HasAttribute(field, prefix + "ColorUsageAttribute"),
+            ReadStringAttribute(field, prefix + "ReferenceTypeConstraintAttribute").Trim());
+    }
+
+    private static AttributeData? FindAttribute(IFieldSymbol field, string fullyQualifiedMetadataName)
+        => field.GetAttributes().FirstOrDefault(attribute =>
+            attribute.AttributeClass?.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat)
+            == fullyQualifiedMetadataName);
+
+    private static string ReadStringAttribute(IFieldSymbol field, string fullyQualifiedMetadataName)
+    {
+        var attribute = FindAttribute(field, fullyQualifiedMetadataName);
+        if (attribute is null || attribute.ConstructorArguments.Length != 1)
+            return string.Empty;
+        return attribute.ConstructorArguments[0].Value as string ?? string.Empty;
+    }
+
+    private static float? ReadFloatAttribute(IFieldSymbol field, string fullyQualifiedMetadataName)
+        => ReadFloatArgument(FindAttribute(field, fullyQualifiedMetadataName), 0);
+
+    private static float? ReadFloatArgument(AttributeData? attribute, int index)
+    {
+        if (attribute is null || index < 0 || index >= attribute.ConstructorArguments.Length)
+            return null;
+        return attribute.ConstructorArguments[index].Value switch
+        {
+            float value => value,
+            double value => (float)value,
+            int value => value,
+            uint value => value,
+            long value => value,
+            ulong value => value,
+            _ => null
+        };
+    }
 
     private static bool IsBehaviour(INamedTypeSymbol symbol)
     {
@@ -407,6 +687,52 @@ public sealed class ScriptApiGenerator : IIncrementalGenerator
         return false;
     }
 
+    private static string SerializeInspectorMetadata(InspectorFieldMetadataInfo metadata)
+        => JsonSerializer.Serialize(new
+        {
+            displayName = metadata.DisplayName,
+            tooltip = metadata.Tooltip,
+            header = metadata.Header,
+            spaceBefore = metadata.SpaceBefore,
+            rangeMin = metadata.RangeMin,
+            rangeMax = metadata.RangeMax,
+            min = metadata.Min,
+            max = metadata.Max,
+            multiline = metadata.Multiline,
+            readOnly = metadata.ReadOnly,
+            hideInInspector = metadata.HideInInspector,
+            flags = metadata.Flags,
+            colorUsage = metadata.ColorUsage,
+            referenceTypeConstraint = metadata.ReferenceTypeConstraint
+        });
+
+    private static string FormatNullableFloatLiteral(float? value)
+        => value.HasValue
+            ? value.Value.ToString("R", System.Globalization.CultureInfo.InvariantCulture) + "f"
+            : "null";
+
+    private static void AppendManagedInspectorMetadataLiteral(
+        StringBuilder builder,
+        InspectorFieldMetadataInfo metadata)
+    {
+        builder.Append("new Nullus.ManagedScriptFieldMetadata(")
+            .Append(SymbolDisplay.FormatLiteral(metadata.DisplayName, quote: true)).Append(", ")
+            .Append(SymbolDisplay.FormatLiteral(metadata.Tooltip, quote: true)).Append(", ")
+            .Append(SymbolDisplay.FormatLiteral(metadata.Header, quote: true)).Append(", ")
+            .Append(FormatNullableFloatLiteral(metadata.SpaceBefore)).Append(", ")
+            .Append(FormatNullableFloatLiteral(metadata.RangeMin)).Append(", ")
+            .Append(FormatNullableFloatLiteral(metadata.RangeMax)).Append(", ")
+            .Append(FormatNullableFloatLiteral(metadata.Min)).Append(", ")
+            .Append(FormatNullableFloatLiteral(metadata.Max)).Append(", ")
+            .Append(metadata.Multiline ? "true" : "false").Append(", ")
+            .Append(metadata.ReadOnly ? "true" : "false").Append(", ")
+            .Append(metadata.HideInInspector ? "true" : "false").Append(", ")
+            .Append(metadata.Flags ? "true" : "false").Append(", ")
+            .Append(metadata.ColorUsage ? "true" : "false").Append(", ")
+            .Append(SymbolDisplay.FormatLiteral(metadata.ReferenceTypeConstraint, quote: true))
+            .Append(")");
+    }
+
     private static void Emit(
         SourceProductionContext context,
         Manifest manifest,
@@ -460,6 +786,11 @@ public sealed class ScriptApiGenerator : IIncrementalGenerator
             builder.AppendLine("    public static ulong MemberId(string owner, string signature) => StableId(owner + \"::\" + signature);");
             builder.AppendLine("}");
             builder.AppendLine();
+
+            // Every reflected engine component gets a C# identity type so an
+            // editor script can write [CustomEditor(typeof(UICanvasComponent))]
+            // instead of a raw native type name string.
+            AppendComponentBindings(builder, manifest);
         }
 
         if (isScriptAssemblyProject)
@@ -517,7 +848,9 @@ public sealed class ScriptApiGenerator : IIncrementalGenerator
                             behaviourJson.Append(',');
                         behaviourJson.Append(JsonSerializer.Serialize(field.Aliases[aliasIndex]));
                     }
-                    behaviourJson.Append("]}");
+                    behaviourJson.Append("],\"metadata\":")
+                        .Append(SerializeInspectorMetadata(field.Metadata))
+                        .Append('}');
                 }
                 behaviourJson.Append("]}");
             }
@@ -565,7 +898,9 @@ public sealed class ScriptApiGenerator : IIncrementalGenerator
                     .Append(", new string[] { ");
                 foreach (var alias in field.Aliases)
                     builder.Append(SymbolDisplay.FormatLiteral(alias, quote: true)).Append(", ");
-                builder.Append(" }), ");
+                builder.Append(" }, ");
+                AppendManagedInspectorMetadataLiteral(builder, field.Metadata);
+                builder.Append("), ");
             }
             builder.AppendLine(" },");
         }

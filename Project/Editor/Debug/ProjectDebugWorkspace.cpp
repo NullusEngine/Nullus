@@ -319,6 +319,7 @@ bool WriteManifest(const ProjectDebugManifest& manifest, std::string& error)
         {"visualStudioScriptsFilter", manifest.visualStudioScriptsFilter.string()},
         {"visualStudioEngineFilter", manifest.visualStudioEngineFilter.string()},
         {"visualStudioProject", manifest.visualStudioProject.string()},
+        {"visualStudioEditorProject", manifest.visualStudioEditorProject.string()},
         {"visualStudioCodeWorkspace", manifest.visualStudioCodeWorkspace.string()},
         {"visualStudioExtension", manifest.visualStudioExtension.string()},
         {"editorExecutable", manifest.editorExecutable.string()},
@@ -355,6 +356,9 @@ bool WriteProjectFile(const ProjectDebugManifest& manifest, const std::filesyste
     auto analysisAssembly = repositoryRoot / "build" / "Managed" / "Debug" / "Nullus.ScriptAnalysis.dll";
     if (!std::filesystem::is_regular_file(analysisAssembly))
         analysisAssembly = repositoryRoot / "Managed" / "Nullus.ScriptAnalysis" / "bin" / "Debug" / "net8.0" / "Nullus.ScriptAnalysis.dll";
+    // Project editor scripts compile into their own assembly, so the runtime
+    // project must not pull them in.
+    const auto editorSources = manifest.projectRoot / "Assets" / "**" / "Editor" / "**" / "*.cs";
 
     std::string project;
     project += "<Project Sdk=\"Microsoft.NET.Sdk\">\n";
@@ -377,7 +381,7 @@ bool WriteProjectFile(const ProjectDebugManifest& manifest, const std::filesyste
     // generator built by a different Roslyn version.
     project += "  </PropertyGroup>\n";
     project += "  <ItemGroup>\n";
-    project += "    <Compile Include=\"" + XmlEscape((manifest.projectRoot / "Assets" / "**" / "*.cs").string()) + "\" Link=\"Assets\\%(RecursiveDir)%(Filename)%(Extension)\" Condition=\"Exists('" + XmlEscape((manifest.projectRoot / "Assets").string()) + "')\" />\n";
+    project += "    <Compile Include=\"" + XmlEscape((manifest.projectRoot / "Assets" / "**" / "*.cs").string()) + "\" Link=\"Assets\\%(RecursiveDir)%(Filename)%(Extension)\" Exclude=\"" + XmlEscape(editorSources.string()) + "\" Condition=\"Exists('" + XmlEscape((manifest.projectRoot / "Assets").string()) + "')\" />\n";
     project += "    <None Include=\"" + XmlEscape((manifest.projectRoot / "Assets" / "**" / "*.lua").string()) + "\" Link=\"Assets\\%(RecursiveDir)%(Filename)%(Extension)\" Condition=\"Exists('" + XmlEscape((manifest.projectRoot / "Assets").string()) + "')\" />\n";
     project += "    <Reference Include=\"Nullus.Managed\">\n";
     project += "      <HintPath>" + XmlEscape(managedAssembly.string()) + "</HintPath>\n";
@@ -391,6 +395,57 @@ bool WriteProjectFile(const ProjectDebugManifest& manifest, const std::filesyste
     project += "  </ItemGroup>\n";
     project += "</Project>\n";
     return WriteTextIfChanged(manifest.visualStudioProject, project, error);
+}
+
+bool WriteEditorProjectFile(
+    const ProjectDebugManifest& manifest,
+    const std::filesystem::path& repositoryRoot,
+    std::string& error)
+{
+    // Editing/debugging view of Assets/**/Editor/**/*.cs. It references the
+    // runtime project so an editor script can target a project Behaviour with
+    // [CustomEditor(typeof(MyBehaviour))], plus the managed editor assembly that
+    // provides ComponentEditor/EditorWindow/SerializedObject.
+    auto managedAssembly = repositoryRoot / "build" / "Managed" / "Debug" / "Nullus.Managed.dll";
+    if (!std::filesystem::is_regular_file(managedAssembly))
+        managedAssembly = repositoryRoot / "Managed" / "Nullus.Managed" / "bin" / "Debug" / "net8.0" / "Nullus.Managed.dll";
+    auto editorAssembly = repositoryRoot / "build" / "Managed" / "Debug" / "Nullus.Editor.dll";
+    if (!std::filesystem::is_regular_file(editorAssembly))
+        editorAssembly = repositoryRoot / "Managed" / "Nullus.Editor" / "bin" / "Debug" / "net8.0" / "Nullus.Editor.dll";
+
+    std::string project;
+    project += "<Project Sdk=\"Microsoft.NET.Sdk\">\n";
+    project += "  <PropertyGroup>\n";
+    project += "    <TargetFramework>net8.0</TargetFramework>\n";
+    project += "    <AssemblyName>GameScriptsEditor</AssemblyName>\n";
+    project += "    <RootNamespace>Nullus.GameScriptsEditor</RootNamespace>\n";
+    project += "    <Nullable>enable</Nullable>\n";
+    project += "    <ImplicitUsings>enable</ImplicitUsings>\n";
+    project += "    <LangVersion>latest</LangVersion>\n";
+    project += "    <DebugType>portable</DebugType>\n";
+    project += "    <DebugSymbols>true</DebugSymbols>\n";
+    project += "    <Deterministic>true</Deterministic>\n";
+    project += "    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>\n";
+    project += "  </PropertyGroup>\n";
+    project += "  <ItemGroup>\n";
+    project += "    <Compile Include=\"" + XmlEscape((manifest.projectRoot / "Assets" / "**" / "Editor" / "**" / "*.cs").string()) +
+        "\" Link=\"Assets\\%(RecursiveDir)%(Filename)%(Extension)\" Condition=\"Exists('" +
+        XmlEscape((manifest.projectRoot / "Assets").string()) + "')\" />\n";
+    project += "    <ProjectReference Include=\"" + XmlEscape(manifest.visualStudioProject.string()) + "\" />\n";
+    project += "    <Reference Include=\"Nullus.Managed\">\n";
+    project += "      <HintPath>" + XmlEscape(managedAssembly.string()) + "</HintPath>\n";
+    project += "      <Private>false</Private>\n";
+    project += "    </Reference>\n";
+    if (std::filesystem::is_regular_file(editorAssembly))
+    {
+        project += "    <Reference Include=\"Nullus.Editor\">\n";
+        project += "      <HintPath>" + XmlEscape(editorAssembly.string()) + "</HintPath>\n";
+        project += "      <Private>false</Private>\n";
+        project += "    </Reference>\n";
+    }
+    project += "  </ItemGroup>\n";
+    project += "</Project>\n";
+    return WriteTextIfChanged(manifest.visualStudioEditorProject, project, error);
 }
 
 bool WriteSolution(const ProjectDebugManifest& manifest, const std::filesystem::path& repositoryRoot, std::string& error)
@@ -417,6 +472,16 @@ bool WriteSolution(const ProjectDebugManifest& manifest, const std::filesystem::
         gameGuid,
         manifest.visualStudioProject,
         false});
+
+    if (!manifest.visualStudioEditorProject.empty())
+    {
+        projects.push_back({
+            "GameScriptsEditor",
+            "{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}",
+            MakeGuid(manifest.projectId + ":GameScriptsEditor"),
+            manifest.visualStudioEditorProject,
+            false});
+    }
 
     for (const auto& engineProject : manifest.engineProjects)
     {
@@ -679,6 +744,7 @@ ProjectDebugWorkspaceResult GenerateProjectDebugWorkspace(
     result.manifest.visualStudioScriptsFilter = result.manifest.workspaceRoot / "VisualStudio" / "Nullus.Scripts.slnf";
     result.manifest.visualStudioEngineFilter = result.manifest.workspaceRoot / "VisualStudio" / "Nullus.Engine.slnf";
     result.manifest.visualStudioProject = result.manifest.workspaceRoot / "VisualStudio" / "Nullus.GameScripts.csproj";
+    result.manifest.visualStudioEditorProject = result.manifest.workspaceRoot / "VisualStudio" / "Nullus.GameScriptsEditor.csproj";
     result.manifest.visualStudioCodeWorkspace = result.manifest.workspaceRoot / "VSCode" / "Nullus.code-workspace";
     result.manifest.editorExecutable = CanonicalOrNormalized(editorExecutable);
     result.manifest.brokerExecutable = CanonicalOrNormalized(brokerExecutable);
@@ -731,6 +797,7 @@ ProjectDebugWorkspaceResult GenerateProjectDebugWorkspace(
         return result;
     }
     if (!WriteProjectFile(result.manifest, repositoryRoot, writeError) ||
+        !WriteEditorProjectFile(result.manifest, repositoryRoot, writeError) ||
         !WriteSolution(result.manifest, repositoryRoot, writeError) ||
         !WriteWorkspace(result.manifest, writeError))
     {

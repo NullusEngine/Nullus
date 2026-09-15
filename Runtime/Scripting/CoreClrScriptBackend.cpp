@@ -13,16 +13,19 @@
 #include "Windowing/Inputs/InputManager.h"
 #include "Windowing/Inputs/EKey.h"
 #include "Windowing/Inputs/EMouseButton.h"
+#include "Platform/Process/Process.h"
 
 #include <Json/json.hpp>
 
 #include <algorithm>
 #include <cctype>
+#include <cmath>
 #include <cstdlib>
 #include <cstring>
 #include <fstream>
 #include <iterator>
 #include <limits>
+#include <string_view>
 #include <type_traits>
 #include <utility>
 
@@ -182,6 +185,107 @@ ScriptType MakeManagedFieldType(std::string_view typeName, std::string_view kind
         break;
     }
     return type;
+}
+
+bool ParseManagedFieldMetadata(
+    const nlohmann::json& fieldJson,
+    ScriptFieldMetadata& output,
+    std::string& error)
+{
+    const auto metadata = fieldJson.find("metadata");
+    if (metadata == fieldJson.end() || metadata->is_null())
+        return true;
+    if (!metadata->is_object())
+    {
+        error = "Managed Behaviour manifest field metadata must be an object.";
+        return false;
+    }
+
+    const auto readString = [&](const char* key, std::string& target)
+    {
+        const auto value = metadata->find(key);
+        if (value == metadata->end() || value->is_null())
+            return true;
+        if (!value->is_string())
+        {
+            error = std::string("Managed Behaviour manifest metadata '") + key + "' must be a string.";
+            return false;
+        }
+        target = value->get<std::string>();
+        return true;
+    };
+    const auto readBoolean = [&](const char* key, bool& target)
+    {
+        const auto value = metadata->find(key);
+        if (value == metadata->end() || value->is_null())
+            return true;
+        if (!value->is_boolean())
+        {
+            error = std::string("Managed Behaviour manifest metadata '") + key + "' must be a boolean.";
+            return false;
+        }
+        target = value->get<bool>();
+        return true;
+    };
+    const auto readFloat = [&](const char* key, std::optional<float>& target)
+    {
+        const auto value = metadata->find(key);
+        if (value == metadata->end() || value->is_null())
+            return true;
+        if (!value->is_number())
+        {
+            error = std::string("Managed Behaviour manifest metadata '") + key + "' must be a finite number.";
+            return false;
+        }
+        const float parsed = value->get<float>();
+        if (!std::isfinite(parsed))
+        {
+            error = std::string("Managed Behaviour manifest metadata '") + key + "' must be finite.";
+            return false;
+        }
+        target = parsed;
+        return true;
+    };
+
+    std::optional<float> spaceBefore;
+    if (!readString("displayName", output.displayName) ||
+        !readString("tooltip", output.tooltip) ||
+        !readString("header", output.header) ||
+        !readString("referenceTypeConstraint", output.referenceTypeConstraint) ||
+        !readFloat("spaceBefore", spaceBefore))
+    {
+        return false;
+    }
+    if (spaceBefore.has_value())
+        output.spaceBefore = *spaceBefore;
+    if (!readFloat("rangeMin", output.rangeMin) ||
+        !readFloat("rangeMax", output.rangeMax) ||
+        !readFloat("min", output.min) ||
+        !readFloat("max", output.max) ||
+        !readBoolean("multiline", output.multiline) ||
+        !readBoolean("readOnly", output.readOnly) ||
+        !readBoolean("hideInInspector", output.hideInInspector) ||
+        !readBoolean("flags", output.flags) ||
+        !readBoolean("colorUsage", output.colorUsage))
+    {
+        return false;
+    }
+    if (output.spaceBefore < 0.0f)
+    {
+        error = "Managed Behaviour manifest metadata 'spaceBefore' must not be negative.";
+        return false;
+    }
+    if (output.rangeMin.has_value() && output.rangeMax.has_value() && *output.rangeMin > *output.rangeMax)
+    {
+        error = "Managed Behaviour manifest metadata rangeMin must not exceed rangeMax.";
+        return false;
+    }
+    if (output.min.has_value() && output.max.has_value() && *output.min > *output.max)
+    {
+        error = "Managed Behaviour manifest metadata min must not exceed max.";
+        return false;
+    }
+    return true;
 }
 
 ScriptAbiValue ToAbiValue(
@@ -1184,7 +1288,7 @@ ScriptStatus CoreClrHost::Load(const std::filesystem::path& runtimeConfig, const
     // hostfxr uses char_t, which is wchar_t on Windows and char elsewhere.
     // The filesystem path representation matches that ABI on each platform.
 #if defined(_WIN32)
-    using HostFxrInitializeWideFn = int32_t (*)(const wchar_t*, const void*, void**);
+    using HostFxrInitializeWideFn = int32_t (__cdecl *)(const wchar_t*, const void*, void**);
     const auto initializeWide = reinterpret_cast<HostFxrInitializeWideFn>(initialize);
     // hostfxr accepts a null parameter block only for the first runtime
     // initialization in a process.  Script tests and editor play contexts can
@@ -1198,9 +1302,10 @@ ScriptStatus CoreClrHost::Load(const std::filesystem::path& runtimeConfig, const
         const wchar_t* dotnetRoot;
     };
     const auto dotnetRoot = m_dotnetRoot.empty() ? std::wstring{} : m_dotnetRoot.wstring();
+    const auto hostPath = NLS::Platform::Process::GetCurrentExecutablePath().wstring();
     const HostFxrInitializeParameters parameters{
         sizeof(HostFxrInitializeParameters),
-        assembly.c_str(),
+        hostPath.empty() ? nullptr : hostPath.c_str(),
         dotnetRoot.empty() ? nullptr : dotnetRoot.c_str()};
     const auto result = initializeWide(runtimeConfig.c_str(), &parameters, &context);
 #else
@@ -1212,7 +1317,7 @@ ScriptStatus CoreClrHost::Load(const std::filesystem::path& runtimeConfig, const
         const char* dotnetRoot;
     };
     const auto dotnetRoot = m_dotnetRoot.empty() ? std::string{} : m_dotnetRoot.string();
-    const auto hostPath = assembly.string();
+    const auto hostPath = NLS::Platform::Process::GetCurrentExecutablePath().string();
     const HostFxrInitializeParameters parameters{
         sizeof(HostFxrInitializeParameters),
         hostPath.c_str(),
@@ -1787,6 +1892,13 @@ ScriptStatus CoreClrScriptBackend::RefreshBehaviourManifest()
                 field.kind = fieldJson.value("kind", std::string{});
                 field.serialized = fieldJson.value("serialized", true);
                 field.aliases = fieldJson.value("aliases", std::vector<std::string>{});
+                std::string metadataError;
+                if (!ParseManagedFieldMetadata(fieldJson, field.metadata, metadataError))
+                {
+                    return ScriptStatus::Error(
+                        ScriptStatusCode::SchemaMismatch,
+                        "Managed Behaviour manifest field '" + field.name + "' has invalid Inspector metadata: " + metadataError);
+                }
                 if (field.id == 0 || field.name.empty() || field.typeName.empty())
                     return ScriptStatus::Error(ScriptStatusCode::SchemaMismatch, "Managed Behaviour manifest contains an incomplete field.");
                 if (field.kind.empty())
@@ -1807,6 +1919,7 @@ ScriptStatus CoreClrScriptBackend::RefreshBehaviourManifest()
             nativeField.type = MakeManagedFieldType(field.typeName, field.kind);
             nativeField.serialized = field.serialized;
             nativeField.aliases = field.aliases;
+            nativeField.metadata = field.metadata;
             descriptor.fields.push_back(std::move(nativeField));
         }
         if (descriptor.id != 0)

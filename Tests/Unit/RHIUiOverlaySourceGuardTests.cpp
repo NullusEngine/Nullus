@@ -1801,14 +1801,26 @@ TEST(RHIUiOverlaySourceGuardTests, DriverUIAccessExposesUiOverlayResourceLifecyc
 TEST(RHIUiOverlaySourceGuardTests, AssetBrowserProjectCopyRegeneratesMetaIdentity)
 {
     const auto assetBrowserSource = ReadSourceText(RepoPath("Project/Editor/Panels/AssetBrowser.cpp"));
-    const auto copyFileBody = ExtractFunctionBody(assetBrowserSource, "bool CopyAssetFileWithMeta(");
-    const auto copyFolderBody = ExtractFunctionBody(assetBrowserSource, "bool CopyAssetFolderRecursively(");
+    // Duplication belongs to the undo asset-file commands.  The browser must not
+    // copy a source payload or its .meta verbatim, or the duplicate would share
+    // the source asset identity.
+    EXPECT_NE(
+        assetBrowserSource.find("NLS::Editor::Undo::AssetFile::MakeDuplicateCommand("),
+        std::string::npos)
+        << "Asset Browser duplication must route through the undo asset-file command.";
+    EXPECT_EQ(
+        assetBrowserSource.find("std::filesystem::copy_file(sourceMeta"),
+        std::string::npos)
+        << "Duplication must not copy the source meta verbatim.";
 
-    EXPECT_NE(copyFileBody.find("AssetId::New()"), std::string::npos);
-    EXPECT_NE(copyFileBody.find("meta.Save(destinationMeta)"), std::string::npos);
-    EXPECT_EQ(copyFileBody.find("std::filesystem::copy_file(sourceMeta"), std::string::npos);
-    EXPECT_NE(copyFolderBody.find("CopyAssetFileWithMeta(entry.path(), destination / relative)"), std::string::npos);
-    EXPECT_EQ(copyFolderBody.find("std::filesystem::copy("), std::string::npos);
+    const auto assetFileUndoSource =
+        ReadSourceText(RepoPath("Project/Editor/Undo/AssetFileUndo.cpp"));
+    const auto duplicateBody =
+        ExtractFunctionBody(assetFileUndoSource, "UndoCommandPtr MakeDuplicateCommand(");
+    EXPECT_NE(duplicateBody.find("NLS::Core::Assets::AssetId::New()"), std::string::npos)
+        << "A duplicated asset must receive a fresh asset id.";
+    EXPECT_NE(duplicateBody.find("DuplicateAssetFileCommand"), std::string::npos)
+        << "Duplication must stay an undoable asset-file command.";
 }
 
 TEST(RHIUiOverlaySourceGuardTests, ToolbarUsesLegacyImageButtonsAndRawTextureIds)
@@ -1866,4 +1878,74 @@ TEST(RHIUiOverlaySourceGuardTests, EditorCursorImagesUseCurrentEditorCursorResou
 
     for (const auto& cursorFile : cursorFiles)
         EXPECT_TRUE(std::filesystem::is_regular_file(cursorFile)) << "Missing editor cursor image: " << cursorFile.string();
+}
+
+TEST(RHIUiOverlaySourceGuardTests, UiDocumentPathResolutionHasASingleImplementation)
+{
+    // The engine resolver owns the "Assets/..." -> project mapping. Three copies
+    // of that join used to exist and each folded the assets folder into itself
+    // once a host passed a trailing separator, producing
+    // "<project>/Assets/Assets/<document>.ui" for "Assets/<document>.ui".
+    const auto resolverSource = ReadSourceText(RepoPath("Runtime/Engine/UI/UIDocumentSourceResolver.cpp"));
+    EXPECT_NE(resolverSource.find("NormalizeAssetRootPath"), std::string::npos)
+        << "The shared resolver must normalize the host asset root before joining.";
+
+    const auto inspectorSource =
+        ReadSourceText(RepoPath("Project/Editor/Inspector/UICanvasComponentEditor.cpp"));
+    EXPECT_NE(inspectorSource.find("ResolveUIDocumentSourcePath"), std::string::npos)
+        << "The Canvas inspector must ask the shared resolver for the document source.";
+    EXPECT_EQ(inspectorSource.find("assets.parent_path() / source"), std::string::npos)
+        << "The Canvas inspector must not re-implement the Assets/ join.";
+
+    const auto gameSource = ReadSourceText(RepoPath("Project/Game/Core/Game.cpp"));
+    EXPECT_NE(gameSource.find("NLS::Engine::UI::ResolveProjectUIDocumentPath"), std::string::npos)
+        << "The game host must use the shared resolver for pending documents.";
+    EXPECT_EQ(
+        gameSource.find("std::filesystem::path ResolveProjectUIDocumentPath("),
+        std::string::npos)
+        << "The game host must not keep a second copy of the Assets/ join.";
+}
+
+TEST(RHIUiOverlaySourceGuardTests, UiOverlayDiagnosticsKeepIndependentOneShotState)
+{
+    // Document problems and "the Game View panel is closed" must not share one
+    // last-message slot: clearing the document slot each frame used to re-arm the
+    // panel message, so the same line was logged every frame.
+    const auto source =
+        ReadSourceText(RepoPath("Project/Editor/UI/EditorUiOverlayPresenter.cpp"));
+
+    EXPECT_EQ(source.find("m_lastOverlayWarning"), std::string::npos)
+        << "Diagnostics must not collapse back into one shared one-shot slot.";
+    EXPECT_NE(source.find("ReportDocumentWarning"), std::string::npos);
+    EXPECT_NE(source.find("ReportPresentationNotice"), std::string::npos);
+    EXPECT_NE(source.find("m_lastDocumentWarning.clear();"), std::string::npos)
+        << "Only the document slot is re-armed every frame.";
+    EXPECT_NE(source.find("void EditorUiOverlayPresenter::ReportPresentationNotice"), std::string::npos);
+}
+
+TEST(RHIUiOverlaySourceGuardTests, UiOverlayDynamicBuffersCoverAppendedGeometry)
+{
+    // The editor merges the retained in-game UI into the published ImGui overlay
+    // snapshot. The dynamic vertex/index buffers are sized from the snapshot
+    // totals, so geometry appended after the ImGui capture must extend those
+    // totals; leaving them at the ImGui-only counts under-allocates the buffers
+    // and the upload writes past the end, which is what made individual glyphs
+    // vanish or corrupt while unrelated editor panels changed size.
+    const auto presenterSource =
+        ReadSourceText(RepoPath("Project/Editor/UI/EditorUiOverlayPresenter.cpp"));
+    EXPECT_NE(presenterSource.find("snapshot.totalVertexCount +="), std::string::npos)
+        << "appending UI geometry must extend the snapshot vertex total";
+    EXPECT_NE(presenterSource.find("snapshot.totalIndexCount +="), std::string::npos)
+        << "appending UI geometry must extend the snapshot index total";
+
+    const auto rendererSource =
+        ReadSourceText(RepoPath("Runtime/Rendering/UI/RHIImGuiOverlayRenderer.cpp"));
+    EXPECT_NE(rendererSource.find("drawListVertexCount"), std::string::npos)
+        << "buffer sizing must count the geometry actually present in the draw lists";
+    EXPECT_NE(rendererSource.find("drawListIndexCount"), std::string::npos)
+        << "buffer sizing must count the indices actually present in the draw lists";
+    EXPECT_EQ(
+        rendererSource.find("const size_t vertexBytes = static_cast<size_t>(snapshot.totalVertexCount)"),
+        std::string::npos)
+        << "the declared total must not be the only input to the buffer size";
 }

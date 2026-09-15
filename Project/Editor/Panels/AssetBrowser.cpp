@@ -71,11 +71,10 @@
 #include <Image.h>
 #include <Profiling/Profiler.h>
 
-#include "Panels/MaterialEditor.h"
 #include "Panels/AssetBrowser.h"
 #include "Panels/AssetView.h"
-#include "Panels/AssetProperties.h"
 #include "Panels/Hierarchy.h"
+#include "Panels/Inspector.h"
 #include "Panels/SceneView.h"
 #include "Panels/UIDocumentDesigner.h"
 #include "Assets/AssetBrowserPresentation.h"
@@ -94,11 +93,18 @@
 #include "Assets/EditorAssetDatabase.h"
 #include "Core/EditorActions.h"
 #include "Core/Context.h"
+#include "Inspector/EditorSelectionService.h"
+#include "Inspector/InspectorUndo.h"
 #include "Assets/AssetDragDropWorkflow.h"
 #include "Assets/ShaderLabMaterialDefaults.h"
 #include "Assets/PrefabUtilityFacade.h"
 #include "Core/EditorResources.h"
 #include "Core/RecentBackgroundWorkGate.h"
+#include "Undo/AssetFileUndo.h"
+#include "Undo/EditorUndoMutationContext.h"
+#include "Undo/EditorUndoService.h"
+#include "Undo/PrefabSaveUndoSupport.h"
+#include "Undo/SceneObjectUndoTarget.h"
 #include "UI/UIDocumentDesignerModel.h"
 #include "GameObject.h"
 #include "Rendering/Context/DriverAccess.h"
@@ -123,9 +129,12 @@ constexpr size_t kMaxAssetBrowserThumbnailDrawOutcomePaths = 64u;
 constexpr int kAssetBrowserThumbnailDrawOutcomeSamplePeriodFrames = 15;
 constexpr size_t kAssetBrowserThumbnailVisibleSetStableFrames = 3u;
 constexpr auto kAssetBrowserThumbnailInitialVisibleTimeout = std::chrono::seconds(30);
+constexpr auto kAssetBrowserUndoWatcherSuppressionDuration = std::chrono::seconds(3);
 constexpr double kAssetBrowserSceneLoadThumbnailEscapeSeconds = 2.0;
 constexpr double kAssetBrowserVisiblePendingPresentationRecoveryIntervalSeconds = 0.25;
 constexpr size_t kMaxAssetBrowserVisiblePendingPresentationProbesPerPump = 2u;
+constexpr const char* kTransactionalReferenceSnapshotRequired =
+	"requires transactional reference snapshot";
 
 std::optional<std::string> LoadScriptTemplate(
 	const std::filesystem::path& editorAssetFolder,
@@ -148,6 +157,16 @@ std::optional<std::string> LoadScriptTemplate(
 		contents.replace(position, scriptNameToken.size(), scriptName);
 	}
 	return contents;
+}
+
+std::optional<std::string> ReadAssetTemplateContents(const std::filesystem::path& templatePath)
+{
+	std::ifstream input(templatePath, std::ios::binary);
+	if (!input)
+		return std::nullopt;
+	return std::string {
+		std::istreambuf_iterator<char>(input),
+		std::istreambuf_iterator<char>() };
 }
 
 NLS::Render::RHI::TextureColorSpace CachedThumbnailTextureColorSpace(
@@ -722,11 +741,6 @@ auto ScheduleAssetBrowserJobFuture(const char* debugName, Function&& function)
 		[] {});
 }
 
-std::string GetAssociatedMetaFile(const std::string& p_assetPath)
-{
-	return p_assetPath + ".meta";
-}
-
 std::filesystem::path ProjectRootFromAssetsFolder(const std::string& projectAssetsFolder)
 {
 	auto assetsPath = std::filesystem::path(projectAssetsFolder).lexically_normal();
@@ -1295,35 +1309,6 @@ std::filesystem::path BuildUniqueAssetPath(
 	}
 }
 
-bool CreateNativeMaterialAssetAtPath(
-	const std::string& projectAssetsFolder,
-	const std::filesystem::path& absolutePath,
-	const std::string& payload)
-{
-	const auto normalizedPath = absolutePath.lexically_normal();
-	const auto projectRoot = ProjectRootFromAssetsFolder(projectAssetsFolder);
-	const auto projectRelativePath = EditorAssetPathFromAbsolutePath(projectAssetsFolder, normalizedPath.string());
-	if (projectRoot.empty() || projectRelativePath.empty())
-		return false;
-
-	NLS::Editor::Assets::AssetDatabaseFacade database(
-		NLS::Editor::Assets::MakeProjectEditorAssetRoots(projectRoot));
-	if (!database.Refresh())
-		return false;
-
-	NLS::Editor::Assets::AssetObjectRecord material;
-	material.name = normalizedPath.stem().generic_string();
-	material.artifactType = NLS::Core::Assets::ArtifactType::Material;
-	material.loaderId = "material";
-	material.serializedPayload = payload;
-	return database.CreateAsset(material, projectRelativePath.generic_string());
-}
-
-std::string BuildDefaultAssetBrowserMaterialPayload()
-{
-	return NLS::Editor::Assets::BuildDefaultShaderLabMaterialPayload();
-}
-
 bool IsPathInsideOrEqual(
 	const std::filesystem::path& candidate,
 	const std::filesystem::path& root)
@@ -1392,124 +1377,6 @@ std::vector<std::filesystem::path> ReadWindowsClipboardFilePaths()
 	return paths;
 }
 #endif
-
-bool CopyAssetFileWithMeta(
-	const std::filesystem::path& source,
-	const std::filesystem::path& destination)
-{
-	std::error_code error;
-	std::filesystem::create_directories(destination.parent_path(), error);
-	if (error)
-		return false;
-
-	std::filesystem::copy_file(source, destination, std::filesystem::copy_options::overwrite_existing, error);
-	if (error)
-		return false;
-
-	const auto sourceMeta = source.string() + ".meta";
-	if (std::filesystem::exists(sourceMeta))
-	{
-		const auto destinationMeta = destination.string() + ".meta";
-		auto meta = NLS::Core::Assets::AssetMeta::Load(sourceMeta)
-			.value_or(NLS::Core::Assets::AssetMeta::CreateForAsset(destination));
-		meta.id = NLS::Core::Assets::AssetId::New();
-		meta.assetType = NLS::Core::Assets::InferAssetType(destination);
-		meta.importerId = NLS::Core::Assets::InferImporterId(meta.assetType);
-		if (!meta.Save(destinationMeta))
-			return false;
-	}
-	return true;
-}
-
-bool CopyAssetFolderRecursively(
-	const std::filesystem::path& source,
-	const std::filesystem::path& destination)
-{
-	std::error_code error;
-	std::filesystem::create_directories(destination, error);
-	if (error)
-		return false;
-
-	for (const auto& entry : std::filesystem::recursive_directory_iterator(
-			 source,
-			 std::filesystem::directory_options::skip_permission_denied,
-			 error))
-	{
-		if (error)
-			return false;
-
-		const auto relative = entry.path().lexically_relative(source);
-		if (relative.empty())
-			continue;
-
-		if (entry.is_directory())
-		{
-			std::filesystem::create_directories(destination / relative, error);
-			if (error)
-				return false;
-			continue;
-		}
-
-		if (entry.is_regular_file())
-		{
-			if (entry.path().extension() == ".meta")
-				continue;
-			if (!CopyAssetFileWithMeta(entry.path(), destination / relative))
-				return false;
-		}
-	}
-	return true;
-}
-
-bool CopyAssetFolderRecursivelyWithoutMeta(
-	const std::filesystem::path& source,
-	const std::filesystem::path& destination)
-{
-	std::error_code error;
-	std::filesystem::create_directories(destination, error);
-	if (error)
-		return false;
-
-	for (const auto& entry : std::filesystem::recursive_directory_iterator(
-			 source,
-			 std::filesystem::directory_options::skip_permission_denied,
-			 error))
-	{
-		if (error)
-			return false;
-
-		const auto relative = entry.path().lexically_relative(source);
-		if (relative.empty())
-			continue;
-
-		if (entry.is_directory())
-		{
-			std::filesystem::create_directories(destination / relative, error);
-			if (error)
-				return false;
-			continue;
-		}
-
-		if (entry.is_regular_file())
-		{
-			if (entry.path().extension() == ".meta")
-				continue;
-
-			const auto target = destination / relative;
-			std::filesystem::create_directories(target.parent_path(), error);
-			if (error)
-				return false;
-			std::filesystem::copy_file(
-				entry.path(),
-				target,
-				std::filesystem::copy_options::overwrite_existing,
-				error);
-			if (error)
-				return false;
-		}
-	}
-	return true;
-}
 
 std::string AssetBrowserFileStamp(const std::filesystem::path& path)
 {
@@ -1683,8 +1550,265 @@ std::optional<std::string> SelectManifestPrefabSubAssetKeyForDragPayload(
 	return std::nullopt;
 }
 
-void ReimportProjectAssetAsync(const std::string& projectAssetsFolder, const std::string& absolutePath)
+NLS::Editor::Undo::UndoScopeId MakeAssetBrowserUndoScope(
+	const NLS::Editor::Assets::AssetBrowserItem& item)
 {
+	const auto resourcePath = !item.sourceAssetPath.empty()
+		? item.sourceAssetPath
+		: item.selectionResourcePath;
+	return NLS::Editor::Inspector::MakeInspectorAssetUndoScope(
+		resourcePath,
+		item.assetId.IsValid() ? item.assetId.ToString() : std::string {});
+}
+
+void InvalidateAssetBrowserUndoScope(
+	const NLS::Editor::Undo::UndoScopeId& scope,
+	NLS::Editor::Undo::UndoInvalidationReason reason);
+
+std::string NormalizeAssetWatcherPathKey(const std::filesystem::path& path)
+{
+	if (path.empty())
+		return {};
+
+	const auto normalized = path.lexically_normal().generic_u8string();
+	std::string key(reinterpret_cast<const char*>(normalized.data()), normalized.size());
+#if defined(_WIN32)
+	std::transform(
+		key.begin(),
+		key.end(),
+		key.begin(),
+		[](const unsigned char character) { return static_cast<char>(std::tolower(character)); });
+#endif
+	return key;
+}
+
+bool IsAssetMetaPath(const std::filesystem::path& path)
+{
+	auto extension = path.extension().string();
+	std::transform(
+		extension.begin(),
+		extension.end(),
+		extension.begin(),
+		[](const unsigned char character) { return static_cast<char>(std::tolower(character)); });
+	return extension == ".meta";
+}
+
+std::filesystem::path SourceAssetPathForWatcherChange(std::filesystem::path path)
+{
+	path = path.lexically_normal();
+	if (IsAssetMetaPath(path))
+		path.replace_extension();
+	return path;
+}
+
+NLS::Editor::Panels::AssetBrowserWatcherSuppressionRecord CaptureAssetWatcherSuppressionRecord(
+	const std::filesystem::path& path)
+{
+	NLS::Editor::Panels::AssetBrowserWatcherSuppressionRecord record;
+	std::error_code error;
+	record.exists = std::filesystem::exists(path, error) && !error;
+	if (!record.exists)
+		return record;
+
+	error.clear();
+	record.directory = std::filesystem::is_directory(path, error) && !error;
+	if (!record.directory)
+	{
+		error.clear();
+		record.size = std::filesystem::file_size(path, error);
+		if (error)
+			record.size = 0u;
+	}
+	error.clear();
+	record.lastWriteTime = std::filesystem::last_write_time(path, error);
+	if (error)
+		record.lastWriteTime = {};
+	return record;
+}
+
+bool MatchesAssetWatcherSuppressionRecord(
+	const NLS::Editor::Panels::AssetBrowserWatcherSuppressionRecord& expected,
+	const NLS::Editor::Panels::AssetBrowserWatcherSuppressionRecord& actual)
+{
+	if (expected.exists != actual.exists)
+		return false;
+	if (!expected.exists)
+		return true;
+	return expected.directory == actual.directory &&
+		(expected.directory || expected.size == actual.size) &&
+		expected.lastWriteTime == actual.lastWriteTime;
+}
+
+void RecordAssetBrowserUndoWatcherSuppression(
+	std::unordered_map<std::string, NLS::Editor::Panels::AssetBrowserWatcherSuppressionRecord>& suppressions,
+	const std::filesystem::path& path)
+{
+	if (path.empty() || !path.is_absolute())
+		return;
+
+	const auto key = NormalizeAssetWatcherPathKey(path);
+	if (key.empty())
+		return;
+
+	auto record = CaptureAssetWatcherSuppressionRecord(path);
+	record.expiresAt = std::chrono::steady_clock::now() + kAssetBrowserUndoWatcherSuppressionDuration;
+	suppressions.insert_or_assign(key, std::move(record));
+}
+
+void RecordAssetBrowserUndoWatcherSuppressions(
+	std::unordered_map<std::string, NLS::Editor::Panels::AssetBrowserWatcherSuppressionRecord>& suppressions,
+	const NLS::Editor::Undo::UndoCommandInfo& command)
+{
+	for (const auto& affected : command.affected)
+	{
+		const std::filesystem::path path(affected);
+		if (!path.is_absolute())
+			continue;
+
+		RecordAssetBrowserUndoWatcherSuppression(suppressions, path);
+		if (!IsAssetMetaPath(path))
+		{
+			RecordAssetBrowserUndoWatcherSuppression(
+				suppressions,
+				NLS::Core::Assets::GetAssetMetaPath(path));
+		}
+	}
+}
+
+void PruneExpiredAssetBrowserUndoWatcherSuppressions(
+	std::unordered_map<std::string, NLS::Editor::Panels::AssetBrowserWatcherSuppressionRecord>& suppressions,
+	const std::chrono::steady_clock::time_point now)
+{
+	for (auto entry = suppressions.begin(); entry != suppressions.end();)
+	{
+		if (entry->second.expiresAt <= now)
+			entry = suppressions.erase(entry);
+		else
+			++entry;
+	}
+}
+
+bool IsSelfIssuedAssetBrowserWatcherChange(
+	std::unordered_map<std::string, NLS::Editor::Panels::AssetBrowserWatcherSuppressionRecord>& suppressions,
+	const std::filesystem::path& changedPath,
+	const std::chrono::steady_clock::time_point now)
+{
+	const auto key = NormalizeAssetWatcherPathKey(changedPath);
+	const auto found = suppressions.find(key);
+	if (key.empty() || found == suppressions.end())
+		return false;
+
+	const auto actual = CaptureAssetWatcherSuppressionRecord(changedPath);
+	if (MatchesAssetWatcherSuppressionRecord(found->second, actual))
+		return true;
+
+	// An external writer superseded the result of the command. Do not let an
+	// older suppression record hide that modification for the rest of its TTL.
+	suppressions.erase(found);
+	return false;
+}
+
+std::vector<std::string> CollectExternalAssetWatcherUndoScopeKeys(
+	const std::string& projectAssetsFolder,
+	const std::shared_ptr<const NLS::Editor::Assets::EditorAssetSnapshotIndex>& snapshotIndex,
+	const std::vector<std::filesystem::path>& changedPaths)
+{
+	std::unordered_set<std::string> scopeKeys;
+	for (const auto& changedPath : changedPaths)
+	{
+		const auto sourcePath = SourceAssetPathForWatcherChange(changedPath);
+		if (!sourcePath.is_absolute())
+			continue;
+
+		const auto projectRelativePath = EditorAssetPathFromAbsolutePath(
+			projectAssetsFolder,
+			sourcePath.string());
+		const auto canonicalPath = NLS::Editor::Assets::NormalizeEditorProjectAssetPath(projectRelativePath);
+		if (canonicalPath.empty() || canonicalPath == "Assets")
+			continue;
+
+		std::string assetId;
+		if (snapshotIndex != nullptr)
+		{
+			if (const auto found = snapshotIndex->assetIndexByCanonicalSourcePath.find(canonicalPath);
+				found != snapshotIndex->assetIndexByCanonicalSourcePath.end() &&
+				found->second < snapshotIndex->assets.size())
+			{
+				const auto& snapshotAssetId = snapshotIndex->assets[found->second].assetId;
+				if (snapshotAssetId.IsValid())
+					assetId = snapshotAssetId.ToString();
+			}
+		}
+		if (assetId.empty())
+		{
+			const auto metadata = NLS::Core::Assets::AssetMeta::Load(
+				NLS::Core::Assets::GetAssetMetaPath(sourcePath));
+			if (metadata.has_value() && metadata->id.IsValid())
+				assetId = metadata->id.ToString();
+		}
+
+		const auto scope = NLS::Editor::Inspector::MakeInspectorAssetUndoScope(canonicalPath, assetId);
+		if (scope.IsValid())
+			scopeKeys.insert(scope.stableKey);
+	}
+
+	std::vector<std::string> result(scopeKeys.begin(), scopeKeys.end());
+	std::sort(result.begin(), result.end());
+	return result;
+}
+
+void AppendUniqueExternalAssetWatcherScopeKeys(
+	std::vector<std::string>& destination,
+	std::vector<std::string> source)
+{
+	destination.insert(
+		destination.end(),
+		std::make_move_iterator(source.begin()),
+		std::make_move_iterator(source.end()));
+	destination.erase(
+		std::remove(destination.begin(), destination.end(), std::string {}),
+		destination.end());
+	std::sort(destination.begin(), destination.end());
+	destination.erase(std::unique(destination.begin(), destination.end()), destination.end());
+}
+
+void InvalidateExternalAssetWatcherUndoScopes(const std::vector<std::string>& scopeKeys)
+{
+	for (const auto& scopeKey : scopeKeys)
+	{
+		InvalidateAssetBrowserUndoScope(
+			{NLS::Editor::Undo::UndoScopeKind::Asset, scopeKey, 0u},
+			NLS::Editor::Undo::UndoInvalidationReason::ExternalModification);
+	}
+}
+
+void InvalidateAssetBrowserUndoScope(
+	const NLS::Editor::Undo::UndoScopeId& scope,
+	const NLS::Editor::Undo::UndoInvalidationReason reason)
+{
+	if (!scope.IsValid() ||
+		!NLS::Core::ServiceLocator::Contains<NLS::Editor::Undo::EditorUndoService>())
+	{
+		return;
+	}
+
+	auto& undo = NLS::Core::ServiceLocator::Get<NLS::Editor::Undo::EditorUndoService>();
+	undo.InvalidateScope(scope, reason);
+	undo.MarkSaved(scope);
+}
+
+void InvalidateAssetBrowserUndoScope(
+	const NLS::Editor::Assets::AssetBrowserItem& item,
+	const NLS::Editor::Undo::UndoInvalidationReason reason)
+{
+	InvalidateAssetBrowserUndoScope(MakeAssetBrowserUndoScope(item), reason);
+}
+
+void ReimportProjectAssetAsync(
+	const std::string& projectAssetsFolder,
+	const NLS::Editor::Assets::AssetBrowserItem& item)
+{
+	const auto absolutePath = item.absolutePath.string();
 	const auto projectRoot = ProjectRootFromAssetsFolder(projectAssetsFolder);
 	const auto assetPath = EditorAssetPathFromAbsolutePath(projectAssetsFolder, absolutePath);
 	if (projectRoot.empty() || assetPath.empty())
@@ -1695,9 +1819,11 @@ void ReimportProjectAssetAsync(const std::string& projectAssetsFolder, const std
 
 	auto& tracker = EDITOR_CONTEXT(importProgressTracker);
 	auto residentPrefabPreviewRegistry = EDITOR_CONTEXT(residentPrefabPreviewRegistry);
+	const auto undoScope = MakeAssetBrowserUndoScope(item);
 	const auto queued = EDITOR_EXEC(TrackBackgroundTask([
 		projectRoot,
 		assetPath = assetPath.generic_string(),
+		undoScope,
 		residentPrefabPreviewRegistry = std::move(residentPrefabPreviewRegistry),
 		&tracker]
 	{
@@ -1705,12 +1831,17 @@ void ReimportProjectAssetAsync(const std::string& projectAssetsFolder, const std
 			NLS::Editor::Assets::MakeProjectEditorAssetRoots(projectRoot));
 		importer.SetResidentPrefabPreviewRegistry(residentPrefabPreviewRegistry);
 		const auto imported = importer.SaveAndReimport(assetPath, tracker);
-		EDITOR_EXEC(DelayAction([assetPath, imported]
+		EDITOR_EXEC(DelayAction([assetPath, undoScope, imported]
 		{
 			EDITOR_PANEL(NLS::Editor::Panels::AssetBrowser, "Asset Browser").Refresh();
-			EDITOR_PANEL(NLS::Editor::Panels::AssetProperties, "Asset Properties").Refresh();
+			EDITOR_PANEL(NLS::Editor::Panels::Inspector, "Inspector").Refresh();
 			if (imported)
+			{
+				InvalidateAssetBrowserUndoScope(
+					undoScope,
+					NLS::Editor::Undo::UndoInvalidationReason::AssetReimported);
 				NLS_LOG_INFO("Reimported asset: " + assetPath);
+			}
 			else
 				NLS_LOG_ERROR("Failed to reimport asset: " + assetPath);
 		}));
@@ -1718,6 +1849,26 @@ void ReimportProjectAssetAsync(const std::string& projectAssetsFolder, const std
 	if (!queued)
 		NLS_LOG_ERROR("Failed to queue asset reimport because the editor background task queue is at capacity: " + assetPath.generic_string());
 }
+
+#if defined(NLS_ENABLE_TEST_HOOKS)
+void NLS::Editor::Panels::TestHooks::NotifyAssetBrowserReimportedForTesting(
+	const NLS::Editor::Assets::AssetBrowserItem& item)
+{
+	InvalidateAssetBrowserUndoScope(item, NLS::Editor::Undo::UndoInvalidationReason::AssetReimported);
+}
+
+void NLS::Editor::Panels::TestHooks::NotifyAssetBrowserReloadedForTesting(
+	const NLS::Editor::Assets::AssetBrowserItem& item)
+{
+	InvalidateAssetBrowserUndoScope(item, NLS::Editor::Undo::UndoInvalidationReason::Reloaded);
+}
+
+void NLS::Editor::Panels::TestHooks::NotifyAssetBrowserExternalModificationForTesting(
+	const NLS::Editor::Assets::AssetBrowserItem& item)
+{
+	InvalidateAssetBrowserUndoScope(item, NLS::Editor::Undo::UndoInvalidationReason::ExternalModification);
+}
+#endif
 
 const char* AssetPreimportReasonLabel(const NLS::Editor::Assets::AssetPreimportReason reason)
 {
@@ -1989,31 +2140,325 @@ std::optional<NLS::Editor::Assets::EditorAssetDragPayload> BuildEditorAssetDragP
 			imported);
 }
 
-void RenameAsset(const std::string& p_prev, const std::string& p_new)
+[[nodiscard]] bool RequiresTransactionalReferenceSnapshot(const std::filesystem::path& path)
 {
-	std::filesystem::rename(p_prev, p_new);
-
-	if (const std::string previousMetaPath = GetAssociatedMetaFile(p_prev); std::filesystem::exists(previousMetaPath))
+	switch (Utils::PathParser::GetFileType(path.string()))
 	{
-		if (const std::string newMetaPath = GetAssociatedMetaFile(p_new); !std::filesystem::exists(newMetaPath))
-		{
-			std::filesystem::rename(previousMetaPath, newMetaPath);
-		}
-		else
-		{
-			NLS_LOG_ERROR(newMetaPath + " is already existing, .meta creation failed");
-		}
+	case Utils::PathParser::EFileType::MODEL:
+	case Utils::PathParser::EFileType::TEXTURE:
+	case Utils::PathParser::EFileType::SHADER:
+	case Utils::PathParser::EFileType::MATERIAL:
+	case Utils::PathParser::EFileType::SOUND:
+	case Utils::PathParser::EFileType::SCENE:
+	case Utils::PathParser::EFileType::PREFAB:
+		return true;
+	default:
+		return false;
 	}
 }
 
-void RemoveAsset(const std::string& p_toDelete)
+[[nodiscard]] bool CanDeleteProjectFileThroughUndo(
+	const NLS::Editor::Assets::AssetBrowserItem& item)
 {
-	std::filesystem::remove(p_toDelete);
+	return !item.absolutePath.empty() &&
+		(std::filesystem::is_regular_file(item.absolutePath) || std::filesystem::is_directory(item.absolutePath));
+}
 
-	if (const std::string metaPath = GetAssociatedMetaFile(p_toDelete); std::filesystem::exists(metaPath))
+[[nodiscard]] bool CanRenameProjectFileThroughUndo(
+	const NLS::Editor::Assets::AssetBrowserItem& item)
+{
+	return !item.absolutePath.empty() &&
+		(std::filesystem::is_regular_file(item.absolutePath) || std::filesystem::is_directory(item.absolutePath));
+}
+
+bool ExecuteAssetBrowserUndoCommand(
+	NLS::Editor::Undo::UndoCommandPtr command,
+	const std::string_view operation)
+{
+	if (!command)
 	{
-		std::filesystem::remove(metaPath);
+		NLS_LOG_WARNING(std::string("Asset ") + std::string(operation) +
+			" was rejected because a reversible command could not be created.");
+		return false;
 	}
+	if (!NLS::Core::ServiceLocator::Contains<NLS::Editor::Undo::EditorUndoService>())
+	{
+		NLS_LOG_WARNING(std::string("Asset ") + std::string(operation) +
+			" was rejected because the global Undo service is unavailable.");
+		return false;
+	}
+
+	const auto result = NLS::Core::ServiceLocator::Get<NLS::Editor::Undo::EditorUndoService>()
+		.Execute(std::move(command));
+	if (result.Succeeded())
+		return true;
+
+	NLS_LOG_WARNING(
+		std::string("Asset ") + std::string(operation) + " was rejected by the global Undo service: " +
+		(result.message.empty() ? std::string("Unknown error.") : result.message));
+	return false;
+}
+
+template <typename TPrefabOperationResult>
+std::string DescribePrefabOperationFailure(
+	const TPrefabOperationResult& operation,
+	const std::string_view fallback)
+{
+	if (!operation.diagnostics.empty() && !operation.diagnostics.front().message.empty())
+		return operation.diagnostics.front().message;
+	return std::string(fallback);
+}
+
+void MarkPrefabRootSceneDirty(NLS::Engine::GameObject& root)
+{
+	if (NLS::Core::ServiceLocator::Contains<NLS::Editor::Core::EditorActions>())
+	{
+		NLS::Core::ServiceLocator::Get<NLS::Editor::Core::EditorActions>().MarkOwningSceneDirty(root);
+		return;
+	}
+
+	if (NLS::Core::ServiceLocator::Contains<NLS::Editor::Core::Context>())
+	{
+		auto& context = NLS::Core::ServiceLocator::Get<NLS::Editor::Core::Context>();
+		if (context.sceneManager.GetCurrentScene() == root.GetScene())
+			context.sceneManager.MarkCurrentSceneDirty();
+	}
+}
+
+class SaveHierarchyPrefabUndoCommand final : public NLS::Editor::Undo::IEditorUndoCommand
+{
+public:
+	SaveHierarchyPrefabUndoCommand(
+		NLS::Editor::Undo::UndoCommandInfo info,
+		NLS::Editor::Undo::SceneObjectUndoTarget root,
+		NLS::Core::Assets::AssetId prefabAssetId,
+		NLS::Core::Assets::AssetId sceneAssetId,
+		std::string prefabSubAssetKey,
+		NLS::Engine::Assets::PrefabArtifact artifact,
+		NLS::Editor::Undo::UndoCommandPtr fileCommand)
+		: m_info(std::move(info))
+		, m_root(std::move(root))
+		, m_prefabAssetId(prefabAssetId)
+		, m_sceneAssetId(sceneAssetId)
+		, m_prefabSubAssetKey(std::move(prefabSubAssetKey))
+		, m_artifact(std::move(artifact))
+		, m_fileCommand(std::move(fileCommand))
+	{
+	}
+
+	[[nodiscard]] NLS::Editor::Undo::UndoCommandInfo GetInfo() const override
+	{
+		return m_info;
+	}
+
+	[[nodiscard]] NLS::Editor::Undo::UndoValidationResult Validate(
+		const NLS::Editor::Undo::UndoDirection direction,
+		const NLS::Editor::Undo::UndoExecutionContext& context) const override
+	{
+		const auto* root = m_root.Resolve();
+		if (root == nullptr)
+			return NLS::Editor::Undo::UndoValidationResult::Stale(
+				"The GameObject used to save this Prefab no longer exists.");
+		if (!NLS::Core::ServiceLocator::Contains<NLS::Editor::Core::Context>())
+			return NLS::Editor::Undo::UndoValidationResult::Failed(
+				"The editor context required to update the Prefab instance is unavailable.");
+		if (!m_fileCommand)
+			return NLS::Editor::Undo::UndoValidationResult::Failed(
+				"The Prefab asset command is incomplete.");
+
+		const auto& editorContext = NLS::Core::ServiceLocator::Get<NLS::Editor::Core::Context>();
+		const auto* instance = editorContext.prefabInstanceRegistry.FindRootInstance(*root);
+		if (direction == NLS::Editor::Undo::UndoDirection::Undo)
+		{
+			if (instance == nullptr)
+				return NLS::Editor::Undo::UndoValidationResult::Conflict(
+					"The saved Prefab instance was disconnected outside the Undo timeline.");
+			if (!NLS::Editor::Undo::PrefabSave::MatchesInstanceIdentity(
+					*instance,
+					m_prefabAssetId,
+					m_prefabSubAssetKey,
+					m_sceneAssetId))
+				return NLS::Editor::Undo::UndoValidationResult::Conflict(
+					"The GameObject Prefab connection changed outside the Undo timeline.");
+		}
+		else if (instance != nullptr)
+		{
+			return NLS::Editor::Undo::UndoValidationResult::Conflict(
+				"The GameObject was connected to a Prefab outside the Undo timeline.");
+		}
+
+		return m_fileCommand->Validate(direction, context);
+	}
+
+	NLS::Editor::Undo::UndoStartResult Apply(
+		const NLS::Editor::Undo::UndoDirection direction,
+		const NLS::Editor::Undo::UndoExecutionContext& context,
+		NLS::Editor::Undo::UndoCompletion) override
+	{
+		NLS_EDITOR_UNDO_REQUIRE_MUTATION_CONTEXT("saving or restoring a Prefab asset");
+		auto* root = m_root.Resolve();
+		if (root == nullptr)
+		{
+			return NLS::Editor::Undo::UndoStartResult::Failed(
+				"The GameObject used to save this Prefab no longer exists.");
+		}
+		if (!NLS::Core::ServiceLocator::Contains<NLS::Editor::Core::Context>())
+		{
+			return NLS::Editor::Undo::UndoStartResult::Failed(
+				"The editor context required to update the Prefab instance is unavailable.");
+		}
+
+		auto& editorContext = NLS::Core::ServiceLocator::Get<NLS::Editor::Core::Context>();
+		if (direction == NLS::Editor::Undo::UndoDirection::Undo)
+		{
+			if (!editorContext.prefabInstanceRegistry.RemoveRootInstance(*root))
+			{
+				return NLS::Editor::Undo::UndoStartResult::Failed(
+					"The saved Prefab instance was disconnected outside the Undo timeline.");
+			}
+
+			const auto fileResult = m_fileCommand->Apply(direction, context, {});
+			if (fileResult.state == NLS::Editor::Undo::UndoStartState::Completed)
+			{
+				MarkPrefabRootSceneDirty(*root);
+				return fileResult;
+			}
+
+			std::string reconnectError;
+			const bool reconnected = ConnectRoot(*root, editorContext, reconnectError);
+			const auto message = fileResult.message.empty()
+				? std::string("The Prefab asset could not be moved to UndoTrash.")
+				: fileResult.message;
+			return NLS::Editor::Undo::UndoStartResult::Failed(
+				message,
+				fileResult.rollbackFailed || !reconnected);
+		}
+
+		const auto fileResult = m_fileCommand->Apply(direction, context, {});
+		if (fileResult.state != NLS::Editor::Undo::UndoStartState::Completed)
+			return fileResult;
+
+		std::string connectError;
+		if (ConnectRoot(*root, editorContext, connectError))
+		{
+			MarkPrefabRootSceneDirty(*root);
+			return NLS::Editor::Undo::UndoStartResult::Completed();
+		}
+
+		const auto rollback = m_fileCommand->Apply(NLS::Editor::Undo::UndoDirection::Undo, context, {});
+		return NLS::Editor::Undo::UndoStartResult::Failed(
+			connectError.empty() ? std::string("The saved Prefab could not be connected to the GameObject.") : connectError,
+			rollback.state != NLS::Editor::Undo::UndoStartState::Completed || rollback.rollbackFailed);
+	}
+
+	bool TryMergeFrom(const NLS::Editor::Undo::IEditorUndoCommand&) override
+	{
+		// Saving a Prefab creates a file/scene cross-scope boundary and must never
+		// time-merge with another operation.
+		return false;
+	}
+
+private:
+	[[nodiscard]] bool ConnectRoot(
+		NLS::Engine::GameObject& root,
+		NLS::Editor::Core::Context& editorContext,
+		std::string& error) const
+	{
+		auto connected = NLS::Editor::Assets::PrefabEditorWorkflow().ConnectExistingPrefabInstance({
+			nullptr,
+			m_prefabAssetId,
+			m_prefabSubAssetKey,
+			m_sceneAssetId,
+			false,
+			&m_artifact
+		}, root);
+		if (connected.status != NLS::Editor::Assets::PrefabEditorOperationStatus::Committed ||
+			!connected.instance.has_value())
+		{
+			error = DescribePrefabOperationFailure(
+				connected,
+				"The saved Prefab could not be connected to the GameObject.");
+			return false;
+		}
+
+		editorContext.prefabInstanceRegistry.Register(std::move(*connected.instance));
+		return true;
+	}
+
+	NLS::Editor::Undo::UndoCommandInfo m_info;
+	NLS::Editor::Undo::SceneObjectUndoTarget m_root;
+	NLS::Core::Assets::AssetId m_prefabAssetId;
+	NLS::Core::Assets::AssetId m_sceneAssetId;
+	std::string m_prefabSubAssetKey;
+	NLS::Engine::Assets::PrefabArtifact m_artifact;
+	NLS::Editor::Undo::UndoCommandPtr m_fileCommand;
+};
+
+NLS::Editor::Undo::UndoCommandPtr MakeSaveHierarchyPrefabUndoCommand(
+	NLS::Engine::GameObject& gameObject,
+	const NLS::Editor::Undo::UndoScopeId& sceneScope,
+	const std::filesystem::path& projectRoot,
+	const std::filesystem::path& prefabPath,
+	const std::string& prefabResourcePath,
+	const NLS::Core::Assets::AssetId prefabAssetId,
+	const NLS::Core::Assets::AssetId sceneAssetId)
+{
+	auto rootTarget = NLS::Editor::Undo::SceneObjectUndoTarget::Capture(gameObject, sceneScope);
+	if (!rootTarget.has_value() || !prefabAssetId.IsValid())
+		return {};
+
+	auto saved = NLS::Editor::Assets::PrefabUtilityFacade().SaveAsPrefabAsset(
+		gameObject,
+		prefabAssetId,
+		std::filesystem::path(prefabResourcePath));
+	if (saved.status != NLS::Editor::Assets::PrefabOperationStatus::Committed ||
+		!saved.artifact.has_value() || saved.prefabSourceText.empty())
+	{
+		NLS_LOG_WARNING(
+			"Save As Prefab was rejected: " +
+			DescribePrefabOperationFailure(saved, "The GameObject could not be serialized as a Prefab."));
+		return {};
+	}
+
+	auto fileCommand = NLS::Editor::Undo::AssetFile::MakeCreateFileCommand(
+		projectRoot,
+		prefabPath,
+		saved.prefabSourceText,
+		prefabAssetId.ToString(),
+		"Save As Prefab",
+		prefabAssetId);
+	if (!fileCommand)
+		return {};
+
+	NLS::Editor::Undo::UndoCommandInfo info;
+	info.label = "Save As Prefab";
+	info.sourceModule = "Asset Browser";
+	info.scopes = {
+		sceneScope,
+		NLS::Editor::Inspector::MakeInspectorAssetUndoScope(prefabResourcePath, prefabAssetId.ToString())};
+	info.affected = {
+		rootTarget->GetAffectedKey(),
+		prefabPath.lexically_normal().string(),
+		NLS::Core::Assets::GetAssetMetaPath(prefabPath).lexically_normal().string()};
+	info.writeThroughScopes = {info.scopes.back()};
+	info.estimatedBytes = sizeof(SaveHierarchyPrefabUndoCommand) +
+		prefabResourcePath.size() + saved.prefabSourceText.size() +
+		rootTarget->GetAffectedKey().size();
+
+	return std::make_unique<SaveHierarchyPrefabUndoCommand>(
+		std::move(info),
+		std::move(*rootTarget),
+		prefabAssetId,
+		sceneAssetId,
+		"prefab:" + gameObject.GetName(),
+		std::move(*saved.artifact),
+		std::move(fileCommand));
+}
+
+void DrawTransactionalSnapshotRequiredTooltip()
+{
+	if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+		ImGui::SetTooltip("%s", kTransactionalReferenceSnapshotRequired);
 }
 
 Editor::Panels::AssetBrowser::AssetBrowser
@@ -2033,6 +2478,14 @@ Editor::Panels::AssetBrowser::AssetBrowser
 	m_thumbnailFeatureConfig(std::move(thumbnailFeatureConfig)),
 	m_thumbnailService(m_thumbnailFeatureConfig)
 {
+	// The Inspector's object reference Ping publishes an asset selection here so
+	// the browser can reveal it instead of leaving the request unconsumed.
+	m_editorSelectionListener =
+		NLS::Editor::Inspector::EditorSelectionService::Get().SelectionChangedEvent +=
+		[this](const NLS::Editor::Inspector::InspectorTargetSet& targets)
+		{
+			HandleEditorSelectionChanged(targets);
+		};
 	m_thumbnailRenderScheduler.SetAdaptiveBudgetEnabled(
 		m_thumbnailFeatureConfig.adaptiveBudget);
 	if (NLS::Core::ServiceLocator::Contains<NLS::Editor::Core::EditorActions>() &&
@@ -2098,18 +2551,64 @@ Editor::Panels::AssetBrowser::AssetBrowser
 			});
 	}
 
+	if (NLS::Core::ServiceLocator::Contains<NLS::Editor::Undo::EditorUndoService>())
+	{
+		auto& undoService = NLS::Core::ServiceLocator::Get<NLS::Editor::Undo::EditorUndoService>();
+		m_assetUndoHistoryListener = undoService.SubscribeHistoryChanged([this](const NLS::Editor::Undo::UndoHistoryEvent& event)
+		{
+			if (event.kind != NLS::Editor::Undo::UndoHistoryEventKind::CommandApplied ||
+				!event.command.has_value() || event.command->sourceModule != "Asset Browser")
+			{
+				return;
+			}
+
+			RecordAssetBrowserUndoWatcherSuppressions(
+				m_assetBrowserUndoWatcherSuppressions,
+				*event.command);
+
+			std::unordered_set<std::string> changedProjectPaths;
+			for (const auto& affected : event.command->affected)
+			{
+				const std::filesystem::path affectedPath(affected);
+				if (!affectedPath.is_absolute())
+					continue;
+
+				const auto projectPath = EditorAssetPathFromAbsolutePath(
+					m_projectAssetFolder,
+					affectedPath.string());
+				if (!projectPath.empty())
+					changedProjectPaths.insert(NormalizeProjectBrowserPath(projectPath));
+			}
+			for (const auto& projectPath : changedProjectPaths)
+				ScheduleProjectAssetPreimportForPath(projectPath);
+			RebuildProjectAssetPresentationAfterWorkflow();
+		});
+	}
+
 	Fill();
 }
 
 Editor::Panels::AssetBrowser::~AssetBrowser()
 {
 	ShutdownThumbnailPipeline();
+	if (m_editorSelectionListener != NLS::InvalidListenerID)
+	{
+		NLS::Editor::Inspector::EditorSelectionService::Get().SelectionChangedEvent.RemoveListener(
+			m_editorSelectionListener);
+		m_editorSelectionListener = NLS::InvalidListenerID;
+	}
 	NLS::Editor::Assets::CloseAssetBrowserAsyncRefresh(m_projectAssetDatabaseRefreshState);
 	NLS::Editor::Assets::CloseAssetBrowserAsyncRefresh(m_currentFolderItemsRefreshState);
 	NLS::Editor::Assets::CloseAssetBrowserAsyncRefresh(m_objectReferencePickerRefreshState);
 
 	if (EDITOR_CONTEXT(window) != nullptr && m_windowDroppedFilesListener != 0u)
 		EDITOR_CONTEXT(window)->DroppedFilesEvent.RemoveListener(m_windowDroppedFilesListener);
+	if (m_assetUndoHistoryListener != 0u &&
+		NLS::Core::ServiceLocator::Contains<NLS::Editor::Undo::EditorUndoService>())
+	{
+		NLS::Core::ServiceLocator::Get<NLS::Editor::Undo::EditorUndoService>()
+			.UnsubscribeHistoryChanged(m_assetUndoHistoryListener);
+	}
 
 	if (m_projectAssetDatabaseRefresh.has_value())
 		AbandonProjectAssetDatabaseRefreshFuture(m_projectAssetDatabaseRefresh->future);
@@ -2230,6 +2729,7 @@ void Editor::Panels::AssetBrowser::OnBeforeDrawWidgets()
 		return;
 	}
 	PumpStandardPbrShaderPassPrewarm();
+	ProcessPendingAssetPing();
 	if (!editorWindowClosing &&
 		!sceneReadbackValidationActive &&
 		!interactive &&
@@ -2562,17 +3062,33 @@ void Editor::Panels::AssetBrowser::ConsumeWatcherChangesAndSchedulePreimport()
 		std::vector<std::filesystem::path> relativeChanges;
 		relativeChanges.reserve(projectAssetChanges.size());
 		const auto projectRoot = ProjectRootFromAssetsFolder(m_projectAssetFolder);
+		const auto now = std::chrono::steady_clock::now();
+		PruneExpiredAssetBrowserUndoWatcherSuppressions(m_assetBrowserUndoWatcherSuppressions, now);
+		std::vector<std::filesystem::path> externalProjectAssetChanges;
+		externalProjectAssetChanges.reserve(projectAssetChanges.size());
 		for (const auto& changedPath : projectAssetChanges)
 		{
+			if (!IsSelfIssuedAssetBrowserWatcherChange(
+				m_assetBrowserUndoWatcherSuppressions,
+				changedPath,
+				now))
+			{
+				externalProjectAssetChanges.push_back(changedPath);
+			}
+
 			auto relative = changedPath.lexically_relative(projectRoot);
 			if (relative.empty() || relative.is_absolute())
 				relative = changedPath;
 			relativeChanges.push_back(relative.lexically_normal());
 		}
+		auto externalWatcherScopeKeys = CollectExternalAssetWatcherUndoScopeKeys(
+			m_projectAssetFolder,
+			m_projectAssetSubAssetSnapshotIndex,
+			externalProjectAssetChanges);
 		ScheduleProjectAssetPreimport({
 			NLS::Editor::Assets::AssetPreimportReason::FileWatcherChanged,
 			std::move(relativeChanges)
-		});
+		}, std::move(externalWatcherScopeKeys));
 	}
 	if (csharpSourceChanged && EDITOR_CONTEXT(managedScriptDebugSession) != nullptr)
 	{
@@ -2623,7 +3139,8 @@ void Editor::Panels::AssetBrowser::RequestRefresh()
 }
 
 void Editor::Panels::AssetBrowser::ScheduleProjectAssetPreimport(
-	NLS::Editor::Assets::AssetPreimportRequest request)
+	NLS::Editor::Assets::AssetPreimportRequest request,
+	std::vector<std::string> externalWatcherScopeKeys)
 {
 	using namespace NLS::Editor::Assets;
 
@@ -2643,16 +3160,21 @@ void Editor::Panels::AssetBrowser::ScheduleProjectAssetPreimport(
 		m_pendingProjectAssetPreimportRequest = m_pendingProjectAssetPreimportRequest.has_value()
 			? MergeAssetPreimportRequests(std::move(*m_pendingProjectAssetPreimportRequest), request)
 			: std::move(request);
+		AppendUniqueExternalAssetWatcherScopeKeys(
+			m_pendingProjectAssetPreimportExternalWatcherScopeKeys,
+			std::move(externalWatcherScopeKeys));
 		return;
 	}
 	m_projectAssetPreimportRunning = true;
+	AppendUniqueExternalAssetWatcherScopeKeys(externalWatcherScopeKeys, {});
 
 	auto& tracker = EDITOR_CONTEXT(importProgressTracker);
 	const auto queued = EDITOR_EXEC(TrackBackgroundTask([
 		projectRoot,
 		request = std::move(request),
+		externalWatcherScopeKeys = std::move(externalWatcherScopeKeys),
 		residentPrefabPreviewRegistry = m_residentPrefabPreviewRegistry,
-		&tracker]
+		&tracker]() mutable
 	{
 		AssetDatabaseFacade database(MakeProjectEditorAssetRoots(projectRoot));
 		database.SetResidentPrefabPreviewRegistry(residentPrefabPreviewRegistry);
@@ -2663,16 +3185,26 @@ void Editor::Panels::AssetBrowser::ScheduleProjectAssetPreimport(
 		EDITOR_EXEC(DelayAction([
 			reason = request.reason,
 			changedPaths = request.changedPaths,
+			externalWatcherScopeKeys = std::move(externalWatcherScopeKeys),
 			imported,
-			diagnostics = std::move(diagnostics)]
+			diagnostics = std::move(diagnostics)]() mutable
 		{
 			auto& assetBrowser = EDITOR_PANEL(NLS::Editor::Panels::AssetBrowser, "Asset Browser");
 			assetBrowser.m_projectAssetPreimportRunning = false;
+			if (imported && reason == NLS::Editor::Assets::AssetPreimportReason::FileWatcherChanged)
+			{
+				InvalidateExternalAssetWatcherUndoScopes(externalWatcherScopeKeys);
+			}
 			if (assetBrowser.m_pendingProjectAssetPreimportRequest.has_value())
 			{
 				auto pendingRequest = std::move(*assetBrowser.m_pendingProjectAssetPreimportRequest);
 				assetBrowser.m_pendingProjectAssetPreimportRequest.reset();
-				assetBrowser.ScheduleProjectAssetPreimport(std::move(pendingRequest));
+				auto pendingExternalWatcherScopeKeys = std::move(
+					assetBrowser.m_pendingProjectAssetPreimportExternalWatcherScopeKeys);
+				assetBrowser.m_pendingProjectAssetPreimportExternalWatcherScopeKeys.clear();
+				assetBrowser.ScheduleProjectAssetPreimport(
+					std::move(pendingRequest),
+					std::move(pendingExternalWatcherScopeKeys));
 			}
 			else
 			{
@@ -2746,6 +3278,7 @@ void Editor::Panels::AssetBrowser::RebuildProjectAssetPresentation(
 		DiscardProjectAssetDatabaseRefresh();
 		m_projectAssetDatabaseRefreshQueuedAfterInFlight = false;
 		NLS::Editor::Assets::SetObjectReferencePickerEntries({});
+		NLS::Editor::Assets::AppendObjectReferencePickerAuthoringDocuments();
 		m_objectReferencePickerRefreshRequested = false;
 		NLS::Editor::Assets::ResetAssetBrowserAsyncRefresh(m_projectAssetDatabaseRefreshState);
 		NLS::Editor::Assets::ResetAssetBrowserAsyncRefresh(m_currentFolderItemsRefreshState);
@@ -2761,6 +3294,7 @@ void Editor::Panels::AssetBrowser::RebuildProjectAssetPresentation(
 		DiscardProjectAssetDatabaseRefresh();
 		m_projectAssetDatabaseRefreshQueuedAfterInFlight = false;
 		NLS::Editor::Assets::SetObjectReferencePickerEntries({});
+		NLS::Editor::Assets::AppendObjectReferencePickerAuthoringDocuments();
 		m_objectReferencePickerRefreshRequested = false;
 	}
 
@@ -2776,6 +3310,7 @@ void Editor::Panels::AssetBrowser::RebuildProjectAssetPresentation(
 		{
 			InvalidateObjectReferencePickerEntriesRefresh();
 			NLS::Editor::Assets::SetObjectReferencePickerEntries({});
+			NLS::Editor::Assets::AppendObjectReferencePickerAuthoringDocuments();
 			m_objectReferencePickerRefreshRequested = false;
 			NLS::Editor::Assets::ResetAssetBrowserAsyncRefresh(m_objectReferencePickerRefreshState);
 			m_projectAssetDatabaseReady = false;
@@ -2919,6 +3454,71 @@ void Editor::Panels::AssetBrowser::SelectProjectFolder(const std::string& projec
 void Editor::Panels::AssetBrowser::SelectProjectFolderForValidation(const std::string& projectRelativePath)
 {
 	SelectProjectFolder(projectRelativePath);
+}
+
+void Editor::Panels::AssetBrowser::RequestAssetPing(std::string projectRelativePath)
+{
+	const auto normalized = NormalizeProjectBrowserPath(std::move(projectRelativePath));
+	if (normalized.empty() || normalized.compare(0u, 7u, "Assets/") != 0)
+		return;
+
+	m_pendingPingProjectPath = normalized;
+	// A ping must reveal the asset even when the browser is currently filtered.
+	m_projectSearchQuery.clear();
+	m_projectTypeFilter = NLS::Editor::Assets::AssetBrowserItemType::All;
+	PrioritizeAssetBrowserUiFeedback();
+}
+
+void Editor::Panels::AssetBrowser::HandleEditorSelectionChanged(
+	const NLS::Editor::Inspector::InspectorTargetSet& targets)
+{
+	const auto* primary = targets.Primary();
+	if (primary == nullptr || primary->resourcePath.empty())
+		return;
+
+	// Only asset targets are revealable here. Scene objects belong to the
+	// Hierarchy, which owns its own selection handling.
+	if (primary->kind != NLS::Editor::Inspector::InspectorTargetKind::AssetImporter &&
+		primary->kind != NLS::Editor::Inspector::InspectorTargetKind::Material)
+	{
+		return;
+	}
+
+	RequestAssetPing(primary->resourcePath);
+}
+
+void Editor::Panels::AssetBrowser::ProcessPendingAssetPing()
+{
+	if (!m_pendingPingProjectPath.has_value())
+		return;
+
+	const auto requested = *m_pendingPingProjectPath;
+	const auto folder = NormalizeProjectBrowserPath(std::filesystem::path(requested).parent_path());
+	if (NormalizeProjectBrowserPath(m_selectedProjectFolder) != folder)
+	{
+		// Selecting the folder rebuilds the listing (possibly asynchronously), so
+		// the request stays pending and matching resumes on a later frame.
+		SelectProjectFolder(folder);
+		return;
+	}
+
+	RebuildProjectAssetDisplayItemsIfNeeded();
+	const auto found = std::find_if(
+		m_projectDisplayItems.begin(),
+		m_projectDisplayItems.end(),
+		[&requested](const NLS::Editor::Assets::AssetBrowserDisplayItem& candidate)
+		{
+			if (candidate.loadingPlaceholder)
+				return false;
+			return NormalizeProjectBrowserPath(ProjectBrowserSelectionPathForItem(candidate.item)) == requested;
+		});
+	if (found == m_projectDisplayItems.end())
+		return;
+
+	m_selectedProjectItem = NLS::Editor::Assets::BuildAssetBrowserActionIdentity(found->item);
+	m_pingedProjectPath = requested;
+	m_pingHighlightExpiresAt = ImGui::GetTime() + 1.0;
+	m_pendingPingProjectPath.reset();
 }
 
 bool Editor::Panels::AssetBrowser::IsAssetBrowserInteractive() const
@@ -3541,44 +4141,25 @@ bool Editor::Panels::AssetBrowser::CommitProjectBrowserTextDialog()
 				return candidate;
 		}
 	};
-	auto createScriptAsset = [&](const std::filesystem::path& finalPath, const std::string& contents)
+	const auto projectRoot = ProjectRootFromAssetsFolder(m_projectAssetFolder);
+	auto createTextAsset = [&](const std::filesystem::path& finalPath,
+		const std::string& contents,
+		const std::string_view label)
 	{
-		std::error_code error;
-		std::filesystem::create_directories(finalPath.parent_path(), error);
-		if (error)
-			return false;
-
-		std::ofstream output(finalPath, std::ios::binary | std::ios::trunc);
-		if (!output)
-			return false;
-		output << contents;
-		output.flush();
-		if (!output)
-		{
-			std::filesystem::remove(finalPath, error);
-			return false;
-		}
-		output.close();
-
-		auto meta = NLS::Core::Assets::AssetMeta::CreateForAsset(finalPath);
-		if (!meta.Save(NLS::Core::Assets::GetAssetMetaPath(finalPath)))
-		{
-			std::filesystem::remove(finalPath, error);
-			return false;
-		}
-		createdOrChangedProjectPath = EditorAssetPathFromAbsolutePath(m_projectAssetFolder, finalPath.string());
-		return !createdOrChangedProjectPath.empty();
-	};
-	auto createMaterialAsset = [&](const std::string& contents)
-	{
-		const auto finalPath = BuildUniqueAssetPath(targetFolder, name, ".mat");
 		const auto projectRelativePath = EditorAssetPathFromAbsolutePath(m_projectAssetFolder, finalPath.string());
-		if (projectRelativePath.empty())
+		if (projectRoot.empty() || projectRelativePath.empty())
 			return false;
-
-		if (!CreateNativeMaterialAssetAtPath(m_projectAssetFolder, finalPath, contents))
+		if (!ExecuteAssetBrowserUndoCommand(
+				NLS::Editor::Undo::AssetFile::MakeCreateFileCommand(
+					projectRoot,
+					finalPath,
+					contents,
+					projectRelativePath.generic_string(),
+					std::string(label)),
+				"creation"))
+		{
 			return false;
-
+		}
 		createdOrChangedProjectPath = projectRelativePath;
 		return true;
 	};
@@ -3586,17 +4167,16 @@ bool Editor::Panels::AssetBrowser::CommitProjectBrowserTextDialog()
 	auto createUIDocument = [&]
 	{
 		const auto finalPath = BuildUniqueAssetPath(targetFolder, name, ".ui");
-		if (!createScriptAsset(
+		if (!createTextAsset(
 				finalPath,
-				NLS::Editor::UIDocumentTools::UIDocumentDesignerModel::CreateDocumentSource(name)))
+				NLS::Editor::UIDocumentTools::UIDocumentDesignerModel::CreateDocumentSource(name),
+				"Create UI Document"))
 		{
 			return false;
 		}
 		createdUIDocumentPath = finalPath;
 		return true;
 	};
-	bool shouldPreimportCreatedAsset = true;
-
 	switch (kind)
 	{
 	case ProjectBrowserTextDialogKind::RenameFolder:
@@ -3605,11 +4185,9 @@ bool Editor::Panels::AssetBrowser::CommitProjectBrowserTextDialog()
 		const auto destination = (source.parent_path() / name).lexically_normal();
 		if (source == destination || std::filesystem::exists(destination))
 			return false;
-		RenameAsset(source.string(), EnsureTrailingPathSeparator(destination));
-		EDITOR_EXEC(PropagateFolderRename(source.string(), EnsureTrailingPathSeparator(destination)));
+		if (!RenameProjectFileThroughUndo(source, destination, source.generic_string()))
+			return false;
 		createdOrChangedProjectPath = EditorAssetFolderFromAbsolutePath(m_projectAssetFolder, destination.string());
-		if (m_selectedProjectFolder == m_projectBrowserTextDialog.targetProjectRelativeFolder)
-			m_selectedProjectFolder = NormalizeProjectBrowserPath(createdOrChangedProjectPath);
 		break;
 	}
 	case ProjectBrowserTextDialogKind::RenameFile:
@@ -3618,32 +4196,33 @@ bool Editor::Panels::AssetBrowser::CommitProjectBrowserTextDialog()
 		const auto destination = (source.parent_path() / (name + source.extension().string())).lexically_normal();
 		if (source == destination || std::filesystem::exists(destination))
 			return false;
-		RenameAsset(source.string(), destination.string());
-		EDITOR_EXEC(PropagateFileRename(source.string(), destination.string()));
-		if (EDITOR_CONTEXT(sceneManager).GetCurrentSceneSourcePath() == source.string())
-			EDITOR_CONTEXT(sceneManager).StoreCurrentSceneSourcePath(destination.string());
+		if (!RenameProjectFileThroughUndo(source, destination, source.generic_string()))
+			return false;
 		createdOrChangedProjectPath = EditorAssetPathFromAbsolutePath(m_projectAssetFolder, destination.string());
 		break;
 	}
 	case ProjectBrowserTextDialogKind::CreateFolder:
 	{
 		const auto finalPath = BuildUniqueAssetPath(targetFolder, name, "");
-		std::filesystem::create_directories(finalPath);
-		createdOrChangedProjectPath = EditorAssetFolderFromAbsolutePath(m_projectAssetFolder, finalPath.string());
+		const auto projectRelativePath = EditorAssetFolderFromAbsolutePath(m_projectAssetFolder, finalPath.string());
+		if (projectRoot.empty() || projectRelativePath.empty() ||
+			!ExecuteAssetBrowserUndoCommand(
+				NLS::Editor::Undo::AssetFile::MakeCreateDirectoryCommand(
+					projectRoot,
+					finalPath,
+					projectRelativePath.generic_string(),
+					"Create Folder"),
+				"folder creation"))
+		{
+			return false;
+		}
+		createdOrChangedProjectPath = projectRelativePath;
 		break;
 	}
 	case ProjectBrowserTextDialogKind::CreateScene:
-	{
-		const auto finalPath = BuildUniqueAssetPath(targetFolder, name, ".scene");
-		Engine::SceneSystem::Scene scene;
-		if (!Engine::SceneSystem::SceneManager::SaveSceneToPath(scene, finalPath.string()))
-		{
-			NLS_LOG_ERROR("Failed to create scene asset: " + finalPath.string());
-			return false;
-		}
-		createdOrChangedProjectPath = EditorAssetPathFromAbsolutePath(m_projectAssetFolder, finalPath.string());
-		break;
-	}
+		NLS_LOG_WARNING(std::string("Scene creation was rejected: ") +
+			kTransactionalReferenceSnapshotRequired);
+		return false;
 	case ProjectBrowserTextDialogKind::CreateCSharpScript:
 	{
 		const auto finalPath = buildUniqueScriptPath(".cs");
@@ -3657,7 +4236,7 @@ bool Editor::Panels::AssetBrowser::CommitProjectBrowserTextDialog()
 			NLS_LOG_ERROR("Failed to load C# script template from engine assets.");
 			return false;
 		}
-		if (!createScriptAsset(finalPath, *contents))
+		if (!createTextAsset(finalPath, *contents, "Create C# Script"))
 			return false;
 		break;
 	}
@@ -3673,7 +4252,7 @@ bool Editor::Panels::AssetBrowser::CommitProjectBrowserTextDialog()
 			NLS_LOG_ERROR("Failed to load Lua script template from engine assets.");
 			return false;
 		}
-		if (!createScriptAsset(finalPath, *contents))
+		if (!createTextAsset(finalPath, *contents, "Create Lua Script"))
 			return false;
 		break;
 	}
@@ -3682,72 +4261,68 @@ bool Editor::Panels::AssetBrowser::CommitProjectBrowserTextDialog()
 			return false;
 		break;
 	case ProjectBrowserTextDialogKind::CreateStandardShader:
-	{
-		const auto finalPath = BuildUniqueAssetPath(targetFolder, name, ".shader");
-		std::filesystem::copy_file(
-			EDITOR_CONTEXT(engineAssetsPath) + "Shaders\\ShaderLab\\StandardPBR.shader",
-			finalPath,
-			std::filesystem::copy_options::overwrite_existing);
-		createdOrChangedProjectPath = EditorAssetPathFromAbsolutePath(m_projectAssetFolder, finalPath.string());
-		break;
-	}
 	case ProjectBrowserTextDialogKind::CreateStandardPBRShader:
 	{
 		const auto finalPath = BuildUniqueAssetPath(targetFolder, name, ".shader");
-		std::filesystem::copy_file(
-			EDITOR_CONTEXT(engineAssetsPath) + "Shaders\\ShaderLab\\StandardPBR.shader",
-			finalPath,
-			std::filesystem::copy_options::overwrite_existing);
-		createdOrChangedProjectPath = EditorAssetPathFromAbsolutePath(m_projectAssetFolder, finalPath.string());
+		const auto contents = ReadAssetTemplateContents(
+			std::filesystem::path(EDITOR_CONTEXT(engineAssetsPath)) / "Shaders" / "ShaderLab" /
+				"StandardPBR.shader");
+		if (!contents.has_value())
+		{
+			NLS_LOG_ERROR("Failed to load the standard shader template from engine assets.");
+			return false;
+		}
+		const auto label = kind == ProjectBrowserTextDialogKind::CreateStandardShader
+			? "Create Standard Shader"
+			: "Create Standard PBR Shader";
+		if (!createTextAsset(finalPath, *contents, label))
+			return false;
 		break;
 	}
 	case ProjectBrowserTextDialogKind::CreateUnlitShader:
 	{
 		const auto finalPath = BuildUniqueAssetPath(targetFolder, name, ".shader");
-		std::filesystem::copy_file(
-			EDITOR_CONTEXT(engineAssetsPath) + "Shaders\\ShaderLab\\UnlitColor.shader",
-			finalPath,
-			std::filesystem::copy_options::overwrite_existing);
-		createdOrChangedProjectPath = EditorAssetPathFromAbsolutePath(m_projectAssetFolder, finalPath.string());
+		const auto contents = ReadAssetTemplateContents(
+			std::filesystem::path(EDITOR_CONTEXT(engineAssetsPath)) / "Shaders" / "ShaderLab" /
+				"UnlitColor.shader");
+		if (!contents.has_value())
+		{
+			NLS_LOG_ERROR("Failed to load the unlit shader template from engine assets.");
+			return false;
+		}
+		if (!createTextAsset(finalPath, *contents, "Create Unlit Shader"))
+			return false;
 		break;
 	}
 	case ProjectBrowserTextDialogKind::CreateUnlitTextureShader:
 	{
 		const auto finalPath = BuildUniqueAssetPath(targetFolder, name, ".shader");
-		std::filesystem::copy_file(
-			EDITOR_CONTEXT(engineAssetsPath) + "Shaders\\ShaderLab\\UnlitTexture.shader",
-			finalPath,
-			std::filesystem::copy_options::overwrite_existing);
-		createdOrChangedProjectPath = EditorAssetPathFromAbsolutePath(m_projectAssetFolder, finalPath.string());
+		const auto contents = ReadAssetTemplateContents(
+			std::filesystem::path(EDITOR_CONTEXT(engineAssetsPath)) / "Shaders" / "ShaderLab" /
+				"UnlitTexture.shader");
+		if (!contents.has_value())
+		{
+			NLS_LOG_ERROR("Failed to load the unlit texture shader template from engine assets.");
+			return false;
+		}
+		if (!createTextAsset(finalPath, *contents, "Create Unlit Texture Shader"))
+			return false;
 		break;
 	}
 	case ProjectBrowserTextDialogKind::CreateEmptyMaterial:
-		if (!createMaterialAsset(BuildDefaultAssetBrowserMaterialPayload()))
-			return false;
-		shouldPreimportCreatedAsset = false;
-		break;
 	case ProjectBrowserTextDialogKind::CreateStandardMaterial:
 	case ProjectBrowserTextDialogKind::CreateStandardPBRMaterial:
-		if (!createMaterialAsset(BuildDefaultAssetBrowserMaterialPayload()))
-			return false;
-		shouldPreimportCreatedAsset = false;
-		break;
 	case ProjectBrowserTextDialogKind::CreateUnlitMaterial:
-		if (!createMaterialAsset(BuildDefaultAssetBrowserMaterialPayload()))
-			return false;
-		shouldPreimportCreatedAsset = false;
-		break;
 	case ProjectBrowserTextDialogKind::CreateDefaultSurfaceMaterial:
-		if (!createMaterialAsset(BuildDefaultAssetBrowserMaterialPayload()))
-			return false;
-		shouldPreimportCreatedAsset = false;
-		break;
+		NLS_LOG_WARNING(std::string("Native material creation was rejected: ") +
+			kTransactionalReferenceSnapshotRequired);
+		return false;
 	case ProjectBrowserTextDialogKind::None:
 	default:
 		return false;
 	}
 
-	if (!createdOrChangedProjectPath.empty() && shouldPreimportCreatedAsset)
+	if (!createdOrChangedProjectPath.empty())
 		ScheduleProjectAssetPreimportForPath(createdOrChangedProjectPath);
 	RebuildProjectAssetPresentationAfterWorkflow();
 	if (createdUIDocumentPath.has_value())
@@ -3762,8 +4337,16 @@ void Editor::Panels::AssetBrowser::BeginInlineRenameProjectItem(
 	const NLS::Editor::Assets::AssetBrowserItem& item)
 {
 	const auto capabilities = NLS::Editor::Assets::BuildAssetBrowserWorkflowCapabilities(item);
-	if (!capabilities.canRename || item.kind == NLS::Editor::Assets::AssetBrowserItemKind::GeneratedSubAsset)
+	if (!capabilities.canRename || item.kind == NLS::Editor::Assets::AssetBrowserItemKind::GeneratedSubAsset ||
+		!CanRenameProjectFileThroughUndo(item))
+	{
+		if (item.kind != NLS::Editor::Assets::AssetBrowserItemKind::GeneratedSubAsset)
+		{
+			NLS_LOG_WARNING(std::string("Asset rename was rejected: ") +
+				kTransactionalReferenceSnapshotRequired);
+		}
 		return;
+	}
 
 	m_projectBrowserInlineRename = {};
 	m_projectBrowserInlineRename.active = true;
@@ -3849,34 +4432,9 @@ bool Editor::Panels::AssetBrowser::RenameProjectItem(
 		return false;
 
 	const auto source = item.absolutePath.lexically_normal();
-	if (item.kind == NLS::Editor::Assets::AssetBrowserItemKind::Folder)
-	{
-		const auto destination = (source.parent_path() / name).lexically_normal();
-		if (source == destination)
-			return false;
-		if (std::filesystem::exists(destination))
-		{
-			NLS::Dialogs::MessageBox message(
-				"Folder already exists",
-				"A folder with that name already exists in this location.",
-				NLS::Dialogs::MessageBox::EMessageType::ERROR,
-				NLS::Dialogs::MessageBox::EButtonLayout::OK);
-			return false;
-		}
-		RenameAsset(source.string(), EnsureTrailingPathSeparator(destination));
-		EDITOR_EXEC(PropagateFolderRename(source.string(), EnsureTrailingPathSeparator(destination)));
-		const auto changedProjectPath = EditorAssetFolderFromAbsolutePath(m_projectAssetFolder, destination.string());
-		if (m_selectedProjectFolder == item.projectRelativePath)
-			m_selectedProjectFolder = NormalizeProjectBrowserPath(changedProjectPath);
-		auto renamedItem = item;
-		renamedItem.projectRelativePath = NormalizeProjectBrowserPath(changedProjectPath);
-		m_selectedProjectItem = NLS::Editor::Assets::BuildAssetBrowserActionIdentity(renamedItem);
-		ScheduleProjectAssetPreimportForPath(changedProjectPath);
-		RebuildProjectAssetPresentationAfterWorkflow();
-		return true;
-	}
-
-	const auto destination = (source.parent_path() / (name + source.extension().string())).lexically_normal();
+	const auto destination = item.kind == NLS::Editor::Assets::AssetBrowserItemKind::Folder
+		? (source.parent_path() / name).lexically_normal()
+		: (source.parent_path() / (name + source.extension().string())).lexically_normal();
 	if (source == destination)
 		return false;
 	if (std::filesystem::exists(destination))
@@ -3888,10 +4446,13 @@ bool Editor::Panels::AssetBrowser::RenameProjectItem(
 			NLS::Dialogs::MessageBox::EButtonLayout::OK);
 		return false;
 	}
-	RenameAsset(source.string(), destination.string());
-	EDITOR_EXEC(PropagateFileRename(source.string(), destination.string()));
-	if (EDITOR_CONTEXT(sceneManager).GetCurrentSceneSourcePath() == source.string())
-		EDITOR_CONTEXT(sceneManager).StoreCurrentSceneSourcePath(destination.string());
+	if (!RenameProjectFileThroughUndo(
+			source,
+			destination,
+			item.assetId.IsValid() ? item.assetId.ToString() : item.projectRelativePath))
+	{
+		return false;
+	}
 	const auto changedProjectPath = EditorAssetPathFromAbsolutePath(m_projectAssetFolder, destination.string());
 	auto renamedItem = item;
 	renamedItem.projectRelativePath = NormalizeProjectBrowserPath(changedProjectPath);
@@ -3900,6 +4461,31 @@ bool Editor::Panels::AssetBrowser::RenameProjectItem(
 	ScheduleProjectAssetPreimportForPath(changedProjectPath);
 	RebuildProjectAssetPresentationAfterWorkflow();
 	return true;
+}
+
+bool Editor::Panels::AssetBrowser::RenameProjectFileThroughUndo(
+	const std::filesystem::path& sourcePath,
+	const std::filesystem::path& destinationPath,
+	std::string assetIdentifier)
+{
+	const auto source = sourcePath.lexically_normal();
+	const auto destination = destinationPath.lexically_normal();
+	const bool needsReferenceSnapshot = std::filesystem::is_directory(source) ||
+		RequiresTransactionalReferenceSnapshot(source);
+	return ExecuteAssetBrowserUndoCommand(
+		needsReferenceSnapshot
+			? NLS::Editor::Undo::AssetFile::MakeProjectAssetMutationCommand(
+				ProjectRootFromAssetsFolder(m_projectAssetFolder),
+				source,
+				destination,
+				std::move(assetIdentifier),
+				std::filesystem::is_directory(source) ? "Move Asset Folder" : "Rename Asset")
+			: NLS::Editor::Undo::AssetFile::MakeRenameCommand(
+				ProjectRootFromAssetsFolder(m_projectAssetFolder),
+				source,
+				destination,
+				std::move(assetIdentifier)),
+		"rename");
 }
 
 void Editor::Panels::AssetBrowser::ClearProjectAssetClipboard()
@@ -3958,9 +4544,34 @@ bool Editor::Panels::AssetBrowser::DuplicateProjectItem(
 		std::filesystem::is_directory(source) ? "" : source.extension().string());
 	bool copied = false;
 	if (std::filesystem::is_directory(source))
-		copied = CopyAssetFolderRecursively(source, destination);
+	{
+		std::error_code error;
+		if (!std::filesystem::is_empty(source, error) || error)
+		{
+			NLS_LOG_WARNING(std::string("Folder duplication was rejected: ") +
+				kTransactionalReferenceSnapshotRequired);
+			return false;
+		}
+		const auto destinationProjectPath =
+			EditorAssetFolderFromAbsolutePath(m_projectAssetFolder, destination.string());
+		copied = !destinationProjectPath.empty() && ExecuteAssetBrowserUndoCommand(
+			NLS::Editor::Undo::AssetFile::MakeCreateDirectoryCommand(
+				ProjectRootFromAssetsFolder(m_projectAssetFolder),
+				destination,
+				destinationProjectPath.generic_string(),
+				"Duplicate Folder"),
+			"folder duplication");
+	}
 	else if (std::filesystem::is_regular_file(source))
-		copied = CopyAssetFileWithMeta(source, destination);
+	{
+		copied = ExecuteAssetBrowserUndoCommand(
+			NLS::Editor::Undo::AssetFile::MakeDuplicateCommand(
+				ProjectRootFromAssetsFolder(m_projectAssetFolder),
+				source,
+				destination,
+				item.assetId.IsValid() ? item.assetId.ToString() : item.projectRelativePath),
+			"duplication");
+	}
 	if (!copied)
 		return false;
 
@@ -3978,15 +4589,11 @@ bool Editor::Panels::AssetBrowser::ImportExternalFilesIntoCurrentFolder(
 	const auto destinationFolder = ProjectBrowserAbsolutePathForResourcePath(
 		m_projectAssetFolder,
 		m_selectedProjectFolder);
-	if (destinationFolder.empty())
+	const auto projectRoot = ProjectRootFromAssetsFolder(m_projectAssetFolder);
+	if (destinationFolder.empty() || projectRoot.empty() ||
+		!std::filesystem::is_directory(destinationFolder))
 		return false;
 
-	std::error_code error;
-	std::filesystem::create_directories(destinationFolder, error);
-	if (error)
-		return false;
-
-	const auto projectAssetsRoot = std::filesystem::path(m_projectAssetFolder).lexically_normal();
 	bool changed = false;
 	for (const auto& rawSource : sourcePaths)
 	{
@@ -3999,33 +4606,23 @@ bool Editor::Panels::AssetBrowser::ImportExternalFilesIntoCurrentFolder(
 		if (!isDirectory && !isFile)
 			continue;
 
-		const bool sourceInsideProjectAssets = IsPathInsideOrEqual(source, projectAssetsRoot);
-		if (isDirectory && IsPathInsideOrEqual(destinationFolder, source))
+		if (isDirectory)
+		{
+			NLS_LOG_WARNING(std::string("Folder import was rejected: ") +
+				kTransactionalReferenceSnapshotRequired);
 			continue;
+		}
 		const auto destination = BuildUniqueAssetPath(
 			destinationFolder,
-			isDirectory ? source.filename().string() : source.stem().string(),
-			isDirectory ? "" : source.extension().string());
-
-		bool copied = false;
-		if (isDirectory)
-			copied = sourceInsideProjectAssets
-				? CopyAssetFolderRecursively(source, destination)
-				: CopyAssetFolderRecursivelyWithoutMeta(source, destination);
-		else if (sourceInsideProjectAssets)
-			copied = CopyAssetFileWithMeta(source, destination);
-		else
-		{
-			std::filesystem::copy_file(
-				source,
-				destination,
-				std::filesystem::copy_options::overwrite_existing,
-				error);
-			copied = !error;
-			error.clear();
-		}
-
-		if (!copied)
+			source.stem().string(),
+			source.extension().string());
+		if (!ExecuteAssetBrowserUndoCommand(
+				NLS::Editor::Undo::AssetFile::MakeDuplicateCommand(
+					projectRoot,
+					source,
+					destination,
+					source.generic_string()),
+				"import"))
 			continue;
 
 		ScheduleProjectAssetPreimportForPath(EditorAssetPathFromAbsolutePath(m_projectAssetFolder, destination.string()));
@@ -4067,15 +4664,21 @@ bool Editor::Panels::AssetBrowser::DeleteProjectItem(
 	const auto capabilities = NLS::Editor::Assets::BuildAssetBrowserWorkflowCapabilities(item);
 	if (!capabilities.canDelete || item.kind == NLS::Editor::Assets::AssetBrowserItemKind::GeneratedSubAsset)
 		return false;
+	const bool canDeleteThroughUndo = CanDeleteProjectFileThroughUndo(item);
+	if (!canDeleteThroughUndo)
+	{
+		NLS_LOG_WARNING(std::string("Asset deletion was rejected: ") +
+			kTransactionalReferenceSnapshotRequired);
+		return false;
+	}
 
 	m_projectDeleteActionAwaitingRelease = true;
 	m_projectDeleteActionSuppressedUntil = now + 0.20;
 
 	using namespace NLS::Dialogs;
-	const bool isFolder = item.kind == NLS::Editor::Assets::AssetBrowserItemKind::Folder;
 	MessageBox message(
-		isFolder ? "Delete folder" : "Delete file",
-		"Deleting this asset is irreversible, are you sure that you want to delete \"" + item.absolutePath.string() + "\"?",
+		"Delete file",
+		"Deleting this asset can be reverted with Undo. Delete \"" + item.absolutePath.string() + "\"?",
 		MessageBox::EMessageType::WARNING,
 		MessageBox::EButtonLayout::YES_NO);
 	if (message.GetUserAction() != MessageBox::EUserAction::YES)
@@ -4084,7 +4687,7 @@ bool Editor::Panels::AssetBrowser::DeleteProjectItem(
 	const auto projectRoot = ProjectRootFromAssetsFolder(m_projectAssetFolder);
 	std::vector<std::filesystem::path> thumbnailPathsToRelease;
 	std::optional<NLS::Editor::Assets::AssetThumbnailRequest> deletedThumbnailRequest;
-	if (!isFolder && item.assetId.IsValid())
+	if (item.assetId.IsValid())
 	{
 		auto requestContext = MakeAssetBrowserThumbnailRequestBuildContext(m_thumbnailFeatureConfig);
 		requestContext.assetDatabaseSnapshot = m_projectAssetDatabaseSnapshot;
@@ -4114,34 +4717,31 @@ bool Editor::Panels::AssetBrowser::DeleteProjectItem(
 		}
 	}
 
-	if (isFolder)
+	const bool needsReferenceSnapshot = std::filesystem::is_directory(item.absolutePath) ||
+		RequiresTransactionalReferenceSnapshot(item.absolutePath);
+	const bool deleted = ExecuteAssetBrowserUndoCommand(
+		needsReferenceSnapshot
+			? NLS::Editor::Undo::AssetFile::MakeProjectAssetMutationCommand(
+				projectRoot,
+				item.absolutePath,
+				{},
+				item.assetId.IsValid() ? item.assetId.ToString() : item.projectRelativePath,
+				std::filesystem::is_directory(item.absolutePath) ? "Delete Asset Folder" : "Delete Asset")
+			: NLS::Editor::Undo::AssetFile::MakeDeleteCommand(
+				projectRoot,
+				item.absolutePath,
+				item.assetId.IsValid() ? item.assetId.ToString() : item.projectRelativePath),
+		"deletion");
+	if (!deleted)
+		return false;
+	if (deletedThumbnailRequest.has_value())
 	{
-		EDITOR_EXEC(PropagateFolderDestruction(item.absolutePath.string()));
-		std::filesystem::remove_all(item.absolutePath);
-		m_thumbnailService.ClearQueuedRequests();
+		m_thumbnailService.InvalidateThumbnail(*deletedThumbnailRequest);
 		(void)NLS::Editor::Assets::RemoveAssetThumbnailCachesForSourcePath(
 			projectRoot,
 			m_thumbnailFeatureConfig.cacheRoot,
-			item.projectRelativePath,
-			true);
-		if (IsProjectBrowserAncestorOf(item.projectRelativePath, m_selectedProjectFolder))
-			m_selectedProjectFolder = "Assets";
-	}
-	else
-	{
-		RemoveAsset(item.absolutePath.string());
-		EDITOR_EXEC(PropagateFileRename(item.absolutePath.string(), "?"));
-		if (deletedThumbnailRequest.has_value())
-		{
-			m_thumbnailService.InvalidateThumbnail(*deletedThumbnailRequest);
-			(void)NLS::Editor::Assets::RemoveAssetThumbnailCachesForSourcePath(
-				projectRoot,
-				m_thumbnailFeatureConfig.cacheRoot,
-				item.sourceAssetPath.empty() ? item.projectRelativePath : item.sourceAssetPath,
-				false);
-		}
-		if (EDITOR_CONTEXT(sceneManager).GetCurrentSceneSourcePath() == item.absolutePath.string())
-			EDITOR_CONTEXT(sceneManager).ForgetCurrentSceneSourcePath();
+			item.sourceAssetPath.empty() ? item.projectRelativePath : item.sourceAssetPath,
+			false);
 	}
 	for (const auto& path : thumbnailPathsToRelease)
 	{
@@ -4173,22 +4773,26 @@ void Editor::Panels::AssetBrowser::DrawProjectFolderContextMenu(
 	DrawProjectCurrentFolderContextMenu("##folderContent", projectRelativeFolder, absoluteFolder);
 
 	const bool isAssetsRoot = NormalizeProjectBrowserPath(projectRelativeFolder) == "Assets";
-	if (ImGui::MenuItem("Rename...", nullptr, false, !isAssetsRoot))
+	if (!isAssetsRoot && ImGui::MenuItem("Rename..."))
 	{
-		NLS::Editor::Assets::AssetBrowserItem item;
-		item.projectRelativePath = NormalizeProjectBrowserPath(projectRelativeFolder);
-		item.absolutePath = absoluteFolder;
-		item.kind = NLS::Editor::Assets::AssetBrowserItemKind::Folder;
-		BeginInlineRenameProjectItem(item);
+		RequestProjectBrowserTextDialog(
+			ProjectBrowserTextDialogKind::RenameFolder,
+			"Rename Folder",
+			absoluteFolder.parent_path(),
+			std::filesystem::path(projectRelativeFolder).parent_path().generic_string(),
+			absoluteFolder,
+			absoluteFolder.filename().generic_string());
 	}
 
-	if (ImGui::MenuItem("Delete", nullptr, false, !isAssetsRoot))
+	if (!isAssetsRoot && ImGui::MenuItem("Delete"))
 	{
-		NLS::Editor::Assets::AssetBrowserItem item;
-		item.projectRelativePath = NormalizeProjectBrowserPath(projectRelativeFolder);
-		item.absolutePath = absoluteFolder;
-		item.kind = NLS::Editor::Assets::AssetBrowserItemKind::Folder;
-		(void)DeleteProjectItem(item);
+		NLS::Editor::Assets::AssetBrowserItem folder;
+		folder.kind = NLS::Editor::Assets::AssetBrowserItemKind::Folder;
+		folder.projectRelativePath = NormalizeProjectBrowserPath(projectRelativeFolder);
+		folder.sourceAssetPath = folder.projectRelativePath;
+		folder.absolutePath = absoluteFolder;
+		folder.displayName = absoluteFolder.filename().generic_string();
+		(void)DeleteProjectItem(folder);
 	}
 
 	ImGui::EndPopup();
@@ -4204,11 +4808,10 @@ void Editor::Panels::AssetBrowser::DrawProjectCurrentFolderContextMenu(
 	if (ImGui::MenuItem("Show in explorer"))
 		Platform::SystemCalls::ShowInExplorer(EnsureTrailingPathSeparator(absoluteFolder));
 
-	if (ImGui::MenuItem("Import Here..."))
-	{
-		if (EDITOR_EXEC(ImportAssetAtLocation(EnsureTrailingPathSeparator(absoluteFolder))))
-			RebuildProjectAssetPresentationAfterWorkflow();
-	}
+	ImGui::BeginDisabled();
+	ImGui::MenuItem("Import Here...", nullptr, false, false);
+	ImGui::EndDisabled();
+	DrawTransactionalSnapshotRequiredTooltip();
 
 	if (ImGui::BeginMenu("Create"))
 	{
@@ -4222,16 +4825,10 @@ void Editor::Panels::AssetBrowser::DrawProjectCurrentFolderContextMenu(
 				{},
 				"New Folder");
 		}
-		if (ImGui::MenuItem("Scene"))
-		{
-			RequestProjectBrowserTextDialog(
-				ProjectBrowserTextDialogKind::CreateScene,
-				"Create Scene",
-				absoluteFolder,
-				projectRelativeFolder,
-				{},
-				"New Scene");
-		}
+		ImGui::BeginDisabled();
+		ImGui::MenuItem("Scene", nullptr, false, false);
+		ImGui::EndDisabled();
+		DrawTransactionalSnapshotRequiredTooltip();
 		if (ImGui::MenuItem("C# Script"))
 		{
 			RequestProjectBrowserTextDialog(
@@ -4266,20 +4863,10 @@ void Editor::Panels::AssetBrowser::DrawProjectCurrentFolderContextMenu(
 				RequestProjectBrowserTextDialog(ProjectBrowserTextDialogKind::CreateUnlitTextureShader, "Create Unlit Texture Shader", absoluteFolder, projectRelativeFolder, {}, "New Shader");
 			ImGui::EndMenu();
 		}
-		if (ImGui::BeginMenu("Material"))
-		{
-			if (ImGui::MenuItem("Empty"))
-				RequestProjectBrowserTextDialog(ProjectBrowserTextDialogKind::CreateEmptyMaterial, "Create Empty Material", absoluteFolder, projectRelativeFolder, {}, "New Material");
-			if (ImGui::MenuItem("Standard"))
-				RequestProjectBrowserTextDialog(ProjectBrowserTextDialogKind::CreateStandardMaterial, "Create Standard Material", absoluteFolder, projectRelativeFolder, {}, "New Material");
-			if (ImGui::MenuItem("Standard PBR"))
-				RequestProjectBrowserTextDialog(ProjectBrowserTextDialogKind::CreateStandardPBRMaterial, "Create Standard PBR Material", absoluteFolder, projectRelativeFolder, {}, "New Material");
-			if (ImGui::MenuItem("Unlit"))
-				RequestProjectBrowserTextDialog(ProjectBrowserTextDialogKind::CreateUnlitMaterial, "Create Unlit Material", absoluteFolder, projectRelativeFolder, {}, "New Material");
-			if (ImGui::MenuItem("Default Surface"))
-				RequestProjectBrowserTextDialog(ProjectBrowserTextDialogKind::CreateDefaultSurfaceMaterial, "Create Default Surface Material", absoluteFolder, projectRelativeFolder, {}, "New Material");
-			ImGui::EndMenu();
-		}
+		ImGui::BeginDisabled();
+		ImGui::MenuItem("Material", nullptr, false, false);
+		ImGui::EndDisabled();
+		DrawTransactionalSnapshotRequiredTooltip();
 		ImGui::EndMenu();
 	}
 }
@@ -4309,17 +4896,18 @@ void Editor::Panels::AssetBrowser::DrawProjectGridItemContextMenu(
 	if (capabilities.canPreview && ImGui::MenuItem("Preview"))
 		PreviewProjectGridItem(item);
 	if (capabilities.canReimport && ImGui::MenuItem("Reimport"))
-		ReimportProjectAssetAsync(m_projectAssetFolder, item.absolutePath.string());
+		ReimportProjectAssetAsync(m_projectAssetFolder, item);
 	if (capabilities.canReload && ImGui::MenuItem("Reload"))
 	{
 		const auto resourcePath = ProjectBrowserResourcePathForItem(item);
+		bool reloaded = false;
 		if (item.type == NLS::Editor::Assets::AssetBrowserItemType::Texture)
 		{
 			auto& textureManager = NLS_SERVICE(NLS::Core::ResourceManagement::TextureManager);
 			if (textureManager.IsResourceRegistered(resourcePath))
 			{
 				textureManager.AResourceManager::ReloadResource(resourcePath);
-				EDITOR_PANEL(Editor::Panels::MaterialEditor, "Material Editor").Refresh();
+				reloaded = true;
 			}
 		}
 		else if (item.type == NLS::Editor::Assets::AssetBrowserItemType::Material)
@@ -4328,8 +4916,15 @@ void Editor::Panels::AssetBrowser::DrawProjectGridItemContextMenu(
 			if (materialManager[resourcePath] != nullptr)
 			{
 				materialManager.AResourceManager::ReloadResource(resourcePath);
-				EDITOR_PANEL(Editor::Panels::MaterialEditor, "Material Editor").Refresh();
+				reloaded = true;
 			}
+		}
+		if (reloaded)
+		{
+			InvalidateAssetBrowserUndoScope(
+				item,
+				NLS::Editor::Undo::UndoInvalidationReason::Reloaded);
+			EDITOR_PANEL(Editor::Panels::Inspector, "Inspector").Refresh();
 		}
 	}
 	if (capabilities.canCompile && ImGui::MenuItem("Compile"))
@@ -4350,10 +4945,26 @@ void Editor::Panels::AssetBrowser::DrawProjectGridItemContextMenu(
 	}
 	if (capabilities.canDuplicate && ImGui::MenuItem("Duplicate"))
 		(void)DuplicateProjectItem(item);
-	if (capabilities.canRename && ImGui::MenuItem("Rename..."))
-		BeginInlineRenameProjectItem(item);
-	if (capabilities.canDelete && ImGui::MenuItem("Delete"))
-		(void)DeleteProjectItem(item);
+	const bool canRenameThroughUndo = capabilities.canRename && CanRenameProjectFileThroughUndo(item);
+	if (capabilities.canRename)
+	{
+		ImGui::BeginDisabled(!canRenameThroughUndo);
+		if (ImGui::MenuItem("Rename..."))
+			BeginInlineRenameProjectItem(item);
+		ImGui::EndDisabled();
+		if (!canRenameThroughUndo)
+			DrawTransactionalSnapshotRequiredTooltip();
+	}
+	const bool canDeleteThroughUndo = capabilities.canDelete && CanDeleteProjectFileThroughUndo(item);
+	if (capabilities.canDelete)
+	{
+		ImGui::BeginDisabled(!canDeleteThroughUndo);
+		if (ImGui::MenuItem("Delete"))
+			(void)DeleteProjectItem(item);
+		ImGui::EndDisabled();
+		if (!canDeleteThroughUndo)
+			DrawTransactionalSnapshotRequiredTooltip();
+	}
 	if (capabilities.canOpenProperties && ImGui::MenuItem("Properties"))
 		OpenProjectGridItemProperties(item);
 
@@ -4631,6 +5242,17 @@ void Editor::Panels::AssetBrowser::DrawCurrentFolderGrid()
 						ImVec2(iconMax.x + 3.0f, iconMax.y + 3.0f),
 						ImGui::GetColorU32(ImGuiCol_Header),
 						2.0f);
+				}
+				if (ImGui::GetTime() < m_pingHighlightExpiresAt &&
+					NormalizeProjectBrowserPath(ProjectBrowserSelectionPathForItem(item)) == m_pingedProjectPath)
+				{
+					drawList->AddRect(
+						ImVec2(iconMin.x - 4.0f, iconMin.y - 4.0f),
+						ImVec2(iconMax.x + 4.0f, iconMax.y + 4.0f),
+						IM_COL32(255, 196, 64, 235),
+						2.0f,
+						0,
+						3.0f);
 				}
 				{
 					AssetBrowserArtifactTelemetryAccumulatorScope thumbnailTelemetry {
@@ -5003,6 +5625,17 @@ void Editor::Panels::AssetBrowser::DrawCurrentFolderList(
 					ImVec2(cursor.x + rowSize.x, cursor.y + rowSize.y),
 					ImGui::GetColorU32(selected ? ImGuiCol_Header : ImGuiCol_HeaderHovered),
 					2.0f);
+			}
+			if (ImGui::GetTime() < m_pingHighlightExpiresAt &&
+				NormalizeProjectBrowserPath(ProjectBrowserSelectionPathForItem(item)) == m_pingedProjectPath)
+			{
+				drawList->AddRect(
+					cursor,
+					ImVec2(cursor.x + rowSize.x, cursor.y + rowSize.y),
+					IM_COL32(255, 196, 64, 235),
+					2.0f,
+					0,
+					3.0f);
 			}
 				if (NLS::Editor::Assets::ShouldShowAssetBrowserSubAssetDisclosure(displayItem))
 			{
@@ -7532,7 +8165,9 @@ void Editor::Panels::AssetBrowser::PumpObjectReferencePickerEntriesRefresh()
 				completedKey);
 			if (completion.publish && result.diagnostic.empty())
 			{
-				NLS::Editor::Assets::SetObjectReferencePickerEntries(std::move(result.entries));
+				NLS::Editor::Assets::SetObjectReferencePickerEntries(
+					NLS::Editor::Assets::AppendObjectReferencePickerEntriesFromAssetRoots(
+						std::move(result.entries)));
 				m_objectReferencePickerRefreshRequested = false;
 				NLS::Editor::Assets::CompleteAssetBrowserAsyncRefresh(m_objectReferencePickerRefreshState);
 			}
@@ -8649,14 +9284,7 @@ void Editor::Panels::AssetBrowser::DrawProjectGridItemDragSource(
 	}
 
 	const bool sourceEditorPayload =
-		item.kind == NLS::Editor::Assets::AssetBrowserItemKind::SourceAsset &&
-		(item.type == NLS::Editor::Assets::AssetBrowserItemType::Model ||
-		 item.type == NLS::Editor::Assets::AssetBrowserItemType::Prefab ||
-		 item.type == NLS::Editor::Assets::AssetBrowserItemType::Material ||
-		 item.type == NLS::Editor::Assets::AssetBrowserItemType::Texture ||
-		 item.type == NLS::Editor::Assets::AssetBrowserItemType::Shader ||
-         (item.type == NLS::Editor::Assets::AssetBrowserItemType::Script &&
-          NLS::Editor::Assets::IsScriptAssetPath(item.dragResourcePath)));
+		NLS::Editor::Assets::ShouldUseEditorAssetDragPayload(item);
 	const bool generatedEditorPayload =
 		item.kind == NLS::Editor::Assets::AssetBrowserItemKind::GeneratedSubAsset &&
 		!item.dragResourcePath.empty() &&
@@ -8785,19 +9413,34 @@ void Editor::Panels::AssetBrowser::OpenProjectGridItemProperties(
 	if (!NLS::Editor::Assets::BuildAssetBrowserWorkflowCapabilities(item).canOpenProperties)
 		return;
 
-	auto& assetProperties = EDITOR_PANEL(Editor::Panels::AssetProperties, "Asset Properties");
-	assetProperties.SetTarget(ProjectBrowserSelectionPathForItem(item));
-	assetProperties.Open();
-	assetProperties.Focus();
+	SelectProjectGridItem(item);
+	auto& inspector = EDITOR_PANEL(Editor::Panels::Inspector, "Inspector");
+	inspector.Open();
+	inspector.Focus();
 }
 
 void Editor::Panels::AssetBrowser::PreviewProjectGridItem(
 	const NLS::Editor::Assets::AssetBrowserItem& item)
 {
 	OpenProjectGridItemProperties(item);
-	auto& assetProperties = EDITOR_PANEL(Editor::Panels::AssetProperties, "Asset Properties");
 	auto& assetView = EDITOR_PANEL(Editor::Panels::AssetView, "Asset View");
-	assetProperties.Preview();
+	const auto resourcePath = ProjectBrowserResourcePathForItem(item);
+	if (item.type == NLS::Editor::Assets::AssetBrowserItemType::Model ||
+		item.type == NLS::Editor::Assets::AssetBrowserItemType::Mesh)
+	{
+		if (auto* resource = NLS_SERVICE(NLS::Core::ResourceManagement::MeshManager).GetResource(resourcePath))
+			assetView.SetResource(resource);
+	}
+	else if (item.type == NLS::Editor::Assets::AssetBrowserItemType::Material)
+	{
+		if (auto* resource = NLS_SERVICE(NLS::Core::ResourceManagement::MaterialManager).GetResource(resourcePath))
+			assetView.SetResource(resource);
+	}
+	else if (item.type == NLS::Editor::Assets::AssetBrowserItemType::Texture)
+	{
+		if (auto* resource = NLS_SERVICE(NLS::Core::ResourceManagement::TextureManager).GetResource(resourcePath))
+			assetView.SetResource(resource);
+	}
 	assetView.Open();
 	assetView.Focus();
 }
@@ -8847,39 +9490,20 @@ bool Editor::Panels::AssetBrowser::MoveOrCopyProjectBrowserFolderIntoFolder(
 		return false;
 	}
 
-	const auto source = ProjectBrowserAbsolutePathForResourcePath(m_projectAssetFolder, receivedProjectRelativeFolder);
+	const auto source = ProjectBrowserAbsolutePathForResourcePath(
+		m_projectAssetFolder,
+		receivedProjectRelativeFolder);
 	if (source.empty() || !std::filesystem::is_directory(source))
 		return false;
 
 	const auto destination = (target / source.filename()).lexically_normal();
-	if (source == destination)
+	if (source == destination || std::filesystem::exists(destination))
+		return false;
+	if (!RenameProjectFileThroughUndo(source, destination, receivedProjectRelativeFolder))
 		return false;
 
-	if (IsPathInsideOrEqual(target, source))
-	{
-		using namespace NLS::Dialogs;
-		MessageBox errorMessage(
-			"Invalid folder move",
-			"You can't move a folder into itself.",
-			MessageBox::EMessageType::ERROR,
-			MessageBox::EButtonLayout::OK);
-		return false;
-	}
-
-	if (std::filesystem::exists(destination))
-	{
-		using namespace NLS::Dialogs;
-		MessageBox errorMessage(
-			"Folder already exists",
-			"You can't move this folder to this location because the name is already taken.",
-			MessageBox::EMessageType::ERROR,
-			MessageBox::EButtonLayout::OK);
-		return false;
-	}
-
-	RenameAsset(source.string(), EnsureTrailingPathSeparator(destination));
-	EDITOR_EXEC(PropagateFolderRename(source.string(), EnsureTrailingPathSeparator(destination)));
-	ScheduleProjectAssetPreimportForPath(EditorAssetFolderFromAbsolutePath(m_projectAssetFolder, destination.string()));
+	ScheduleProjectAssetPreimportForPath(
+		EditorAssetFolderFromAbsolutePath(m_projectAssetFolder, destination.string()));
 	RebuildProjectAssetPresentationAfterWorkflow();
 	return true;
 }
@@ -8919,8 +9543,8 @@ bool Editor::Panels::AssetBrowser::MoveOrCopyProjectBrowserFileIntoFolder(
 		return false;
 	}
 
-	RenameAsset(source.string(), destination.string());
-	EDITOR_EXEC(PropagateFileRename(source.string(), destination.string()));
+	if (!RenameProjectFileThroughUndo(source, destination, receivedResourcePath))
+		return false;
 
 	ScheduleProjectAssetPreimportForPath(EditorAssetPathFromAbsolutePath(m_projectAssetFolder, destination.string()));
 	RebuildProjectAssetPresentationAfterWorkflow();
@@ -8934,64 +9558,125 @@ bool Editor::Panels::AssetBrowser::SaveHierarchyObjectAsPrefabIntoFolder(
 {
 	if (gameObject == nullptr || targetProjectRelativeFolder.empty() || targetAbsoluteFolder.empty())
 		return false;
+	if (!NLS::Core::ServiceLocator::Contains<NLS::Editor::Undo::EditorUndoService>() ||
+		!NLS::Core::ServiceLocator::Contains<NLS::Editor::Core::Context>())
+	{
+		NLS_LOG_WARNING("Save As Prefab was rejected because the editor Undo context is unavailable.");
+		return false;
+	}
+
+	std::error_code directoryError;
+	const auto targetFolder = targetAbsoluteFolder.lexically_normal();
+	if (!std::filesystem::is_directory(targetFolder, directoryError) || directoryError)
+	{
+		NLS_LOG_WARNING("Save As Prefab was rejected because the target folder is unavailable.");
+		return false;
+	}
+
+	auto& editorContext = NLS::Core::ServiceLocator::Get<NLS::Editor::Core::Context>();
+	if (editorContext.prefabInstanceRegistry.FindRootInstance(*gameObject) != nullptr)
+	{
+		NLS_LOG_WARNING(
+			"Save As Prefab was rejected because the GameObject is already connected to a Prefab. "
+			"Create a variant or unpack it before saving a new Prefab.");
+		return false;
+	}
+
+	const auto sceneTarget = NLS::Editor::Inspector::InspectorTargetHandle::FromObject(
+		*gameObject,
+		NLS::Editor::Inspector::InspectorTargetKind::GameObject);
+	const auto sceneScope = NLS::Editor::Inspector::MakeInspectorUndoScope(sceneTarget);
+	if (!sceneScope.IsValid())
+	{
+		NLS_LOG_WARNING("Save As Prefab was rejected because the GameObject has no stable scene Undo scope.");
+		return false;
+	}
 
 	const auto projectRoot = ProjectRootFromAssetsFolder(m_projectAssetFolder);
 	if (projectRoot.empty())
+		return false;
+
+	const auto baseName = SanitizeAssetBrowserName(gameObject->GetName());
+	std::filesystem::path prefabPath = targetFolder / (baseName + ".prefab");
+	for (size_t suffix = 1u;
+		std::filesystem::exists(prefabPath) ||
+			std::filesystem::exists(NLS::Core::Assets::GetAssetMetaPath(prefabPath));
+		++suffix)
 	{
-		NLS_LOG_ERROR("Failed to resolve prefab destination project root for hierarchy drop.");
+		if (suffix == 10000u)
+		{
+			NLS_LOG_WARNING("Save As Prefab was rejected because a unique destination path could not be allocated.");
+			return false;
+		}
+		prefabPath = targetFolder / (baseName + " " + std::to_string(suffix) + ".prefab");
+	}
+	prefabPath = prefabPath.lexically_normal();
+
+	const auto prefabResourcePath = NormalizeProjectBrowserPath(
+		EditorAssetPathFromAbsolutePath(m_projectAssetFolder, prefabPath.string()));
+	if (prefabResourcePath.empty() ||
+		(prefabResourcePath != "Assets" && prefabResourcePath.compare(0u, 7u, "Assets/") != 0))
+	{
+		NLS_LOG_WARNING("Save As Prefab was rejected because the destination is outside the project Assets folder.");
 		return false;
 	}
 
-	if (!m_projectAssetDatabaseReady ||
-		m_projectAssetDatabase == nullptr ||
-		m_projectAssetDatabaseRoot.lexically_normal() != projectRoot.lexically_normal())
+	std::string owningSceneError;
+	const auto sceneAssetId = NLS::Editor::Undo::PrefabSave::ResolveOwningSceneAssetId(
+		*gameObject,
+		editorContext.sceneManager.GetCurrentScene(),
+		editorContext.sceneManager.GetCurrentSceneSourcePath(),
+		editorContext.activePrefabStage.has_value() ? &*editorContext.activePrefabStage : nullptr,
+		owningSceneError);
+	if (!sceneAssetId.has_value())
 	{
-		NLS_LOG_ERROR("Asset database is still refreshing; prefab drop will be available when the asset browser finishes indexing.");
+		NLS_LOG_WARNING(
+			"Save As Prefab was rejected because " +
+			(owningSceneError.empty() ? std::string("the owning scene could not be resolved.") : owningSceneError + "."));
 		return false;
 	}
 
-	NLS::Core::Assets::AssetId sceneAssetId;
-	const auto currentSceneSourcePath = EDITOR_CONTEXT(sceneManager).GetCurrentSceneSourcePath();
-	if (!currentSceneSourcePath.empty())
-	{
-		const auto sceneMeta = NLS::Core::Assets::AssetMeta::Load(
-			NLS::Core::Assets::GetAssetMetaPath(std::filesystem::path(currentSceneSourcePath).lexically_normal()));
-		if (sceneMeta.has_value())
-			sceneAssetId = sceneMeta->id;
-	}
-
-	const auto result = NLS::Editor::Assets::AssetDragDropWorkflow().Execute({
-		{NLS::Editor::Assets::DragPayloadKind::HierarchyObject, {}, {}, nullptr, gameObject},
-		{NLS::Editor::Assets::DropTargetKind::AssetBrowserFolder, nullptr, nullptr, 0u, false, targetProjectRelativeFolder},
-		sceneAssetId,
-		NLS::Editor::Assets::DragDropOperationKind::SaveAsPrefab,
-		m_projectAssetDatabase.get(),
-		&EDITOR_CONTEXT(prefabInstanceRegistry)
-	});
-
-	if (result.status != NLS::Editor::Assets::DragDropOperationStatus::Committed)
-	{
-		for (const auto& diagnostic : result.diagnostics)
-			NLS_LOG_ERROR(diagnostic.code + ": " + diagnostic.message);
+	auto command = MakeSaveHierarchyPrefabUndoCommand(
+		*gameObject,
+		sceneScope,
+		projectRoot,
+		prefabPath,
+		prefabResourcePath,
+		NLS::Core::Assets::AssetId::New(),
+		*sceneAssetId);
+	if (!command)
 		return false;
-	}
 
-	EDITOR_CONTEXT(sceneManager).MarkCurrentSceneDirty();
-	if (result.instance.has_value() && result.instance->instanceRoot != nullptr)
-	{
-		EDITOR_PANEL(NLS::Editor::Panels::Hierarchy, "Hierarchy")
-			.RefreshPrefabPresentation(*result.instance->instanceRoot);
-	}
-	for (const auto& createdPath : result.createdAssetPaths)
-		ScheduleProjectAssetPreimportForPath(createdPath);
-	RebuildProjectAssetPresentationAfterWorkflow();
-	return true;
+	return ExecuteAssetBrowserUndoCommand(std::move(command), "save as Prefab");
 }
 
 void Editor::Panels::AssetBrowser::SelectProjectGridItem(
 	const NLS::Editor::Assets::AssetBrowserItem& item)
 {
 	m_selectedProjectItem = NLS::Editor::Assets::BuildAssetBrowserActionIdentity(item);
+
+	if (item.kind == NLS::Editor::Assets::AssetBrowserItemKind::Folder)
+	{
+		NLS::Editor::Inspector::EditorSelectionService::Get().Clear();
+		return;
+	}
+
+	const auto resourcePath = ProjectBrowserSelectionPathForItem(item);
+	if (resourcePath.empty())
+	{
+		NLS::Editor::Inspector::EditorSelectionService::Get().Clear();
+		return;
+	}
+
+	const auto kind = item.type == NLS::Editor::Assets::AssetBrowserItemType::Material
+		? NLS::Editor::Inspector::InspectorTargetKind::Material
+		: NLS::Editor::Inspector::InspectorTargetKind::AssetImporter;
+	NLS::Editor::Inspector::EditorSelectionService::Get().Select(
+		NLS::Editor::Inspector::InspectorTargetHandle::FromAsset(
+			kind,
+			resourcePath,
+			item.assetId.IsValid() ? item.assetId.ToString() : std::string {},
+			NLS::Editor::Assets::AssetBrowserItemTypeDisplayLabel(item.type)));
 }
 
 void Editor::Panels::AssetBrowser::PrepareCSharpScriptDebugProject(
@@ -9226,6 +9911,16 @@ void Editor::Panels::AssetBrowser::OpenProjectGridItem(
 			return;
 		}
 
+		// Replacing an open Stage destroys its stable object graph. Route the
+		// transition through EditorActions so its current Undo generation is
+		// invalidated before the new Stage receives a distinct generation.
+		if (EDITOR_EXEC(GetContext()).activePrefabStage.has_value() &&
+			!EDITOR_EXEC(CloseActivePrefabStage(false)))
+		{
+			NLS_LOG_ERROR("Failed to close the existing prefab stage before opening: " + item.dragResourcePath);
+			return;
+		}
+
 		EDITOR_EXEC(GetContext()).activePrefabStage = std::move(stage.stage);
 		EDITOR_EXEC(NotifyPrefabStageOpened());
 		EDITOR_PANEL(NLS::Editor::Panels::Hierarchy, "Hierarchy").RebuildFromCurrentScene();
@@ -9241,13 +9936,11 @@ void Editor::Panels::AssetBrowser::OpenProjectGridItem(
 		const auto resourcePath = ProjectBrowserResourcePathForItem(item);
 		NLS::Render::Resources::Material* material =
 			NLS_SERVICE(NLS::Core::ResourceManagement::MaterialManager)[resourcePath];
+		auto& inspector = EDITOR_PANEL(Editor::Panels::Inspector, "Inspector");
+		inspector.Open();
+		inspector.Focus();
 		if (material != nullptr)
 		{
-			auto& materialEditor = EDITOR_PANEL(Editor::Panels::MaterialEditor, "Material Editor");
-			materialEditor.SetTarget(*material);
-			materialEditor.Open();
-			materialEditor.Focus();
-
 			auto& assetView = EDITOR_PANEL(Editor::Panels::AssetView, "Asset View");
 			assetView.SetResource(material);
 			assetView.Open();
@@ -9259,13 +9952,7 @@ void Editor::Panels::AssetBrowser::OpenProjectGridItem(
 	SelectProjectGridItem(item);
 
 	if (item.previewableInAssetView)
-	{
-		auto& assetProperties = EDITOR_PANEL(Editor::Panels::AssetProperties, "Asset Properties");
-		auto& assetView = EDITOR_PANEL(Editor::Panels::AssetView, "Asset View");
-		assetProperties.Preview();
-		assetView.Open();
-		assetView.Focus();
-	}
+		PreviewProjectGridItem(item);
 }
 
 void Editor::Panels::AssetBrowser::StartWatchersAsync()

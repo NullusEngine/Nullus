@@ -11,6 +11,11 @@
 #include <optional>
 #include <string>
 
+namespace NLS::Scripting
+{
+class CoreClrScriptBackend;
+}
+
 namespace NLS::Editor::Scripting
 {
 enum class ManagedDebugPreparationState : uint8_t
@@ -66,6 +71,11 @@ public:
 
 private:
     NLS::Scripting::ScriptStatus ApplyBuild(const ManagedScriptBuildResult& result);
+    // Reloads the project editor-scripts assembly after a successful scripting
+    // reload so edited, added, or deleted editor scripts take effect.
+    static void ReloadEditorScripts(
+        NLS::Scripting::CoreClrScriptBackend& backend,
+        const std::filesystem::path& scriptingAssembly);
 
     NLS::Scripting::ScriptRuntime* m_runtime = nullptr;
     std::filesystem::path m_projectRoot;

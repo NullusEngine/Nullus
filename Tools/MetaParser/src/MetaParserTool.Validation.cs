@@ -149,7 +149,7 @@ internal static partial class MetaParserTool
                 return true;
             }
 
-            reason = $"PPtr object references require a supported Unity Object target type; '{pptrElementTypeName}' is not in the registered PPtr target set.";
+            reason = $"PPtr object references require a supported external editor Object target type; '{pptrElementTypeName}' is not in the registered PPtr target set.";
             return false;
         }
 

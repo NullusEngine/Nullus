@@ -15,6 +15,7 @@
 #include "Components/MeshFilter.h"
 #include "Components/MeshRenderer.h"
 #include "Components/TransformComponent.h"
+#include "Components/UICanvasComponent.h"
 #include "Core/ResourceManagement/MaterialManager.h"
 #include "Core/ResourceManagement/MeshManager.h"
 #include "Core/ServiceLocator.h"
@@ -1799,6 +1800,11 @@ namespace NLS::Engine::Serialize
             const ObjectRecord& record,
             const LoadPolicy& policy = {})
         {
+            // v1 documents omit `enabled`; Component construction defaults it
+            // to true, which keeps historical scenes and prefabs compatible.
+            if (const auto enabled = ReadBool(record, "enabled"); enabled.has_value())
+                component.SetEnabled(*enabled);
+
             if (component.DeserializeObjectGraphProperties(record.properties))
                 return;
 
@@ -1811,6 +1817,29 @@ namespace NLS::Engine::Serialize
 
             ApplyReflectedFields(component, record, IsNoGraphProperty, &policy, nullptr);
         }
+
+    public:
+        // Inspector structural Undo stores ObjectGraph records so it has the
+        // same v1/v2 and script-field semantics as scene and prefab loading.
+        // Keeping the replay entry point here prevents editor code from
+        // reimplementing the graph conversion rules.
+        static bool ApplyComponentSnapshot(
+            Components::Component& component,
+            const ObjectRecord& record,
+            const LoadPolicy& policy = {})
+        {
+            try
+            {
+                ApplyComponentState(component, record, policy);
+                return true;
+            }
+            catch (...)
+            {
+                return false;
+            }
+        }
+
+    private:
 
         static bool TryApplyBatchedTransformState(
             Components::Component& component,
@@ -1957,7 +1986,21 @@ namespace NLS::Engine::Serialize
                         std::chrono::steady_clock::now() - fieldLookupStart);
                 ++telemetry.fieldLookupCount;
                 if (!field.IsValid() || field.IsReadOnly())
+                {
+                    // Object graphs written before UIDocumentReference stored
+                    // the Canvas document as a plain string field. Read that
+                    // legacy shape once; new writes only emit document.
+                    if (property.name == "documentPath" &&
+                        property.value.GetKind() == PropertyValue::Kind::String)
+                    {
+                        if (auto* canvas = dynamic_cast<Components::UICanvasComponent*>(&object))
+                        {
+                            canvas->SetDocumentReference(UI::UIDocumentReference({}, property.value.GetString()));
+                            continue;
+                        }
+                    }
                     continue;
+                }
 
                 if (policy &&
                     policy->deferAssetReferenceResolution &&
@@ -1966,15 +2009,15 @@ namespace NLS::Engine::Serialize
                     continue;
                 }
 
-                const auto objectReferenceResult = TrySetUnityObjectReferenceField(instance, field, property.value);
-                if (objectReferenceResult == UnityObjectReferenceApplyResult::Applied)
+                const auto objectReferenceResult = TrySetEngineObjectReferenceField(instance, field, property.value);
+                if (objectReferenceResult == EngineObjectReferenceApplyResult::Applied)
                 {
                     if (context != nullptr)
                         ResolveRuntimeAssetReference(object, record, property, *context);
                     continue;
                 }
 
-                if (objectReferenceResult == UnityObjectReferenceApplyResult::ShapeMismatch)
+                if (objectReferenceResult == EngineObjectReferenceApplyResult::ShapeMismatch)
                 {
                     if (policy != nullptr &&
                         policy->invalidReferencePolicy == InvalidReferencePolicy::Preserve)
@@ -1984,7 +2027,7 @@ namespace NLS::Engine::Serialize
 
                     throw std::invalid_argument(
                         "Object graph property \"" + record.typeName + "." + property.name +
-                        "\" must use a Unity-style object reference shape.");
+                        "\" must use a engine-style object reference shape.");
                 }
 
                 const auto directStart = collectTelemetry ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point {};
@@ -2265,14 +2308,14 @@ namespace NLS::Engine::Serialize
             stats.Record(sample);
         }
 
-        enum class UnityObjectReferenceApplyResult
+        enum class EngineObjectReferenceApplyResult
         {
             NotObjectReferenceField,
             Applied,
             ShapeMismatch
         };
 
-        static UnityObjectReferenceApplyResult TrySetUnityObjectReferenceField(
+        static EngineObjectReferenceApplyResult TrySetEngineObjectReferenceField(
             NLS::meta::Variant& instance,
             const NLS::meta::Field& field,
             const PropertyValue& value)
@@ -2283,9 +2326,9 @@ namespace NLS::Engine::Serialize
                 switch (Internal::ApplyPPtrArrayOrThrow(instance, field, value))
                 {
                 case Internal::PPtrApplyResult::Applied:
-                    return UnityObjectReferenceApplyResult::Applied;
+                    return EngineObjectReferenceApplyResult::Applied;
                 case Internal::PPtrApplyResult::ShapeMismatch:
-                    return UnityObjectReferenceApplyResult::ShapeMismatch;
+                    return EngineObjectReferenceApplyResult::ShapeMismatch;
                 }
             }
 
@@ -2294,13 +2337,13 @@ namespace NLS::Engine::Serialize
                 switch (Internal::ApplyPPtrValueOrThrow(instance, field, value))
                 {
                 case Internal::PPtrApplyResult::Applied:
-                    return UnityObjectReferenceApplyResult::Applied;
+                    return EngineObjectReferenceApplyResult::Applied;
                 case Internal::PPtrApplyResult::ShapeMismatch:
-                    return UnityObjectReferenceApplyResult::ShapeMismatch;
+                    return EngineObjectReferenceApplyResult::ShapeMismatch;
                 }
             }
 
-            return UnityObjectReferenceApplyResult::NotObjectReferenceField;
+            return EngineObjectReferenceApplyResult::NotObjectReferenceField;
         }
 
         static void ResolveRuntimeAssetReference(
@@ -3114,7 +3157,7 @@ namespace NLS::Engine::Serialize
                     ? SerializationDiagnosticSeverity::Error
                     : SerializationDiagnosticSeverity::Warning,
                 "Object graph property \"" + object.typeName + "." + property.name +
-                    "\" must use a Unity-style object reference shape."
+                    "\" must use a engine-style object reference shape."
             });
         }
 

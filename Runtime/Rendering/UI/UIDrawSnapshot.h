@@ -127,18 +127,52 @@ namespace NLS::Render::UI
             uint64_t sortKey = 0u,
             uint32_t textureGeneration = 0u)
         {
+            AddTexturedQuad(
+                left,
+                top,
+                right,
+                bottom,
+                { 0.0f, 0.0f },
+                { 1.0f, 1.0f },
+                color,
+                clipIndex,
+                textureId,
+                sortKey,
+                textureGeneration);
+        }
+
+        // Textured variant. Glyphs supply atlas sub-rect UVs, so a plain 0..1
+        // mapping is not enough.
+        void AddTexturedQuad(
+            float left,
+            float top,
+            float right,
+            float bottom,
+            const std::array<float, 2>& topLeftUv,
+            const std::array<float, 2>& bottomRightUv,
+            const std::array<float, 4>& color,
+            uint32_t clipIndex = UIClipIndexNone,
+            uint64_t textureId = 0u,
+            uint64_t sortKey = 0u,
+            uint32_t textureGeneration = 0u)
+        {
             const auto firstVertex = static_cast<uint32_t>(vertices.size());
             const auto firstIndex = static_cast<uint32_t>(indices.size());
             const UIDrawVertex quadVertices[] = {
-                { { left, top }, { 0.0f, 0.0f }, { color[0], color[1], color[2], color[3] } },
-                { { right, top }, { 1.0f, 0.0f }, { color[0], color[1], color[2], color[3] } },
-                { { right, bottom }, { 1.0f, 1.0f }, { color[0], color[1], color[2], color[3] } },
-                { { left, bottom }, { 0.0f, 1.0f }, { color[0], color[1], color[2], color[3] } }
+                { { left, top }, { topLeftUv[0], topLeftUv[1] }, { color[0], color[1], color[2], color[3] } },
+                { { right, top }, { bottomRightUv[0], topLeftUv[1] }, { color[0], color[1], color[2], color[3] } },
+                { { right, bottom }, { bottomRightUv[0], bottomRightUv[1] }, { color[0], color[1], color[2], color[3] } },
+                { { left, bottom }, { topLeftUv[0], bottomRightUv[1] }, { color[0], color[1], color[2], color[3] } }
             };
             vertices.insert(vertices.end(), std::begin(quadVertices), std::end(quadVertices));
+            // Indices address vertices relative to this batch's base. Consumers
+            // bind the batch base as the draw call's vertex offset, so baking
+            // firstVertex into the indices as well shifted every quad by its own
+            // offset: quad N sampled quad 2N, which made alternating glyphs
+            // ("Score: 0" -> "Soe0") disappear.
             indices.insert(indices.end(), {
-                firstVertex + 0u, firstVertex + 1u, firstVertex + 2u,
-                firstVertex + 0u, firstVertex + 2u, firstVertex + 3u });
+                0u, 1u, 2u,
+                0u, 2u, 3u });
             batches.push_back({
                 firstVertex, 4u, firstIndex, 6u, clipIndex, textureId,
                 sortKey,

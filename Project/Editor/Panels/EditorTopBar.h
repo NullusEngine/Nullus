@@ -23,8 +23,10 @@ namespace NLS::Editor::Panels
 
         void InitializeSettingsMenu();
         void HandleShortcuts(float p_deltaTime);
-        void RegisterWindowPanel(const std::string& p_name, UI::PanelWindow& p_panel);
-        void RegisterProjectSettingsPanel(ProjectSettings& p_panel);
+	void RegisterWindowPanel(const std::string& p_name, UI::PanelWindow& p_panel);
+	// Adds a scripted editor command to the Window or Tools menu.
+	bool RegisterCommand(const std::string& p_menuPath, std::function<void()> p_execute);
+	void RegisterProjectSettingsPanel(ProjectSettings& p_panel);
         void DrawDialogs();
 
     protected:

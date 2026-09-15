@@ -291,9 +291,9 @@ internal static partial class MetaParserTool
     }
 
     private static bool HasPropertyMarker(CppField field)
-        => GetReflectionAttributes(field, "Property").Count > 0;
+        => GetMacroReflectionAttributes(field, "Property").Count > 0;
 
     private static bool HasFunctionMarker(CppFunction function)
-        => GetReflectionAttributes(function, "Function").Count > 0;
+        => GetMacroReflectionAttributes(function, "Function").Count > 0;
 
 }

@@ -18,7 +18,7 @@ namespace NLS::Engine::Components
 /**
  * Base class for any light
  */
-CLASS(NLS_ENGINE_API LightComponent, Scriptable, ComponentMenu("Rendering/Light")) : public Component
+CLASS(NLS_ENGINE_API LightComponent, Scriptable, ComponentMenu("Rendering/Light"), DisallowMultipleComponent) : public Component
 {
 public:
     GENERATED_BODY()
@@ -113,6 +113,22 @@ public:
      */
     FUNCTION()
     void SetSize(const Maths::Vector3& p_size);
+
+private:
+    PROPERTY(DisplayName("Light Type"), Getter(GetLightType), Setter(SetLightType))
+    Render::Settings::ELightType lightType = Render::Settings::ELightType::POINT;
+    PROPERTY(DisplayName("Color"), Getter(GetColor), Setter(SetColor))
+    Maths::Vector3 color{1.0f, 1.0f, 1.0f};
+    PROPERTY(DisplayName("Intensity"), Getter(GetIntensity), Setter(SetIntensity))
+    float intensity = 1.0f;
+    PROPERTY(DisplayName("Range"), Getter(GetRange), Setter(SetRange))
+    float range = 10.0f;
+    PROPERTY(DisplayName("Cutoff"), Getter(GetCutoff), Setter(SetCutoff))
+    float cutoff = 12.0f;
+    PROPERTY(DisplayName("Outer Cutoff"), Getter(GetOuterCutoff), Setter(SetOuterCutoff))
+    float outerCutoff = 15.0f;
+    PROPERTY(DisplayName("Size"), Getter(GetSize), Setter(SetSize))
+    Maths::Vector3 size{1.0f, 1.0f, 1.0f};
 
 protected:
     Render::Entities::Light* m_data = nullptr;

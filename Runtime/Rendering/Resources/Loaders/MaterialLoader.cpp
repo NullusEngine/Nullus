@@ -14,6 +14,7 @@
 #include <optional>
 #include <sstream>
 #include <string_view>
+#include <system_error>
 #include <unordered_map>
 #include <vector>
 
@@ -1363,24 +1364,40 @@ std::string MaterialLoader::ReadSerializedPayload(const std::string& p_path)
 
 void MaterialLoader::Reload(Material& p_material, const std::string& p_path)
 {
-    Reload(p_material, p_path, {});
+    static_cast<void>(TryReload(p_material, p_path));
 }
 
 void MaterialLoader::Reload(Material& p_material, const std::string& p_path, const LoadOptions& options)
+{
+    static_cast<void>(TryReload(p_material, p_path, options));
+}
+
+bool MaterialLoader::TryReload(Material& p_material, const std::string& p_path)
+{
+    return TryReload(p_material, p_path, {});
+}
+
+bool MaterialLoader::TryReload(Material& p_material, const std::string& p_path, const LoadOptions& options)
 {
     const auto xml = ReadMaterialPayloadText(p_path, options);
     if (xml.empty())
     {
         NLS_LOG_ERROR("Failed to reload material: " + p_path);
-        return;
+        return false;
     }
 
     if (!ApplySerializedMaterial(p_material, xml, options))
-        return;
+        return false;
     p_material.path = p_path;
+    return true;
 }
 
 void MaterialLoader::Save(Material& p_material, const std::string& p_path)
+{
+    static_cast<void>(TrySave(p_material, p_path));
+}
+
+bool MaterialLoader::TrySave(Material& p_material, const std::string& p_path)
 {
     std::ostringstream output;
     output << "shaderLabMaterialVersion=1\n";
@@ -1388,7 +1405,7 @@ void MaterialLoader::Save(Material& p_material, const std::string& p_path)
     if (!ValidateShaderLabMaterialShaderReference(shaderReference))
     {
         NLS_LOG_ERROR("Failed to save material: " + p_path);
-        return;
+        return false;
     }
     output << "shader=" << NLS::Render::Resources::EscapeMaterialField(shaderReference) << "\n";
     output << "surfaceMode=" << MaterialSurfaceModeName(p_material.GetSurfaceMode()) << "\n";
@@ -1494,14 +1511,29 @@ void MaterialLoader::Save(Material& p_material, const std::string& p_path)
     metadata.schemaVersion = 1u;
     const auto bytes = NLS::Core::Assets::WriteNativeArtifactContainer(std::move(metadata), payload);
 
-    std::filesystem::create_directories(std::filesystem::path(p_path).parent_path());
+    const auto parentPath = std::filesystem::path(p_path).parent_path();
+    std::error_code directoryError;
+    if (!parentPath.empty())
+        std::filesystem::create_directories(parentPath, directoryError);
+    if (directoryError)
+    {
+        NLS_LOG_ERROR("Failed to create material directory: " + parentPath.string());
+        return false;
+    }
     std::ofstream file(p_path, std::ios::binary | std::ios::trunc);
     if (!file)
     {
         NLS_LOG_ERROR("Failed to save material: " + p_path);
-        return;
+        return false;
     }
     file.write(reinterpret_cast<const char*>(bytes.data()), static_cast<std::streamsize>(bytes.size()));
+    file.flush();
+    if (!file)
+    {
+        NLS_LOG_ERROR("Failed to write material: " + p_path);
+        return false;
+    }
+    return true;
 }
 
 bool MaterialLoader::Destroy(Material*& p_material)

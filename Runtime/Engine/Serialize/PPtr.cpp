@@ -1,5 +1,7 @@
 #include "Serialize/PPtr.h"
 
+#include <limits>
+
 namespace NLS::Engine::Serialize
 {
 PersistentManager& PersistentManager::Instance()
@@ -224,6 +226,47 @@ InstanceID PersistentManager::BindObjectIdentifier(NLS::Object& object, const Ob
     return instanceID;
 }
 
+ObjectIdentifier PersistentManager::GetOrCreateLocalObjectIdentifier(NLS::Object& object)
+{
+    const InstanceID instanceID = object.GetInstanceID();
+    if (instanceID == InstanceID_None)
+        return {};
+
+    std::lock_guard lock(m_mutex);
+    if (NLS::Object::IDToPointer(instanceID) != &object)
+        return {};
+
+    if (const auto existing = m_identifierByInstanceID.find(instanceID);
+        existing != m_identifierByInstanceID.end())
+    {
+        // A scene object must not overwrite an asset identity that another
+        // system already attached to this Object instance.
+        return existing->second.IsLocalObject() ? existing->second : ObjectIdentifier {};
+    }
+
+    while (m_nextRuntimeLocalIdentifier < 0)
+    {
+        const auto localIdentifier = m_nextRuntimeLocalIdentifier;
+        if (m_nextRuntimeLocalIdentifier == std::numeric_limits<int64_t>::min())
+            m_nextRuntimeLocalIdentifier = 0;
+        else
+            --m_nextRuntimeLocalIdentifier;
+
+        const auto identifier = ObjectIdentifier::LocalObject(localIdentifier);
+        if (m_instanceIDByIdentifier.contains(identifier))
+            continue;
+
+        m_identifierByInstanceID.emplace(instanceID, identifier);
+        m_instanceIDByIdentifier.emplace(identifier, instanceID);
+        return identifier;
+    }
+
+    // Exhaustion would require more than 2^63 runtime object identities in a
+    // single process.  Returning an invalid identifier fails the command
+    // safely instead of reusing a stale target identity.
+    return {};
+}
+
 bool PersistentManager::InstanceIDToObjectIdentifier(InstanceID instanceID, ObjectIdentifier& identifier) const
 {
     std::lock_guard lock(m_mutex);
@@ -233,6 +276,56 @@ bool PersistentManager::InstanceIDToObjectIdentifier(InstanceID instanceID, Obje
 
     identifier = found->second;
     return true;
+}
+
+bool PersistentManager::TryGetInstanceID(
+    const ObjectIdentifier& identifier,
+    InstanceID& instanceID) const
+{
+    instanceID = InstanceID_None;
+    if (!identifier.IsValid())
+        return false;
+
+    std::lock_guard lock(m_mutex);
+    const auto found = m_instanceIDByIdentifier.find(identifier);
+    if (found == m_instanceIDByIdentifier.end())
+        return false;
+
+    instanceID = found->second;
+    return true;
+}
+
+bool PersistentManager::ReserveObjectIdentifier(const ObjectIdentifier& identifier)
+{
+    if (!identifier.IsValid())
+        return false;
+
+    std::lock_guard lock(m_mutex);
+    const auto found = m_instanceIDByIdentifier.find(identifier);
+    if (found == m_instanceIDByIdentifier.end() || found->second == InstanceID_None ||
+        NLS::Object::IDToPointer(found->second) != nullptr)
+    {
+        return false;
+    }
+
+    NLS::Object::ReserveInstanceID(found->second);
+    return true;
+}
+
+void PersistentManager::ReleaseReservedObjectIdentifier(const ObjectIdentifier& identifier)
+{
+    if (!identifier.IsValid())
+        return;
+
+    std::lock_guard lock(m_mutex);
+    const auto found = m_instanceIDByIdentifier.find(identifier);
+    if (found == m_instanceIDByIdentifier.end() || found->second == InstanceID_None ||
+        NLS::Object::IDToPointer(found->second) != nullptr)
+    {
+        return;
+    }
+
+    NLS::Object::ReleaseReservedInstanceID(found->second);
 }
 
 bool PersistentManager::InstanceIDToSerializedObjectIdentifier(

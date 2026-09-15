@@ -2130,6 +2130,54 @@ TEST(EditorAssetDatabaseTests, BlockingStartupPreimportSucceedsWhenNoProjectAsse
     std::filesystem::remove_all(root);
 }
 
+TEST(EditorAssetDatabaseTests, BlockingStartupPreimportImportsUiDocumentSources)
+{
+    using namespace NLS::Editor::Assets;
+
+    const auto root = MakeEditorAssetTestRoot();
+    WriteText(
+        root / "Assets" / "UI" / "Hud.ui",
+        R"({
+            "version": 1,
+            "documentId": "44444444-4444-4444-8444-444444444444",
+            "root": {
+                "type": "Text",
+                "name": "Score",
+                "text": "Score: 0",
+                "layout": { "size": [160, 24] }
+            }
+        })");
+    PrepareStandardPbrFreshnessOnlyDependency(root);
+
+    StartupAssetPreimportOptions options;
+    options.projectRoot = root;
+
+    const auto result = RunBlockingStartupAssetPreimport(options);
+
+    ASSERT_TRUE(result.succeeded) << JoinDiagnosticSummaries(result.diagnostics);
+    EXPECT_EQ(result.plannedAssetCount, 1u);
+    EXPECT_EQ(result.importedAssetCount, 1u);
+
+    AssetDatabaseFacade database(MakeProjectEditorAssetRoots(root));
+    ASSERT_TRUE(database.Refresh());
+    EXPECT_TRUE(database.IsArtifactManifestCurrentForAssetPath("Assets/UI/Hud.ui"));
+    EXPECT_TRUE(database.LoadSubAssetAtPath("Assets/UI/Hud.ui", "ui-document:Hud").has_value());
+
+    // The Inspector object picker is fed from the same published snapshot list,
+    // so an imported UI document must be selectable as an asset reference.
+    const auto pickerEntries = BuildObjectReferencePickerEntries(database);
+    EXPECT_TRUE(std::any_of(
+        pickerEntries.begin(),
+        pickerEntries.end(),
+        [](const ObjectReferencePickerEntry& entry)
+        {
+            return GetEditorAssetDragPayloadArtifactType(entry.payload) ==
+                NLS::Core::Assets::ArtifactType::UIDocument;
+        })) << "UI documents must be offered to the object reference picker";
+
+    std::filesystem::remove_all(root);
+}
+
 NLS_LONG_RUNNING_TEST(EditorAssetDatabaseIntegrationPerformanceTests, BlockingStartupPreimportImportsBuiltInShaderForEmptyProject)
 {
     using namespace NLS::Editor::Assets;

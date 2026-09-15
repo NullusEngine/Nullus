@@ -1,9 +1,11 @@
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <memory>
 
 #include "Assets/EditorAssetDatabase.h"
 #include "Assets/PrefabEditorWorkflow.h"
+#include "Assets/PrefabUtilityFacade.h"
 #include "Components/LightComponent.h"
 #include "Components/MeshFilter.h"
 #include "Components/MeshRenderer.h"
@@ -1772,6 +1774,57 @@ TEST(PrefabEditorWorkflowTests, RevertsStructuralOverridesFromLiveInstance)
     EXPECT_EQ(instantiate.instance->instanceRoot->GetComponent<NLS::Engine::Components::LightComponent>(), nullptr);
     EXPECT_NE(FindChildByName(*instantiate.instance->instanceRoot, "Socket"), nullptr);
     EXPECT_EQ(FindChildByName(*instantiate.instance->instanceRoot, "Extra"), nullptr);
+}
+
+TEST(PrefabEditorWorkflowTests, InspectorUndoRefreshRebuildsPropertyAndStructuralOverrideView)
+{
+    constexpr auto assetGuid = "8e8e8e8e-8e8e-4e8e-9e8e-8e8e8e8e8e9e";
+    NLS::Engine::GameObject root("Prefab Root", "Prop");
+    NLS::Editor::Assets::PrefabEditorWorkflow workflow;
+    auto artifact = workflow.CreatePrefabFromSelection({
+        &root,
+        {},
+        NLS::Core::Assets::AssetId(NLS::Guid::Parse(assetGuid)),
+        "Assets/Prefabs/UndoRefresh.prefab"
+    }).artifact;
+    ASSERT_TRUE(artifact.has_value());
+
+    NLS::Engine::SceneSystem::Scene scene;
+    auto instantiate = workflow.InstantiatePrefab({
+        &*artifact,
+        NLS::Core::Assets::AssetId(NLS::Guid::Parse(assetGuid)),
+        "prefab:UndoRefresh"
+    }, scene);
+    ASSERT_TRUE(instantiate.instance.has_value());
+
+    auto& instance = *instantiate.instance;
+    instance.instanceRoot->SetName("Local Override Name");
+    ASSERT_NE(instance.instanceRoot->AddComponent<NLS::Engine::Components::LightComponent>(), nullptr);
+
+    NLS::Editor::Assets::PrefabUtilityFacade facade;
+    const auto overrides = facade.GetPrefabOverrides(*artifact, instance, true);
+    ASSERT_FALSE(overrides.empty());
+
+    auto overrideView = *artifact;
+    const auto materialized = facade.MaterializeOverrideView(overrideView, overrides);
+    ASSERT_EQ(materialized.status, NLS::Editor::Assets::PrefabOperationStatus::Committed);
+    ASSERT_EQ(
+        facade.RefreshConnectedInstance(instance, overrideView).status,
+        NLS::Editor::Assets::PrefabOperationStatus::Committed);
+    instance.UseSharedSourcePrefab(std::make_shared<const NLS::Engine::Assets::PrefabArtifact>(*artifact));
+
+    EXPECT_EQ(instance.instanceRoot->GetName(), "Local Override Name");
+    EXPECT_NE(instance.instanceRoot->GetComponent<NLS::Engine::Components::LightComponent>(), nullptr);
+    const auto* sourceRoot = FindObjectRecord(instance.SourceGraph(), instance.SourceGraph().root);
+    ASSERT_NE(sourceRoot, nullptr);
+    EXPECT_EQ(ReadStringProperty(*sourceRoot, "name"), "Prefab Root");
+
+    ASSERT_EQ(
+        facade.RefreshConnectedInstance(instance, *artifact).status,
+        NLS::Editor::Assets::PrefabOperationStatus::Committed);
+    instance.UseSharedSourcePrefab(std::make_shared<const NLS::Engine::Assets::PrefabArtifact>(*artifact));
+    EXPECT_EQ(instance.instanceRoot->GetName(), "Prefab Root");
+    EXPECT_EQ(instance.instanceRoot->GetComponent<NLS::Engine::Components::LightComponent>(), nullptr);
 }
 
 TEST(PrefabEditorWorkflowTests, RevertsSelectedNestedOverrideWithoutRemovingOuterOverride)

@@ -8,6 +8,7 @@
 #include <utility>
 #include <vector>
 
+#include "Serialize/BinaryBuffer.h"
 #include "Serialize/ObjectGraphDocument.h"
 
 namespace NLS::Engine::Serialize
@@ -111,61 +112,12 @@ namespace NLS::Engine::Serialize
         static constexpr uint32_t kMinVersion = 1u;
         static constexpr uint32_t kVersion = 1u;
 
-        class Writer
+        class Writer final : public BinaryBufferWriter
         {
         public:
-            std::vector<uint8_t> bytes;
-
-            void WriteBytes(const void* data, const size_t size)
-            {
-                const auto* begin = static_cast<const uint8_t*>(data);
-                bytes.insert(bytes.end(), begin, begin + size);
-            }
-
-            void WriteBool(const bool value)
-            {
-                bytes.push_back(value ? 1u : 0u);
-            }
-
-            void WriteU8(const uint8_t value)
-            {
-                bytes.push_back(value);
-            }
-
-            void WriteU32(const uint32_t value)
-            {
-                for (uint32_t shift = 0u; shift < 32u; shift += 8u)
-                    bytes.push_back(static_cast<uint8_t>((value >> shift) & 0xffu));
-            }
-
-            void WriteU64(const uint64_t value)
-            {
-                for (uint32_t shift = 0u; shift < 64u; shift += 8u)
-                    bytes.push_back(static_cast<uint8_t>((value >> shift) & 0xffu));
-            }
-
-            void WriteI32(const int32_t value)
-            {
-                WriteU32(static_cast<uint32_t>(value));
-            }
-
-            void WriteI64(const int64_t value)
-            {
-                WriteU64(static_cast<uint64_t>(value));
-            }
-
-            void WriteDouble(const double value)
-            {
-                uint64_t bits = 0u;
-                static_assert(sizeof(bits) == sizeof(value));
-                std::memcpy(&bits, &value, sizeof(bits));
-                WriteU64(bits);
-            }
-
             void WriteString(const std::string& value)
             {
-                WriteU32(static_cast<uint32_t>(value.size()));
-                WriteBytes(value.data(), value.size());
+                BinaryBufferWriter::WriteString(value);
             }
 
             void WriteGuid(const NLS::Guid& guid)
@@ -291,12 +243,11 @@ namespace NLS::Engine::Serialize
             }
         };
 
-        class Reader
+        class Reader final : public BinaryBufferReader
         {
         public:
             Reader(const uint8_t* input, const size_t inputSize)
-                : data(input)
-                , size(inputSize)
+                : BinaryBufferReader(input, inputSize)
             {
             }
 
@@ -304,109 +255,18 @@ namespace NLS::Engine::Serialize
             {
                 if (Remaining() < sizeof(kMagic))
                     return false;
-                if (std::memcmp(data + position, kMagic, sizeof(kMagic)) != 0)
+                uint8_t magic[sizeof(kMagic)] {};
+                if (!ReadBytes(magic, sizeof(magic)) ||
+                    std::memcmp(magic, kMagic, sizeof(kMagic)) != 0)
                     return false;
-                position += sizeof(kMagic);
-                return true;
-            }
-
-            bool IsComplete() const
-            {
-                return position == size;
-            }
-
-            bool ReadBool(bool& value)
-            {
-                uint8_t byte = 0u;
-                if (!ReadU8(byte) || byte > 1u)
-                    return false;
-                value = byte != 0u;
-                return true;
-            }
-
-            bool ReadU8(uint8_t& value)
-            {
-                if (Remaining() < 1u)
-                    return false;
-                value = data[position++];
-                return true;
-            }
-
-            bool ReadU32(uint32_t& value)
-            {
-                if (Remaining() < 4u)
-                    return false;
-                value =
-                    static_cast<uint32_t>(data[position]) |
-                    (static_cast<uint32_t>(data[position + 1u]) << 8u) |
-                    (static_cast<uint32_t>(data[position + 2u]) << 16u) |
-                    (static_cast<uint32_t>(data[position + 3u]) << 24u);
-                position += 4u;
-                return true;
-            }
-
-            bool ReadU64(uint64_t& value)
-            {
-                if (Remaining() < 8u)
-                    return false;
-                value =
-                    static_cast<uint64_t>(data[position]) |
-                    (static_cast<uint64_t>(data[position + 1u]) << 8u) |
-                    (static_cast<uint64_t>(data[position + 2u]) << 16u) |
-                    (static_cast<uint64_t>(data[position + 3u]) << 24u) |
-                    (static_cast<uint64_t>(data[position + 4u]) << 32u) |
-                    (static_cast<uint64_t>(data[position + 5u]) << 40u) |
-                    (static_cast<uint64_t>(data[position + 6u]) << 48u) |
-                    (static_cast<uint64_t>(data[position + 7u]) << 56u);
-                position += 8u;
-                return true;
-            }
-
-            bool ReadI32(int32_t& value)
-            {
-                uint32_t raw = 0u;
-                if (!ReadU32(raw))
-                    return false;
-                value = static_cast<int32_t>(raw);
-                return true;
-            }
-
-            bool ReadI64(int64_t& value)
-            {
-                uint64_t raw = 0u;
-                if (!ReadU64(raw))
-                    return false;
-                value = static_cast<int64_t>(raw);
-                return true;
-            }
-
-            bool ReadDouble(double& value)
-            {
-                uint64_t bits = 0u;
-                if (!ReadU64(bits))
-                    return false;
-                static_assert(sizeof(bits) == sizeof(value));
-                std::memcpy(&value, &bits, sizeof(value));
-                return true;
-            }
-
-            bool ReadString(std::string& value)
-            {
-                uint32_t length = 0u;
-                if (!ReadU32(length) || Remaining() < length)
-                    return false;
-                value.assign(reinterpret_cast<const char*>(data + position), length);
-                position += length;
                 return true;
             }
 
             bool ReadGuid(NLS::Guid& guid)
             {
-                if (Remaining() < NLS::Guid::Bytes {}.size())
-                    return false;
                 NLS::Guid::Bytes bytes {};
-                std::memcpy(bytes.data(), data + position, bytes.size());
-                position += bytes.size();
+                if (!ReadBytes(bytes.data(), bytes.size()))
+                    return false;
                 guid = NLS::Guid(bytes);
                 return true;
             }
@@ -633,11 +493,6 @@ namespace NLS::Engine::Serialize
             }
 
         private:
-            size_t Remaining() const
-            {
-                return size - position;
-            }
-
             static bool IsValidSerializedObjectReference(const ObjectIdentifier& reference)
             {
                 if (reference.guid.IsValid())
@@ -655,10 +510,6 @@ namespace NLS::Engine::Serialize
                 return reference.fileType == FileType::NonAssetType &&
                     reference.filePath.empty();
             }
-
-            const uint8_t* data = nullptr;
-            size_t size = 0u;
-            size_t position = 0u;
             static constexpr uint32_t kMaxUncheckedCollectionElementCount = 4096u;
         };
     };

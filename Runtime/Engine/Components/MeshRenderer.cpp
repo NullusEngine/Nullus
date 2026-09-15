@@ -57,9 +57,9 @@ MeshRenderer::MeshRenderer(const MeshRenderer& other)
     : materials(other.materials)
     , m_materialPaths(other.m_materialPaths)
     , m_materialNames(other.m_materialNames)
-    , m_userMatrix(other.m_userMatrix)
-    , m_customBoundingSphere(other.m_customBoundingSphere)
-    , m_frustumBehaviour(other.m_frustumBehaviour)
+    , userMatrixValues(other.userMatrixValues)
+    , customBoundingSphere(other.customBoundingSphere)
+    , frustumBehaviour(other.frustumBehaviour)
     , m_transientRenderingSuppressed(false)
 {
     m_materials.resize((std::max)(other.m_materials.size(), other.m_materialPaths.size()), nullptr);
@@ -80,9 +80,9 @@ MeshRenderer& MeshRenderer::operator=(const MeshRenderer& other)
     m_failedMaterialPaths.clear();
     m_failedMaterialPaths.resize(m_materialPaths.size());
     m_materialNames = other.m_materialNames;
-    m_userMatrix = other.m_userMatrix;
-    m_customBoundingSphere = other.m_customBoundingSphere;
-    m_frustumBehaviour = other.m_frustumBehaviour;
+    userMatrixValues = other.userMatrixValues;
+    customBoundingSphere = other.customBoundingSphere;
+    frustumBehaviour = other.frustumBehaviour;
     m_transientRenderingSuppressed = false;
     MarkRenderStateChanged();
     return *this;
@@ -97,25 +97,25 @@ void MeshRenderer::OnCreate()
 
 void MeshRenderer::SetFrustumBehaviour(EFrustumBehaviour p_boundingMode)
 {
-    if (m_frustumBehaviour == p_boundingMode)
+    if (frustumBehaviour == p_boundingMode)
         return;
-    m_frustumBehaviour = p_boundingMode;
+    frustumBehaviour = p_boundingMode;
     MarkRenderStateChanged();
 }
 
 MeshRenderer::EFrustumBehaviour MeshRenderer::GetFrustumBehaviour() const
 {
-    return m_frustumBehaviour;
+    return frustumBehaviour;
 }
 
 const Render::Geometry::BoundingSphere& MeshRenderer::GetCustomBoundingSphere() const
 {
-    return m_customBoundingSphere;
+    return customBoundingSphere;
 }
 
 void MeshRenderer::SetCustomBoundingSphere(const Render::Geometry::BoundingSphere& p_boundingSphere)
 {
-    m_customBoundingSphere = p_boundingSphere;
+    customBoundingSphere = p_boundingSphere;
     MarkRenderStateChanged();
 }
 
@@ -228,7 +228,7 @@ void MeshRenderer::RemoveAllMaterials()
 
 const Maths::Matrix4& MeshRenderer::GetUserMatrix() const
 {
-    return m_userMatrix;
+    return userMatrixValues;
 }
 
 const MeshRenderer::MaterialList& MeshRenderer::GetMaterials() const
@@ -444,7 +444,7 @@ NLS::Array<float> MeshRenderer::GetUserMatrixValues() const
 {
     NLS::Array<float> result;
     result.reserve(16);
-    for (float value : m_userMatrix.data)
+    for (float value : userMatrixValues.data)
         result.push_back(value);
     return result;
 }
@@ -523,9 +523,9 @@ void MeshRenderer::SetUserMatrixElement(uint32_t p_row, uint32_t p_column, float
 {
     if (p_row < 4 && p_column < 4)
     {
-        if (m_userMatrix.data[4 * p_row + p_column] == p_value)
+        if (userMatrixValues.data[4 * p_row + p_column] == p_value)
             return;
-        m_userMatrix.data[4 * p_row + p_column] = p_value;
+        userMatrixValues.data[4 * p_row + p_column] = p_value;
         MarkRenderStateChanged();
     }
 }
@@ -533,7 +533,7 @@ void MeshRenderer::SetUserMatrixElement(uint32_t p_row, uint32_t p_column, float
 float MeshRenderer::GetUserMatrixElement(uint32_t p_row, uint32_t p_column) const
 {
     if (p_row < 4 && p_column < 4)
-        return m_userMatrix.data[4 * p_row + p_column];
+        return userMatrixValues.data[4 * p_row + p_column];
     else
         return 0.0f;
 }

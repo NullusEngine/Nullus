@@ -1,10 +1,12 @@
 ﻿#pragma once
 #include "Core/Context.h"
 #include "Core/EditorActions.h"
+#include "UI/EditorUiOverlayPresenter.h"
 #include "Core/AssetFileWatcher.h"
 #include "Core/PanelsManager.h"
 #include "Assets/EditorStartupAssetPreimport.h"
 #include "Shortcuts/EditorShortcutService.h"
+#include "Undo/EditorUndoService.h"
 #include <Rendering/Data/FrameInfo.h>
 #include <UI/Modules/Canvas.h>
 #include <chrono>
@@ -126,8 +128,10 @@ public:
     void PostUpdate();
 
 private:
-    uint64_t m_elapsedFrames = 0;
-    uint64_t m_sceneSourcePathChangedListener = 0;
+	uint64_t m_elapsedFrames = 0;
+	uint64_t m_sceneSourcePathChangedListener = 0;
+	uint64_t m_sceneLoadListener = 0;
+	uint64_t m_editorModeChangedListener = 0;
     uint32_t m_frameRateSampleCount = 0;
     float m_currentDeltaTime = 0.0f;
     float m_currentFrameRate = 0.0f;
@@ -157,9 +161,14 @@ private:
 
         bool ownsJobSystem = false;
     };
-    JobSystemLifetime m_jobSystemLifetime;
-    EditorActions	m_editorActions;
-    Shortcuts::EditorShortcutService m_shortcutService;
+	JobSystemLifetime m_jobSystemLifetime;
+	Undo::EditorUndoService m_undoService;
+	EditorActions	m_editorActions;
+	Shortcuts::EditorShortcutService m_shortcutService;
+	// Presents the retained game UI of the edited scene inside the Game View.
+	UiOverlay::EditorUiOverlayPresenter m_uiOverlayPresenter;
+	bool m_uiOverlaySupplementInstalled = false;
+	bool m_historyFrozenForPlayMode = false;
 };
 } // namespace Editor::Core
 } // namespace NLS

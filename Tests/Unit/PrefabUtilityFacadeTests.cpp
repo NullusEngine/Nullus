@@ -483,10 +483,10 @@ TEST(PrefabUtilityFacadeTests, AnnotatesSceneDocumentWithConnectedPrefabRootMeta
     EXPECT_EQ(FindProperty(*rootRecord, "scenePrefab"), nullptr);
 }
 
-TEST(PrefabUtilityFacadeTests, AnnotatesSceneDocumentWithUnityStylePrefabInstanceRecord)
+TEST(PrefabUtilityFacadeTests, AnnotatesSceneDocumentWithEngineStylePrefabInstanceRecord)
 {
     PrefabUtilityFacade facade;
-    auto prefab = MakePrefabArtifact("UnityStyleScenePrefab", Id("f4171717-1717-4717-8717-171717171717"));
+    auto prefab = MakePrefabArtifact("EngineStyleScenePrefab", Id("f4171717-1717-4717-8717-171717171717"));
     prefab.generatedModelPrefab = true;
 
     NLS::Engine::SceneSystem::Scene scene;
@@ -494,13 +494,13 @@ TEST(PrefabUtilityFacadeTests, AnnotatesSceneDocumentWithUnityStylePrefabInstanc
     auto instantiate = facade.InstantiatePrefab({
         &prefab,
         prefab.assetId,
-        "prefab:UnityStyleScenePrefab",
+        "prefab:EngineStyleScenePrefab",
         Id("f4181818-1818-4818-8818-181818181818")
     }, scene);
     ASSERT_EQ(instantiate.status, PrefabOperationStatus::Committed);
     ASSERT_TRUE(instantiate.instance.has_value());
     ASSERT_NE(instantiate.instance->instanceRoot, nullptr);
-    instantiate.instance->instanceRoot->SetName("SceneOnlyUnityStyleOverride");
+    instantiate.instance->instanceRoot->SetName("SceneOnlyEngineStyleOverride");
     registry.Register(*instantiate.instance);
 
     auto document = NLS::Engine::Serialize::ObjectGraphSerializer::SerializeScene(scene);
@@ -512,8 +512,8 @@ TEST(PrefabUtilityFacadeTests, AnnotatesSceneDocumentWithUnityStylePrefabInstanc
     EXPECT_NE(output.find("\"instanceRoot\""), std::string::npos);
     EXPECT_NE(output.find("\"modifications\""), std::string::npos);
     EXPECT_NE(output.find("\"correspondence\""), std::string::npos);
-    EXPECT_NE(output.find("\"filePath\": \"prefab:UnityStyleScenePrefab\""), std::string::npos);
-    EXPECT_NE(output.find("SceneOnlyUnityStyleOverride"), std::string::npos);
+    EXPECT_NE(output.find("\"filePath\": \"prefab:EngineStyleScenePrefab\""), std::string::npos);
+    EXPECT_NE(output.find("SceneOnlyEngineStyleOverride"), std::string::npos);
     EXPECT_EQ(output.find("\"scenePrefab\""), std::string::npos);
 }
 
@@ -573,7 +573,7 @@ TEST(PrefabUtilityFacadeTests, NormalizesScenePrefabInstanceArtifactPathsToSubAs
         MakeLocalIdentifierInFile(sourceAssetId.GetGuid(), meshSubAssetKey));
 }
 
-TEST(PrefabUtilityFacadeTests, UnityStylePrefabInstanceRecordRoundTripsThroughReaderAndWriter)
+TEST(PrefabUtilityFacadeTests, EngineStylePrefabInstanceRecordRoundTripsThroughReaderAndWriter)
 {
     PrefabUtilityFacade facade;
     auto prefab = MakePrefabArtifact("RoundTripScenePrefab", Id("f4191919-1919-4919-8919-191919191919"));
@@ -607,7 +607,7 @@ TEST(PrefabUtilityFacadeTests, UnityStylePrefabInstanceRecordRoundTripsThroughRe
     EXPECT_FALSE(parsed->prefabInstances[0].correspondence.empty());
 }
 
-TEST(PrefabUtilityFacadeTests, UnityStylePrefabInstanceRestoresFromStrippedScenePlaceholder)
+TEST(PrefabUtilityFacadeTests, EngineStylePrefabInstanceRestoresFromStrippedScenePlaceholder)
 {
     PrefabUtilityFacade facade;
     auto prefab = MakePrefabArtifact("StrippedScenePrefab", Id("f4212121-2121-4121-8121-212121212121"));
@@ -1712,24 +1712,24 @@ TEST(PrefabUtilityFacadeTests, RestoresPrefabRegistryBySceneRootOrderWhenNamesCo
     EXPECT_EQ(restored->prefabSubAssetKey, "prefab:DuplicateName");
 }
 
-TEST(PrefabUtilityFacadeTests, RestoresMixedUnityStyleAndLegacyScenePrefabMetadata)
+TEST(PrefabUtilityFacadeTests, RestoresMixedEngineStyleAndLegacyScenePrefabMetadata)
 {
     PrefabUtilityFacade facade;
-    auto unityStylePrefab = MakePrefabArtifact("MixedUnityStylePrefab", Id("f42d2d2d-2d2d-4d2d-8d2d-2d2d2d2d2d2d"));
-    unityStylePrefab.generatedModelPrefab = true;
+    auto engineStylePrefab = MakePrefabArtifact("MixedEngineStylePrefab", Id("f42d2d2d-2d2d-4d2d-8d2d-2d2d2d2d2d2d"));
+    engineStylePrefab.generatedModelPrefab = true;
     auto legacyPrefab = MakePrefabArtifact("MixedLegacyPrefab", Id("f42e2e2e-2e2e-4e2e-8e2e-2e2e2e2e2e2e"));
 
     NLS::Engine::SceneSystem::Scene sourceScene;
     NLS::Editor::Assets::PrefabInstanceRegistry sourceRegistry;
-    auto unityStyle = facade.InstantiatePrefab({
-        &unityStylePrefab,
-        unityStylePrefab.assetId,
-        "prefab:MixedUnityStylePrefab",
+    auto engineStyle = facade.InstantiatePrefab({
+        &engineStylePrefab,
+        engineStylePrefab.assetId,
+        "prefab:MixedEngineStylePrefab",
         Id("f42f2f2f-2f2f-4f2f-8f2f-2f2f2f2f2f2f")
     }, sourceScene);
-    ASSERT_EQ(unityStyle.status, PrefabOperationStatus::Committed);
-    ASSERT_TRUE(unityStyle.instance.has_value());
-    sourceRegistry.Register(*unityStyle.instance);
+    ASSERT_EQ(engineStyle.status, PrefabOperationStatus::Committed);
+    ASSERT_TRUE(engineStyle.instance.has_value());
+    sourceRegistry.Register(*engineStyle.instance);
 
     auto legacy = facade.InstantiatePrefab({
         &legacyPrefab,
@@ -1763,7 +1763,7 @@ TEST(PrefabUtilityFacadeTests, RestoresMixedUnityStyleAndLegacyScenePrefabMetada
 
     auto loadedScene = NLS::Engine::Serialize::ObjectGraphInstantiator::InstantiateScene(document);
     ASSERT_NE(loadedScene, nullptr);
-    EXPECT_EQ(loadedScene->FindGameObjectByName("MixedUnityStylePrefab"), nullptr);
+    EXPECT_EQ(loadedScene->FindGameObjectByName("MixedEngineStylePrefab"), nullptr);
     ASSERT_NE(loadedScene->FindGameObjectByName("MixedLegacyPrefab"), nullptr);
 
     NLS::Editor::Assets::PrefabInstanceRegistry restoredRegistry;
@@ -1774,19 +1774,19 @@ TEST(PrefabUtilityFacadeTests, RestoresMixedUnityStyleAndLegacyScenePrefabMetada
         restoredRegistry,
         [&](AssetId assetId, const std::string& subAssetKey) -> std::optional<PrefabArtifact>
         {
-            if (assetId == unityStylePrefab.assetId && subAssetKey == "prefab:MixedUnityStylePrefab")
-                return unityStylePrefab;
+            if (assetId == engineStylePrefab.assetId && subAssetKey == "prefab:MixedEngineStylePrefab")
+                return engineStylePrefab;
             if (assetId == legacyPrefab.assetId && subAssetKey == "prefab:MixedLegacyPrefab")
                 return legacyPrefab;
             return std::nullopt;
         });
 
     ASSERT_EQ(restore.status, PrefabOperationStatus::Committed);
-    auto* loadedUnityStyleRoot = loadedScene->FindGameObjectByName("MixedUnityStylePrefab");
-    ASSERT_NE(loadedUnityStyleRoot, nullptr);
+    auto* loadedEngineStyleRoot = loadedScene->FindGameObjectByName("MixedEngineStylePrefab");
+    ASSERT_NE(loadedEngineStyleRoot, nullptr);
     auto* loadedLegacyRoot = loadedScene->FindGameObjectByName("MixedLegacyPrefab");
     ASSERT_NE(loadedLegacyRoot, nullptr);
-    EXPECT_NE(restoredRegistry.FindInstance(*loadedUnityStyleRoot), nullptr);
+    EXPECT_NE(restoredRegistry.FindInstance(*loadedEngineStyleRoot), nullptr);
     EXPECT_NE(restoredRegistry.FindInstance(*loadedLegacyRoot), nullptr);
 }
 
@@ -2443,7 +2443,7 @@ TEST(PrefabUtilityFacadeTests, AppliesOverridesToNearestEditableLayerAndRejectsI
     EXPECT_EQ(rejectReadOnly.status, PrefabOperationStatus::Rejected);
 }
 
-TEST(PrefabUtilityFacadeTests, DerivesUnityLikePrefabEditorStateForConnectedOverridesAndUnpackedObjects)
+TEST(PrefabUtilityFacadeTests, DerivesEngineLikePrefabEditorStateForConnectedOverridesAndUnpackedObjects)
 {
     PrefabUtilityFacade facade;
     auto artifact = MakePrefabArtifact("EditorStateRoot", Id("b5210101-0101-4101-8101-010101010101"));

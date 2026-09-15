@@ -14,6 +14,7 @@
 #include "Engine/Assets/PrefabAsset.h"
 #include "Panels/SceneView.h"
 #include "Panels/GameView.h"
+#include "Panels/HierarchyUndo.h"
 #include "Panels/SceneViewPickingPolicy.h"
 #include "Panels/ViewFrameLifecycle.h"
 #include "Settings/EditorSettings.h"
@@ -21,6 +22,9 @@
 #include "Core/EditorInteractionBlocker.h"
 #include "Core/RendererResourceStreamingBudget.h"
 #include "Core/SceneCameraFocus.h"
+#include "Undo/EditorUndoMutationContext.h"
+#include "Undo/EditorUndoService.h"
+#include "Undo/SceneObjectUndoTarget.h"
 #include "ImGuizmo.h"
 #include "Debug/Logger.h"
 #include "Rendering/Context/DriverAccess.h"
@@ -58,6 +62,16 @@
 #include <vector>
 using namespace NLS;
 
+namespace NLS::Editor::Panels
+{
+struct SceneViewGizmoEditState
+{
+    std::optional<Core::SceneViewGizmoMatrix> pendingModelMatrix;
+    Core::EGizmoOperation operation = Core::EGizmoOperation::TRANSLATE;
+    Core::SceneViewGizmoPivot pivot = Core::SceneViewGizmoPivot::Pivot;
+};
+}
+
 namespace
 {
 constexpr float kSceneViewGizmoCameraLength = 8.0f;
@@ -67,6 +81,238 @@ constexpr uint64_t kSceneViewHoverPickingVisibleDrawBudget = 1024u;
 constexpr size_t kSceneViewImportedPrefabPreloadGateCapacity = 256u;
 constexpr size_t kSceneViewValidationMinimumVisibleSceneLoadObjects = 32u;
 constexpr auto kSceneViewImportedPrefabPreloadGateTtl = std::chrono::seconds(3);
+
+struct SceneViewTransformSnapshot
+{
+    Maths::Vector3 localPosition {};
+    Maths::Quaternion localRotation {};
+    Maths::Vector3 localScale {1.0f, 1.0f, 1.0f};
+};
+
+bool operator==(const SceneViewTransformSnapshot& left, const SceneViewTransformSnapshot& right)
+{
+    // Quaternion::operator== currently compares one component incorrectly.
+    return left.localPosition == right.localPosition &&
+        left.localRotation.x == right.localRotation.x &&
+        left.localRotation.y == right.localRotation.y &&
+        left.localRotation.z == right.localRotation.z &&
+        left.localRotation.w == right.localRotation.w &&
+        left.localScale == right.localScale;
+}
+
+Editor::Undo::UndoScopeId BuildSceneViewUndoScope(const Engine::GameObject& gameObject);
+
+struct SceneViewGizmoTarget
+{
+    Editor::Undo::SceneObjectUndoTarget object;
+};
+
+std::optional<SceneViewGizmoTarget> CaptureSceneViewGizmoTarget(
+    Engine::GameObject& gameObject,
+    const Editor::Undo::UndoScopeId& scope)
+{
+    auto object = Editor::Undo::SceneObjectUndoTarget::Capture(gameObject, scope);
+    if (!object.has_value())
+        return std::nullopt;
+
+    return SceneViewGizmoTarget {std::move(*object)};
+}
+
+Engine::GameObject* ResolveSceneViewGizmoTarget(const SceneViewGizmoTarget& target)
+{
+    if (!NLS::Core::ServiceLocator::Contains<Editor::Core::EditorActions>())
+        return nullptr;
+
+    auto& actions = NLS::Core::ServiceLocator::Get<Editor::Core::EditorActions>();
+    auto* gameObject = target.object.Resolve();
+    if (gameObject == nullptr || gameObject->GetScene() == nullptr)
+        return nullptr;
+
+    const auto& context = actions.GetContext();
+    const bool belongsToActivePrefabStage = context.activePrefabStage.has_value() &&
+        context.activePrefabStage->stageScene.get() == gameObject->GetScene();
+    const bool belongsToCurrentScene = context.sceneManager.GetCurrentScene() == gameObject->GetScene();
+    if (!belongsToActivePrefabStage && !belongsToCurrentScene)
+        return nullptr;
+
+    return BuildSceneViewUndoScope(*gameObject) == target.object.GetScope()
+        ? gameObject
+        : nullptr;
+}
+
+std::optional<SceneViewTransformSnapshot> ReadSceneViewTransform(const Engine::GameObject& gameObject)
+{
+    if (gameObject.GetTransform() == nullptr)
+        return std::nullopt;
+
+    const auto* transform = gameObject.GetTransform();
+    return SceneViewTransformSnapshot {
+        transform->GetLocalPosition(),
+        transform->GetLocalRotation(),
+        transform->GetLocalScale()};
+}
+
+std::optional<SceneViewTransformSnapshot> ReadSceneViewTransform(const SceneViewGizmoTarget& target)
+{
+    const auto* gameObject = ResolveSceneViewGizmoTarget(target);
+    return gameObject != nullptr ? ReadSceneViewTransform(*gameObject) : std::nullopt;
+}
+
+bool ApplySceneViewTransform(const SceneViewGizmoTarget& target, const SceneViewTransformSnapshot& snapshot)
+{
+    NLS_EDITOR_UNDO_REQUIRE_MUTATION_CONTEXT("SceneView::ApplySceneViewTransform");
+    auto* gameObject = ResolveSceneViewGizmoTarget(target);
+    if (gameObject == nullptr || gameObject->GetTransform() == nullptr)
+        return false;
+
+    gameObject->GetTransform()->SetLocalTransform(
+        snapshot.localPosition,
+        snapshot.localRotation,
+        snapshot.localScale);
+    if (NLS::Core::ServiceLocator::Contains<Editor::Core::EditorActions>())
+        EDITOR_EXEC(MarkOwningSceneDirty(*gameObject));
+    return true;
+}
+
+class SceneViewTransformUndoCommand final : public Editor::Undo::IEditorUndoCommand
+{
+public:
+    SceneViewTransformUndoCommand(
+        Editor::Undo::UndoCommandInfo info,
+        SceneViewGizmoTarget target,
+        const SceneViewTransformSnapshot before,
+        const SceneViewTransformSnapshot after)
+        : m_info(std::move(info))
+        , m_target(std::move(target))
+        , m_before(before)
+        , m_after(after)
+    {
+    }
+
+    [[nodiscard]] Editor::Undo::UndoCommandInfo GetInfo() const override
+    {
+        return m_info;
+    }
+
+    [[nodiscard]] Editor::Undo::UndoValidationResult Validate(
+        const Editor::Undo::UndoDirection,
+        const Editor::Undo::UndoExecutionContext&) const override
+    {
+        return ReadSceneViewTransform(m_target).has_value()
+            ? Editor::Undo::UndoValidationResult::Ready()
+            : Editor::Undo::UndoValidationResult::Stale("The transformed GameObject is no longer valid in this Scene.");
+    }
+
+    Editor::Undo::UndoStartResult Apply(
+        const Editor::Undo::UndoDirection direction,
+        const Editor::Undo::UndoExecutionContext&,
+        Editor::Undo::UndoCompletion) override
+    {
+        return ApplySceneViewTransform(m_target, direction == Editor::Undo::UndoDirection::Undo ? m_before : m_after)
+            ? Editor::Undo::UndoStartResult::Completed()
+            : Editor::Undo::UndoStartResult::Failed("The transformed GameObject is no longer valid in this Scene.");
+    }
+
+    bool TryMergeFrom(const Editor::Undo::IEditorUndoCommand&) override
+    {
+        return false;
+    }
+
+private:
+    Editor::Undo::UndoCommandInfo m_info;
+    SceneViewGizmoTarget m_target;
+    SceneViewTransformSnapshot m_before;
+    SceneViewTransformSnapshot m_after;
+};
+
+class SceneViewTransformEdit final : public Editor::Undo::IEditorUndoEdit
+{
+public:
+    SceneViewTransformEdit(
+        Editor::Undo::UndoCommandInfo info,
+        SceneViewGizmoTarget target,
+        const SceneViewTransformSnapshot before,
+        std::shared_ptr<Editor::Panels::SceneViewGizmoEditState> state)
+        : m_info(std::move(info))
+        , m_target(std::move(target))
+        , m_before(before)
+        , m_state(std::move(state))
+    {
+    }
+
+    [[nodiscard]] Editor::Undo::UndoValidationResult Validate(
+        const Editor::Undo::UndoExecutionContext&) const override
+    {
+        return ReadSceneViewTransform(m_target).has_value()
+            ? Editor::Undo::UndoValidationResult::Ready()
+            : Editor::Undo::UndoValidationResult::Stale("The transformed GameObject is no longer valid in this Scene.");
+    }
+
+    Editor::Undo::UndoStartResult Preview(
+        const Editor::Undo::UndoExecutionContext&,
+        Editor::Undo::UndoCompletion) override
+    {
+        auto* gameObject = ResolveSceneViewGizmoTarget(m_target);
+        if (gameObject == nullptr || gameObject->GetTransform() == nullptr)
+            return Editor::Undo::UndoStartResult::Failed("The transformed GameObject is no longer valid in this Scene.");
+        if (!m_state || !m_state->pendingModelMatrix.has_value())
+            return Editor::Undo::UndoStartResult::Failed("The Scene View gizmo has no pending transform.");
+
+        // PreviewEditSession establishes the mutation context before this runs.
+        // The panel only captures ImGuizmo's matrix; the edit owns the write.
+        NLS::Editor::Core::ApplyGameObjectWorldGizmoMatrix(
+            *gameObject,
+            *m_state->pendingModelMatrix,
+            m_state->operation,
+            m_state->pivot);
+        const auto current = ReadSceneViewTransform(*gameObject);
+        if (!current.has_value())
+            return Editor::Undo::UndoStartResult::Failed("The transformed GameObject is no longer valid in this Scene.");
+        m_after = *current;
+        return Editor::Undo::UndoStartResult::Completed();
+    }
+
+    Editor::Undo::UndoStartResult Cancel(
+        const Editor::Undo::UndoExecutionContext&,
+        Editor::Undo::UndoCompletion) override
+    {
+        return ApplySceneViewTransform(m_target, m_before)
+            ? Editor::Undo::UndoStartResult::Completed()
+            : Editor::Undo::UndoStartResult::Failed("The transformed GameObject is no longer valid in this Scene.");
+    }
+
+    [[nodiscard]] bool HasChanges() const override
+    {
+        return m_after.has_value() && *m_after != m_before;
+    }
+
+    [[nodiscard]] Editor::Undo::UndoCommandPtr BuildCommand() override
+    {
+        if (!HasChanges())
+            return {};
+        return std::make_unique<SceneViewTransformUndoCommand>(m_info, m_target, m_before, *m_after);
+    }
+
+private:
+    Editor::Undo::UndoCommandInfo m_info;
+    SceneViewGizmoTarget m_target;
+    SceneViewTransformSnapshot m_before;
+    std::optional<SceneViewTransformSnapshot> m_after;
+    std::shared_ptr<Editor::Panels::SceneViewGizmoEditState> m_state;
+};
+
+Editor::Undo::UndoScopeId BuildSceneViewUndoScope(const Engine::SceneSystem::Scene& scene)
+{
+    if (!NLS::Core::ServiceLocator::Contains<Editor::Core::EditorActions>())
+        return {};
+    return NLS::Core::ServiceLocator::Get<Editor::Core::EditorActions>().GetUndoScopeForScene(scene);
+}
+
+Editor::Undo::UndoScopeId BuildSceneViewUndoScope(const Engine::GameObject& gameObject)
+{
+    const auto* scene = gameObject.GetScene();
+    return scene != nullptr ? BuildSceneViewUndoScope(*scene) : Editor::Undo::UndoScopeId {};
+}
 
 std::mutex& SceneViewImportedPrefabPreloadMutex()
 {
@@ -516,6 +762,7 @@ Editor::Panels::SceneView::SceneView(
 
 Editor::Panels::SceneView::~SceneView()
 {
+    CancelGizmoEditSession();
     CancelActivePrefabDragInstance();
     Engine::GameObject::DestroyedEvent -= m_destroyedListener;
 }
@@ -578,7 +825,30 @@ void Editor::Panels::SceneView::HandleViewportAssetDragDrop()
         default:
             if (!NLS::Editor::Assets::IsBuiltInResourcePath(path))
                 break;
-            EDITOR_EXEC(CreateGameObjectFromAsset(path, true));
+            auto* scene = GetScene();
+            if (scene == nullptr)
+            {
+                NLS_LOG_WARNING("Skipped built-in asset drop because there is no active Scene.");
+                break;
+            }
+            if (!NLS::Core::ServiceLocator::Contains<Editor::Undo::EditorUndoService>())
+            {
+                NLS_LOG_WARNING("Skipped built-in asset drop because the global Undo service is unavailable.");
+                break;
+            }
+
+            const auto result = HierarchyUndo::CreateGameObjectFromAsset(
+                NLS::Core::ServiceLocator::Get<Editor::Undo::EditorUndoService>(),
+                path,
+                *scene,
+                nullptr,
+                BuildSceneViewUndoScope(*scene));
+            if (!result.Succeeded())
+            {
+                NLS_LOG_WARNING(
+                    "Scene View built-in asset drop was not applied through Undo: " +
+                    (result.message.empty() ? std::string("Undo service rejected the command.") : result.message));
+            }
             break;
         }
     }
@@ -653,18 +923,27 @@ void Editor::Panels::SceneView::UpdateActivePrefabDragInstance(
             return;
 
         NLS::Editor::Assets::EditorAssetDragDropBridge bridge(EDITOR_CONTEXT(projectAssetsPath));
-        auto result = bridge.TryDropImportedAssetHandleFromHotCacheIntoHierarchy(
-            m_activeDraggedPrefabAssetPath,
-            m_activeDraggedPrefabSubAssetKey,
-            m_activeDraggedPrefabAssetId,
-            m_activeDraggedPrefabAssetType,
-            *m_activeDraggedPrefabHotCacheKey,
-            *scene,
-            {},
-            &EDITOR_CONTEXT(prefabInstanceRegistry),
-            nullptr,
-            nullptr,
-            true);
+        NLS::Editor::Assets::EditorAssetDragDropBridgeResult result;
+        {
+            // The drag proxy is live scene state, but it is intentionally not
+            // a durable history entry. Keep its creation inside an explicit
+            // transient mutation scope so debug builds still detect any
+            // editor-side write that bypasses the mutation gateway.
+            const NLS::Editor::Undo::ScopedEditorUndoTransientMutationContext transientMutationContext(
+                BuildSceneViewUndoScope(*scene));
+            result = bridge.TryDropImportedAssetHandleFromHotCacheIntoHierarchy(
+                m_activeDraggedPrefabAssetPath,
+                m_activeDraggedPrefabSubAssetKey,
+                m_activeDraggedPrefabAssetId,
+                m_activeDraggedPrefabAssetType,
+                *m_activeDraggedPrefabHotCacheKey,
+                *scene,
+                {},
+                &EDITOR_CONTEXT(prefabInstanceRegistry),
+                nullptr,
+                nullptr,
+                true);
+        }
         if (!result.handled ||
             result.dragDrop.status != NLS::Editor::Assets::DragDropOperationStatus::Committed ||
             !result.dragDrop.instance.has_value() ||
@@ -675,7 +954,11 @@ void Editor::Panels::SceneView::UpdateActivePrefabDragInstance(
 
         m_activeDraggedPrefabRoot = result.dragDrop.instance->instanceRoot;
         m_activeDraggedPrefabRootSceneToken = CaptureActivePrefabDragSceneToken();
-        m_activeDraggedPrefabRoot->SetEditorTransient(true);
+        {
+            const NLS::Editor::Undo::ScopedEditorUndoTransientMutationContext transientMutationContext(
+                BuildSceneViewUndoScope(*m_activeDraggedPrefabRoot));
+            m_activeDraggedPrefabRoot->SetEditorTransient(true);
+        }
         m_activeDraggedPrefabRootAwaitingRendererResources = false;
         if (result.dragDrop.deferredAssetReferenceResolutionRequested)
         {
@@ -723,6 +1006,8 @@ void Editor::Panels::SceneView::UpdateActivePrefabDragInstance(
     {
         if (!m_activeDraggedPrefabRootAwaitingRendererResources)
             m_activeDraggedPrefabProxyPlacement.reset();
+        const NLS::Editor::Undo::ScopedEditorUndoTransientMutationContext transientMutationContext(
+            BuildSceneViewUndoScope(*m_activeDraggedPrefabRoot));
         m_activeDraggedPrefabRoot->GetTransform()->SetWorldPosition(*targetPlacement);
     }
 }
@@ -783,9 +1068,14 @@ void Editor::Panels::SceneView::CancelActivePrefabDragInstance()
 {
     auto* root = m_activeDraggedPrefabRoot;
     const auto rootSceneToken = m_activeDraggedPrefabRootSceneToken;
+    const auto transientScope = root != nullptr
+        ? BuildSceneViewUndoScope(*root)
+        : Editor::Undo::UndoScopeId {};
     ClearActivePrefabDragState();
     if (root == nullptr)
         return;
+
+    const NLS::Editor::Undo::ScopedEditorUndoTransientMutationContext transientMutationContext(transientScope);
     NLS::Editor::Core::CleanupPrefabInstanceMarkedDestroy(
         EDITOR_CONTEXT(prefabInstanceRegistry),
         EDITOR_CONTEXT(resourceLifetimeRegistry),
@@ -821,13 +1111,11 @@ bool Editor::Panels::SceneView::CommitActivePrefabDragInstance()
         ClearActivePrefabDragState();
         return false;
     }
-    bool replaceGraphOnlyPreviewWithRendererReadyInstance = false;
     if (m_activeDraggedPrefabHotCacheKey.has_value())
     {
         NLS::Editor::Assets::EditorAssetDragDropBridge bridge(EDITOR_CONTEXT(projectAssetsPath));
         if (!m_activeDraggedPrefabHotCacheKey->rendererArtifactReadinessRequired)
         {
-            replaceGraphOnlyPreviewWithRendererReadyInstance = true;
             m_activeDraggedPrefabHotCacheKey = bridge.TryFindImportedPrefabHotCacheKey(
                 m_activeDraggedPrefabAssetPath,
                 m_activeDraggedPrefabSubAssetKey,
@@ -855,78 +1143,36 @@ bool Editor::Panels::SceneView::CommitActivePrefabDragInstance()
     const auto placement = m_activeDraggedPrefabDropPlacement.has_value()
         ? m_activeDraggedPrefabDropPlacement
         : ResolveActivePrefabDragPlacement(EDITOR_CONTEXT(inputManager)->GetMousePosition());
-    if (replaceGraphOnlyPreviewWithRendererReadyInstance)
+    const auto payload = m_activeDraggedPrefabPayload;
+    const auto scope = BuildSceneViewUndoScope(*root);
+    auto* scene = root->GetScene();
+    CancelActivePrefabDragInstance();
+
+    if (!payload.has_value() || scene == nullptr)
+        return false;
+    if (!NLS::Core::ServiceLocator::Contains<Editor::Undo::EditorUndoService>())
     {
-        const auto payload = m_activeDraggedPrefabPayload;
-        const auto assetPath = m_activeDraggedPrefabAssetPath;
-        const auto subAssetKey = m_activeDraggedPrefabSubAssetKey;
-        const auto assetId = m_activeDraggedPrefabAssetId;
-        const auto assetType = m_activeDraggedPrefabAssetType;
-        const auto rendererReadyHotCacheKey = m_activeDraggedPrefabHotCacheKey;
-        CancelActivePrefabDragInstance();
-        if (!rendererReadyHotCacheKey.has_value())
-            return false;
-
-        auto* scene = GetScene();
-        if (scene == nullptr)
-            return false;
-
-        NLS::Editor::Assets::EditorAssetDragDropBridge bridge(EDITOR_CONTEXT(projectAssetsPath));
-        auto result = bridge.TryDropImportedAssetHandleFromHotCacheIntoHierarchy(
-            assetPath,
-            subAssetKey,
-            assetId,
-            assetType,
-            *rendererReadyHotCacheKey,
-            *scene,
-            {},
-            &EDITOR_CONTEXT(prefabInstanceRegistry),
-            nullptr,
-            nullptr);
-        if (!result.handled ||
-            result.dragDrop.status != NLS::Editor::Assets::DragDropOperationStatus::Committed ||
-            !result.dragDrop.instance.has_value() ||
-            result.dragDrop.instance->instanceRoot == nullptr)
-        {
-            return false;
-        }
-
-        root = result.dragDrop.instance->instanceRoot;
-        if (placement.has_value() && root->GetTransform() != nullptr)
-            root->GetTransform()->SetWorldPosition(*placement);
-        if (result.dragDrop.deferredAssetReferenceResolutionRequested)
-        {
-            NLS::Editor::Core::PrefabInstanceAssetResolutionOptions resolutionOptions;
-            resolutionOptions.hideRootUntilRendererResourcesReady = true;
-            resolutionOptions.keepRootRenderingSuppressedOnFailure = true;
-            resolutionOptions.rendererDependencyTemplates = result.dragDrop.rendererDependencyTemplates;
-            EDITOR_EXEC(QueuePrefabInstanceAssetResolution(
-                result.dragDrop.instance ? &*result.dragDrop.instance : nullptr,
-                result.dragDrop.sharedArtifact
-                    ? result.dragDrop.sharedArtifact.get()
-                    : (result.dragDrop.artifact ? &*result.dragDrop.artifact : nullptr),
-                payload.has_value()
-                    ? NLS::Editor::Assets::GetEditorAssetDragPayloadPath(*payload)
-                    : assetPath,
-                {},
-                resolutionOptions));
-        }
-        EDITOR_EXEC(SelectGameObject(*root));
-        EDITOR_EXEC(MarkOwningSceneDirty(*root));
-        EDITOR_PANEL(Editor::Panels::Hierarchy, "Hierarchy").RebuildFromCurrentScene();
-        ClearActivePrefabDragState();
-        return true;
+        NLS_LOG_WARNING("Scene View prefab drop was cancelled because the global Undo service is unavailable.");
+        return false;
     }
 
-    if (placement.has_value() && root->GetTransform() != nullptr)
+    auto& undoService = NLS::Core::ServiceLocator::Get<Editor::Undo::EditorUndoService>();
+    const auto result = HierarchyUndo::CreateGameObjectFromAsset(
+        undoService,
+        *payload,
+        *scene,
+        nullptr,
+        scope,
+        placement);
+    if (!result.Succeeded())
     {
-        root->GetTransform()->SetWorldPosition(*placement);
+        NLS_LOG_WARNING(
+            "Scene View prefab drop was not applied through Undo: " +
+            (result.message.empty() ? std::string("Undo service rejected the command.") : result.message));
+        return false;
     }
-    root->SetEditorTransient(false);
-    EDITOR_EXEC(SelectGameObject(*root));
-    EDITOR_EXEC(MarkOwningSceneDirty(*root));
+
     EDITOR_PANEL(Editor::Panels::Hierarchy, "Hierarchy").RebuildFromCurrentScene();
-    ClearActivePrefabDragState();
     return true;
 }
 
@@ -1452,6 +1698,26 @@ void Editor::Panels::SceneView::OnAfterDrawWidgets()
     MarkViewportImageInputBoundsForLastDraw();
 }
 
+void Editor::Panels::SceneView::CancelGizmoEditSession()
+{
+    if (!m_gizmoEditSession.has_value())
+    {
+        m_gizmoEditTarget.reset();
+        m_gizmoEditState.reset();
+        return;
+    }
+
+    if (NLS::Core::ServiceLocator::Contains<Editor::Undo::EditorUndoService>())
+    {
+        auto& undoService = NLS::Core::ServiceLocator::Get<Editor::Undo::EditorUndoService>();
+        static_cast<void>(undoService.CancelEditSession(*m_gizmoEditSession));
+    }
+
+    m_gizmoEditSession.reset();
+    m_gizmoEditTarget.reset();
+    m_gizmoEditState.reset();
+}
+
 void Editor::Panels::SceneView::AfterRenderFrame()
 {
     AViewControllable::AfterRenderFrame();
@@ -1667,8 +1933,20 @@ void Editor::Panels::SceneView::TryWriteValidationReadback()
 void Editor::Panels::SceneView::DrawViewportOverlay()
 {
     m_gizmoInteraction = {};
+	if (m_gizmoEditSession.has_value() &&
+		(!NLS::Core::ServiceLocator::Contains<Editor::Undo::EditorUndoService>() ||
+		 !NLS::Core::ServiceLocator::Get<Editor::Undo::EditorUndoService>().HasActiveEditSession()))
+	{
+		// A global Undo (or Escape) may have cancelled this continuous edit.
+		m_gizmoEditSession.reset();
+		m_gizmoEditTarget.reset();
+		m_gizmoEditState.reset();
+	}
     if (Editor::Core::DoesShortcutSettingsWindowBlockSceneInput())
+    {
+        CancelGizmoEditSession();
         return;
+    }
 
     const auto imageMin = HasViewportImageBounds()
         ? GetViewportImageMin()
@@ -1679,7 +1957,10 @@ void Editor::Panels::SceneView::DrawViewportOverlay()
     const auto imageWidth = imageMax.x - imageMin.x;
     const auto imageHeight = imageMax.y - imageMin.y;
     if (imageWidth <= 0.0f || imageHeight <= 0.0f)
+    {
+        CancelGizmoEditSession();
         return;
+    }
 
     const auto overlayMatrices = GetViewportOverlayCameraMatrices();
     auto viewMatrix = Core::ToImGuizmoMatrix(overlayMatrices.view);
@@ -1743,13 +2024,31 @@ void Editor::Panels::SceneView::DrawViewportOverlay()
         m_cameraMovedForPresentation = true;
     }
 
+    auto* undoService = NLS::Core::ServiceLocator::Contains<Editor::Undo::EditorUndoService>()
+        ? &NLS::Core::ServiceLocator::Get<Editor::Undo::EditorUndoService>()
+        : nullptr;
+
     if (!EDITOR_EXEC(IsAnyGameObjectSelected()))
+    {
+        CancelGizmoEditSession();
         return;
+    }
 
     auto* selectedGameObject = EDITOR_EXEC(GetSelectedGameObject());
     if (selectedGameObject == nullptr || selectedGameObject->GetTransform() == nullptr)
+    {
+        CancelGizmoEditSession();
         return;
+    }
 
+    if (m_gizmoEditTarget.has_value() && !m_gizmoEditTarget->Matches(*selectedGameObject))
+    {
+        CancelGizmoEditSession();
+    }
+
+    const auto transformBeforeManipulation = m_gizmoEditSession.has_value()
+        ? std::optional<SceneViewTransformSnapshot> {}
+        : ReadSceneViewTransform(*selectedGameObject);
     auto modelMatrix = Core::GetGameObjectWorldGizmoMatrix(*selectedGameObject, m_currentPivot);
 
     using namespace Windowing::Inputs;
@@ -1771,10 +2070,65 @@ void Editor::Panels::SceneView::DrawViewportOverlay()
     m_gizmoInteraction.isHovered = !cameraControlActive && ImGuizmo::IsOver();
     m_gizmoInteraction.isUsing = !cameraControlActive && ImGuizmo::IsUsing();
 
-    if (!cameraControlActive && manipulated)
+    if (!cameraControlActive && undoService != nullptr &&
+        !m_gizmoEditSession.has_value() && m_gizmoInteraction.isUsing &&
+        transformBeforeManipulation.has_value())
     {
-        Core::ApplyGameObjectWorldGizmoMatrix(*selectedGameObject, modelMatrix, m_currentOperation, m_currentPivot);
-        EDITOR_EXEC(MarkOwningSceneDirty(*selectedGameObject));
+        const auto scope = BuildSceneViewUndoScope(*selectedGameObject);
+        auto target = CaptureSceneViewGizmoTarget(*selectedGameObject, scope);
+        if (!target.has_value())
+            return;
+
+        Editor::Undo::UndoCommandInfo info;
+        info.label = "Transform";
+        info.sourceModule = "Scene View";
+        info.scopes = {target->object.GetScope()};
+        info.affected = {target->object.GetAffectedKey()};
+        info.estimatedBytes = sizeof(SceneViewTransformSnapshot) * 2u;
+
+        const auto targetForPanel = target->object;
+        auto state = std::make_shared<SceneViewGizmoEditState>();
+        auto begin = undoService->BeginEditSession({
+            info,
+            std::make_unique<SceneViewTransformEdit>(
+                info,
+                std::move(*target),
+                *transformBeforeManipulation,
+                state)});
+        if (begin.result.state == Editor::Undo::UndoRequestState::Completed && begin.session.IsValid())
+        {
+            m_gizmoEditSession.emplace(std::move(begin.session));
+            m_gizmoEditTarget = targetForPanel;
+            m_gizmoEditState = std::move(state);
+        }
+    }
+
+    if (!cameraControlActive && manipulated && undoService != nullptr && m_gizmoEditSession.has_value())
+    {
+		if (!m_gizmoEditState)
+		{
+			CancelGizmoEditSession();
+			return;
+		}
+		m_gizmoEditState->pendingModelMatrix = modelMatrix;
+		m_gizmoEditState->operation = m_currentOperation;
+		m_gizmoEditState->pivot = m_currentPivot;
+		const auto preview = undoService->PreviewEditSession(*m_gizmoEditSession);
+		if (preview.state != Editor::Undo::UndoRequestState::Completed)
+		{
+			CancelGizmoEditSession();
+		}
+	}
+
+	if (undoService != nullptr && m_gizmoEditSession.has_value() && !m_gizmoInteraction.isUsing)
+	{
+		const auto commit = undoService->CommitEditSession(*m_gizmoEditSession);
+		if (commit.state == Editor::Undo::UndoRequestState::Completed || !undoService->HasActiveEditSession())
+		{
+			m_gizmoEditSession.reset();
+			m_gizmoEditTarget.reset();
+			m_gizmoEditState.reset();
+		}
     }
 }
 

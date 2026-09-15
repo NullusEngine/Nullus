@@ -6390,6 +6390,53 @@ TEST(FrameGraphSceneTargetsTests, ExternalSceneOutputSnapshotDetachesFramebuffer
     EXPECT_EQ(summary.identities, framebufferSummary.identities);
 }
 
+TEST(FrameGraphSceneTargetsTests, ExternalSceneOutputSnapshotRetainsFramebufferViewsAcrossResize)
+{
+    NLS::Render::Settings::DriverSettings settings;
+    settings.graphicsBackend = NLS::Render::Settings::EGraphicsBackend::NONE;
+    settings.enableExplicitRHI = false;
+
+    NLS::Render::Context::Driver driver(settings);
+    NLS::Core::ServiceLocator::Provide(driver);
+    auto explicitDevice = std::make_shared<TestExplicitDevice>();
+    NLS::Render::Context::DriverTestAccess::SetExplicitDevice(driver, explicitDevice);
+
+    NLS::Render::Entities::Camera camera;
+    NLS::Render::Buffers::Framebuffer outputBuffer(320u, 180u);
+    NLS::Render::Data::FrameDescriptor frameDescriptor;
+    frameDescriptor.renderWidth = 320u;
+    frameDescriptor.renderHeight = 180u;
+    frameDescriptor.camera = &camera;
+    NLS::Render::FrameGraph::SetExternalSceneOutputFramebuffer(frameDescriptor, &outputBuffer);
+
+    const auto snapshot = NLS::Render::FrameGraph::CaptureExternalSceneOutputSnapshot(frameDescriptor);
+    ASSERT_NE(snapshot.outputColorTexture, nullptr);
+    ASSERT_NE(snapshot.outputDepthStencilTexture, nullptr);
+    ASSERT_NE(snapshot.outputColorView, nullptr);
+    ASSERT_NE(snapshot.outputDepthStencilView, nullptr);
+    EXPECT_EQ(snapshot.outputColorView->GetTexture(), snapshot.outputColorTexture);
+    EXPECT_EQ(snapshot.outputDepthStencilView->GetTexture(), snapshot.outputDepthStencilTexture);
+
+    const auto framebufferSnapshot = outputBuffer.CaptureExplicitResourceSnapshot(
+        "FrameGraphSceneTargetsTestsColorView",
+        "FrameGraphSceneTargetsTestsDepthView");
+    ASSERT_NE(framebufferSnapshot.colorTexture, nullptr);
+    ASSERT_NE(framebufferSnapshot.depthStencilTexture, nullptr);
+    ASSERT_NE(framebufferSnapshot.colorView, nullptr);
+    ASSERT_NE(framebufferSnapshot.depthStencilView, nullptr);
+    EXPECT_EQ(framebufferSnapshot.colorView->GetTexture(), framebufferSnapshot.colorTexture);
+    EXPECT_EQ(framebufferSnapshot.depthStencilView->GetTexture(), framebufferSnapshot.depthStencilTexture);
+
+    outputBuffer.Resize(640u, 360u);
+
+    EXPECT_NE(snapshot.outputColorTexture, outputBuffer.GetExplicitTextureHandle());
+    EXPECT_NE(snapshot.outputDepthStencilTexture, outputBuffer.GetExplicitDepthStencilTextureHandle());
+    EXPECT_NE(snapshot.outputColorView, outputBuffer.GetOrCreateExplicitColorView("ResizedSceneColorView"));
+    EXPECT_NE(snapshot.outputDepthStencilView, outputBuffer.GetOrCreateExplicitDepthStencilView("ResizedSceneDepthView"));
+    EXPECT_EQ(snapshot.outputColorView->GetTexture(), snapshot.outputColorTexture);
+    EXPECT_EQ(snapshot.outputDepthStencilView->GetTexture(), snapshot.outputDepthStencilTexture);
+}
+
 TEST(FrameGraphSceneTargetsTests, ExternalSceneOutputSummaryCountsViewOnlyTargets)
 {
     NLS::Render::RHI::RHITextureDesc colorDesc;

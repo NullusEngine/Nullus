@@ -51,6 +51,11 @@ public:
         const LoadOptions& options);
     static std::string ReadSerializedPayload(const std::string& p_path);
 
+    // Result-reporting variants used by editor workflows. The existing void
+    // entry points remain for callers that do not need to react to failures.
+    static bool TryReload(Material& p_material, const std::string& p_path);
+    static bool TryReload(Material& p_material, const std::string& p_path, const LoadOptions& options);
+
     /**
      * Reload the material using the given file path
      * @param p_material
@@ -65,6 +70,7 @@ public:
      * @param p_path
      */
     static void Save(Material& p_material, const std::string& p_path);
+    static bool TrySave(Material& p_material, const std::string& p_path);
 
     /**
      * Destroy the given material

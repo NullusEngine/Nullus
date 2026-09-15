@@ -6,6 +6,7 @@
 #include "Core/Context.h"
 
 #include <Core/ServiceLocator.h>
+#include <Engine/UI/UIDocumentSourceResolver.h>
 #include <Debug/Logger.h>
 #include <stdexcept>
 #include <Platform/Process/Process.h>
@@ -212,6 +213,17 @@ Game::Context::Context(
 	TextureManager::ProvideAssetPaths(projectAssetsPath, engineAssetsPath);
 	ShaderManager::ProvideAssetPaths(projectAssetsPath, engineAssetsPath);
     MaterialManager::ProvideAssetPaths(projectAssetsPath, engineAssetsPath);
+
+	// Scene documents store "Assets/..." references. Resolve them against the
+	// project so a canvas assigned at runtime loads its document immediately
+	// instead of waiting for the deferred startup pass alone.
+	NLS::Engine::UI::SetUIDocumentSourcePathResolver(
+		[assetsPath = projectAssetsPath](const NLS::Engine::UI::UIDocumentReference& reference)
+		{
+			return NLS::Engine::UI::ResolveProjectUIDocumentPath(
+				assetsPath,
+				reference.GetResourcePath());
+		});
 
 	if (!projectSettings.IsKeyExisting("start_scene"))
 		projectSettings.Add<std::string>("start_scene", "");

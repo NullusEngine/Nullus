@@ -4,6 +4,7 @@
 #include "Assets/AssetMeta.h"
 #include "Engine/UI/UIDataContext.h"
 #include "Engine/UI/UIDocument.h"
+#include "Engine/UI/UIDocumentSourceResolver.h"
 #include "Engine/UI/UIInputRouter.h"
 #include "Engine/UI/UIStyleSheet.h"
 #include "Engine/UI/UIWorldHitTest.h"
@@ -14,6 +15,8 @@
 #include "Rendering/UI/UIDrawSnapshotAdapter.h"
 #include "Rendering/UI/UITextureRegistry.h"
 #include "Rendering/UI/UIFontAtlas.h"
+#include "Rendering/UI/UIFontTextShaper.h"
+#include "Rendering/UI/UIFontAtlasUploader.h"
 
 #include <filesystem>
 #include <fstream>
@@ -276,6 +279,521 @@ TEST(UIDocumentTests, TextChangesInvalidateRetainedSnapshotSignature)
     EXPECT_NE(beforeRhi->contentSignature, afterRhi->contentSignature);
 }
 
+TEST(UIDocumentTests, TextRunsProduceGlyphQuadsWithAtlasUvs)
+{
+    NLS::Render::UI::SetSharedUIFontAtlasFontPath({});
+    NLS::Render::UI::ClearUiFontAtlasTextureId();
+
+    const auto document = UIDocument::LoadFromJson(R"json({
+        "version": 1,
+        "root": {
+            "type": "Text",
+            "name": "Score",
+            "text": "Score: 0",
+            "style": { "backgroundColor": [0.0, 0.0, 0.0, 0.0], "color": [1.0, 1.0, 1.0, 1.0] },
+            "layout": { "size": [200, 32] }
+        }
+    })json");
+    ASSERT_TRUE(document.has_value());
+
+    auto instance = document->Instantiate();
+    ASSERT_NE(instance, nullptr);
+    instance->UpdateLayout({ 320.0f, 120.0f });
+    const auto withoutAtlas = instance->BuildDrawSnapshot(6u, 320u, 120u);
+    ASSERT_NE(withoutAtlas, nullptr);
+    EXPECT_EQ(withoutAtlas->vertices.size(), 0u)
+        << "text stays invisible until a font atlas texture is registered";
+
+    // Registering the atlas texture is what makes text produce geometry.
+    NLS::Render::UI::SetUiFontAtlasTextureId(4242u, 3u);
+    instance->GetRoot()->SetText("Score: 1");
+    const auto snapshot = instance->BuildDrawSnapshot(7u, 320u, 120u);
+    ASSERT_NE(snapshot, nullptr);
+    ASSERT_EQ(snapshot->textRuns.size(), 1u);
+
+    // Text must reach the render consumer as geometry, not only as metadata.
+    ASSERT_GE(snapshot->vertices.size(), 4u) << "text runs must emit glyph quads";
+    EXPECT_EQ(snapshot->vertices.size() % 4u, 0u);
+    EXPECT_GE(snapshot->batches.size(), 1u);
+    EXPECT_EQ(snapshot->batches.front().textureId, 4242u)
+        << "glyph quads sample the registered UI font atlas texture";
+    EXPECT_EQ(snapshot->batches.front().textureGeneration, 3u);
+
+    // Consecutive glyphs must reference distinct atlas cells.
+    ASSERT_GE(snapshot->vertices.size(), 8u);
+    const auto firstU = snapshot->vertices[0].uv[0];
+    const auto secondU = snapshot->vertices[4].uv[0];
+    EXPECT_TRUE(firstU != secondU || snapshot->vertices[0].uv[1] != snapshot->vertices[4].uv[1])
+        << "each glyph needs its own atlas sub-rect";
+
+    // Every quad must sample exactly the rasterized bitmap. Sampling the whole
+    // padded atlas cell squeezed the glyph into a corner of its quad, which is
+    // why text used to render as unreadable smudges instead of "Score: 1".
+    const auto& atlas = NLS::Render::UI::GetSharedUIFontAtlas();
+    ASSERT_FALSE(atlas.GetPages().empty());
+    const auto pageWidth = static_cast<float>(atlas.GetPages().front().width);
+    float stackHeight = 0.0f;
+    for (const auto& page : atlas.GetPages())
+        stackHeight += static_cast<float>(page.height);
+    ASSERT_GT(pageWidth, 0.0f);
+    ASSERT_GT(stackHeight, 0.0f);
+
+    const auto quadWidth = snapshot->vertices[2].position[0] - snapshot->vertices[0].position[0];
+    const auto quadHeight = snapshot->vertices[2].position[1] - snapshot->vertices[0].position[1];
+    const auto sampledWidth =
+        (snapshot->vertices[2].uv[0] - snapshot->vertices[0].uv[0]) * pageWidth;
+    const auto sampledHeight =
+        (snapshot->vertices[2].uv[1] - snapshot->vertices[0].uv[1]) * stackHeight;
+    EXPECT_GT(quadWidth, 0.0f);
+    EXPECT_GT(quadHeight, 0.0f);
+    EXPECT_NEAR(sampledWidth, quadWidth, 0.5f)
+        << "glyph quads must sample the bitmap rect, not the padded atlas cell";
+    EXPECT_NEAR(sampledHeight, quadHeight, 0.5f)
+        << "glyph quads must sample the bitmap rect, not the padded atlas cell";
+
+    NLS::Render::UI::ClearUiFontAtlasTextureId();
+}
+
+TEST(UIDocumentTests, TempDumpProjectHudVertexLayout)
+{
+    const auto hudPath = std::filesystem::path(NLS_ROOT_DIR) /
+        "TestProject" / "Assets" / "HUD.ui";
+    const auto fontPath = std::filesystem::path(NLS_ROOT_DIR) /
+        "App" / "Assets" / "Engine" / "Fonts" / "Ruda-Bold.ttf";
+    if (!std::filesystem::is_regular_file(hudPath) || !std::filesystem::is_regular_file(fontPath))
+        GTEST_SKIP() << "project HUD or engine font is unavailable";
+
+    auto& atlas = NLS::Render::UI::GetSharedUIFontAtlas();
+    ASSERT_TRUE(atlas.LoadFontFromFile(fontPath));
+    // Same order as the editor: prewarm printable ASCII, then upload, then shape.
+    constexpr std::string_view prewarm =
+        " !\"#$%&'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+        "[\\]^_`abcdefghijklmnopqrstuvwxyz{|}~";
+    (void)atlas.EnsureText(1u, prewarm, 16u, 1u, true);
+    NLS::Render::UI::SetUiFontAtlasTextureId(9u, 1u);
+
+    std::vector<UIDocumentDiagnostic> diagnostics;
+    auto document = UIDocument::LoadFromFile(hudPath.generic_string(), &diagnostics);
+    for (const auto& diagnostic : diagnostics)
+        GTEST_LOG_(INFO) << "temp-hud|diagnostic " << diagnostic.path << ": " << diagnostic.message;
+    ASSERT_TRUE(document.has_value());
+    auto instance = document->Instantiate();
+    ASSERT_NE(instance, nullptr);
+    instance->UpdateLayout({ 320.0f, 120.0f });
+    const auto snapshot = instance->BuildDrawSnapshot(31u, 320u, 120u);
+    ASSERT_NE(snapshot, nullptr);
+
+    GTEST_LOG_(INFO) << "temp-hud| vertices=" << snapshot->vertices.size()
+                     << " indices=" << snapshot->indices.size()
+                     << " batches=" << snapshot->batches.size()
+                     << " clips=" << snapshot->clips.size();
+    for (size_t index = 0u; index < snapshot->vertices.size(); ++index)
+    {
+        const auto& vertex = snapshot->vertices[index];
+        GTEST_LOG_(INFO) << "temp-hud| v" << index
+                         << " pos=" << vertex.position[0] << "," << vertex.position[1]
+                         << " uv=" << vertex.uv[0] << "," << vertex.uv[1];
+    }
+    for (size_t index = 0u; index < snapshot->batches.size(); ++index)
+    {
+        const auto& batch = snapshot->batches[index];
+        GTEST_LOG_(INFO) << "temp-hud| b" << index
+                         << " firstVertex=" << batch.firstVertex
+                         << " vertexCount=" << batch.vertexCount
+                         << " firstIndex=" << batch.firstIndex
+                         << " indexCount=" << batch.indexCount
+                         << " texture=" << batch.textureId
+                         << " gen=" << batch.textureGeneration
+                         << " clip=" << batch.clipIndex;
+    }
+    GTEST_LOG_(INFO) << "temp-hud| indices:";
+    {
+        std::string line = "temp-hud| ";
+        for (const auto value : snapshot->indices)
+            line += std::to_string(value) + " ";
+        GTEST_LOG_(INFO) << line;
+    }
+    NLS::Render::UI::ClearUiFontAtlasTextureId();
+}
+
+TEST(UIDocumentTests, EveryGlyphQuadResolvesToItsOwnVerticesThroughTheDrawBase)
+{
+    const auto fontPath = std::filesystem::path(NLS_ROOT_DIR) /
+        "App" / "Assets" / "Engine" / "Fonts" / "Ruda-Bold.ttf";
+    if (!std::filesystem::is_regular_file(fontPath))
+        GTEST_SKIP() << "engine font sample is unavailable";
+    ASSERT_TRUE(NLS::Render::UI::GetSharedUIFontAtlas().LoadFontFromFile(fontPath));
+    NLS::Render::UI::SetUiFontAtlasTextureId(4242u, 1u);
+
+    const auto document = UIDocument::LoadFromJson(R"json({
+        "version": 1,
+        "root": { "type": "Text", "name": "Score", "text": "abcdefgh",
+            "style": { "color": [1.0, 1.0, 1.0, 1.0] },
+            "layout": { "size": [200, 32] } }
+    })json");
+    ASSERT_TRUE(document.has_value());
+    auto instance = document->Instantiate();
+    ASSERT_NE(instance, nullptr);
+    instance->UpdateLayout({ 320.0f, 120.0f });
+    const auto snapshot = instance->BuildDrawSnapshot(21u, 320u, 120u);
+    ASSERT_NE(snapshot, nullptr);
+    ASSERT_EQ(snapshot->batches.size(), 8u);
+
+    // Reproduce exactly how the overlay renderer binds a batch: the draw call's
+    // vertex offset is the batch base, and the stored indices are added to it.
+    // If the indices already contain the base, each quad resolves to the wrong
+    // vertices and alternating glyphs disappear.
+    for (size_t batchIndex = 0u; batchIndex < snapshot->batches.size(); ++batchIndex)
+    {
+        const auto& batch = snapshot->batches[batchIndex];
+        ASSERT_GE(batch.indexCount, 3u);
+
+        float resolvedMinX = 1.0e9f;
+        float resolvedMinY = 1.0e9f;
+        for (uint32_t element = 0u; element < batch.indexCount; ++element)
+        {
+            const auto index = snapshot->indices[batch.firstIndex + element];
+            const auto resolvedVertex = batch.firstVertex + index;
+            ASSERT_LT(resolvedVertex, snapshot->vertices.size())
+                << "batch " << batchIndex << " resolves outside the vertex buffer";
+            resolvedMinX = (std::min)(resolvedMinX, snapshot->vertices[resolvedVertex].position[0]);
+            resolvedMinY = (std::min)(resolvedMinY, snapshot->vertices[resolvedVertex].position[1]);
+        }
+
+        const auto& expected = snapshot->vertices[batch.firstVertex];
+        EXPECT_FLOAT_EQ(resolvedMinX, expected.position[0])
+            << "batch " << batchIndex << " must draw its own glyph";
+        EXPECT_FLOAT_EQ(resolvedMinY, expected.position[1])
+            << "batch " << batchIndex << " must draw its own glyph";
+    }
+
+    NLS::Render::UI::ClearUiFontAtlasTextureId();
+}
+
+TEST(UIDocumentTests, RegisteringTheFontAtlasTextureRebuildsCachedTextGeometry)
+{
+    const auto fontPath = std::filesystem::path(NLS_ROOT_DIR) /
+        "App" / "Assets" / "Engine" / "Fonts" / "Ruda-Bold.ttf";
+    if (!std::filesystem::is_regular_file(fontPath))
+        GTEST_SKIP() << "engine font sample is unavailable";
+    ASSERT_TRUE(NLS::Render::UI::GetSharedUIFontAtlas().LoadFontFromFile(fontPath));
+    NLS::Render::UI::ClearUiFontAtlasTextureId();
+
+    const auto document = UIDocument::LoadFromJson(R"json({
+        "version": 1,
+        "root": { "type": "Text", "name": "Score", "text": "Score: 0",
+            "style": { "color": [1.0, 1.0, 1.0, 1.0] },
+            "layout": { "size": [200, 32] } }
+    })json");
+    ASSERT_TRUE(document.has_value());
+    auto instance = document->Instantiate();
+    ASSERT_NE(instance, nullptr);
+    instance->UpdateLayout({ 320.0f, 120.0f });
+
+    // Without a registered atlas texture there is nothing to sample, so the
+    // document legitimately keeps its snapshot free of glyph geometry.
+    const auto withoutAtlas = instance->BuildDrawSnapshot(20u, 320u, 120u);
+    ASSERT_NE(withoutAtlas, nullptr);
+    EXPECT_EQ(withoutAtlas->vertices.size(), 0u);
+
+    // Registering the texture must invalidate that cached snapshot. Resolving
+    // text lazily and then reusing a text-less snapshot is what left individual
+    // glyphs (the ones added to the atlas last) missing on screen.
+    NLS::Render::UI::SetUiFontAtlasTextureId(4242u, 1u);
+    const auto withAtlas = instance->BuildDrawSnapshot(21u, 320u, 120u);
+    ASSERT_NE(withAtlas, nullptr);
+    EXPECT_GE(withAtlas->vertices.size(), 4u)
+        << "cached text geometry must be rebuilt once the atlas texture exists";
+    EXPECT_EQ(withAtlas->batches.size(), 7u);
+
+    NLS::Render::UI::ClearUiFontAtlasTextureId();
+}
+
+TEST(UIDocumentTests, PrewarmedAtlasStillRendersEveryDocumentGlyph)
+{
+    const auto fontPath = std::filesystem::path(NLS_ROOT_DIR) /
+        "App" / "Assets" / "Engine" / "Fonts" / "Ruda-Bold.ttf";
+    if (!std::filesystem::is_regular_file(fontPath))
+        GTEST_SKIP() << "engine font sample is unavailable";
+    auto& atlas = NLS::Render::UI::GetSharedUIFontAtlas();
+    ASSERT_TRUE(atlas.LoadFontFromFile(fontPath));
+
+    // Same order as the editor: the uploader prewarms printable ASCII first and
+    // the document is shaped afterwards into that page.
+    constexpr std::string_view prewarm =
+        " !\"#$%&'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+        "[\\]^_`abcdefghijklmnopqrstuvwxyz{|}~";
+    (void)atlas.EnsureText(1u, prewarm, 16u, 1u, true);
+
+    NLS::Render::UI::SetUiFontAtlasTextureId(7u, 1u);
+    const auto document = UIDocument::LoadFromJson(R"json({
+        "version": 1,
+        "root": { "type": "Text", "name": "Score", "text": "Score: 0",
+            "style": { "color": [1.0, 1.0, 1.0, 1.0] },
+            "layout": { "size": [200, 32] } }
+    })json");
+    ASSERT_TRUE(document.has_value());
+    auto instance = document->Instantiate();
+    ASSERT_NE(instance, nullptr);
+    instance->UpdateLayout({ 320.0f, 120.0f });
+    const auto snapshot = instance->BuildDrawSnapshot(12u, 320u, 120u);
+    ASSERT_NE(snapshot, nullptr);
+
+    const auto image = NLS::Render::UI::BuildUIFontAtlasImage(atlas);
+    ASSERT_GT(image.width, 0u);
+    ASSERT_GT(image.height, 0u);
+
+    size_t index = 0u;
+    std::string report;
+    for (size_t quad = 0u; quad + 4u <= snapshot->vertices.size(); quad += 4u)
+    {
+        const auto& first = snapshot->vertices[quad];
+        const auto& opposite = snapshot->vertices[quad + 2u];
+        const auto left = static_cast<int32_t>(first.position[0]);
+        const auto top = static_cast<int32_t>(first.position[1]);
+        const auto right = static_cast<int32_t>(opposite.position[0]);
+        const auto bottom = static_cast<int32_t>(opposite.position[1]);
+        uint32_t ink = 0u;
+        for (int32_t y = top; y < bottom; ++y)
+        {
+            for (int32_t x = left; x < right; ++x)
+            {
+                if (x < 0 || y < 0 || x >= 320 || y >= 120)
+                    continue;
+                const auto fx = (static_cast<float>(x) + 0.5f - first.position[0]) /
+                    (opposite.position[0] - first.position[0]);
+                const auto fy = (static_cast<float>(y) + 0.5f - first.position[1]) /
+                    (opposite.position[1] - first.position[1]);
+                const auto u = first.uv[0] + (opposite.uv[0] - first.uv[0]) * fx;
+                const auto v = first.uv[1] + (opposite.uv[1] - first.uv[1]) * fy;
+                const auto tx = (std::min)(image.width - 1u,
+                    static_cast<uint32_t>(u * static_cast<float>(image.width)));
+                const auto ty = (std::min)(image.height - 1u,
+                    static_cast<uint32_t>(v * static_cast<float>(image.height)));
+                if (image.rgba[(static_cast<size_t>(ty) * image.width + tx) * 4u + 3u] != 0u)
+                    ++ink;
+            }
+        }
+        report += "quad" + std::to_string(quad / 4u) + " ink=" + std::to_string(ink) + "; ";
+        EXPECT_GT(ink, 0u)
+            << "glyph quad " << (quad / 4u) << " samples an empty atlas cell after prewarm";
+        ++index;
+    }
+    EXPECT_EQ(index, 7u) << "\"Score: 0\" must shape seven visible glyphs";
+    EXPECT_TRUE(report.empty() == false);
+    NLS::Render::UI::ClearUiFontAtlasTextureId();
+}
+
+TEST(UIDocumentTests, GlyphQuadsSampleExactlyTheirBitmap)
+{
+    // The test working directory is the repository root, where the engine-relative
+    // font path does not resolve. Point the shared atlas at the shipped font so
+    // this test covers the real rasterized path instead of the tofu fallback.
+    const auto fontPath = std::filesystem::path(NLS_ROOT_DIR) /
+        "App" / "Assets" / "Engine" / "Fonts" / "Ruda-Bold.ttf";
+    if (!std::filesystem::is_regular_file(fontPath))
+        GTEST_SKIP() << "engine font sample is unavailable";
+    // LoadFontFromFile also drops glyphs cached by earlier tests, so this stays
+    // independent of test order and of the shared atlas' lazy default font.
+    ASSERT_TRUE(NLS::Render::UI::GetSharedUIFontAtlas().LoadFontFromFile(fontPath));
+    NLS::Render::UI::SetUiFontAtlasTextureId(7u, 1u);
+    // Diagnostics counters are process-wide, so this test compares deltas.
+    const auto glyphDiagnosticsBefore =
+        NLS::Render::UI::GetSharedUIFontAtlas().GetDiagnostics();
+
+    const auto document = UIDocument::LoadFromJson(R"json({
+        "version": 1,
+        "root": {
+            "type": "Text",
+            "name": "Score",
+            "text": "Score: 0",
+            "style": { "backgroundColor": [0.0, 0.0, 0.0, 0.0], "color": [1.0, 1.0, 1.0, 1.0] },
+            "layout": { "size": [200, 32] }
+        }
+    })json");
+    ASSERT_TRUE(document.has_value());
+    auto instance = document->Instantiate();
+    ASSERT_NE(instance, nullptr);
+    instance->UpdateLayout({ 320.0f, 120.0f });
+    const auto snapshot = instance->BuildDrawSnapshot(11u, 320u, 120u);
+    ASSERT_NE(snapshot, nullptr);
+    ASSERT_GE(snapshot->vertices.size(), 4u);
+
+    const auto atlasImage = NLS::Render::UI::BuildUIFontAtlasImage(
+        NLS::Render::UI::GetSharedUIFontAtlas());
+    ASSERT_GT(atlasImage.width, 0u);
+    ASSERT_GT(atlasImage.height, 0u);
+
+    const auto& fontAtlas = NLS::Render::UI::GetSharedUIFontAtlas();
+    ASSERT_TRUE(fontAtlas.HasFontData()) << "the engine font must back this glyph test";
+    const auto& glyphDiagnosticsAfter = fontAtlas.GetDiagnostics();
+    EXPECT_GT(
+        glyphDiagnosticsAfter.generatedGlyphs - glyphDiagnosticsBefore.generatedGlyphs,
+        0u);
+    EXPECT_EQ(
+        glyphDiagnosticsAfter.fallbackGlyphs - glyphDiagnosticsBefore.fallbackGlyphs,
+        0u)
+        << "every glyph of \"Score: 0\" must come from the real font";
+
+    constexpr uint32_t canvasWidth = 320u;
+    constexpr uint32_t canvasHeight = 120u;
+    std::vector<uint8_t> canvas(static_cast<size_t>(canvasWidth) * canvasHeight * 4u, 0u);
+    for (size_t index = 0u; index + 4u <= snapshot->vertices.size(); index += 4u)
+    {
+        const auto& quad = snapshot->vertices[index];
+        const auto& opposite = snapshot->vertices[index + 2u];
+        const auto left = quad.position[0];
+        const auto top = quad.position[1];
+        const auto width = opposite.position[0] - left;
+        const auto height = opposite.position[1] - top;
+        if (width <= 0.0f || height <= 0.0f)
+            continue;
+
+        for (int32_t y = 0; y < static_cast<int32_t>(std::ceil(height)); ++y)
+        {
+            for (int32_t x = 0; x < static_cast<int32_t>(std::ceil(width)); ++x)
+            {
+                const auto fx = (static_cast<float>(x) + 0.5f) / width;
+                const auto fy = (static_cast<float>(y) + 0.5f) / height;
+                const auto u = quad.uv[0] + (opposite.uv[0] - quad.uv[0]) * fx;
+                const auto v = quad.uv[1] + (opposite.uv[1] - quad.uv[1]) * fy;
+                const auto texelX = (std::min)(atlasImage.width - 1u,
+                    static_cast<uint32_t>(u * static_cast<float>(atlasImage.width)));
+                const auto texelY = (std::min)(atlasImage.height - 1u,
+                    static_cast<uint32_t>(v * static_cast<float>(atlasImage.height)));
+                const auto alpha = atlasImage.rgba[
+                    (static_cast<size_t>(texelY) * atlasImage.width + texelX) * 4u + 3u];
+                const auto pixelX = static_cast<int32_t>(left) + x;
+                const auto pixelY = static_cast<int32_t>(top) + y;
+                if (pixelX < 0 || pixelY < 0 ||
+                    pixelX >= static_cast<int32_t>(canvasWidth) ||
+                    pixelY >= static_cast<int32_t>(canvasHeight))
+                    continue;
+                const auto offset =
+                    (static_cast<size_t>(pixelY) * canvasWidth + static_cast<uint32_t>(pixelX)) * 4u;
+                canvas[offset + 0u] = 255u;
+                canvas[offset + 1u] = 255u;
+                canvas[offset + 2u] = 255u;
+                canvas[offset + 3u] = alpha;
+            }
+        }
+    }
+
+    size_t inkPixels = 0u;
+    for (size_t offset = 3u; offset < canvas.size(); offset += 4u)
+        if (canvas[offset] != 0u)
+            ++inkPixels;
+    EXPECT_GT(inkPixels, 40u) << "glyph quads must sample real coverage";
+
+    // A readable glyph covers its quad. Sampling the padded atlas cell instead of
+    // the bitmap left roughly two thirds of every quad empty, which is what made
+    // text render as smudges.
+    size_t measuredQuads = 0u;
+    for (size_t index = 0u; index + 4u <= snapshot->vertices.size(); index += 4u)
+    {
+        const auto& quad = snapshot->vertices[index];
+        const auto& opposite = snapshot->vertices[index + 2u];
+        const auto left = static_cast<int32_t>(quad.position[0]);
+        const auto top = static_cast<int32_t>(quad.position[1]);
+        const auto right = static_cast<int32_t>(opposite.position[0]);
+        const auto bottom = static_cast<int32_t>(opposite.position[1]);
+        if (right - left <= 0 || bottom - top <= 0)
+            continue;
+
+        int32_t minimumX = right;
+        int32_t maximumX = left;
+        int32_t minimumY = bottom;
+        int32_t maximumY = top;
+        bool hasInk = false;
+        for (int32_t y = top; y < bottom; ++y)
+        {
+            if (y < 0 || y >= static_cast<int32_t>(canvasHeight))
+                continue;
+            for (int32_t x = left; x < right; ++x)
+            {
+                if (x < 0 || x >= static_cast<int32_t>(canvasWidth))
+                    continue;
+                const auto alpha = canvas[
+                    (static_cast<size_t>(y) * canvasWidth + static_cast<uint32_t>(x)) * 4u + 3u];
+                if (alpha == 0u)
+                    continue;
+                hasInk = true;
+                minimumX = (std::min)(minimumX, x);
+                maximumX = (std::max)(maximumX, x);
+                minimumY = (std::min)(minimumY, y);
+                maximumY = (std::max)(maximumY, y);
+            }
+        }
+        if (!hasInk)
+            continue;
+
+        ++measuredQuads;
+        EXPECT_GE(
+            static_cast<float>(maximumX - minimumX + 1) / static_cast<float>(right - left),
+            0.7f)
+            << "glyph ink must span its quad horizontally";
+        EXPECT_GE(
+            static_cast<float>(maximumY - minimumY + 1) / static_cast<float>(bottom - top),
+            0.7f)
+            << "glyph ink must span its quad vertically";
+    }
+    EXPECT_GE(measuredQuads, 6u) << "Score: 0 must produce at least six sized glyph quads";
+
+    // Minimal 24-bit BMP writer so the preview can be inspected without pulling a
+    // second image dependency into the test target.
+    const auto rowBytes = ((canvasWidth * 3u) + 3u) & ~3u;
+    const auto imageBytes = rowBytes * canvasHeight;
+    std::vector<uint8_t> header;
+    const auto push16 = [&header](const uint16_t value)
+    {
+        header.push_back(static_cast<uint8_t>(value & 0xffu));
+        header.push_back(static_cast<uint8_t>((value >> 8u) & 0xffu));
+    };
+    const auto push32 = [&header](const uint32_t value)
+    {
+        for (uint32_t shift = 0u; shift < 32u; shift += 8u)
+            header.push_back(static_cast<uint8_t>((value >> shift) & 0xffu));
+    };
+    header.push_back('B');
+    header.push_back('M');
+    push32(54u + imageBytes);
+    push16(0u);
+    push16(0u);
+    push32(54u);
+    push32(40u);
+    push32(canvasWidth);
+    push32(canvasHeight);
+    push16(1u);
+    push16(24u);
+    push32(0u);
+    push32(imageBytes);
+    push32(2835u);
+    push32(2835u);
+    push32(0u);
+    push32(0u);
+
+    std::vector<uint8_t> file = header;
+    file.resize(54u + imageBytes, 0u);
+    for (uint32_t y = 0u; y < canvasHeight; ++y)
+    {
+        const auto sourceRow = canvasHeight - 1u - y;
+        for (uint32_t x = 0u; x < canvasWidth; ++x)
+        {
+            const auto alpha = canvas[(static_cast<size_t>(sourceRow) * canvasWidth + x) * 4u + 3u];
+            const auto destination = 54u + static_cast<size_t>(y) * rowBytes + static_cast<size_t>(x) * 3u;
+            file[destination + 0u] = alpha;
+            file[destination + 1u] = alpha;
+            file[destination + 2u] = alpha;
+        }
+    }
+    const auto previewPath = std::filesystem::temp_directory_path() / "nullus_ui_text_preview.bmp";
+    std::ofstream preview(previewPath, std::ios::binary | std::ios::trunc);
+    preview.write(reinterpret_cast<const char*>(file.data()), static_cast<std::streamsize>(file.size()));
+    ASSERT_TRUE(preview.good());
+
+    NLS::Render::UI::ClearUiFontAtlasTextureId();
+}
+
 TEST(UIDocumentTests, CanvasElementHandlesRejectReloadedOrForeignElements)
 {
     constexpr const char* source = R"json({
@@ -390,6 +908,101 @@ TEST(UIDocumentTests, FontAtlasRequestsCjkAndReportsFallbackGlyphs)
     ASSERT_TRUE(atlas.EnsureGlyph({ 12u, 0x4e2du, 16u }, 3u, fallback, false));
     EXPECT_TRUE(fallback.fallback);
     EXPECT_GT(atlas.GetDiagnostics().fallbackGlyphs, 0u);
+}
+
+TEST(UIDocumentTests, FontAtlasRasterizesRealGlyphsFromTrueTypeData)
+{
+    const std::filesystem::path relativeFont = "Assets/Engine/Fonts/Ruda-Bold.ttf";
+    std::filesystem::path fontPath;
+    auto searchRoot = std::filesystem::current_path();
+    for (int depth = 0; depth < 6 && fontPath.empty(); ++depth)
+    {
+        const std::filesystem::path candidates[] = {
+            searchRoot / relativeFont,
+            searchRoot / "build" / "bin" / "Debug" / relativeFont,
+            searchRoot / "App" / "Win64_Debug_Runtime_Shared" / relativeFont};
+        for (const auto& candidate : candidates)
+        {
+            if (std::filesystem::is_regular_file(candidate))
+            {
+                fontPath = candidate;
+                break;
+            }
+        }
+        searchRoot = searchRoot.parent_path();
+    }
+
+    NLS::Render::UI::UIFontAtlas atlas;
+    atlas.Configure(256u, 256u, 2u);
+    ASSERT_FALSE(fontPath.empty()) << "engine font not found from cwd " << std::filesystem::current_path().string();
+    ASSERT_TRUE(atlas.LoadFontFromFile(fontPath));
+    EXPECT_TRUE(atlas.HasFontData());
+
+    NLS::Render::UI::UIFontGlyph glyphA;
+    ASSERT_TRUE(atlas.EnsureGlyph({ 21u, 'A', 24u }, 1u, glyphA, true));
+    EXPECT_FALSE(glyphA.fallback);
+    EXPECT_GT(glyphA.advance, 0.0f);
+    EXPECT_GE(glyphA.uv[0], 0.0f);
+    EXPECT_LE(glyphA.uv[2], 1.0f);
+
+    NLS::Render::UI::UIFontGlyph glyphB;
+    ASSERT_TRUE(atlas.EnsureGlyph({ 21u, 'B', 24u }, 1u, glyphB, true));
+    EXPECT_FALSE(glyphB.fallback);
+    EXPECT_NE(glyphA.uv[0], glyphB.uv[0]);
+
+    ASSERT_FALSE(atlas.GetPages().empty());
+    const auto& pixels = atlas.GetPages().front().pixels;
+    ASSERT_EQ(pixels.size(), 256u * 256u * 4u);
+    EXPECT_TRUE(std::any_of(pixels.begin(), pixels.end(), [](const uint8_t value) { return value != 0u; }))
+        << "rasterized glyph coverage must reach the atlas page pixels";
+
+    // A codepoint the font does not provide keeps an observable tofu cell.
+    NLS::Render::UI::UIFontGlyph tofu;
+    ASSERT_TRUE(atlas.EnsureGlyph({ 21u, 0x10ffffu, 24u }, 1u, tofu, true));
+    EXPECT_TRUE(tofu.fallback);
+}
+
+TEST(UIDocumentTests, FontAtlasImageStacksPagesAndMapsPageUvs)
+{
+    NLS::Render::UI::UIFontAtlas atlas;
+    // A large glyph on a tiny page fills the whole page, so the second glyph
+    // lands on page 1 and exercises the stacked atlas layout.
+    atlas.Configure(64u, 64u, 2u);
+    NLS::Render::UI::UIFontGlyph first;
+    ASSERT_TRUE(atlas.EnsureGlyph({ 31u, 'A', 48u }, 1u, first, true));
+    NLS::Render::UI::UIFontGlyph second;
+    ASSERT_TRUE(atlas.EnsureGlyph({ 31u, 'B', 48u }, 1u, second, true));
+    ASSERT_EQ(atlas.GetPages().size(), 2u);
+    EXPECT_EQ(first.pageIndex, 0u);
+    EXPECT_EQ(second.pageIndex, 1u);
+
+    const auto image = NLS::Render::UI::BuildUIFontAtlasImage(atlas);
+    EXPECT_EQ(image.width, 64u);
+    EXPECT_EQ(image.height, 128u);
+    EXPECT_EQ(image.pageCount, 2u);
+    ASSERT_EQ(image.rgba.size(), 64u * 128u * 4u);
+
+    const auto halfBytes = image.rgba.begin() + static_cast<std::ptrdiff_t>(64u * 64u * 4u);
+    EXPECT_TRUE(std::any_of(image.rgba.begin(), halfBytes, [](const uint8_t value) { return value != 0u; }))
+        << "page 0 pixels must be present in the stacked image";
+    EXPECT_TRUE(std::any_of(halfBytes, image.rgba.end(), [](const uint8_t value) { return value != 0u; }))
+        << "page 1 pixels must be present in the stacked image";
+
+    const auto pageZeroOrigin = NLS::Render::UI::MapUIFontAtlasPageUv(atlas, 0u, 0.0f, 0.0f);
+    const auto pageOneOrigin = NLS::Render::UI::MapUIFontAtlasPageUv(atlas, 1u, 0.0f, 0.0f);
+    const auto pageOneBottom = NLS::Render::UI::MapUIFontAtlasPageUv(atlas, 1u, 1.0f, 1.0f);
+    EXPECT_FLOAT_EQ(pageZeroOrigin[1], 0.0f);
+    EXPECT_FLOAT_EQ(pageOneOrigin[1], 0.5f);
+    EXPECT_FLOAT_EQ(pageOneBottom[1], 1.0f);
+    EXPECT_FLOAT_EQ(pageOneBottom[0], 1.0f);
+
+    // A third glyph only fits through page eviction, and both eviction and the
+    // new glyph must advance the generation so uploaders notice changed pixels.
+    const auto generationAfterGlyphs = atlas.GetContentGeneration();
+    atlas.SetCompletedFrame(1u);
+    NLS::Render::UI::UIFontGlyph third;
+    ASSERT_TRUE(atlas.EnsureGlyph({ 31u, 'C', 16u }, 2u, third, true));
+    EXPECT_GT(atlas.GetContentGeneration(), generationAfterGlyphs);
 }
 
 TEST(UIDocumentTests, LocalizationTableFormatsWhitelistedArguments)
@@ -580,6 +1193,78 @@ TEST(UIDocumentTests, AssetDatabaseImportsUiArtifactsAndCanvasReloadsFromArtifac
     ASSERT_TRUE(persistedManifest.has_value());
     EXPECT_EQ(persistedManifest->FindPrimaryArtifact()->artifactType, ArtifactType::UIDocument);
     EXPECT_TRUE(restarted.IsArtifactManifestCurrentForAssetPath("Assets/HUD.ui"));
+
+    std::filesystem::remove_all(root);
+}
+
+TEST(UIDocumentTests, CanvasResolvesProjectRelativeDocumentReferencesThroughHostResolver)
+{
+    const auto root = std::filesystem::temp_directory_path() /
+        ("nullus_ui_document_reference_" + NLS::Guid::New().ToString());
+    const auto documentPath = root / "Assets" / "UI" / "Hud.ui";
+    std::filesystem::create_directories(documentPath.parent_path());
+
+    {
+        std::ofstream output(documentPath, std::ios::binary | std::ios::trunc);
+        output << R"json({
+            "version": 1,
+            "documentId": "33333333-3333-4333-8333-333333333333",
+            "root": { "type": "Text", "name": "Score", "text": "Score: 0", "layout": { "size": [160, 24] } }
+        })json";
+        ASSERT_TRUE(output.good());
+    }
+
+    // A scene stores the logical "Assets/..." reference. The host resolver maps
+    // it onto the project without rewriting what the scene serializes.
+    SetUIDocumentSourcePathResolver(
+        [assetsPath = (root / "Assets").generic_string()](const UIDocumentReference& reference)
+        {
+            return ResolveProjectUIDocumentPath(assetsPath, reference.GetResourcePath());
+        });
+
+    NLS::Engine::Components::UICanvasComponent canvas;
+    canvas.SetDocumentReference(UIDocumentReference({}, "Assets/UI/Hud.ui"));
+
+    EXPECT_NE(canvas.GetDocument(), nullptr);
+    EXPECT_EQ(canvas.GetDocumentPath(), "Assets/UI/Hud.ui");
+    EXPECT_NE(canvas.GetElementHandle("Score"), 0u);
+
+    // An unresolvable reference must keep the stable reference while leaving the
+    // canvas without a live document instead of failing the assignment.
+    canvas.SetDocumentReference(UIDocumentReference({}, "Assets/UI/Missing.ui"));
+    EXPECT_EQ(canvas.GetDocument(), nullptr);
+    EXPECT_EQ(canvas.GetDocumentPath(), "Assets/UI/Missing.ui");
+
+    SetUIDocumentSourcePathResolver({});
+    std::filesystem::remove_all(root);
+}
+
+TEST(UIDocumentTests, ProjectDocumentResolutionHandlesHostAssetsPathsWithTrailingSeparator)
+{
+    const auto root = std::filesystem::temp_directory_path() /
+        ("nullus_ui_trailing_separator_" + NLS::Guid::New().ToString());
+    const auto documentPath = root / "Assets" / "UI" / "Hud.ui";
+    std::filesystem::create_directories(documentPath.parent_path());
+    {
+        std::ofstream output(documentPath, std::ios::binary | std::ios::trunc);
+        output << R"json({"version":1,"root":{"type":"Text","name":"Score"}})json";
+        ASSERT_TRUE(output.good());
+    }
+
+    // The editor hands the resolver its project assets folder with a trailing
+    // separator (Context::projectAssetsPath). A reference stored as
+    // "Assets/..." must still map onto the project folder instead of nesting a
+    // second Assets directory below it.
+    const auto canonical = (root / "Assets").generic_string();
+    const auto withSeparator = canonical + "/";
+    EXPECT_FALSE(ResolveProjectUIDocumentPath(withSeparator, "Assets/UI/Hud.ui").empty());
+    EXPECT_FALSE(ResolveProjectUIDocumentPath(withSeparator, "UI/Hud.ui").empty());
+    EXPECT_EQ(
+        ResolveProjectUIDocumentPath(withSeparator, "Assets/UI/Hud.ui"),
+        ResolveProjectUIDocumentPath(canonical, "Assets/UI/Hud.ui"));
+    EXPECT_EQ(
+        ResolveProjectUIDocumentPath(withSeparator, "UI/Hud.ui"),
+        ResolveProjectUIDocumentPath(canonical, "UI/Hud.ui"));
 
     std::filesystem::remove_all(root);
 }

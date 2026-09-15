@@ -27,10 +27,6 @@ set(NLS_SCRIPTING_SOURCES
     ${CMAKE_CURRENT_SOURCE_DIR}/ScriptDebug.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/ScriptFieldSerialization.h
     ${CMAKE_CURRENT_SOURCE_DIR}/ScriptFieldSerialization.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/SerializedObject.h
-    ${CMAKE_CURRENT_SOURCE_DIR}/SerializedObject.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/SerializedProperty.h
-    ${CMAKE_CURRENT_SOURCE_DIR}/SerializedProperty.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/ScriptScheduler.h
     ${CMAKE_CURRENT_SOURCE_DIR}/ScriptScheduler.cpp
 )

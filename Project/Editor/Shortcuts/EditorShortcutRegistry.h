@@ -21,6 +21,10 @@ namespace NLS::Editor::Shortcuts
 
         bool SetBinding(const std::string& p_id, const ShortcutBinding& p_binding);
         ShortcutBinding GetBinding(const std::string& p_id) const;
+        // Returns the effective gestures for a command. A user override
+        // replaces the full default set; otherwise the primary binding and
+        // all distinct alternate defaults are returned in declaration order.
+        std::vector<ShortcutBinding> GetBindings(const std::string& p_id) const;
         bool ClearBinding(const std::string& p_id);
         bool ResetBinding(const std::string& p_id);
         std::vector<ShortcutConflict> ValidateBinding(

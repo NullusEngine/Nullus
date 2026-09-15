@@ -678,7 +678,7 @@ PrefabImportResult BuildGeneratedModelPrefab(
     result.artifact.assetId = scene.sourceAssetId;
     result.artifact.generatedModelPrefab = true;
     result.artifact.graph.format = "Nullus.ObjectGraph.Prefab";
-    result.artifact.graph.version = 1;
+    result.artifact.graph.version = 2;
     result.artifact.graph.documentId = NLS::Guid::NewDeterministic(MakeLabel(scene, "document"));
 
     if (!scene.skins.empty() || !scene.animations.empty())

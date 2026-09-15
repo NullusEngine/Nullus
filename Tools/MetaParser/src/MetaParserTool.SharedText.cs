@@ -69,16 +69,6 @@ internal static partial class MetaParserTool
         return normalized;
     }
 
-    private static string BuildPropertyNameFromSuffix(string suffix)
-    {
-        if (string.IsNullOrWhiteSpace(suffix))
-            return string.Empty;
-        if (suffix.Length == 1)
-            return suffix.ToLowerInvariant();
-
-        return char.ToLowerInvariant(suffix[0]) + suffix[1..];
-    }
-
     private static string QualifyTypeName(
         string typeName,
         string namespacePrefix,

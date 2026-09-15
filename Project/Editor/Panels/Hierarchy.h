@@ -94,6 +94,7 @@ namespace NLS::Editor::Panels
 
 		std::unordered_map<Engine::GameObject*, UI::Widgets::TreeNode*> m_widgetGameObjectLink;
 		uint64_t m_gameObjectUnselectedListener = 0;
+		uint64_t m_selectionChangedListener = 0;
 		uint64_t m_sceneUnloadListener = 0;
 		uint64_t m_gameObjectCreatedListener = 0;
 		uint64_t m_gameObjectDestroyedListener = 0;

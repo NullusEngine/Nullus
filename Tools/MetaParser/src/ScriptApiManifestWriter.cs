@@ -7,7 +7,18 @@ using System.Text.Json.Serialization;
 internal static partial class MetaParserTool
 {
     private sealed record ScriptApiManifestDocument(int version, string schemaHash, IReadOnlyList<ScriptApiManifestType> types);
-    private sealed record ScriptApiManifestType(ulong id, string name, IReadOnlyList<ScriptApiManifestMethod> methods, IReadOnlyList<ScriptApiManifestProperty> properties, IReadOnlyList<ScriptApiManifestField> fields);
+    private sealed record ScriptApiManifestType(
+        ulong id,
+        string name,
+        IReadOnlyList<ScriptApiManifestMethod> methods,
+        IReadOnlyList<ScriptApiManifestProperty> properties,
+        IReadOnlyList<ScriptApiManifestField> fields,
+        // Editor-side identity for a reflected engine component.  The schema
+        // hash is computed from the canonical member list only, so these
+        // descriptive fields never invalidate cached schemas or built
+        // assemblies.
+        [property: JsonPropertyName("baseType")] string? baseType = null,
+        [property: JsonPropertyName("isComponent")] bool isComponent = false);
     private sealed record ScriptApiManifestMethod(
         ulong id,
         string name,
@@ -153,7 +164,27 @@ internal static partial class MetaParserTool
             type.QualifiedName,
             methods,
             properties,
-            fields);
+            fields,
+            ResolveComponentBaseTypeName(type),
+            IsReflectedComponent(type));
+    }
+
+    private static bool IsReflectedComponent(ReflectTypeInfo type)
+        => ResolveComponentBaseTypeName(type) is not null;
+
+    private static string? ResolveComponentBaseTypeName(ReflectTypeInfo type)
+    {
+        foreach (var baseInfo in type.Bases)
+        {
+            var name = baseInfo.TypeName;
+            if (string.IsNullOrWhiteSpace(name))
+                continue;
+            var separator = name.LastIndexOf("::", StringComparison.Ordinal);
+            var simpleName = separator >= 0 ? name[(separator + 2)..] : name;
+            if (string.Equals(simpleName, "Component", StringComparison.Ordinal))
+                return name;
+        }
+        return null;
     }
 
     private static void ValidatePortableType(string typeName, string subject)

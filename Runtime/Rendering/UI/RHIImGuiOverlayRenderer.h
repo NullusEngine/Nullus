@@ -4,6 +4,7 @@
 #include <mutex>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 #include "RenderDef.h"
@@ -107,6 +108,11 @@ namespace NLS::Render::UI
             size_t frameResourceSlot,
             uint64_t contentSignature,
             std::string& errorMessage);
+        // A command whose texture cannot be resolved is skipped while recording the
+        // draw loop. That was silent, which made a single unregistered texture look
+        // like a rendering bug in the UI itself. Reports each texture id once.
+        void ReportUnresolvedDrawTexture(uint64_t packedTextureId, uint32_t elementCount);
+        std::unordered_set<uint64_t> m_reportedUnresolvedTextures;
         bool UploadDynamicBuffers(
             size_t frameResourceSlot,
             const UiDrawDataSnapshot& snapshot,

@@ -78,11 +78,7 @@ target_include_directories(
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}>
 )
 
-target_link_libraries(
-  Editor
-  PRIVATE
-    EditorProject
-)
+target_link_libraries(Editor PRIVATE EditorProject)
 if(UNIX)
   find_package(Threads REQUIRED)
   target_link_libraries(Editor PRIVATE Threads::Threads)

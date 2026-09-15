@@ -8,6 +8,7 @@
 #include <Rendering/Buffers/Framebuffer.h>
 #include <Engine/UI/UIRuntimeService.h>
 #include <Rendering/UI/UIDrawSnapshot.h>
+#include <Rendering/UI/UIFontAtlasUploader.h>
 
 #include "Core/Context.h"
 #include "LaunchArgs.h"
@@ -70,5 +71,8 @@ namespace NLS::Game::Core
 		uint64_t m_fixedFrameIndex = 0;
 		Engine::UI::UIRuntimeService m_uiRuntimeService;
 		std::shared_ptr<const NLS::Render::UI::UIDrawSnapshot> m_uiSnapshot;
+		// Keeps the engine font atlas resident as a UI texture so retained text
+		// has pixels to sample.
+		NLS::Render::UI::UIFontAtlasUploader m_uiFontAtlasUploader;
 	};
 }

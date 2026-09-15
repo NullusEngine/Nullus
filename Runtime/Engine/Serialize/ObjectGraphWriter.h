@@ -144,7 +144,7 @@ namespace NLS::Engine::Serialize
         static nlohmann::json WriteObjectReference(const ObjectIdentifier& reference)
         {
             if (!IsSerializableObjectReference(reference))
-                throw std::invalid_argument("ObjectIdentifier must be empty or a complete Unity-style object reference.");
+                throw std::invalid_argument("ObjectIdentifier must be empty or a complete engine-style object reference.");
 
             nlohmann::json output;
             output["fileID"] = reference.localIdentifierInFile;

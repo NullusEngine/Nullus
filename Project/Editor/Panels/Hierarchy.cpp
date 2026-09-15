@@ -1,6 +1,9 @@
 #include "Panels/Hierarchy.h"
+
+#include "Inspector/EditorSelectionService.h"
 #include "Core/EditorActions.h"
 #include "Core/RecentBackgroundWorkGate.h"
+#include "Panels/HierarchyUndo.h"
 #include "Assets/AssetDragDropWorkflow.h"
 #include "Assets/EditorAssetDragDropBridge.h"
 #include "Assets/EditorAssetDragPayload.h"
@@ -19,6 +22,7 @@
 #include <Debug/Logger.h>
 
 #include <ServiceLocator.h>
+#include <SceneSystem/Scene.h>
 #include <Utils/PathParser.h>
 
 #include <UI/Plugins/ContextualMenu.h>
@@ -109,6 +113,93 @@ bool ScheduleHierarchyImportedPrefabPreloadOnce(
 	return scheduled;
 }
 
+NLS::Editor::Undo::UndoScopeId BuildHierarchyUndoScope(const Engine::SceneSystem::Scene& scene)
+{
+    if (!NLS::Core::ServiceLocator::Contains<NLS::Editor::Core::EditorActions>())
+        return {};
+    return NLS::Core::ServiceLocator::Get<NLS::Editor::Core::EditorActions>().GetUndoScopeForScene(scene);
+}
+
+NLS::Editor::Undo::UndoScopeId BuildHierarchyUndoScope(const Engine::GameObject& gameObject)
+{
+    if (const auto* scene = gameObject.GetScene())
+        return BuildHierarchyUndoScope(*scene);
+    return {};
+}
+
+void ReportHierarchyUndoFailure(const NLS::Editor::Undo::UndoRequestResult& result)
+{
+    if (!result.Succeeded())
+    {
+        NLS_LOG_WARNING(
+            "Hierarchy change was not applied through Undo: " +
+            (result.message.empty() ? std::string("Undo service rejected the command.") : result.message));
+    }
+}
+
+void RenameGameObjectThroughUndo(Engine::GameObject& gameObject, std::string newName)
+{
+    if (!NLS::Core::ServiceLocator::Contains<NLS::Editor::Undo::EditorUndoService>())
+    {
+        NLS_LOG_WARNING("Hierarchy rename was rejected because the global Undo service is unavailable.");
+        return;
+    }
+
+    auto& undoService = NLS::Core::ServiceLocator::Get<NLS::Editor::Undo::EditorUndoService>();
+    ReportHierarchyUndoFailure(NLS::Editor::Panels::HierarchyUndo::RenameGameObject(
+        undoService,
+        gameObject,
+        std::move(newName),
+        BuildHierarchyUndoScope(gameObject)));
+}
+
+void ReparentGameObjectThroughUndo(Engine::GameObject& gameObject, Engine::GameObject* newParent)
+{
+    if (!NLS::Core::ServiceLocator::Contains<NLS::Editor::Undo::EditorUndoService>())
+    {
+        NLS_LOG_WARNING("Hierarchy reparent was rejected because the global Undo service is unavailable.");
+        return;
+    }
+
+    auto& undoService = NLS::Core::ServiceLocator::Get<NLS::Editor::Undo::EditorUndoService>();
+    ReportHierarchyUndoFailure(NLS::Editor::Panels::HierarchyUndo::ReparentGameObject(
+        undoService,
+        gameObject,
+        newParent,
+        BuildHierarchyUndoScope(gameObject)));
+}
+
+void DuplicateGameObjectThroughUndo(Engine::GameObject& gameObject)
+{
+    if (!NLS::Core::ServiceLocator::Contains<NLS::Editor::Undo::EditorUndoService>())
+    {
+        NLS_LOG_WARNING("Hierarchy duplicate was rejected because the global Undo service is unavailable.");
+        return;
+    }
+
+    auto& undoService = NLS::Core::ServiceLocator::Get<NLS::Editor::Undo::EditorUndoService>();
+    ReportHierarchyUndoFailure(NLS::Editor::Panels::HierarchyUndo::DuplicateGameObject(
+        undoService,
+        gameObject,
+        nullptr,
+        BuildHierarchyUndoScope(gameObject)));
+}
+
+void DeleteGameObjectThroughUndo(Engine::GameObject& gameObject)
+{
+    if (!NLS::Core::ServiceLocator::Contains<NLS::Editor::Undo::EditorUndoService>())
+    {
+        NLS_LOG_WARNING("Hierarchy delete was rejected because the global Undo service is unavailable.");
+        return;
+    }
+
+    auto& undoService = NLS::Core::ServiceLocator::Get<NLS::Editor::Undo::EditorUndoService>();
+    ReportHierarchyUndoFailure(NLS::Editor::Panels::HierarchyUndo::DeleteGameObject(
+        undoService,
+        gameObject,
+        BuildHierarchyUndoScope(gameObject)));
+}
+
 void DropAssetIntoHierarchy(
 	const NLS::Editor::Assets::EditorAssetDragPayload& payload,
 	Engine::GameObject* parent)
@@ -138,16 +229,33 @@ void DropAssetIntoHierarchy(
 				NLS::Editor::Assets::GetEditorAssetDragPayloadPath(payload));
 			return;
 		}
-		if (auto* component = parent->AddComponent<NLS::Scripting::ScriptComponent>())
+		if (!NLS::Core::ServiceLocator::Contains<NLS::Editor::Undo::EditorUndoService>())
 		{
-			component->SetScriptAsset(*asset);
-			EDITOR_EXEC(MarkOwningSceneDirty(*parent));
+			NLS_LOG_WARNING("Skipped script drop because the global Undo service is unavailable.");
+			return;
 		}
+		auto& undoService = NLS::Core::ServiceLocator::Get<NLS::Editor::Undo::EditorUndoService>();
+		ReportHierarchyUndoFailure(NLS::Editor::Panels::HierarchyUndo::AddScriptComponent(
+			undoService,
+			*parent,
+			*asset,
+			BuildHierarchyUndoScope(*parent)));
 		return;
 	}
 
 	(void)ScheduleHierarchyImportedPrefabPreloadOnce(payload);
-	(void)EDITOR_EXEC(CreateGameObjectFromAssetNonBlocking(payload, true, parent));
+	if (!NLS::Core::ServiceLocator::Contains<NLS::Editor::Undo::EditorUndoService>())
+	{
+		NLS_LOG_WARNING("Skipped asset drop because the global Undo service is unavailable.");
+		return;
+	}
+	auto& undoService = NLS::Core::ServiceLocator::Get<NLS::Editor::Undo::EditorUndoService>();
+	ReportHierarchyUndoFailure(NLS::Editor::Panels::HierarchyUndo::CreateGameObjectFromAsset(
+		undoService,
+		payload,
+		*scene,
+		parent,
+		BuildHierarchyUndoScope(*scene)));
 }
 
 void DropModelFileIntoHierarchy(
@@ -162,7 +270,24 @@ void DropModelFileIntoHierarchy(
 		return;
 	}
 
-	EDITOR_EXEC(CreateGameObjectFromAsset(path, true, parent));
+	auto* scene = EDITOR_CONTEXT(sceneManager).GetCurrentScene();
+	if (scene == nullptr)
+	{
+		NLS_LOG_WARNING("Skipped model drop because there is no active scene.");
+		return;
+	}
+	if (!NLS::Core::ServiceLocator::Contains<NLS::Editor::Undo::EditorUndoService>())
+	{
+		NLS_LOG_WARNING("Skipped model drop because the global Undo service is unavailable.");
+		return;
+	}
+	auto& undoService = NLS::Core::ServiceLocator::Get<NLS::Editor::Undo::EditorUndoService>();
+	ReportHierarchyUndoFailure(NLS::Editor::Panels::HierarchyUndo::CreateGameObjectFromAsset(
+		undoService,
+		path,
+		*scene,
+		parent,
+		BuildHierarchyUndoScope(*scene)));
 }
 }
 
@@ -188,13 +313,13 @@ public:
             auto& duplicateButton = CreateWidget<UI::Widgets::MenuItem>("Duplicate");
             duplicateButton.ClickedEvent += [this]
             {
-                EDITOR_EXEC(DelayAction(EDITOR_BIND(DuplicateGameObject, std::ref(*m_target), nullptr, true), 0));
+                DuplicateGameObjectThroughUndo(*m_target);
             };
 
             auto& deleteButton = CreateWidget<UI::Widgets::MenuItem>("Delete");
             deleteButton.ClickedEvent += [this]
             {
-                EDITOR_EXEC(DestroyGameObject(std::ref(*m_target)));
+                DeleteGameObjectThroughUndo(*m_target);
             };
 
 			auto& renameMenu = CreateWidget<UI::Widgets::MenuList>("Rename to...");
@@ -209,8 +334,7 @@ public:
 
 			nameEditor.EnterPressedEvent += [this](std::string p_newName)
 			{
-				m_target->SetName(p_newName);
-				EDITOR_EXEC(MarkOwningSceneDirty(*m_target));
+				RenameGameObjectThroughUndo(*m_target, std::move(p_newName));
 			};
         }
 
@@ -365,10 +489,8 @@ Editor::Panels::Hierarchy::Hierarchy
 	RefreshSceneRootName();
 	m_sceneRoot->AddPlugin<UI::DDTarget<std::pair<Engine::GameObject*, UI::Widgets::TreeNode*>>>("GameObject").DataReceivedEvent += [this](std::pair<Engine::GameObject*, UI::Widgets::TreeNode*> p_element)
 	{
-		m_sceneRoot->ConsiderWidget(*p_element.second);
-
-		EDITOR_EXEC(MarkOwningSceneDirty(*p_element.first));
-		p_element.first->DetachFromParent();
+		if (p_element.first != nullptr)
+			ReparentGameObjectThroughUndo(*p_element.first, nullptr);
 	};
 	m_sceneRoot->AddPlugin<UI::DDTarget<NLS::Editor::Assets::EditorAssetDragPayload>>(
 		NLS::Editor::Assets::kEditorAssetDragPayloadType).DataReceivedEvent += [](NLS::Editor::Assets::EditorAssetDragPayload p_data)
@@ -381,7 +503,17 @@ Editor::Panels::Hierarchy::Hierarchy
 	};
     m_sceneRoot->AddPlugin<GameObjectContextualMenu>(nullptr, *m_sceneRoot);
 
-	m_gameObjectUnselectedListener = EDITOR_EVENT(GameObjectUnselectedEvent) += std::bind(&Hierarchy::UnselectGameObjectsWidgets, this);
+	m_selectionChangedListener = NLS::Editor::Inspector::EditorSelectionService::Get().SelectionChangedEvent +=
+		[this](const NLS::Editor::Inspector::InspectorTargetSet& selection)
+	{
+		UnselectGameObjectsWidgets();
+		const auto* target = selection.Primary();
+		if (target == nullptr || target->kind != NLS::Editor::Inspector::InspectorTargetKind::GameObject)
+			return;
+
+		if (auto* gameObject = NLS::Object::IDToPointer<Engine::GameObject>(target->instanceId))
+			SelectGameObjectByInstance(*gameObject);
+	};
 	m_sceneUnloadListener = EDITOR_CONTEXT(sceneManager).SceneUnloadEvent += std::bind(&Hierarchy::Clear, this);
 	m_sceneLoadListener = EDITOR_CONTEXT(sceneManager).SceneLoadEvent += std::bind(&Hierarchy::RebuildFromCurrentScene, this);
 	m_sceneSourcePathChangedListener = EDITOR_CONTEXT(sceneManager).CurrentSceneSourcePathChangedEvent += [this](const std::string&)
@@ -394,21 +526,19 @@ Editor::Panels::Hierarchy::Hierarchy
 	};
 	m_gameObjectCreatedListener = Engine::GameObject::CreatedEvent += std::bind(&Hierarchy::AddGameObjectByInstance, this, std::placeholders::_1);
 	m_gameObjectDestroyedListener = Engine::GameObject::DestroyedEvent += std::bind(&Hierarchy::DeleteGameObjectByInstance, this, std::placeholders::_1);
-	m_gameObjectSelectedListener = EDITOR_EVENT(GameObjectSelectedEvent) += std::bind(&Hierarchy::SelectGameObjectByInstance, this, std::placeholders::_1);
 	m_gameObjectAttachedListener = Engine::GameObject::AttachEvent += std::bind(&Hierarchy::AttachGameObjectToParent, this, std::placeholders::_1);
 	m_gameObjectDetachedListener = Engine::GameObject::DettachEvent += std::bind(&Hierarchy::DetachFromParent, this, std::placeholders::_1);
 }
 
 Editor::Panels::Hierarchy::~Hierarchy()
 {
-	EDITOR_EVENT(GameObjectUnselectedEvent) -= m_gameObjectUnselectedListener;
+	NLS::Editor::Inspector::EditorSelectionService::Get().SelectionChangedEvent -= m_selectionChangedListener;
 	EDITOR_CONTEXT(sceneManager).SceneUnloadEvent -= m_sceneUnloadListener;
 	EDITOR_CONTEXT(sceneManager).SceneLoadEvent -= m_sceneLoadListener;
 	EDITOR_CONTEXT(sceneManager).CurrentSceneSourcePathChangedEvent -= m_sceneSourcePathChangedListener;
 	EDITOR_CONTEXT(sceneManager).CurrentSceneDirtyStateChangedEvent -= m_sceneDirtyStateChangedListener;
 	Engine::GameObject::CreatedEvent -= m_gameObjectCreatedListener;
 	Engine::GameObject::DestroyedEvent -= m_gameObjectDestroyedListener;
-	EDITOR_EVENT(GameObjectSelectedEvent) -= m_gameObjectSelectedListener;
 	Engine::GameObject::AttachEvent -= m_gameObjectAttachedListener;
 	Engine::GameObject::DettachEvent -= m_gameObjectDetachedListener;
 }
@@ -515,16 +645,18 @@ void Editor::Panels::Hierarchy::AddGameObjectByInstance(Engine::GameObject & p_a
 	textSelectable.leaf = true;
 	textSelectable.AddPlugin<GameObjectContextualMenu>(&p_actor, textSelectable);
 	textSelectable.AddPlugin<UI::DDSource<std::pair<Engine::GameObject*, UI::Widgets::TreeNode*>>>("GameObject", "Attach to...", std::make_pair(&p_actor, &textSelectable));
-	textSelectable.AddPlugin<UI::DDTarget<std::pair<Engine::GameObject*, UI::Widgets::TreeNode*>>>("GameObject").DataReceivedEvent += [&p_actor, &textSelectable](std::pair<Engine::GameObject*, UI::Widgets::TreeNode*> p_element)
+	textSelectable.AddPlugin<UI::DDTarget<std::pair<Engine::GameObject*, UI::Widgets::TreeNode*>>>("GameObject").DataReceivedEvent += [&p_actor](std::pair<Engine::GameObject*, UI::Widgets::TreeNode*> p_element)
 	{
+		if (p_element.first == nullptr)
+			return;
+
 		if (p_actor.IsDescendantOf(p_element.first))
 		{
 			NLS_LOG_WARNING("Cannot attach \"" + p_element.first->GetName() + "\" to \"" + p_actor.GetName() + "\" because it is a descendant of the latter.");
 			return;
 		}
 
-		p_element.first->SetParent(p_actor);
-		EDITOR_EXEC(MarkOwningSceneDirty(*p_element.first));
+		ReparentGameObjectThroughUndo(*p_element.first, &p_actor);
 	};
 	textSelectable.AddPlugin<UI::DDTarget<NLS::Editor::Assets::EditorAssetDragPayload>>(
 		NLS::Editor::Assets::kEditorAssetDragPayloadType).DataReceivedEvent += [&p_actor](NLS::Editor::Assets::EditorAssetDragPayload p_data)

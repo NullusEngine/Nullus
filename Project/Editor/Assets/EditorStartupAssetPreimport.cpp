@@ -646,14 +646,21 @@ std::filesystem::path GetStartupAssetPreimportStampPath(const std::filesystem::p
     return NLS::Core::Assets::NormalizeAssetPath(projectRoot) / kStartupAssetPreimportStampPath;
 }
 
-const std::array<NLS::Core::Assets::AssetType, 5u>& StartupPreimportAssetTypes()
+const std::array<NLS::Core::Assets::AssetType, 8u>& StartupPreimportAssetTypes()
 {
-    static constexpr std::array<NLS::Core::Assets::AssetType, 5u> kStartupPreimportAssetTypes = {
+    // UI documents, styles and localization tables are ordinary project assets
+    // with importers of their own. Leaving them out of this list meant a .ui file
+    // received its .meta but never an artifact manifest, so the Inspector object
+    // picker had no candidates and the runtime had nothing to load.
+    static constexpr std::array<NLS::Core::Assets::AssetType, 8u> kStartupPreimportAssetTypes = {
         NLS::Core::Assets::AssetType::ModelScene,
         NLS::Core::Assets::AssetType::Prefab,
         NLS::Core::Assets::AssetType::Material,
         NLS::Core::Assets::AssetType::Texture,
-        NLS::Core::Assets::AssetType::Shader
+        NLS::Core::Assets::AssetType::Shader,
+        NLS::Core::Assets::AssetType::UIDocument,
+        NLS::Core::Assets::AssetType::UIStyleSheet,
+        NLS::Core::Assets::AssetType::LocalizationTable
     };
     return kStartupPreimportAssetTypes;
 }

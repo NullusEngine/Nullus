@@ -6,16 +6,26 @@
 #include <cstring>
 
 #include <Debug/Logger.h>
+#include <ServiceLocator.h>
 #include <imgui.h>
 
 #include "Core/EditorActions.h"
 #include "Panels/AssetBrowser.h"
+#include "Undo/EditorUndoService.h"
 
 namespace NLS::Editor::Panels
 {
     namespace
     {
         using Json = NLS::Editor::UIDocumentTools::UIDocumentDesignerModel::Json;
+        using UndoService = NLS::Editor::Undo::EditorUndoService;
+
+        UndoService* TryGetUndoService()
+        {
+            if (!NLS::Core::ServiceLocator::Contains<UndoService>())
+                return nullptr;
+            return &NLS::Core::ServiceLocator::Get<UndoService>();
+        }
 
         constexpr const char* kElementTypes[] = {
             "Panel", "Image", "NineSlice", "Text", "RichText", "Button", "Toggle", "Radio",
@@ -118,6 +128,9 @@ namespace NLS::Editor::Panels
             return;
         }
 
+        if (m_buffersDocumentRevision != m_model.GetDocumentRevision())
+            RefreshEditBuffers();
+
         DrawToolbar();
         ImGui::Separator();
 
@@ -165,25 +178,42 @@ namespace NLS::Editor::Panels
             RefreshEditBuffers();
         }
         ImGui::SameLine();
-        if (!m_model.CanUndo())
+        auto* undo = TryGetUndoService();
+        const bool canUndo = undo != nullptr && undo->CanUndo() && !undo->IsPending() &&
+            !undo->IsFrozen() && !undo->IsPoisoned();
+        const std::string undoUnavailableReason = undo != nullptr
+            ? undo->GetUndoUnavailableReason()
+            : "The global Undo service is unavailable.";
+        if (!canUndo)
             ImGui::BeginDisabled();
         if (ImGui::Button("Undo"))
         {
-            (void)m_model.Undo();
-            RefreshEditBuffers();
+            const auto result = undo->RequestUndo();
+            if (result.Succeeded())
+                RefreshEditBuffers();
         }
-        if (!m_model.CanUndo())
+        if (!canUndo)
             ImGui::EndDisabled();
+        if (!canUndo && ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+            ImGui::SetTooltip("%s", undoUnavailableReason.c_str());
         ImGui::SameLine();
-        if (!m_model.CanRedo())
+        const bool canRedo = undo != nullptr && undo->CanRedo() && !undo->IsPending() &&
+            !undo->IsFrozen() && !undo->IsPoisoned();
+        const std::string redoUnavailableReason = undo != nullptr
+            ? undo->GetRedoUnavailableReason()
+            : "The global Undo service is unavailable.";
+        if (!canRedo)
             ImGui::BeginDisabled();
         if (ImGui::Button("Redo"))
         {
-            (void)m_model.Redo();
-            RefreshEditBuffers();
+            const auto result = undo->RequestRedo();
+            if (result.Succeeded())
+                RefreshEditBuffers();
         }
-        if (!m_model.CanRedo())
+        if (!canRedo)
             ImGui::EndDisabled();
+        if (!canRedo && ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+            ImGui::SetTooltip("%s", redoUnavailableReason.c_str());
         ImGui::SameLine();
         ImGui::TextDisabled("%s", m_model.GetPath().filename().string().c_str());
     }
@@ -313,7 +343,7 @@ namespace NLS::Editor::Panels
         ImGui::TextUnformatted("Name");
         const bool nameChanged = ImGui::InputText("##UiElementName", m_nameBuffer.data(), m_nameBuffer.size());
         if (ImGui::IsItemActivated())
-            m_model.BeginTransaction();
+            m_model.BeginTransaction("Rename UI Element");
         if (nameChanged)
             m_model.SetNodeName(nodeGuid, m_nameBuffer.data(), false);
         if (ImGui::IsItemDeactivatedAfterEdit())
@@ -329,7 +359,7 @@ namespace NLS::Editor::Panels
                     m_textBuffer.size(),
                     { -FLT_MIN, 72.0f });
             if (ImGui::IsItemActivated())
-                m_model.BeginTransaction();
+                m_model.BeginTransaction("Edit UI Text");
             if (textChanged)
                 m_model.SetNodeText(nodeGuid, m_textBuffer.data(), false);
             if (ImGui::IsItemDeactivatedAfterEdit())
@@ -344,7 +374,7 @@ namespace NLS::Editor::Panels
         int modeIndex = LayoutModeIndex(layoutMode);
         const bool modeChanged = ImGui::Combo("Mode", &modeIndex, kLayoutModes, static_cast<int>(std::size(kLayoutModes)));
         if (ImGui::IsItemActivated())
-            m_model.BeginTransaction();
+            m_model.BeginTransaction("Edit UI Layout Mode");
         if (modeChanged)
             m_model.SetNodeLayoutMode(nodeGuid, kLayoutModes[modeIndex], false);
         if (ImGui::IsItemDeactivatedAfterEdit())
@@ -353,7 +383,7 @@ namespace NLS::Editor::Panels
         auto size = ReadVector2(*node, "layout", "size");
         const bool sizeChanged = ImGui::DragFloat2("Size", size.data(), 1.0f, 0.0f, 8192.0f);
         if (ImGui::IsItemActivated())
-            m_model.BeginTransaction();
+            m_model.BeginTransaction("Edit UI Size");
         if (sizeChanged)
             m_model.SetNodeLayoutSize(nodeGuid, size[0], size[1], false);
         if (ImGui::IsItemDeactivatedAfterEdit())
@@ -362,7 +392,7 @@ namespace NLS::Editor::Panels
         float spacing = layout.value("spacing", 0.0f);
         const bool spacingChanged = ImGui::DragFloat("Spacing", &spacing, 0.25f, 0.0f, 512.0f);
         if (ImGui::IsItemActivated())
-            m_model.BeginTransaction();
+            m_model.BeginTransaction("Edit UI Spacing");
         if (spacingChanged)
             m_model.SetNodeSpacing(nodeGuid, spacing, false);
         if (ImGui::IsItemDeactivatedAfterEdit())
@@ -373,7 +403,7 @@ namespace NLS::Editor::Panels
         auto color = ReadColor(*node);
         const bool colorChanged = ImGui::ColorEdit4("Background", color.data(), ImGuiColorEditFlags_AlphaBar);
         if (ImGui::IsItemActivated())
-            m_model.BeginTransaction();
+            m_model.BeginTransaction("Edit UI Background");
         if (colorChanged)
             m_model.SetNodeBackgroundColor(nodeGuid, color[0], color[1], color[2], color[3], false);
         if (ImGui::IsItemDeactivatedAfterEdit())
@@ -417,6 +447,7 @@ namespace NLS::Editor::Panels
 
     void UIDocumentDesigner::RefreshEditBuffers()
     {
+        m_buffersDocumentRevision = m_model.GetDocumentRevision();
         const auto* node = m_model.GetSelectedNode();
         if (node == nullptr)
         {

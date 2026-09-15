@@ -8600,7 +8600,7 @@ TEST(AssetThumbnailCacheTests, BuiltinPrimitivePrefabRemainsPendingWithoutGpuRen
     std::filesystem::remove_all(root);
 }
 
-TEST(AssetThumbnailCacheTests, PrefabPreviewRequiresGpuRendererForBrightObliqueUnityStylePreview)
+TEST(AssetThumbnailCacheTests, PrefabPreviewRequiresGpuRendererForBrightObliqueEngineStylePreview)
 {
     using namespace NLS::Core::Assets;
     using namespace NLS::Editor::Assets;
@@ -11807,7 +11807,7 @@ TEST(AssetThumbnailCacheTests, UnresolvedThumbnailRequestDoesNotUseGlobalArtifac
     std::filesystem::remove_all(root);
 }
 
-TEST(AssetThumbnailCacheTests, UnityStylePreviewRequestQueuesAndReportsLoadingWithoutRendering)
+TEST(AssetThumbnailCacheTests, EngineStylePreviewRequestQueuesAndReportsLoadingWithoutRendering)
 {
     using namespace NLS::Editor::Assets;
 
@@ -11849,7 +11849,7 @@ TEST(AssetThumbnailCacheTests, UnityStylePreviewRequestQueuesAndReportsLoadingWi
     std::filesystem::remove_all(root);
 }
 
-TEST(AssetThumbnailCacheTests, UnityStylePreviewRequestCoalescesDuplicatePrefabRequests)
+TEST(AssetThumbnailCacheTests, EngineStylePreviewRequestCoalescesDuplicatePrefabRequests)
 {
     using namespace NLS::Editor::Assets;
 

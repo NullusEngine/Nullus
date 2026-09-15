@@ -14,7 +14,7 @@
 
 namespace NLS::Engine::Components
 {
-    CLASS(NLS_ENGINE_API MeshFilter, ComponentMenu("Mesh/Mesh Filter")) : public Component
+    CLASS(NLS_ENGINE_API MeshFilter, ComponentMenu("Mesh/Mesh Filter"), DisallowMultipleComponent) : public Component
     {
     public:
         GENERATED_BODY()
@@ -34,10 +34,8 @@ namespace NLS::Engine::Components
         uint64_t GetRenderRevision() const;
         void SetMeshPath(const std::string& p_path);
 
-        PROPERTY(mesh)
         FUNCTION()
         NLS::Engine::Serialize::PPtr<Mesh> GetMeshReference() const;
-        PROPERTY(mesh)
         FUNCTION()
         void SetMeshReference(NLS::Engine::Serialize::PPtr<Mesh> p_reference);
         void SetMeshObjectIdentifier(const NLS::Engine::Serialize::ObjectIdentifier& p_identifier);
@@ -54,6 +52,7 @@ namespace NLS::Engine::Components
             const NLS::Engine::Serialize::ObjectIdentifier& p_identifier,
             bool notify);
 
+        PROPERTY(DisplayName("Mesh"), Getter(GetMeshReference), Setter(SetMeshReference))
         NLS::Engine::Serialize::PPtr<Mesh> mesh;
         std::shared_ptr<Mesh> m_transientMesh;
         std::string m_meshPath;

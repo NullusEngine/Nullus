@@ -124,9 +124,18 @@ ENUM(MyMode) : uint8_t
 
 优先模式：
 
-1. `FUNCTION()` 标记的 `GetXxx` / `SetXxx` 自动属性
-2. 暴露名和访问器命名不一致时，用 `PROPERTY(...)`
-3. 类型本身不适合改声明时，用类外声明
+1. 字段直接加 `PROPERTY(...)`，属性名就是字段真名
+2. 需要封装时，在同一个 `PROPERTY(...)` 里写 `Getter(Name)` / `Setter(Name)`
+3. `DisplayName(...)` 只控制编辑器显示名，不改变序列化名
+4. 字段改名又要保留旧数据时，写 `FormerlySerializedAs("旧名")`
+5. 类型本身不适合改声明时，用类外声明
+
+命名约定：
+
+- 被 `PROPERTY` 标注的字段就是序列化字段，字段名即序列化键；这类反射数据成员不使用 `m_` 前缀（`localPosition`、`skyMode`、`document`），与 `EditorSettings` 里既有的反射结构保持一致。
+- 需要封装时，访问器用 `FUNCTION(...)` 单独暴露，字段仍保留原名。
+- 字段改名后要保证旧数据仍可读，就写 `FormerlySerializedAs("旧名")`；不要为了迁就旧键而发明一个不存在的字段名。
+- 平台宏等无法作为成员名的键（例如 Windows 上的 `near` / `far`）同样用改名加 `FormerlySerializedAs` 处理，`CameraComponent.nearClip` / `farClip` 是先例。
 
 不建议反射：
 
@@ -151,38 +160,49 @@ ENUM(MyMode) : uint8_t
 
 ## 典型写法
 
-### 模式 1：自动属性
+### 模式 1：直接字段属性
 
 ```cpp
-CLASS(CameraComponent) : public Component
-{
-public:
-    GENERATED_BODY()
-
-    FUNCTION()
-    void SetFov(float value);
-
-    FUNCTION()
-    float GetFov() const;
-};
+PROPERTY(DisplayName("Local Position"))
+Maths::Vector3 localPosition;
 ```
 
-因为命名对齐，`GetFov` + `SetFov` 会自动形成属性 `fov`。
+属性名就是字段真名 `localPosition`。`DisplayName` 只影响编辑器标签，不参与
+序列化路径、Prefab override 或 Undo 记录。
 
-### 模式 2：显式属性
+### 模式 2：显式访问器
 
-当暴露名和访问器命名对不上时，用显式属性：
+字段需要封装时，把访问器写在同一个 `PROPERTY(...)` 里：
 
 ```cpp
-PROPERTY(name = active, getter = IsSelfActive, setter = SetActive)
+PROPERTY(DisplayName("Active"), Getter(GetActive), Setter(SetActive))
+bool active;
+
+FUNCTION(Scriptable)
+bool GetActive() const;
+
+FUNCTION(Scriptable)
+void SetActive(bool value);
 ```
 
-当前仓库的典型例子：
+规则：
 
-- `GameObject.active`
-- `MeshFilter.mesh`
+- `Getter` / `Setter` 只接受成员函数名，不做 `GetXxx` / `SetXxx` 命名推导。
+- 只写 `Getter(...)` 得到只读属性；只写 `Setter(...)` 直接报错。
+- 访问器必须 public、非 static，签名匹配且没有重载歧义。
+- 访问器自己的 `FUNCTION(...)` 决定它是否同时作为脚本方法暴露。
 
-### 模式 3：类外反射声明
+### 模式 3：字段改名后保留旧数据
+
+```cpp
+PROPERTY(DisplayName("Near Clip"), FormerlySerializedAs("near"), Getter(GetNear), Setter(SetNear))
+float nearClip = 0.1f;
+```
+
+`FormerlySerializedAs` 让旧数据仍然能用旧名解析到该字段；新写入的数据使用
+字段真名。
+
+### 模式 4：类外反射声明
 
 当类型本身不适合加内联宏时，用：
 
@@ -205,7 +225,7 @@ REFLECT_EXTERNAL(
 )
 ```
 
-### 模式 4：私有类外绑定
+### 模式 5：私有类外绑定
 
 只在确有必要时使用：
 
@@ -225,12 +245,22 @@ REFLECT_EXTERNAL(
 
 ## 支持模式矩阵
 
+## 编辑器脚本如何使用 SerializedObject
+
+`SerializedObject` / `SerializedProperty` 是编辑器专属能力，玩家脚本程序集里没有它们：
+
+- 唯一规范实现是 native 的 `NLS::Editor::Serialization::SerializedObject`（TypeTree + byte stream + staged snapshot）。
+- 编辑器程序集 `Nullus.Editor.dll` 只做句柄包装（源文件 `Managed/Nullus.Managed/EditorSerializedObject.cs`），`Nullus.Managed.csproj` 用 `<Compile Remove>` 把它排除在玩家程序集之外。
+- 编辑器启动时 `Context` 在 CoreCLR 就绪后调用 `InstallManagedSerializationBridge`，把 `GetEditorSerializationApiTable()` 交给托管 `Nullus.Editor.EditorSerializationHost.Install`。装好之后 `new SerializedObject(target)` / `FindProperty(...)` / `ApplyModifiedProperties()` 直接可用；没有安装时对象 `IsValid` 为 false，访问会抛 `InvalidOperationException`。
+- `Nullus.Editor.dll` 由 CMake 托管构建规则产出到 `build/Managed/<config>/`，与项目脚本程序集同目录，宿主按同目录查找。
+
 | 模式 | 适用场景 | 典型宏 | 当前仓库示例 |
 | --- | --- | --- | --- |
 | 内联反射类型 | 引擎拥有该类型，且消费者需要稳定运行时元数据 | `CLASS` / `STRUCT` / `GENERATED_BODY` / `FUNCTION` | `TransformComponent`、`CameraComponent`、`GameObject`、`Scene` |
 | 反射枚举 | 枚举会出现在反射字段或编辑器选项中 | `ENUM` | `EProjectionMode`、`ELightType`、`MeshRenderer::EFrustumBehaviour` |
-| 自动属性 | getter / setter 命名能自然形成 `GetXxx` / `SetXxx` | 对两个访问器都加 `FUNCTION` | `fov`、`near`、`far`、`lightType`、`materialPaths` |
-| 显式属性 | 暴露名和访问器命名不一致 | `PROPERTY(...)` + 对应访问器 | `GameObject.active`、`MeshFilter.mesh` |
+| 直接字段属性 | 字段本身就是要暴露的状态 | 字段上写 `PROPERTY(...)` | `TransformComponent.localPosition`、`SkyBoxComponent.skyMode` |
+| 显式访问器属性 | 需要封装、转换或副作用 | `PROPERTY(Getter(...), Setter(...))` | `GameObject.active`、`MeshFilter.mesh`、`UICanvasComponent.document` |
+| 字段改名迁移 | 字段改名但要读回旧数据 | `PROPERTY(FormerlySerializedAs(\"旧名\"), ...)` | `CameraComponent.nearClip`（旧名 `near`） |
 | 类外反射 | 类型本体不适合加内联反射宏 | `MetaExternal` + `REFLECT_EXTERNAL` | `NLS::Maths::Vector3`、`NLS::Maths::Quaternion` |
 | 私有类外反射 | 私有成员确实需要被有意识地暴露 | `REFLECT_PRIVATE_*` | `PrivateReflectionExternalSample` |
 

@@ -9,6 +9,7 @@
 #include "TypeData.h"
 
 #include "ReflectionDatabase.h"
+#include "RuntimeMetaProperties.h"
 
 namespace NLS::meta
 {
@@ -108,6 +109,15 @@ namespace NLS::meta
             for (auto &field : fields)
                 if (field.GetName( ) == name)
                     return field;
+
+            // Stored data may still use a name that a field was renamed away
+            // from. FormerlySerializedAs keeps those payloads addressable.
+            for (auto &field : fields)
+            {
+                const auto* formerName = field.GetMeta( ).GetProperty<FormerlySerializedAs>( );
+                if (formerName != nullptr && !formerName->name.empty( ) && formerName->name == name)
+                    return field;
+            }
 
             return Field::Invalid( );
         }

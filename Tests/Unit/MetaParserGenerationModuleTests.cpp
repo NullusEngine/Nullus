@@ -272,6 +272,27 @@ TEST(MetaParserGenerationModuleTests, GeneratesModuleSpecificRegistrationEntrypo
     ExpectContains(engineText, "NLS_META_GENERATED_LINK_FUNCTION");
 }
 
+TEST(MetaParserGenerationModuleTests, GeneratesEditorExtensionDescriptorsFromHeaderMetadata)
+{
+    const std::filesystem::path editorHeader =
+        std::filesystem::path(NLS_ROOT_DIR) / "Project/Editor/Gen/EditorProject_MetaGenerated.h";
+    const std::filesystem::path editorSource =
+        std::filesystem::path(NLS_ROOT_DIR) / "Project/Editor/Gen/MetaGenerated.cpp";
+    const std::filesystem::path descriptorSource =
+        std::filesystem::path(NLS_ROOT_DIR) / "Project/Editor/Gen/EditorExtensionDescriptors.generated.cpp";
+
+    const std::string headerText = ReadAllText(editorHeader);
+    const std::string sourceText = ReadAllText(editorSource);
+    const std::string descriptorText = ReadAllText(descriptorSource);
+
+    ExpectContains(headerText, "RegisterEditorExtensions_EditorProject");
+    ExpectContains(headerText, "NLS_META_GENERATED_REGISTER_EDITOR_EXTENSIONS");
+    ExpectContains(sourceText, "EditorExtensionDescriptors.generated.cpp");
+    ExpectContains(descriptorText, "NLS::Engine::Components::UICanvasComponent");
+    ExpectContains(descriptorText, "NLS::Editor::Inspector::UICanvasComponentEditor");
+    ExpectContains(descriptorText, "RegisterEditorExtensionDescriptors");
+}
+
 TEST(MetaParserGenerationModuleTests, GeneratesExpectedBaseReflectionBindings)
 {
     const std::filesystem::path sampleSource = std::filesystem::path(NLS_ROOT_DIR) / "Runtime/Base/Gen/Reflection/MetaParserFieldMethodSample.generated.cpp";
@@ -285,6 +306,22 @@ TEST(MetaParserGenerationModuleTests, GeneratesExpectedBaseReflectionBindings)
     ExpectContains(sampleText, "&NLS::meta::MetaParserFieldMethodSample::SetValue");
     ExpectContains(sampleText, "AddMethod(\"GetValue\", static_cast<int (NLS::meta::MetaParserFieldMethodSample::*)() const>(&NLS::meta::MetaParserFieldMethodSample::GetValue), {})");
     ExpectNotContains(sampleText, "AddMethod(\"OnSerialize\"");
+    ExpectContains(sampleText, "NLS::meta::DisplayName");
+    ExpectContains(sampleText, "NLS::meta::Tooltip");
+    ExpectContains(sampleText, "NLS::meta::Header");
+    ExpectContains(sampleText, "NLS::meta::Space");
+    ExpectContains(sampleText, "NLS::meta::Range");
+    ExpectContains(sampleText, "NLS::meta::Min");
+    ExpectContains(sampleText, "NLS::meta::Max");
+    ExpectContains(sampleText, "NLS::meta::Multiline");
+    ExpectContains(sampleText, "NLS::meta::ReadOnly");
+    ExpectContains(sampleText, "NLS::meta::HideInInspector");
+    ExpectContains(sampleText, "NLS::meta::Flags");
+    ExpectContains(sampleText, "NLS::meta::ColorUsage");
+    ExpectContains(sampleText, "NLS::meta::ReferenceTypeConstraint");
+    ExpectContains(sampleText, "MetaPropertyInitializer<NLS::meta::Space>(4.0f)");
+    ExpectContains(sampleText, "MetaPropertyInitializer<NLS::meta::Min>(-5.0f)");
+    ExpectContains(sampleText, "MetaPropertyInitializer<NLS::meta::Max>(5.0f)");
     ExpectContains(metaText, "LinkReflectionTypes_NLS_Base");
     ExpectContains(metaText, "#include \"Reflection/MetaParserFieldMethodSample.generated.cpp\"");
 }
@@ -582,7 +619,7 @@ TEST(MetaParserGenerationModuleTests, ExternalReflectionTypeDiscoveryHandlesComm
     ExpectNotContains(processText, "DisabledExternal");
 }
 
-TEST(MetaParserGenerationModuleTests, RejectsPPtrFieldsWhoseTargetsAreNotSupportedUnityObjects)
+TEST(MetaParserGenerationModuleTests, RejectsPPtrFieldsWhoseTargetsAreNotSupportedEngineObjects)
 {
     const auto root = std::filesystem::path(NLS_ROOT_DIR);
     const auto tempRoot = std::filesystem::path(NLS_BUILD_DIR) / "MetaParserInvalidPPtrFixture";
@@ -856,13 +893,12 @@ TEST(MetaParserGenerationModuleTests, RejectsPrivateAccessorPropertiesBeforeGene
             << "{\n"
             << "    GENERATED_BODY()\n"
             << "private:\n"
-            << "    PROPERTY(value)\n"
+            << "    PROPERTY(Getter(GetValue), Setter(SetValue))\n"
+            << "    int value = 0;\n"
             << "    FUNCTION()\n"
             << "    int GetValue() const { return value; }\n"
-            << "    PROPERTY(value)\n"
             << "    FUNCTION()\n"
             << "    void SetValue(int p_value) { value = p_value; }\n"
-            << "    int value = 0;\n"
             << "};\n"
             << "} // namespace NLS::Fixture\n";
     }
@@ -884,6 +920,364 @@ TEST(MetaParserGenerationModuleTests, RejectsPrivateAccessorPropertiesBeforeGene
     const std::string processText = ReadAllText(outputPath);
     ExpectContains(processText, "Private reflected accessor methods are not supported");
     ExpectContains(processText, "NLS::Fixture::PrivateAccessorFixture::GetValue");
+}
+
+TEST(MetaParserGenerationModuleTests, RejectsPropertyAnnotationsOnMethods)
+{
+    const auto root = std::filesystem::path(NLS_ROOT_DIR);
+    const auto tempRoot = std::filesystem::path(NLS_BUILD_DIR) / "MetaParserMethodPropertyFixture";
+    const auto runtimeDir = tempRoot / "Runtime" / "Fixture";
+    const auto outputDir = tempRoot / "Gen";
+    ResetTempDirectory(tempRoot);
+    std::filesystem::create_directories(runtimeDir);
+    std::filesystem::create_directories(outputDir);
+
+    const auto headerPath = runtimeDir / "MethodPropertyFixture.h";
+    {
+        std::ofstream header(headerPath);
+        header
+            << "#pragma once\n"
+            << "#include \"Reflection/Macros.h\"\n"
+            << "namespace NLS::Fixture {\n"
+            << "CLASS(MethodPropertyFixture)\n"
+            << "{\n"
+            << "    GENERATED_BODY()\n"
+            << "public:\n"
+            << "    PROPERTY(DisplayName(\"Value\"))\n"
+            << "    FUNCTION()\n"
+            << "    int GetValue() const { return 0; }\n"
+            << "};\n"
+            << "} // namespace NLS::Fixture\n";
+    }
+
+    const auto paramsPath = tempRoot / "MethodPropertyFixture.precompile.json";
+    WriteMetaParserConfig(
+        paramsPath,
+        tempRoot,
+        runtimeDir,
+        outputDir,
+        headerPath,
+        {
+            root / "Runtime" / "Base"
+        });
+
+    const auto outputPath = tempRoot / "metaparser.out.txt";
+    ExpectMetaParserFailure(paramsPath, outputPath);
+
+    const std::string processText = ReadAllText(outputPath);
+    ExpectContains(processText, "PROPERTY(...) may only annotate a field");
+    ExpectContains(processText, "PROPERTY(Getter(Name), Setter(Name))");
+}
+
+TEST(MetaParserGenerationModuleTests, BindsFieldsDirectlyWhenNoAccessorsAreDeclared)
+{
+    const auto root = std::filesystem::path(NLS_ROOT_DIR);
+    const auto tempRoot = std::filesystem::path(NLS_BUILD_DIR) / "MetaParserUnmarkedAccessorFixture";
+    const auto runtimeDir = tempRoot / "Runtime" / "Fixture";
+    const auto outputDir = tempRoot / "Gen";
+    ResetTempDirectory(tempRoot);
+    std::filesystem::create_directories(runtimeDir);
+    std::filesystem::create_directories(outputDir);
+
+    const auto headerPath = runtimeDir / "UnmarkedAccessorFixture.h";
+    {
+        std::ofstream header(headerPath);
+        header
+            << "#pragma once\n"
+            << "#include \"Reflection/Macros.h\"\n"
+            << "namespace NLS::Fixture {\n"
+            << "CLASS(UnmarkedAccessorFixture)\n"
+            << "{\n"
+            << "    GENERATED_BODY()\n"
+            << "public:\n"
+            << "    PROPERTY(DisplayName(\"Value\"))\n"
+            << "    int value = 0;\n"
+            << "    FUNCTION()\n"
+            << "    int GetValue() const { return value; }\n"
+            << "    FUNCTION()\n"
+            << "    void SetValue(int p_value) { value = p_value; }\n"
+            << "};\n"
+            << "} // namespace NLS::Fixture\n";
+    }
+
+    const auto paramsPath = tempRoot / "UnmarkedAccessorFixture.precompile.json";
+    WriteMetaParserConfig(
+        paramsPath,
+        tempRoot,
+        runtimeDir,
+        outputDir,
+        headerPath,
+        {
+            root / "Runtime" / "Base"
+        });
+
+    const auto outputPath = tempRoot / "metaparser.out.txt";
+    ExpectMetaParserSuccess(paramsPath, outputPath);
+
+    const auto generatedSource = outputDir / "UnmarkedAccessorFixture.generated.cpp";
+    const std::string sourceText = ReadAllText(generatedSource);
+
+    ExpectContains(
+        sourceText,
+        "AddField<NLS::Fixture::UnmarkedAccessorFixture, int>(\"value\", &NLS::Fixture::UnmarkedAccessorFixture::value, &NLS::Fixture::UnmarkedAccessorFixture::value");
+    ExpectContains(sourceText, "AddMethod(\"GetValue\"");
+    ExpectContains(sourceText, "AddMethod(\"SetValue\"");
+    ExpectNotContains(
+        sourceText,
+        "AddField<NLS::Fixture::UnmarkedAccessorFixture, int>(\"value\", static_cast<int (NLS::Fixture::UnmarkedAccessorFixture::*)() const>(&NLS::Fixture::UnmarkedAccessorFixture::GetValue)");
+}
+
+namespace
+{
+struct MetaParserFixtureResult
+{
+    bool succeeded = false;
+    std::string generatedSource;
+    std::string processOutput;
+};
+
+MetaParserFixtureResult RunAccessorGrammarFixture(
+    const std::filesystem::path& root,
+    const std::string& fixtureName,
+    const std::string& className,
+    const std::string& classBody)
+{
+    const auto tempRoot = std::filesystem::path(NLS_BUILD_DIR) / ("MetaParser" + fixtureName + "Fixture");
+    const auto runtimeDir = tempRoot / "Runtime" / "Fixture";
+    const auto outputDir = tempRoot / "Gen";
+    std::error_code cleanupError;
+    std::filesystem::remove_all(tempRoot, cleanupError);
+    std::filesystem::create_directories(runtimeDir);
+    std::filesystem::create_directories(outputDir);
+
+    const auto headerPath = runtimeDir / (fixtureName + ".h");
+    std::string headerText =
+        "#pragma once\n"
+        "#include \"Reflection/Macros.h\"\n"
+        "namespace NLS::Fixture {\n"
+        "CLASS(" + className + ")\n"
+        "{\n"
+        "    GENERATED_BODY()\n" + classBody + "};\n"
+        "} // namespace NLS::Fixture\n";
+    WriteTextFile(headerPath, headerText);
+
+    const auto paramsPath = tempRoot / (fixtureName + ".precompile.json");
+    WriteMetaParserConfig(
+        paramsPath,
+        tempRoot,
+        runtimeDir,
+        outputDir,
+        headerPath,
+        {
+            root / "Runtime" / "Base"
+        });
+
+    MetaParserFixtureResult result;
+    const auto outputPath = tempRoot / "metaparser.out.txt";
+    result.succeeded = RunMetaParser(paramsPath, outputPath);
+    result.processOutput = ReadOptionalText(outputPath);
+
+    const auto generatedSource = outputDir / (fixtureName + ".generated.cpp");
+    if (std::filesystem::exists(generatedSource))
+        result.generatedSource = ReadAllText(generatedSource);
+    return result;
+}
+} // namespace
+
+TEST(MetaParserGenerationModuleTests, BindsAccessorsDeclaredInsideTheFieldPropertyAnnotation)
+{
+    const auto root = std::filesystem::path(NLS_ROOT_DIR);
+    const auto fixture = RunAccessorGrammarFixture(
+        root,
+        "AccessorBinding",
+        "AccessorBindingFixture",
+        "public:\n"
+        "    PROPERTY(DisplayName(\"Value\"), Getter(GetValue), Setter(SetValue))\n"
+        "    int value = 0;\n"
+        "    FUNCTION()\n"
+        "    int GetValue() const { return value; }\n"
+        "    FUNCTION()\n"
+        "    void SetValue(int p_value) { value = p_value; }\n");
+
+    ASSERT_TRUE(fixture.succeeded) << fixture.processOutput;
+    ExpectContains(fixture.generatedSource, "AddField<NLS::Fixture::AccessorBindingFixture, int>(\"value\"");
+    ExpectContains(fixture.generatedSource, "&NLS::Fixture::AccessorBindingFixture::GetValue");
+    ExpectContains(fixture.generatedSource, "&NLS::Fixture::AccessorBindingFixture::SetValue");
+    ExpectNotContains(fixture.generatedSource, "AddField<NLS::Fixture::AccessorBindingFixture, int>(\"value\", &NLS::Fixture::AccessorBindingFixture::value");
+}
+
+TEST(MetaParserGenerationModuleTests, BindsReadOnlyPropertyWhenOnlyAGetterIsDeclared)
+{
+    const auto root = std::filesystem::path(NLS_ROOT_DIR);
+    const auto fixture = RunAccessorGrammarFixture(
+        root,
+        "ReadOnlyAccessor",
+        "ReadOnlyAccessorFixture",
+        "public:\n"
+        "    PROPERTY(DisplayName(\"Value\"), Getter(GetValue))\n"
+        "    int value = 0;\n"
+        "    FUNCTION()\n"
+        "    int GetValue() const { return value; }\n");
+
+    ASSERT_TRUE(fixture.succeeded) << fixture.processOutput;
+    ExpectContains(fixture.generatedSource, "AddField<NLS::Fixture::ReadOnlyAccessorFixture, int>(\"value\"");
+    ExpectContains(fixture.generatedSource, "&NLS::Fixture::ReadOnlyAccessorFixture::GetValue");
+    ExpectContains(fixture.generatedSource, "static_cast<void (NLS::Fixture::ReadOnlyAccessorFixture::*)(int)>(nullptr)");
+}
+
+TEST(MetaParserGenerationModuleTests, EmitsFormerlySerializedAsMetadataWithoutRenamingTheField)
+{
+    const auto root = std::filesystem::path(NLS_ROOT_DIR);
+    const auto fixture = RunAccessorGrammarFixture(
+        root,
+        "RenamedField",
+        "RenamedFieldFixture",
+        "public:\n"
+        "    PROPERTY(DisplayName(\"Local Position\"), FormerlySerializedAs(\"localPosition\"))\n"
+        "    int value = 0;\n");
+
+    ASSERT_TRUE(fixture.succeeded) << fixture.processOutput;
+    ExpectContains(fixture.generatedSource, "MetaPropertyInitializer<NLS::meta::FormerlySerializedAs>(\"localPosition\")");
+    ExpectContains(fixture.generatedSource, "AddField<NLS::Fixture::RenamedFieldFixture, int>(\"value\"");
+}
+
+TEST(MetaParserGenerationModuleTests, RejectsBarePropertyArguments)
+{
+    const auto root = std::filesystem::path(NLS_ROOT_DIR);
+    const auto fixture = RunAccessorGrammarFixture(
+        root,
+        "BarePropertyArgument",
+        "BarePropertyArgumentFixture",
+        "public:\n"
+        "    PROPERTY(value)\n"
+        "    int value = 0;\n");
+
+    EXPECT_FALSE(fixture.succeeded) << fixture.processOutput;
+    ExpectContains(fixture.processOutput, "Unsupported PROPERTY argument `value`");
+}
+
+TEST(MetaParserGenerationModuleTests, RejectsSetterWithoutGetter)
+{
+    const auto root = std::filesystem::path(NLS_ROOT_DIR);
+    const auto fixture = RunAccessorGrammarFixture(
+        root,
+        "SetterOnly",
+        "SetterOnlyFixture",
+        "public:\n"
+        "    PROPERTY(Setter(SetValue))\n"
+        "    int value = 0;\n"
+        "    FUNCTION()\n"
+        "    void SetValue(int p_value) { value = p_value; }\n");
+
+    EXPECT_FALSE(fixture.succeeded) << fixture.processOutput;
+    ExpectContains(fixture.processOutput, "without Getter(...)");
+}
+
+TEST(MetaParserGenerationModuleTests, RejectsMissingAccessorMethod)
+{
+    const auto root = std::filesystem::path(NLS_ROOT_DIR);
+    const auto fixture = RunAccessorGrammarFixture(
+        root,
+        "MissingAccessor",
+        "MissingAccessorFixture",
+        "public:\n"
+        "    PROPERTY(Getter(GetMissing))\n"
+        "    int value = 0;\n");
+
+    EXPECT_FALSE(fixture.succeeded) << fixture.processOutput;
+    ExpectContains(fixture.processOutput, "does not exist");
+    ExpectContains(fixture.processOutput, "NLS::Fixture::MissingAccessorFixture::GetMissing");
+}
+
+TEST(MetaParserGenerationModuleTests, RejectsAccessorWithMismatchedSignature)
+{
+    const auto root = std::filesystem::path(NLS_ROOT_DIR);
+    const auto fixture = RunAccessorGrammarFixture(
+        root,
+        "MismatchedGetter",
+        "MismatchedGetterFixture",
+        "public:\n"
+        "    PROPERTY(Getter(GetValue))\n"
+        "    int value = 0;\n"
+        "    FUNCTION()\n"
+        "    int GetValue(int p_index) const { return value + p_index; }\n");
+
+    EXPECT_FALSE(fixture.succeeded) << fixture.processOutput;
+    ExpectContains(fixture.processOutput, "no public overload matches");
+    ExpectContains(fixture.processOutput, "A getter must take no arguments and return a value.");
+}
+
+TEST(MetaParserGenerationModuleTests, RejectsAccessorWithIncompatibleTypes)
+{
+    const auto root = std::filesystem::path(NLS_ROOT_DIR);
+    const auto fixture = RunAccessorGrammarFixture(
+        root,
+        "IncompatibleAccessors",
+        "IncompatibleAccessorsFixture",
+        "public:\n"
+        "    PROPERTY(Getter(GetValue), Setter(SetValue))\n"
+        "    int value = 0;\n"
+        "    FUNCTION()\n"
+        "    int GetValue() const { return value; }\n"
+        "    FUNCTION()\n"
+        "    void SetValue(float p_value) { value = static_cast<int>(p_value); }\n");
+
+    EXPECT_FALSE(fixture.succeeded) << fixture.processOutput;
+    ExpectContains(fixture.processOutput, "has incompatible accessor types");
+}
+
+TEST(MetaParserGenerationModuleTests, RejectsAmbiguousAccessorOverloads)
+{
+    const auto root = std::filesystem::path(NLS_ROOT_DIR);
+    const auto fixture = RunAccessorGrammarFixture(
+        root,
+        "AmbiguousAccessor",
+        "AmbiguousAccessorFixture",
+        "public:\n"
+        "    PROPERTY(Getter(GetValue), Setter(SetValue))\n"
+        "    int value = 0;\n"
+        "    FUNCTION()\n"
+        "    int GetValue() const { return value; }\n"
+        "    FUNCTION()\n"
+        "    void SetValue(int p_value) { value = p_value; }\n"
+        "    FUNCTION()\n"
+        "    void SetValue(const int& p_value) { value = p_value; }\n");
+
+    EXPECT_FALSE(fixture.succeeded) << fixture.processOutput;
+    ExpectContains(fixture.processOutput, "ambiguously");
+}
+
+TEST(MetaParserGenerationModuleTests, RejectsDuplicateAccessorBindings)
+{
+    const auto root = std::filesystem::path(NLS_ROOT_DIR);
+    const auto fixture = RunAccessorGrammarFixture(
+        root,
+        "DuplicateGetter",
+        "DuplicateGetterFixture",
+        "public:\n"
+        "    PROPERTY(Getter(GetValue), Getter(GetValue))\n"
+        "    int value = 0;\n"
+        "    FUNCTION()\n"
+        "    int GetValue() const { return value; }\n");
+
+    EXPECT_FALSE(fixture.succeeded) << fixture.processOutput;
+    ExpectContains(fixture.processOutput, "declares Getter(...) more than once");
+}
+
+TEST(MetaParserGenerationModuleTests, RejectsGetterAndSetterArgumentsOnFunctions)
+{
+    const auto root = std::filesystem::path(NLS_ROOT_DIR);
+    const auto fixture = RunAccessorGrammarFixture(
+        root,
+        "AccessorOnMethod",
+        "AccessorOnMethodFixture",
+        "public:\n"
+        "    int value = 0;\n"
+        "    FUNCTION(Getter(GetValue))\n"
+        "    int GetValue() const { return value; }\n");
+
+    EXPECT_FALSE(fixture.succeeded) << fixture.processOutput;
+    ExpectContains(fixture.processOutput, "Getter(...)/Setter(...) belong on the PROPERTY annotation of the backing field.");
 }
 
 TEST(MetaParserGenerationModuleTests, RejectsMalformedRangeMetadataBeforeGeneratingCpp)
@@ -972,7 +1366,7 @@ TEST(MetaParserGenerationModuleTests, RejectsUnknownPropertyMetadataBeforeGenera
     ExpectMetaParserFailure(paramsPath, outputPath);
 
     const std::string processText = ReadAllText(outputPath);
-    ExpectContains(processText, "Unsupported PROPERTY metadata token");
+    ExpectContains(processText, "Unsupported PROPERTY argument");
     ExpectContains(processText, "Rnage(0, 1)");
 }
 
@@ -1059,10 +1453,16 @@ TEST(MetaParserGenerationModuleTests, GeneratedSourcesRegisterEnumTypesWithoutGe
 TEST(MetaParserGenerationModuleTests, GeneratesComponentMenuTypeMetadataBindings)
 {
     const std::filesystem::path meshRendererSource = std::filesystem::path(NLS_ROOT_DIR) / "Runtime/Engine/Gen/Components/MeshRenderer.generated.cpp";
+    const std::filesystem::path cameraSource = std::filesystem::path(NLS_ROOT_DIR) / "Runtime/Engine/Gen/Components/CameraComponent.generated.cpp";
     const std::string meshRendererText = ReadAllText(meshRendererSource);
+    const std::string cameraText = ReadAllText(cameraSource);
 
     ExpectContains(meshRendererText, "ComponentMenu");
     ExpectContains(meshRendererText, "Rendering/Mesh Renderer");
+    ExpectContains(meshRendererText, "NLS::meta::DisallowMultipleComponent");
+    ExpectContains(meshRendererText, "NLS::meta::RequireComponent");
+    ExpectContains(meshRendererText, "NLS::Engine::Components::MeshFilter");
+    ExpectContains(cameraText, "NLS::meta::DisallowMultipleComponent");
     ExpectContains(meshRendererText, "type.meta");
 }
 
@@ -1085,6 +1485,22 @@ TEST(MetaParserGenerationModuleTests, MapsDenseRuntimeMetaPropertyGeneratedBodie
         "NLS::meta::StableTypeName",
         "NLS::meta::FormerlyTypeName",
         "NLS::meta::ComponentMenu",
+        "NLS::meta::DisallowMultipleComponent",
+        "NLS::meta::RequireComponent",
+        "NLS::meta::RequiresRestart",
+        "NLS::meta::Range",
+        "NLS::meta::DisplayName",
+        "NLS::meta::Tooltip",
+        "NLS::meta::Header",
+        "NLS::meta::Space",
+        "NLS::meta::Min",
+        "NLS::meta::Max",
+        "NLS::meta::Multiline",
+        "NLS::meta::ReadOnly",
+        "NLS::meta::HideInInspector",
+        "NLS::meta::Flags",
+        "NLS::meta::ColorUsage",
+        "NLS::meta::ReferenceTypeConstraint",
     };
 
     std::size_t previousPosition = 0;

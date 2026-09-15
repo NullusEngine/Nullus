@@ -15,6 +15,9 @@ void MenuItem::_Draw_Impl()
     if (ImGui::MenuItem((name + m_widgetID).c_str(), shortcut.c_str(), checkable ? &checked : nullptr, enabled))
         ClickedEvent.Invoke();
 
+    if (!tooltip.empty() && ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+        ImGui::SetTooltip("%s", tooltip.c_str());
+
     if (checked != previousValue)
     {
         ValueChangedEvent.Invoke(checked);

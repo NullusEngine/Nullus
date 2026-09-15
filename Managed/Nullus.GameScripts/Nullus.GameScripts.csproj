@@ -28,7 +28,7 @@
     <Compile Include="GameScriptsMarker.cs" />
     <Compile Include="$(NullusProjectAssets)/**/*.cs"
              Condition="Exists('$(NullusProjectAssets)')"
-             Exclude="$(MSBuildProjectDirectory)/**/*.cs"
+             Exclude="$(MSBuildProjectDirectory)/**/*.cs;$(NullusProjectAssets)/**/Editor/**/*.cs"
              Link="Assets\%(RecursiveDir)%(Filename)%(Extension)" />
     <!-- Visual Studio is an external editor/debug client. The running Editor
          builds the runtime assembly with the repository-local SDK and source

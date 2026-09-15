@@ -180,8 +180,10 @@ void BuiltInScriptRegistry::Refresh(const std::filesystem::path& installRoot)
     const auto root = installRoot.lexically_normal();
     std::unordered_set<std::string> visitedFiles;
     // Source checkout layout.  This is the canonical location for scripts
-    // that ship with the current Nullus build.
-    ScanScriptRoot(root / "Managed" / "Nullus.EngineScripts" / "Scripts", {}, visitedFiles);
+    // that ship with the current Nullus build.  Keep the logical source path
+    // project-relative so a built-in script keeps one stable AssetId across the
+    // source checkout and packaged layouts.
+    ScanScriptRoot(root / "Managed" / "Nullus.EngineScripts" / "Scripts", "Assets/Engine/", visitedFiles);
     // Packaged/editor layout.  Keep this path available for installations that
     // ship engine scripts as regular Engine assets instead of source projects.
     ScanScriptRoot(root / "Assets" / "Engine" / "Scripts", "Assets/Engine/", visitedFiles);

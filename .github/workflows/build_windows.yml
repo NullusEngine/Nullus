@@ -38,7 +38,9 @@ jobs:
           dotnet restore 'Managed/Nullus.ScriptAnalysis/Nullus.ScriptAnalysis.csproj' --nologo
           dotnet restore 'Managed/Nullus.Managed/Nullus.Managed.csproj' --nologo
           dotnet restore 'Managed/Nullus.EngineScripts/Nullus.EngineScripts.csproj' --nologo
+          dotnet restore 'Managed/Nullus.Editor/Nullus.Editor.csproj' --nologo
           dotnet restore 'Managed/Nullus.GameScripts/Nullus.GameScripts.csproj' --nologo
+          dotnet restore 'Managed/Nullus.GameScriptsEditor/Nullus.GameScriptsEditor.csproj' --nologo
 
       - name: Install Vulkan SDK
         timeout-minutes: 30

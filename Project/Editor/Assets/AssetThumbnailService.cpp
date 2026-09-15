@@ -4652,7 +4652,7 @@ NLS::Render::Assets::MeshArtifactData TransformPrefabPreviewMeshInstance(
     return mesh;
 }
 
-std::array<float, 4u> ShadeUnityPreviewMaterial(
+std::array<float, 4u> ShadeEnginePreviewMaterial(
     const MaterialPreviewStyle& material,
     const std::array<float, 3u>& normal,
     const std::array<float, 2u>& uv)
@@ -4889,7 +4889,7 @@ DownsampledThumbnail RenderMeshSetThumbnail(
                     a.uv[0] * b0 + b.uv[0] * b1 + c.uv[0] * b2,
                     a.uv[1] * b0 + b.uv[1] * b1 + c.uv[1] * b2
                 };
-                const auto shaded = ShadeUnityPreviewMaterial(material, normal, uv);
+                const auto shaded = ShadeEnginePreviewMaterial(material, normal, uv);
                 const auto alpha = static_cast<uint8_t>(std::clamp(shaded[3] * 255.0f, 0.0f, 255.0f));
                 PutPixel(
                     canvas,

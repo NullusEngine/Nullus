@@ -124,9 +124,18 @@ Reflect properties when they represent stable consumer-facing state.
 
 Prefer these patterns:
 
-1. Auto property inference when `FUNCTION()` marks a clean `GetXxx` / `SetXxx` pair
-2. Explicit `PROPERTY(...)` when the exposed property name differs from accessor naming
-3. External property declarations when the type should stay free of inline reflection macros
+1. Annotate the storage field with `PROPERTY(...)`; the reflected name is the real field name
+2. Bind accessors with `Getter(Name)` / `Setter(Name)` inside that same `PROPERTY(...)`
+3. Use `DisplayName(...)` for the editor label; it never changes the serialized name
+4. Use `FormerlySerializedAs("oldName")` when a field is renamed but old payloads must keep loading
+5. External property declarations when the type should stay free of inline reflection macros
+
+Naming rules:
+
+- A field annotated with `PROPERTY` *is* the serialized field, so the field name is the serialized key; reflected data members do not use the `m_` prefix (`localPosition`, `skyMode`, `document`), matching the existing reflected structs such as `EditorSettings`.
+- When encapsulation is needed, expose the accessors separately with `FUNCTION(...)` and keep the field name unchanged.
+- When a field is renamed and old payloads must keep loading, write `FormerlySerializedAs("oldName")`; never invent a field name that does not exist just to keep a legacy key.
+- Keys that cannot become member names, such as the Windows `near` / `far` macros, follow the same rename plus `FormerlySerializedAs` route; `CameraComponent.nearClip` / `farClip` is the precedent.
 
 Do not expose internal cache values or fields whose read or write behavior is misleading for metadata consumers.
 
@@ -143,38 +152,50 @@ Do not expose lifecycle callbacks or purely internal helpers unless a real consu
 
 ## Supported patterns with examples
 
-### Pattern 1: Inline reflected type
+### Pattern 1: Field-backed property
 
 ```cpp
-CLASS(CameraComponent) : public Component
-{
-public:
-    GENERATED_BODY()
-
-    FUNCTION()
-    void SetFov(float value);
-
-    FUNCTION()
-    float GetFov() const;
-};
+PROPERTY(DisplayName("Local Position"))
+Maths::Vector3 localPosition;
 ```
 
-Because the names line up, `GetFov` + `SetFov` becomes the reflected property `fov`.
+The reflected property is `localPosition`, the real field name. `DisplayName` only
+controls the editor label and never participates in serialization paths, prefab
+overrides or undo records.
 
-### Pattern 2: Explicit property name
+### Pattern 2: Explicit accessors
 
-Use this when the property name and accessor names do not match cleanly:
+Declaration order matters: accessors live inside the same `PROPERTY(...)`:
 
 ```cpp
-PROPERTY(name = active, getter = IsSelfActive, setter = SetActive)
+PROPERTY(DisplayName("Active"), Getter(GetActive), Setter(SetActive))
+bool active;
+
+FUNCTION(Scriptable)
+bool GetActive() const;
+
+FUNCTION(Scriptable)
+void SetActive(bool value);
 ```
 
-Current repository examples:
+Rules:
 
-- `GameObject.active`
-- `MeshFilter.mesh`
+- `Getter` / `Setter` take a member function name and nothing else; there is no `GetXxx` / `SetXxx` inference.
+- A `Getter(...)` without `Setter(...)` produces a read-only property; a `Setter(...)` without `Getter(...)` is rejected.
+- Accessors must be public, non-static, signature-compatible and unambiguous.
+- The accessor keeps its own `FUNCTION(...)` annotation to stay exposed as a script method.
 
-### Pattern 3: External reflection declaration
+### Pattern 3: Renamed field with legacy payloads
+
+```cpp
+PROPERTY(DisplayName("Near Clip"), FormerlySerializedAs("near"), Getter(GetNear), Setter(SetNear))
+float nearClip = 0.1f;
+```
+
+`FormerlySerializedAs` still resolves old payloads through the historical name while
+new writes use the real field name.
+
+### Pattern 4: External reflection declaration
 
 Use this when the target type should not be annotated directly:
 
@@ -197,7 +218,7 @@ REFLECT_EXTERNAL(
 )
 ```
 
-### Pattern 4: Private external binding
+### Pattern 5: Private external binding
 
 Use only when needed, and only deliberately:
 
@@ -217,12 +238,22 @@ This works through generated access helpers and should remain the exception, not
 
 ## Supported pattern matrix
 
+## How editor scripts use SerializedObject
+
+`SerializedObject` / `SerializedProperty` are editor-only; the player scripting assembly does not contain them:
+
+- The single canonical implementation is the native `NLS::Editor::Serialization::SerializedObject` (TypeTree + byte stream + staged snapshot).
+- The editor assembly `Nullus.Editor.dll` only wraps native handles (source file `Managed/Nullus.Managed/EditorSerializedObject.cs`), and `Nullus.Managed.csproj` keeps it out of the player assembly with `<Compile Remove>`.
+- When the editor starts, `Context` calls `InstallManagedSerializationBridge` once CoreCLR is up, handing `GetEditorSerializationApiTable()` to `Nullus.Editor.EditorSerializationHost.Install`. After that `new SerializedObject(target)` / `FindProperty(...)` / `ApplyModifiedProperties()` work directly; without an installation the wrapper reports `IsValid == false` and access throws `InvalidOperationException`.
+- The CMake managed rule writes `Nullus.Editor.dll` to `build/Managed/<config>/` next to the project scripting assembly, which is where the host looks for it.
+
 | Pattern | Use when | Typical macros | Current repository examples |
 | --- | --- | --- | --- |
 | Inline reflected type | The engine owns the type and consumers need stable runtime metadata | `CLASS` / `STRUCT` / `GENERATED_BODY` / `FUNCTION` | `TransformComponent`, `CameraComponent`, `GameObject`, `Scene` |
 | Reflected enum | The enum appears in reflected fields or editor choices | `ENUM` | `EProjectionMode`, `ELightType`, `MeshRenderer::EFrustumBehaviour` |
-| Auto property | Getter and setter names line up cleanly as `GetXxx` / `SetXxx` | `FUNCTION` on both accessors | `fov`, `near`, `far`, `lightType`, `materialPaths` |
-| Explicit property | The exposed property name differs from accessor naming | `PROPERTY(...)` plus matching accessors | `GameObject.active`, `MeshFilter.mesh` |
+| Field-backed property | The field itself is the consumer-facing state | `PROPERTY(...)` on the field | `TransformComponent.localPosition`, `SkyBoxComponent.skyMode` |
+| Accessor-backed property | Encapsulation, conversion or side effects are required | `PROPERTY(Getter(...), Setter(...))` | `GameObject.active`, `MeshFilter.mesh`, `UICanvasComponent.document` |
+| Renamed field | The field was renamed but old payloads must keep loading | `PROPERTY(FormerlySerializedAs(\"oldName\"), ...)` | `CameraComponent.nearClip` (legacy `near`) |
 | External reflection | The target type should stay free of inline reflection macros | `MetaExternal` + `REFLECT_EXTERNAL` | `NLS::Maths::Vector3`, `NLS::Maths::Quaternion` |
 | Private external reflection | A private member must be exposed deliberately and exceptionally | `REFLECT_PRIVATE_*` | `PrivateReflectionExternalSample` |
 

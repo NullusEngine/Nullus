@@ -110,8 +110,10 @@ namespace NLS::Engine::UI
             const auto indexOffset = static_cast<uint32_t>(result->indices.size());
             const auto clipOffset = static_cast<uint32_t>(result->clips.size());
             result->vertices.insert(result->vertices.end(), snapshot->vertices.begin(), snapshot->vertices.end());
-            for (const auto index : snapshot->indices)
-                result->indices.push_back(index + vertexOffset);
+            // Batch indices stay relative to their own batch base; the batch base
+            // is rebased below. Rebasing the indices here as well added the canvas
+            // vertex base twice and shifted every quad.
+            result->indices.insert(result->indices.end(), snapshot->indices.begin(), snapshot->indices.end());
             result->clips.insert(result->clips.end(), snapshot->clips.begin(), snapshot->clips.end());
             result->diagnostics.nodeCount += snapshot->diagnostics.nodeCount;
             result->diagnostics.visibleNodeCount += snapshot->diagnostics.visibleNodeCount;

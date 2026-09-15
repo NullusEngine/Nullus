@@ -17,7 +17,10 @@
 
 #define DISABLE_VARIANT                  \
     typename std::enable_if<             \
-        !std::is_same<Variant, T>::value \
+        !std::is_same<                   \
+            Variant,                     \
+            typename std::decay<T>::type \
+        >::value                         \
     >::type*                             \
 
 #define DISABLE_VARIANT_DECL DISABLE_VARIANT = nullptr
@@ -46,7 +49,7 @@ namespace NLS::meta
     public:
         Variant(void);
 
-        // Given a type that inherits from the Unity-style Object root and
+        // Given a type that inherits from the engine-style Object root and
         // supplied with the "WrapObject" policy, use the object wrapper
         // variant base 
         template<typename T>

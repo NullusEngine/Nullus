@@ -1106,6 +1106,8 @@ std::optional<EditorAssetDragPayload> MakeAssetBrowserItemDragPayload(
     const AssetBrowserItem& item,
     const AssetDatabaseFacade* database);
 
+bool ShouldUseEditorAssetDragPayload(const AssetBrowserItem& item);
+
 struct AssetBrowserSubAssetEntry
 {
     std::string displayName;
@@ -1134,6 +1136,24 @@ std::vector<ObjectReferencePickerEntry> BuildObjectReferencePickerEntriesFromSna
 
 std::vector<ObjectReferencePickerEntry> BuildObjectReferencePickerEntries(
     const AssetDatabaseFacade& database);
+
+// Scans the mounted asset roots instead of the database snapshot. UI documents
+// are authoring sources whose picker entry must not depend on an import having
+// published an artifact yet, so the Inspector lists them from disk as well.
+std::vector<ObjectReferencePickerEntry> BuildObjectReferencePickerEntriesFromAssetRoots(
+    const std::vector<EditorAssetRoot>& roots);
+
+// Appends every UI document found under the mounted asset roots that the given
+// catalog does not already contain. Both the synchronous refresh and the asset
+// browser's asynchronous publish path route through this so an imported catalog
+// can never drop documents the picker is required to offer.
+std::vector<ObjectReferencePickerEntry> AppendObjectReferencePickerEntriesFromAssetRoots(
+    std::vector<ObjectReferencePickerEntry> entries);
+
+// Re-adds every UI document under the mounted asset roots to the published
+// catalog. Invalidation paths call this right after clearing so the Canvas
+// Document field never loses the documents it has to keep offering.
+void AppendObjectReferencePickerAuthoringDocuments();
 
 void SetObjectReferencePickerAssetRoots(std::vector<EditorAssetRoot> roots);
 std::vector<EditorAssetRoot> GetObjectReferencePickerAssetRoots();

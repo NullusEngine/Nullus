@@ -31,7 +31,7 @@ namespace NLS::Engine::Serialize
 
             ObjectGraphDocument document;
             document.format = "Nullus.ObjectGraph.Scene";
-            document.version = 1;
+            document.version = 2;
             document.documentId = NLS::Guid::NewDeterministic("ObjectGraph.Scene.Document");
 
             const auto sceneId = context.GetId(&scene, "Scene.Root");
@@ -74,7 +74,7 @@ namespace NLS::Engine::Serialize
 
             PrefabDocument prefab;
             prefab.graph.format = "Nullus.ObjectGraph.Prefab";
-            prefab.graph.version = 1;
+            prefab.graph.version = 2;
             prefab.graph.documentId = NLS::Guid::NewDeterministic("ObjectGraph.Prefab.Document:" + root.GetName());
 
             PreassignGameObjectIds(root, context);
@@ -98,6 +98,14 @@ namespace NLS::Engine::Serialize
                 if (type.IsValid())
                     WriteReflectedFields(object, type, record);
             }
+
+            // `enabled` is deliberately graph-owned rather than reflected: it
+            // belongs to every component, including components that serialize
+            // their own payload (such as ScriptComponent).  Older v1 graphs do
+            // not carry it and therefore retain Component's default `true` on
+            // load.
+            if (const auto* component = dynamic_cast<const Components::Component*>(&object))
+                record.properties.push_back({"enabled", PropertyValue::Bool(component->IsSelfEnabled())});
             return record;
         }
 

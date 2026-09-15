@@ -290,6 +290,11 @@ std::string ManagedScriptBuildService::BuildCommand(const ManagedScriptBuildRequ
     const auto engineProject = projectPaths.has_value()
         ? projectPaths->managedProjectRoot / "Managed" / "Nullus.EngineScripts" / "Nullus.EngineScripts.csproj"
         : request.projectRoot / "Managed" / "Nullus.EngineScripts" / "Nullus.EngineScripts.csproj";
+    // Project editor scripts compile into their own assembly beside the runtime
+    // one, so editor-only code never reaches the player build.
+    const auto editorScriptsProject = projectPaths.has_value()
+        ? projectPaths->managedProjectRoot / "Managed" / "Nullus.GameScriptsEditor" / "Nullus.GameScriptsEditor.csproj"
+        : request.projectRoot / "Managed" / "Nullus.GameScriptsEditor" / "Nullus.GameScriptsEditor.csproj";
     const auto outputRoot = request.outputRoot.empty()
         ? request.projectRoot / "Library" / "ScriptBuild" / "Managed"
         : request.outputRoot;
@@ -338,9 +343,20 @@ std::string ManagedScriptBuildService::BuildCommand(const ManagedScriptBuildRequ
         " -p:DebugType=portable -p:DebugSymbols=true -p:Optimize=false" +
         " -p:Deterministic=true -p:OutputPath=" + Quote(staging) +
         " -p:ErrorLog=" + Quote(diagnostics);
+    const auto editorScriptsBuild = Quote(dotnet) + " build " + Quote(editorScriptsProject) +
+        " --configuration " + request.configuration +
+        " --no-restore --no-incremental --nologo" +
+        " -p:NullusProjectAssets=" + Quote(request.projectRoot / "Assets") +
+        " -p:NullusGameScriptsPath=" + Quote(staging / "GameScripts.dll") +
+        " -p:NullusUsePrebuiltScriptGenerator=true" +
+        " -p:NullusScriptGeneratorPath=" + Quote(staging / "Nullus.ScriptGenerator.dll") +
+        " -p:NullusUseScriptAnalysis=false" +
+        " -p:DebugType=portable -p:DebugSymbols=true -p:Optimize=false" +
+        " -p:Deterministic=true -p:OutputPath=" + Quote(staging);
     return generatorBuild + " && " + environmentPrefix + managedBuild +
         " && " + environmentPrefix + engineBuild +
-        " && " + environmentPrefix + gameBuild;
+        " && " + environmentPrefix + gameBuild +
+        " && " + environmentPrefix + editorScriptsBuild;
 }
 
 ManagedScriptBuildResult ManagedScriptBuildService::Build(const ManagedScriptBuildRequest& request)
@@ -373,6 +389,9 @@ ManagedScriptBuildResult ManagedScriptBuildService::Build(const ManagedScriptBui
         "GameScripts.pdb",
         "GameScripts.deps.json",
         "GameScripts.runtimeconfig.json",
+        "GameScriptsEditor.dll",
+        "GameScriptsEditor.pdb",
+        "GameScriptsEditor.deps.json",
         "EngineScripts.dll",
         "EngineScripts.pdb",
         "EngineScripts.deps.json",
@@ -533,6 +552,25 @@ ManagedScriptBuildResult ManagedScriptBuildService::Build(const ManagedScriptBui
         if (!copyRuntimeDependency(artifact))
         {
             result.output += "\nManaged build completed but the Nullus.Managed runtime dependency was missing.";
+            result.exitCode = -1;
+            return result;
+        }
+    }
+
+    // The editor resolves the project editor-scripts assembly beside the loaded
+    // scripting artifact, matching how Nullus.Managed is deployed. A project
+    // without an Editor directory simply produces no such assembly.
+    for (const auto* artifact : {
+        "GameScriptsEditor.dll",
+        "GameScriptsEditor.pdb",
+        "GameScriptsEditor.deps.json"})
+    {
+        std::error_code presenceError;
+        if (!std::filesystem::is_regular_file(staging / artifact, presenceError))
+            continue;
+        if (!copyRuntimeDependency(artifact))
+        {
+            result.output += "\nManaged build completed but the GameScriptsEditor artifact was missing.";
             result.exitCode = -1;
             return result;
         }

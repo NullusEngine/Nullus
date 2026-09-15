@@ -459,19 +459,6 @@ internal static partial class MetaParserTool
         return separatorIndex >= 0 ? fullTypeName[(separatorIndex + 2)..] : fullTypeName;
     }
 
-    private static string NormalizeRegistrationName(string text)
-    {
-        var trimmed = text.Trim();
-        if (trimmed.Length >= 2
-            && ((trimmed[0] == '"' && trimmed[^1] == '"')
-                || (trimmed[0] == '\'' && trimmed[^1] == '\'')))
-        {
-            return trimmed[1..^1].Trim();
-        }
-
-        return trimmed;
-    }
-
     private static List<ReflectBaseInfo> ExtractBases(CppClass cls)
     {
         var result = new List<ReflectBaseInfo>();
@@ -504,21 +491,53 @@ internal static partial class MetaParserTool
     private static List<ReflectFieldInfo> ExtractFields(CppClass cls, IReadOnlyDictionary<string, List<string>> visibleTypes)
     {
         var result = new List<ReflectFieldInfo>();
-        var methodCandidates = ExtractMethodCandidates(cls, visibleTypes);
+        var accessorCandidates = ExtractAccessorCandidates(cls, visibleTypes);
+        var declaredPropertyNames = new HashSet<string>(StringComparer.Ordinal);
         foreach (var field in cls.Fields)
         {
             try
             {
-                var propertyAttributes = GetReflectionAttributes(field, "Property").ToList();
+                var propertyAttributes = GetMacroReflectionAttributes(field, "Property");
                 if (propertyAttributes.Count == 0)
-                    continue;
-                if (field.Visibility != CppVisibility.Public &&
-                    field.Visibility != CppVisibility.Private &&
-                    field.Visibility != CppVisibility.Default)
                     continue;
                 if (field.StorageQualifier == CppStorageQualifier.Static)
                     continue;
                 if (string.IsNullOrWhiteSpace(field.Name))
+                    continue;
+
+                // A PROPERTY annotation never renames storage. The reflected
+                // property is the annotated field itself, so the serialized name
+                // is the real member name and DisplayName(...) owns the UI label.
+                var propertyName = field.Name;
+                if (!declaredPropertyNames.Add(propertyName))
+                {
+                    throw new FormatException(
+                        $"Property '{propertyName}' is declared more than once on '{cls.FullName}'. " +
+                        "Each PROPERTY declaration must annotate a unique field.");
+                }
+
+                var binding = ExtractPropertyAccessorBinding(cls.FullName, propertyName, propertyAttributes, accessorCandidates);
+                if (binding is not null)
+                {
+                    // The generated field must use the public accessor pair even
+                    // when PROPERTY annotates a private backing member.
+                    result.Add(new ReflectFieldInfo(
+                        propertyName,
+                        binding.PropertyTypeName,
+                        binding.GetterExpression,
+                        binding.SetterExpression,
+                        false,
+                        ExtractPropertyMetas(propertyAttributes),
+                        HasScriptableMetadata(propertyAttributes, "Property")));
+                    continue;
+                }
+
+                // A protected field is not directly addressable from the
+                // generated registration unit. It may still declare a
+                // property when a public accessor pair owns the binding.
+                if (field.Visibility != CppVisibility.Public &&
+                    field.Visibility != CppVisibility.Private &&
+                    field.Visibility != CppVisibility.Default)
                     continue;
 
                 var typeName = NormalizeAstMemberTypeName(field.Type, cls, visibleTypes);
@@ -529,7 +548,7 @@ internal static partial class MetaParserTool
                                      (field.Visibility == CppVisibility.Default && cls.ClassKind == CppClassKind.Class);
 
                 result.Add(new ReflectFieldInfo(
-                    field.Name,
+                    propertyName,
                     typeName,
                     $"&{cls.FullName}::{field.Name}",
                     $"&{cls.FullName}::{field.Name}",
@@ -545,11 +564,7 @@ internal static partial class MetaParserTool
             }
         }
 
-        result.AddRange(BuildAutoPropertyFields(cls.FullName, methodCandidates, []));
-
-        return result
-            .DistinctBy(f => f.Name)
-            .ToList();
+        return result;
     }
 
     private static List<ReflectMethodInfo> ExtractMethods(CppClass cls, IReadOnlyDictionary<string, List<string>> visibleTypes)
@@ -557,6 +572,7 @@ internal static partial class MetaParserTool
         var candidateMethods = ExtractMethodCandidates(cls, visibleTypes);
 
         var inlineMethods = candidateMethods
+            .Where(candidate => candidate.IsFunction)
             .Select(candidate => new ReflectMethodInfo(
                 candidate.Name,
                 candidate.PointerExpression,
@@ -564,8 +580,7 @@ internal static partial class MetaParserTool
                 candidate.IsPrivate,
                 candidate.ReturnTypeName,
                 candidate.ParameterTypeNames,
-                candidate.IsScriptable,
-                candidate.PropertyName))
+                candidate.IsScriptable))
             .ToList();
 
         return inlineMethods
@@ -581,12 +596,38 @@ internal static partial class MetaParserTool
         {
             try
             {
-                if (!HasFunctionMarker(method))
+                var propertyAttributes = GetMacroReflectionAttributes(method, "Property");
+                if (propertyAttributes.Count > 0)
+                {
+                    throw new FormatException(
+                        $"PROPERTY(...) may only annotate a field. " +
+                        $"Declare storage on '{cls.FullName}' and bind the public accessors with " +
+                        "PROPERTY(Getter(Name), Setter(Name)) on that field.");
+                }
+
+                var functionAttributes = GetMacroReflectionAttributes(method, "Function");
+                foreach (var attribute in functionAttributes)
+                {
+                    foreach (var token in SplitTopLevel(StripAttributeMarker(attribute, "Function"), ','))
+                    {
+                        if (TryParseMacroInvocation(token, out var functionToken, out _)
+                            && (string.Equals(functionToken, "Getter", StringComparison.Ordinal)
+                                || string.Equals(functionToken, "Setter", StringComparison.Ordinal)))
+                        {
+                            throw new FormatException(
+                                $"FUNCTION on '{cls.FullName}::{method.Name}' declares {functionToken}(...). " +
+                                "Getter(...)/Setter(...) belong on the PROPERTY annotation of the backing field.");
+                        }
+                    }
+                }
+
+                var isFunction = functionAttributes.Count > 0;
+                if (!isFunction)
                     continue;
                 if (method.Visibility == CppVisibility.Private)
                 {
                     throw new NotSupportedException(
-                        "Private reflected accessor methods are not supported. " +
+                        "Private reflected methods are not supported. " +
                         $"Move '{cls.FullName}::{method.Name}' to public visibility or reflect the backing field directly.");
                 }
                 if (method.Visibility != CppVisibility.Public && method.Visibility != CppVisibility.Default)
@@ -595,7 +636,7 @@ internal static partial class MetaParserTool
                     continue;
                 if (string.IsNullOrWhiteSpace(method.Name)
                     || method.Name.StartsWith("operator", StringComparison.Ordinal)
-                    || !IsBindableMethodName(method.Name))
+                    || (!isFunction && !IsBindableMethodName(method.Name)))
                 {
                     continue;
                 }
@@ -615,11 +656,7 @@ internal static partial class MetaParserTool
                 var signatureParameterTypeNames = method.Parameters
                     .Select(parameter => NormalizeAstSignatureTypeName(parameter.Type, cls, visibleTypes))
                     .ToList();
-                var propertyName = ExtractPropertyNameOverride(method);
-                var functionAttributes = GetReflectionAttributes(method, "Function").ToList();
                 var isScriptable = HasScriptableMetadata(functionAttributes, "Function");
-                if (HasScriptableMetadata(GetReflectionAttributes(method, "Property"), "Property"))
-                    isScriptable = true;
 
                 methods.Add(new MethodCandidateInfo(
                     method.Name,
@@ -629,13 +666,13 @@ internal static partial class MetaParserTool
                     false,
                     false,
                     method.IsConst,
-                    propertyName,
+                    isFunction,
                     isScriptable));
             }
             catch (Exception ex)
             {
-                Console.Error.WriteLine($"[MetaParser] Warning: skipping auto-property discovery on {cls.FullName}: {ex.Message}");
-                if (ex is NotSupportedException)
+                Console.Error.WriteLine($"[MetaParser] Warning: skipping reflected method on {cls.FullName}: {ex.Message}");
+                if (ex is NotSupportedException || ex is FormatException)
                     throw;
             }
         }
@@ -705,20 +742,207 @@ internal static partial class MetaParserTool
         return $"static_cast<{returnTypeName} ({fullTypeName}::*)({string.Join(", ", parameterTypeNames)}){constSuffix}>(&{fullTypeName}::{methodName})";
     }
 
-    private static string? ExtractPropertyNameOverride(CppFunction method)
+    private static Dictionary<string, List<MethodCandidateInfo>> ExtractAccessorCandidates(
+        CppClass cls,
+        IReadOnlyDictionary<string, List<string>> visibleTypes)
     {
-        foreach (var attribute in GetReflectionAttributes(method, "Property"))
+        var candidates = new Dictionary<string, List<MethodCandidateInfo>>(StringComparer.Ordinal);
+        foreach (var method in cls.Functions)
         {
-            var tokens = SplitTopLevel(StripAttributeMarker(attribute, "Property"), ',');
-            if (tokens.Count == 0)
+            if (string.IsNullOrWhiteSpace(method.Name)
+                || method.IsConstructor
+                || method.IsDestructor
+                || method.Name.StartsWith("operator", StringComparison.Ordinal))
+            {
+                continue;
+            }
+
+            var returnTypeName = NormalizeAstMemberTypeName(method.ReturnType, cls, visibleTypes);
+            if (ContainsUnsupportedReflectionType(returnTypeName))
                 continue;
 
-            var name = NormalizeRegistrationName(tokens[0]);
-            if (!IsPropertyMetadataToken(name))
-                return name;
+            var parameterTypeNames = method.Parameters
+                .Select(parameter => NormalizeAstMemberTypeName(parameter.Type, cls, visibleTypes))
+                .ToList();
+            if (parameterTypeNames.Any(ContainsUnsupportedReflectionType))
+                continue;
+
+            var signatureReturnTypeName = NormalizeAstSignatureTypeName(method.ReturnType, cls, visibleTypes);
+            var signatureParameterTypeNames = method.Parameters
+                .Select(parameter => NormalizeAstSignatureTypeName(parameter.Type, cls, visibleTypes))
+                .ToList();
+
+            if (!candidates.TryGetValue(method.Name, out var overloads))
+            {
+                overloads = [];
+                candidates[method.Name] = overloads;
+            }
+
+            overloads.Add(new MethodCandidateInfo(
+                method.Name,
+                BuildMethodPointerExpression(cls.FullName, method.Name, signatureReturnTypeName, signatureParameterTypeNames, method.IsConst),
+                returnTypeName,
+                parameterTypeNames,
+                method.IsStatic,
+                method.Visibility == CppVisibility.Private,
+                method.IsConst,
+                false));
         }
 
-        return null;
+        return candidates;
+    }
+
+    private sealed record PropertyAccessorBinding(
+        string PropertyTypeName,
+        string GetterExpression,
+        string SetterExpression);
+
+    private static PropertyAccessorBinding? ExtractPropertyAccessorBinding(
+        string fullTypeName,
+        string propertyName,
+        IEnumerable<string> propertyAttributes,
+        IReadOnlyDictionary<string, List<MethodCandidateInfo>> accessorCandidates)
+    {
+        string? getterName = null;
+        string? setterName = null;
+        foreach (var attribute in propertyAttributes)
+        {
+            foreach (var token in SplitTopLevel(StripAttributeMarker(attribute, "Property"), ','))
+            {
+                if (TryParseAccessorBindingToken(token, "Getter", out var parsedGetter))
+                {
+                    if (getterName is not null)
+                    {
+                        throw new FormatException(
+                            $"PROPERTY on '{fullTypeName}::{propertyName}' declares Getter(...) more than once.");
+                    }
+                    getterName = parsedGetter;
+                }
+                else if (TryParseAccessorBindingToken(token, "Setter", out var parsedSetter))
+                {
+                    if (setterName is not null)
+                    {
+                        throw new FormatException(
+                            $"PROPERTY on '{fullTypeName}::{propertyName}' declares Setter(...) more than once.");
+                    }
+                    setterName = parsedSetter;
+                }
+            }
+        }
+
+        if (getterName is null && setterName is null)
+            return null;
+
+        var getter = ResolvePropertyAccessor(fullTypeName, propertyName, accessorCandidates, getterName, true);
+        var getterTypeName = NormalizePropertyTypeName(getter.ReturnTypeName);
+        if (string.IsNullOrWhiteSpace(getterTypeName) || getterTypeName.Contains('*', StringComparison.Ordinal))
+        {
+            throw new FormatException(
+                $"Property '{propertyName}' on '{fullTypeName}' has unsupported accessor type '{getter.ReturnTypeName}'.");
+        }
+
+        if (setterName is null)
+        {
+            return new PropertyAccessorBinding(
+                getterTypeName,
+                getter.PointerExpression,
+                $"static_cast<void ({fullTypeName}::*)({getterTypeName})>(nullptr)");
+        }
+
+        var setter = ResolvePropertyAccessor(fullTypeName, propertyName, accessorCandidates, setterName, false);
+        if (!string.Equals(NormalizePropertyTypeName(setter.ParameterTypeNames[0]), getterTypeName, StringComparison.Ordinal))
+        {
+            throw new FormatException(
+                $"Property '{propertyName}' on '{fullTypeName}' has incompatible accessor types. " +
+                $"Getter returns '{getter.ReturnTypeName}', setter accepts '{setter.ParameterTypeNames[0]}'.");
+        }
+
+        return new PropertyAccessorBinding(getterTypeName, getter.PointerExpression, setter.PointerExpression);
+    }
+
+    private static bool TryParseAccessorBindingToken(string token, string macroName, out string methodName)
+    {
+        methodName = string.Empty;
+        if (!TryParseMacroInvocation(token, out var parsedMacroName, out var macroBody)
+            || !string.Equals(parsedMacroName, macroName, StringComparison.Ordinal))
+        {
+            return false;
+        }
+
+        var trimmed = macroBody.Trim();
+        if (!IsBindableMethodName(trimmed))
+        {
+            throw new FormatException(
+                $"{macroName} must name a member function, for example {macroName}(GetValue), got `{token.Trim()}`.");
+        }
+
+        methodName = trimmed;
+        return true;
+    }
+
+    private static MethodCandidateInfo ResolvePropertyAccessor(
+        string fullTypeName,
+        string propertyName,
+        IReadOnlyDictionary<string, List<MethodCandidateInfo>> accessorCandidates,
+        string? methodName,
+        bool isGetter)
+    {
+        var role = isGetter ? "Getter" : "Setter";
+        if (methodName is null)
+        {
+            throw new FormatException(
+                $"Property '{propertyName}' on '{fullTypeName}' declares Setter(...) without Getter(...). " +
+                "A reflected property must be readable.");
+        }
+
+        if (!accessorCandidates.TryGetValue(methodName, out var overloads) || overloads.Count == 0)
+        {
+            throw new FormatException(
+                $"Property '{propertyName}' on '{fullTypeName}' binds {role}({methodName}) but " +
+                $"'{fullTypeName}::{methodName}' does not exist.");
+        }
+
+        var memberOverloads = overloads.Where(static candidate => !candidate.IsStatic).ToList();
+        if (memberOverloads.Count == 0)
+        {
+            throw new FormatException(
+                $"Property '{propertyName}' on '{fullTypeName}' binds {role}({methodName}) to a static member function. " +
+                "Accessors must be non-static member functions.");
+        }
+
+        if (memberOverloads.All(static candidate => candidate.IsPrivate))
+        {
+            throw new NotSupportedException(
+                "Private reflected accessor methods are not supported. " +
+                $"Move '{fullTypeName}::{methodName}' to public visibility or reflect the backing field directly.");
+        }
+
+        var publicOverloads = memberOverloads.Where(static candidate => !candidate.IsPrivate).ToList();
+        var matching = publicOverloads.Where(candidate => isGetter
+            ? candidate.ParameterTypeNames.Count == 0
+              && !string.IsNullOrWhiteSpace(candidate.ReturnTypeName)
+              && !string.Equals(candidate.ReturnTypeName, "void", StringComparison.Ordinal)
+            : candidate.ParameterTypeNames.Count == 1
+              && string.Equals(NormalizePropertyTypeName(candidate.ReturnTypeName), "void", StringComparison.Ordinal))
+            .ToList();
+
+        if (matching.Count == 0)
+        {
+            throw new FormatException(
+                $"Property '{propertyName}' on '{fullTypeName}' binds {role}({methodName}) but no public overload matches. " +
+                (isGetter
+                    ? "A getter must take no arguments and return a value."
+                    : "A setter must take exactly one argument and return void."));
+        }
+
+        if (matching.Count > 1)
+        {
+            throw new FormatException(
+                $"Property '{propertyName}' on '{fullTypeName}' binds {role}({methodName}) ambiguously; " +
+                "the accessor must resolve to exactly one overload.");
+        }
+
+        return matching[0];
     }
 
     private static List<ReflectTypeMetaInfo> ExtractPropertyMetas(IEnumerable<string> propertyAttributes)
@@ -727,11 +951,7 @@ internal static partial class MetaParserTool
         foreach (var attribute in propertyAttributes)
         {
             var tokens = SplitTopLevel(StripAttributeMarker(attribute, "Property"), ',');
-            var firstToken = tokens.Count > 0 ? tokens[0].Trim() : string.Empty;
-            var startIndex = tokens.Count > 0 && !IsPropertyMetadataToken(firstToken) ? 1 : 0;
-            if (startIndex == 1 && firstToken.Contains('(', StringComparison.Ordinal))
-                throw new FormatException($"Unsupported PROPERTY metadata token `{firstToken}`.");
-            foreach (var token in tokens.Skip(startIndex))
+            foreach (var token in tokens)
             {
                 var trimmed = token.Trim();
                 if (string.IsNullOrWhiteSpace(trimmed))
@@ -739,28 +959,58 @@ internal static partial class MetaParserTool
                 if (IsCppAstEmptyReflectionArgumentArtifact(trimmed))
                     continue;
 
+                // Accessor bindings are consumed by the property binding pass
+                // and never become runtime metadata.
+                if (TryParseMacroInvocation(trimmed, out var markerName, out _)
+                    && (string.Equals(markerName, "Getter", StringComparison.Ordinal)
+                        || string.Equals(markerName, "Setter", StringComparison.Ordinal)))
+                {
+                    continue;
+                }
+
                 if (string.Equals(trimmed, "Scriptable", StringComparison.Ordinal))
                     continue;
                 if (string.Equals(trimmed, "RequiresRestart", StringComparison.Ordinal))
                     metas.Add(new ReflectTypeMetaInfo("NLS::meta::RequiresRestart", ""));
                 else if (TryParseRangeMeta(trimmed, out var rangeInitializer))
                     metas.Add(new ReflectTypeMetaInfo("NLS::meta::Range", rangeInitializer));
+                else if (TryParseStringMeta(trimmed, "DisplayName", out var displayNameInitializer))
+                    metas.Add(new ReflectTypeMetaInfo("NLS::meta::DisplayName", displayNameInitializer));
+                else if (TryParseStringMeta(trimmed, "Tooltip", out var tooltipInitializer))
+                    metas.Add(new ReflectTypeMetaInfo("NLS::meta::Tooltip", tooltipInitializer));
+                else if (TryParseStringMeta(trimmed, "Header", out var headerInitializer))
+                    metas.Add(new ReflectTypeMetaInfo("NLS::meta::Header", headerInitializer));
+                else if (TryParseFiniteFloatMeta(trimmed, "Space", true, out var spaceInitializer))
+                    metas.Add(new ReflectTypeMetaInfo("NLS::meta::Space", spaceInitializer));
+                else if (TryParseFiniteFloatMeta(trimmed, "Min", false, out var minInitializer))
+                    metas.Add(new ReflectTypeMetaInfo("NLS::meta::Min", minInitializer));
+                else if (TryParseFiniteFloatMeta(trimmed, "Max", false, out var maxInitializer))
+                    metas.Add(new ReflectTypeMetaInfo("NLS::meta::Max", maxInitializer));
+                else if (string.Equals(trimmed, "Multiline", StringComparison.Ordinal))
+                    metas.Add(new ReflectTypeMetaInfo("NLS::meta::Multiline", ""));
+                else if (string.Equals(trimmed, "ReadOnly", StringComparison.Ordinal))
+                    metas.Add(new ReflectTypeMetaInfo("NLS::meta::ReadOnly", ""));
+                else if (string.Equals(trimmed, "HideInInspector", StringComparison.Ordinal))
+                    metas.Add(new ReflectTypeMetaInfo("NLS::meta::HideInInspector", ""));
+                else if (string.Equals(trimmed, "Flags", StringComparison.Ordinal))
+                    metas.Add(new ReflectTypeMetaInfo("NLS::meta::Flags", ""));
+                else if (string.Equals(trimmed, "ColorUsage", StringComparison.Ordinal))
+                    metas.Add(new ReflectTypeMetaInfo("NLS::meta::ColorUsage", ""));
+                else if (TryParseStringMeta(trimmed, "ReferenceTypeConstraint", out var referenceConstraintInitializer))
+                    metas.Add(new ReflectTypeMetaInfo("NLS::meta::ReferenceTypeConstraint", referenceConstraintInitializer));
+                else if (TryParseStringMeta(trimmed, "FormerlySerializedAs", out var formerlySerializedAsInitializer))
+                    metas.Add(new ReflectTypeMetaInfo("NLS::meta::FormerlySerializedAs", formerlySerializedAsInitializer));
                 else
-                    throw new FormatException($"Unsupported PROPERTY metadata token `{trimmed}`.");
+                    throw new FormatException(
+                        $"Unsupported PROPERTY argument `{trimmed}`. " +
+                        "PROPERTY accepts only metadata calls such as DisplayName(\"...\"), Getter(Name) or Setter(Name); " +
+                        "the reflected property name is always the annotated field name.");
             }
         }
 
         return metas
             .DistinctBy(static meta => $"{meta.PropertyTypeName}:{meta.InitializerArguments}")
             .ToList();
-    }
-
-    private static bool IsPropertyMetadataToken(string token)
-    {
-        var trimmed = token.Trim();
-        return string.Equals(trimmed, "Scriptable", StringComparison.Ordinal)
-               || string.Equals(trimmed, "RequiresRestart", StringComparison.Ordinal)
-               || trimmed.StartsWith("Range(", StringComparison.Ordinal);
     }
 
     private static bool HasScriptableMetadata(IEnumerable<string> attributes, string marker)
@@ -804,6 +1054,53 @@ internal static partial class MetaParserTool
         return true;
     }
 
+    private static bool TryParseStringMeta(string token, string macroName, out string initializerArguments)
+    {
+        initializerArguments = string.Empty;
+        if (!TryParseMacroInvocation(token, out var parsedMacroName, out var macroBody) ||
+            !string.Equals(parsedMacroName, macroName, StringComparison.Ordinal))
+        {
+            return false;
+        }
+
+        if (macroBody.Length < 2 || macroBody[0] != '"' || macroBody[^1] != '"')
+        {
+            throw new FormatException(
+                $"{macroName} metadata must be {macroName}(\"...\"), got `{token}`.");
+        }
+
+        initializerArguments = macroBody;
+        return true;
+    }
+
+    private static bool TryParseFiniteFloatMeta(
+        string token,
+        string macroName,
+        bool requireNonNegative,
+        out string initializerArguments)
+    {
+        initializerArguments = string.Empty;
+        if (!TryParseMacroInvocation(token, out var parsedMacroName, out var macroBody) ||
+            !string.Equals(parsedMacroName, macroName, StringComparison.Ordinal))
+        {
+            return false;
+        }
+
+        if (!TryParseFiniteFloatLiteral(macroBody, out var value))
+        {
+            throw new FormatException(
+                $"{macroName} metadata must be {macroName}(<finite-number>), got `{token}`.");
+        }
+        if (requireNonNegative && value < 0.0f)
+        {
+            throw new FormatException(
+                $"{macroName} metadata must not be negative, got `{token}`.");
+        }
+
+        initializerArguments = FormatFloatInitializer(value);
+        return true;
+    }
+
     private static bool TryParseFiniteFloatLiteral(string text, out float value)
     {
         var trimmed = text.Trim();
@@ -817,7 +1114,16 @@ internal static partial class MetaParserTool
     }
 
     private static string FormatFloatInitializer(float value)
-        => value.ToString("R", CultureInfo.InvariantCulture) + "f";
+    {
+        var literal = value.ToString("R", CultureInfo.InvariantCulture);
+        if (literal.IndexOf('.') < 0 &&
+            literal.IndexOf('e') < 0 &&
+            literal.IndexOf('E') < 0)
+        {
+            literal += ".0";
+        }
+        return literal + "f";
+    }
 
     private static string BuildGeneratedFileId(string headerPath)
         => $"NLS_FID_{SanitizeIdentifier(headerPath.Replace('\\', '_').Replace('/', '_').Replace('.', '_'))}";
@@ -989,6 +1295,17 @@ internal static partial class MetaParserTool
             .Select(static item => item.Text)
             .ToList();
 
+    // Macro annotations are attached to CppAttribute entries. CppAst also
+    // exposes a lossy MetaAttribute projection whose values can be a parser
+    // list object; using that projection for PROPERTY names creates phantom
+    // duplicate bindings.
+    private static List<string> GetMacroReflectionAttributes(ICppAttributeContainer container, string marker)
+        => GetReflectionAttributeElements(container, marker)
+            .Where(static item => item.Element is CppAttribute)
+            .Select(static item => item.Text)
+            .Distinct(StringComparer.Ordinal)
+            .ToList();
+
     private static List<(string Text, CppElement Element)> GetReflectionAttributeElements(ICppAttributeContainer container, params string[] markers)
         => EnumerateAttributeTexts(container)
             .Where(attribute => markers.Length == 0 || markers.Any(marker => AttributeHasMarker(attribute.Text, marker)))
@@ -1117,6 +1434,11 @@ internal static partial class MetaParserTool
             trimmed = trimmed[marker.Length..].TrimStart();
         if (trimmed.StartsWith(",", StringComparison.Ordinal))
             trimmed = trimmed[1..].TrimStart();
+        // CppAst's MetaAttribute view represents annotate payloads as
+        // "Marker = value", while its attribute view uses "Marker, value".
+        // Both are one logical macro argument.
+        if (trimmed.StartsWith("=", StringComparison.Ordinal))
+            trimmed = trimmed[1..].TrimStart();
         return trimmed;
     }
 
@@ -1134,15 +1456,36 @@ internal static partial class MetaParserTool
         {
             foreach (var token in SplitTopLevel(StripAttributeMarker(attribute, "Reflection"), ','))
             {
-                if (!TryParseMacroInvocation(token, out var macroName, out var macroArgs))
+                var trimmed = token.Trim();
+                if (string.IsNullOrWhiteSpace(trimmed) ||
+                    string.Equals(trimmed, "Scriptable", StringComparison.Ordinal))
+                {
+                    continue;
+                }
+
+                // CLASS metadata accepts both function-style declarations and
+                // marker declarations.  The latter must not be discarded just
+                // because it has no parentheses: component availability is
+                // resolved entirely through generated reflection metadata.
+                if (string.Equals(trimmed, "DisallowMultipleComponent", StringComparison.Ordinal))
+                {
+                    metas.Add(new ReflectTypeMetaInfo("NLS::meta::DisallowMultipleComponent", string.Empty));
+                    continue;
+                }
+
+                if (!TryParseMacroInvocation(trimmed, out var macroName, out var macroArgs))
                     continue;
 
                 if (string.Equals(macroName, "ComponentMenu", StringComparison.Ordinal))
                     metas.Add(new ReflectTypeMetaInfo("NLS::meta::ComponentMenu", macroArgs.Trim()));
+                else if (string.Equals(macroName, "RequireComponent", StringComparison.Ordinal))
+                    metas.Add(new ReflectTypeMetaInfo("NLS::meta::RequireComponent", macroArgs.Trim()));
             }
         }
 
-        return metas;
+        return metas
+            .DistinctBy(static meta => $"{meta.PropertyTypeName}:{meta.InitializerArguments}")
+            .ToList();
     }
 
     private static string ExtractNamespace(string fullName, string className)

@@ -25,6 +25,7 @@ set(NLS_MANAGED_SCHEMA_BIN "${CMAKE_SOURCE_DIR}/Library/ScriptApi/ScriptApi.bin"
 
 file(GLOB_RECURSE NLS_MANAGED_RUNTIME_SOURCE_FILES CONFIGURE_DEPENDS
     "${NLS_MANAGED_ROOT}/Nullus.Managed/*.cs"
+    "${NLS_MANAGED_ROOT}/Nullus.Editor/*.cs"
     "${NLS_MANAGED_ROOT}/Nullus.ScriptGenerator/*.cs")
 file(GLOB_RECURSE NLS_GAMESCRIPTS_SOURCE_FILES CONFIGURE_DEPENDS
     "${NLS_MANAGED_ROOT}/Nullus.GameScripts/*.cs")
@@ -39,11 +40,18 @@ list(FILTER NLS_SCRIPT_ANALYSIS_SOURCE_FILES EXCLUDE REGEX [[/(bin|obj)/]])
 file(GLOB_RECURSE NLS_PROJECT_SCRIPT_SOURCE_FILES CONFIGURE_DEPENDS
     "${NLS_MANAGED_PROJECT_ASSETS_DIR}/*.cs")
 list(FILTER NLS_PROJECT_SCRIPT_SOURCE_FILES EXCLUDE REGEX [[/(bin|obj)/]])
+# Project editor scripts are compiled into their own assembly so editor-only
+# code never participates in the player build.
+file(GLOB_RECURSE NLS_EDITOR_SCRIPT_SOURCE_FILES CONFIGURE_DEPENDS
+    "${NLS_MANAGED_PROJECT_ASSETS_DIR}/**/Editor/**/*.cs")
+list(FILTER NLS_EDITOR_SCRIPT_SOURCE_FILES EXCLUDE REGEX [[/(bin|obj)/]])
 
 set(NLS_MANAGED_GENERATOR_DLL "${NLS_MANAGED_OUTPUT_DIR}/Nullus.ScriptGenerator.dll")
 set(NLS_MANAGED_RUNTIME_DLL "${NLS_MANAGED_OUTPUT_DIR}/Nullus.Managed.dll")
 set(NLS_MANAGED_RUNTIME_PDB "${NLS_MANAGED_OUTPUT_DIR}/Nullus.Managed.pdb")
 set(NLS_MANAGED_RUNTIME_DEPS "${NLS_MANAGED_OUTPUT_DIR}/Nullus.Managed.deps.json")
+set(NLS_MANAGED_EDITOR_DLL "${NLS_MANAGED_OUTPUT_DIR}/Nullus.Editor.dll")
+set(NLS_MANAGED_EDITOR_PDB "${NLS_MANAGED_OUTPUT_DIR}/Nullus.Editor.pdb")
 set(NLS_MANAGED_STAMP "${CMAKE_CURRENT_BINARY_DIR}/NullusManaged.stamp")
 set(NLS_SCRIPT_ANALYSIS_DLL "${NLS_MANAGED_OUTPUT_DIR}/Nullus.ScriptAnalysis.dll")
 set(NLS_SCRIPT_ANALYSIS_PDB "${NLS_MANAGED_OUTPUT_DIR}/Nullus.ScriptAnalysis.pdb")
@@ -86,6 +94,8 @@ add_custom_command(
         "${NLS_MANAGED_RUNTIME_DLL}"
         "${NLS_MANAGED_RUNTIME_PDB}"
         "${NLS_MANAGED_RUNTIME_DEPS}"
+        "${NLS_MANAGED_EDITOR_DLL}"
+        "${NLS_MANAGED_EDITOR_PDB}"
     COMMAND ${CMAKE_COMMAND} -E make_directory "${NLS_MANAGED_OUTPUT_DIR}"
     COMMAND "${NLS_DOTNET_RUNNER}"
         "${NLS_DOTNET_EXECUTABLE}" build
@@ -106,6 +116,20 @@ add_custom_command(
         ${NLS_MANAGED_PROJECT_ASSETS_ARG}
         --no-restore
         --nologo
+    # The editor assembly carries the SerializedObject/SerializedProperty bridge
+    # and is produced beside the player assemblies so the editor host can resolve
+    # it from the same directory as the scripting assembly.
+    COMMAND "${NLS_DOTNET_RUNNER}"
+        "${NLS_DOTNET_EXECUTABLE}" build
+        "${NLS_MANAGED_ROOT}/Nullus.Editor/Nullus.Editor.csproj"
+        --configuration "${NLS_MANAGED_CONFIGURATION}"
+        --output "${NLS_MANAGED_OUTPUT_DIR}"
+        -p:NullusUsePrebuiltScriptGenerator=true
+        -p:NullusForceScriptGenerator=true
+        "-p:NullusScriptGeneratorPath=${NLS_MANAGED_GENERATOR_DLL}"
+        -p:NullusUseScriptAnalysis=false
+        --no-restore
+        --nologo
     COMMAND ${CMAKE_COMMAND} -E touch "${NLS_MANAGED_STAMP}"
     WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
     DEPENDS
@@ -114,6 +138,7 @@ add_custom_command(
         "${NLS_MANAGED_SCHEMA_BIN}"
         "${NLS_MANAGED_ROOT}/Nullus.ScriptGenerator/Nullus.ScriptGenerator.csproj"
         "${NLS_MANAGED_ROOT}/Nullus.Managed/Nullus.Managed.csproj"
+        "${NLS_MANAGED_ROOT}/Nullus.Editor/Nullus.Editor.csproj"
         ${NLS_MANAGED_RUNTIME_SOURCE_FILES}
     COMMENT "Building Nullus managed runtime and generated script bindings"
     VERBATIM)
@@ -199,6 +224,45 @@ add_custom_command(
     COMMENT "Building bootstrap GameScripts assembly"
     VERBATIM)
 
+set(NLS_EDITOR_SCRIPTS_DLL "${NLS_MANAGED_OUTPUT_DIR}/GameScriptsEditor.dll")
+set(NLS_EDITOR_SCRIPTS_PDB "${NLS_MANAGED_OUTPUT_DIR}/GameScriptsEditor.pdb")
+set(NLS_EDITOR_SCRIPTS_DEPS "${NLS_MANAGED_OUTPUT_DIR}/GameScriptsEditor.deps.json")
+set(NLS_EDITOR_SCRIPTS_STAMP "${CMAKE_CURRENT_BINARY_DIR}/GameScriptsEditor.stamp")
+
+# The editor-scripts assembly is the only managed code allowed to author editor
+# UI.  It references the runtime assembly so a script can customise a project
+# Behaviour, and is loaded exclusively by the editor host.
+add_custom_command(
+    OUTPUT
+        "${NLS_EDITOR_SCRIPTS_STAMP}"
+        "${NLS_EDITOR_SCRIPTS_DLL}"
+        "${NLS_EDITOR_SCRIPTS_PDB}"
+        "${NLS_EDITOR_SCRIPTS_DEPS}"
+    COMMAND ${CMAKE_COMMAND} -E make_directory "${NLS_MANAGED_OUTPUT_DIR}"
+    COMMAND "${NLS_DOTNET_RUNNER}"
+        "${NLS_DOTNET_EXECUTABLE}" build
+        "${NLS_MANAGED_ROOT}/Nullus.GameScriptsEditor/Nullus.GameScriptsEditor.csproj"
+        --configuration "${NLS_MANAGED_CONFIGURATION}"
+        --output "${NLS_MANAGED_OUTPUT_DIR}"
+        ${NLS_MANAGED_PROJECT_ASSETS_ARG}
+        "-p:NullusGameScriptsPath=${NLS_GAMESCRIPTS_DLL}"
+        -p:NullusUsePrebuiltScriptGenerator=true
+        -p:NullusForceScriptGenerator=true
+        "-p:NullusScriptGeneratorPath=${NLS_MANAGED_GENERATOR_DLL}"
+        -p:NullusUseScriptAnalysis=false
+        --no-restore
+        --nologo
+    COMMAND ${CMAKE_COMMAND} -E touch "${NLS_EDITOR_SCRIPTS_STAMP}"
+    WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+    DEPENDS
+        "${NLS_GAMESCRIPTS_STAMP}"
+        "${NLS_MANAGED_STAMP}"
+        "${NLS_MANAGED_ROOT}/Nullus.GameScriptsEditor/Nullus.GameScriptsEditor.csproj"
+        "${NLS_MANAGED_ROOT}/Nullus.GameScriptsEditor/EditorScriptsMarker.cs"
+        ${NLS_EDITOR_SCRIPT_SOURCE_FILES}
+    COMMENT "Building project editor-scripts assembly"
+    VERBATIM)
+
 # Visual Studio's CMake generator requires a source placeholder for custom
 # build items that do not exist during configure. The commands above own these
 # files and replace them on the first build.
@@ -206,7 +270,8 @@ foreach(_nls_managed_stamp IN ITEMS
         "${NLS_SCRIPT_ANALYSIS_STAMP}"
         "${NLS_MANAGED_STAMP}"
         "${NLS_ENGINESCRIPTS_STAMP}"
-        "${NLS_GAMESCRIPTS_STAMP}")
+        "${NLS_GAMESCRIPTS_STAMP}"
+        "${NLS_EDITOR_SCRIPTS_STAMP}")
     if(NOT EXISTS "${_nls_managed_stamp}")
         file(WRITE "${_nls_managed_stamp}" "Nullus managed build stamp\n")
     endif()
@@ -222,6 +287,8 @@ set_source_files_properties(
     "${NLS_MANAGED_RUNTIME_DLL}"
     "${NLS_MANAGED_RUNTIME_PDB}"
     "${NLS_MANAGED_RUNTIME_DEPS}"
+    "${NLS_MANAGED_EDITOR_DLL}"
+    "${NLS_MANAGED_EDITOR_PDB}"
     "${NLS_ENGINESCRIPTS_STAMP}"
     "${NLS_ENGINESCRIPTS_DLL}"
     "${NLS_ENGINESCRIPTS_PDB}"
@@ -232,11 +299,16 @@ set_source_files_properties(
     "${NLS_GAMESCRIPTS_PDB}"
     "${NLS_GAMESCRIPTS_DEPS}"
     "${NLS_GAMESCRIPTS_RUNTIME_CONFIG}"
+    "${NLS_EDITOR_SCRIPTS_STAMP}"
+    "${NLS_EDITOR_SCRIPTS_DLL}"
+    "${NLS_EDITOR_SCRIPTS_PDB}"
+    "${NLS_EDITOR_SCRIPTS_DEPS}"
     PROPERTIES GENERATED TRUE)
 
 target_sources(NLS_Scripting PRIVATE
     "${NLS_SCRIPT_ANALYSIS_STAMP}"
     "${NLS_MANAGED_STAMP}"
     "${NLS_ENGINESCRIPTS_STAMP}"
-    "${NLS_GAMESCRIPTS_STAMP}")
+    "${NLS_GAMESCRIPTS_STAMP}"
+    "${NLS_EDITOR_SCRIPTS_STAMP}")
 add_dependencies(NLS_Scripting NLS_Engine)

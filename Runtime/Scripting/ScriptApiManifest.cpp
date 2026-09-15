@@ -3,6 +3,7 @@
 #include "Json/json.hpp"
 
 #include <algorithm>
+#include <cmath>
 #include <cstring>
 #include <fstream>
 #include <iterator>
@@ -115,6 +116,93 @@ ScriptParameterDescriptor ParameterFromJson(const Json& json)
 {
     return {TypeFromJson(json.value("type", Json::object())), json.value("name", std::string{})};
 }
+
+Json FieldMetadataToJson(const ScriptFieldMetadata& metadata)
+{
+    const auto optionalFloat = [](const std::optional<float>& value) -> Json
+    {
+        return value.has_value() ? Json(*value) : Json(nullptr);
+    };
+    return {
+        {"displayName", metadata.displayName},
+        {"tooltip", metadata.tooltip},
+        {"header", metadata.header},
+        {"spaceBefore", metadata.spaceBefore},
+        {"rangeMin", optionalFloat(metadata.rangeMin)},
+        {"rangeMax", optionalFloat(metadata.rangeMax)},
+        {"min", optionalFloat(metadata.min)},
+        {"max", optionalFloat(metadata.max)},
+        {"multiline", metadata.multiline},
+        {"readOnly", metadata.readOnly},
+        {"hideInInspector", metadata.hideInInspector},
+        {"flags", metadata.flags},
+        {"colorUsage", metadata.colorUsage},
+        {"referenceTypeConstraint", metadata.referenceTypeConstraint}};
+}
+
+bool FieldMetadataFromJson(const Json& json, ScriptFieldMetadata& output)
+{
+    if (!json.is_object())
+        return false;
+
+    const auto readString = [&json](const char* key, std::string& value)
+    {
+        const auto entry = json.find(key);
+        if (entry == json.end() || entry->is_null())
+            return true;
+        if (!entry->is_string())
+            return false;
+        value = entry->get<std::string>();
+        return true;
+    };
+    const auto readBoolean = [&json](const char* key, bool& value)
+    {
+        const auto entry = json.find(key);
+        if (entry == json.end() || entry->is_null())
+            return true;
+        if (!entry->is_boolean())
+            return false;
+        value = entry->get<bool>();
+        return true;
+    };
+    const auto readOptionalFloat = [&json](const char* key, std::optional<float>& value)
+    {
+        const auto entry = json.find(key);
+        if (entry == json.end() || entry->is_null())
+            return true;
+        if (!entry->is_number())
+            return false;
+        const float parsed = entry->get<float>();
+        if (!std::isfinite(parsed))
+            return false;
+        value = parsed;
+        return true;
+    };
+
+    std::optional<float> spaceBefore;
+    if (!readString("displayName", output.displayName) ||
+        !readString("tooltip", output.tooltip) ||
+        !readString("header", output.header) ||
+        !readString("referenceTypeConstraint", output.referenceTypeConstraint) ||
+        !readOptionalFloat("spaceBefore", spaceBefore) ||
+        !readOptionalFloat("rangeMin", output.rangeMin) ||
+        !readOptionalFloat("rangeMax", output.rangeMax) ||
+        !readOptionalFloat("min", output.min) ||
+        !readOptionalFloat("max", output.max) ||
+        !readBoolean("multiline", output.multiline) ||
+        !readBoolean("readOnly", output.readOnly) ||
+        !readBoolean("hideInInspector", output.hideInInspector) ||
+        !readBoolean("flags", output.flags) ||
+        !readBoolean("colorUsage", output.colorUsage))
+    {
+        return false;
+    }
+    if (spaceBefore.has_value())
+        output.spaceBefore = *spaceBefore;
+    return output.spaceBefore >= 0.0f &&
+        (!output.rangeMin.has_value() || !output.rangeMax.has_value() || *output.rangeMin <= *output.rangeMax) &&
+        (!output.min.has_value() || !output.max.has_value() || *output.min <= *output.max);
+}
 }
 
 std::string ScriptApiManifest::ToJson(const ScriptApiDatabase& database)
@@ -207,7 +295,8 @@ std::string ScriptApiManifest::ToJson(const ScriptApiDatabase& database)
                 {"name", field->name},
                 {"type", TypeToJson(field->type)},
                 {"serialized", field->serialized},
-                {"aliases", aliases}});
+                {"aliases", aliases},
+                {"metadata", FieldMetadataToJson(field->metadata)}});
             if (field->defaultValue)
                 typeJson["fields"].back()["default"] = ValueToJson(*field->defaultValue);
         }
@@ -284,6 +373,8 @@ ScriptStatus ScriptApiManifest::FromJson(std::string_view jsonText, ScriptApiDat
                 field.type = TypeFromJson(fieldJson.value("type", Json::object()));
                 field.serialized = fieldJson.value("serialized", true);
                 field.aliases = fieldJson.value("aliases", std::vector<std::string>{});
+                if (fieldJson.contains("metadata") && !FieldMetadataFromJson(fieldJson["metadata"], field.metadata))
+                    return ScriptStatus::Error(ScriptStatusCode::InvalidArgument, "Script API manifest contains invalid field Inspector metadata.");
                 if (fieldJson.contains("default") && !fieldJson["default"].is_null())
                 {
                     ScriptValue defaultValue;

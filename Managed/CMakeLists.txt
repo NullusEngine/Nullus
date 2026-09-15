@@ -13,12 +13,17 @@ if(CMAKE_GENERATOR MATCHES "Visual Studio")
         "${NLS_MANAGED_ROOT}/Nullus.Managed/Nullus.Managed.csproj"
         PLATFORM AnyCPU)
     include_external_msproject(
+        Nullus.Editor
+        "${NLS_MANAGED_ROOT}/Nullus.Editor/Nullus.Editor.csproj"
+        PLATFORM AnyCPU)
+    include_external_msproject(
         Nullus.EngineScripts
         "${NLS_MANAGED_ROOT}/Nullus.EngineScripts/Nullus.EngineScripts.csproj"
         PLATFORM AnyCPU)
     foreach(_nls_managed_ide_target
             Nullus.ScriptGenerator
             Nullus.Managed
+            Nullus.Editor
             Nullus.EngineScripts)
         set_property(TARGET ${_nls_managed_ide_target} PROPERTY FOLDER Managed)
         # The C# projects are source/debug surfaces only. Runtime artifacts are

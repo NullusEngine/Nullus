@@ -17,7 +17,7 @@ using namespace NLS::Maths;
 
 namespace NLS::Engine::Components
 {
-CLASS(NLS_ENGINE_API TransformComponent, Scriptable) : public Component
+CLASS(NLS_ENGINE_API TransformComponent, Scriptable, DisallowMultipleComponent) : public Component
 {
 public:
     GENERATED_BODY()
@@ -187,8 +187,15 @@ public:
 
 private:
     void MarkRenderTransformChanged();
+    void SyncSerializedLocalStateFromTransform() const;
 
     Maths::Transform m_transform;
+    PROPERTY(DisplayName("Local Position"), Getter(GetLocalPosition), Setter(SetLocalPosition))
+    mutable Maths::Vector3 localPosition;
+    PROPERTY(DisplayName("Local Rotation"), Getter(GetLocalRotation), Setter(SetLocalRotation))
+    mutable Maths::Quaternion localRotation;
+    PROPERTY(DisplayName("Local Scale"), Getter(GetLocalScale), Setter(SetLocalScale))
+    mutable Maths::Vector3 localScale{1.0f, 1.0f, 1.0f};
     uint64_t m_renderRevision = 1u;
 };
 } // namespace NLS::Engine::Components

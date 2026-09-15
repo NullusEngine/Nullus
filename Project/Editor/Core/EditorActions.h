@@ -22,6 +22,7 @@
 #include "Core/RendererResourcePrewarmRequest.h"
 #include "Core/RendererResourceStreamingBudget.h"
 #include "Assets/EditorAssetDragDropBridge.h"
+#include "Undo/EditorUndoService.h"
 
 #define EDITOR_EXEC(action)                 NLS::Core::ServiceLocator::Get<NLS::Editor::Core::EditorActions>().action
 #define EDITOR_BIND(method, ...)            std::bind(&NLS::Editor::Core::EditorActions::method, &NLS::Core::ServiceLocator::Get<NLS::Editor::Core::EditorActions>(), ##__VA_ARGS__)
@@ -282,6 +283,11 @@ namespace NLS::Editor::Core
             Engine::GameObject* p_parent = nullptr,
             std::optional<Maths::Vector3> placementOverride = std::nullopt);
         Engine::GameObject* CreateGameObjectFromAssetBlocking(
+            const std::string& path,
+            bool focusOnCreation = true,
+            Engine::GameObject* p_parent = nullptr,
+            std::optional<Maths::Vector3> placementOverride = std::nullopt);
+        Engine::GameObject* CreateGameObjectFromAssetBlocking(
             const NLS::Editor::Assets::EditorAssetDragPayload& payload,
             bool focusOnCreation = true,
             Engine::GameObject* p_parent = nullptr,
@@ -515,6 +521,11 @@ namespace NLS::Editor::Core
             uint64_t prefabStageGeneration = 0u;
         };
         SceneMutationToken CaptureSceneMutationToken() const;
+        // All scene-facing editor modules obtain their stable Undo scope here.
+        // Play sandbox activation is deliberately not a new Edit-scene scope.
+        [[nodiscard]] NLS::Editor::Undo::UndoScopeId GetUndoScopeForScene(
+            const Engine::SceneSystem::Scene& scene) const;
+        [[nodiscard]] NLS::Editor::Undo::UndoScopeId GetActivePrefabStageUndoScope() const;
         void NotifyPrefabStageOpened();
         ListenerID TrackGameObjectDestroyedListener(std::function<void(Engine::GameObject&)> callback);
         void ReleaseGameObjectDestroyedListener(ListenerID listener);
@@ -562,12 +573,21 @@ namespace NLS::Editor::Core
 		std::mutex m_delayedActionsMutex;
 		std::vector<ListenerID> m_gameObjectDestroyedListeners;
         std::mutex m_gameObjectDestroyedListenersMutex;
+        // Tracks every visible-scene activation, including Play sandbox
+        // swaps, for transient async editor operations.
         uint64_t m_mainSceneGeneration = 0u;
+        // The document key is deliberately independent from the scene path:
+        // Save As must preserve Undo history for the same live Edit scene.
+        // Both values rotate only after a successful real scene replacement,
+        // never while entering or leaving the Play sandbox.
+        std::string m_editSceneUndoDocumentKey = "edit-scene:1";
+        uint64_t m_editSceneUndoGeneration = 1u;
         uint64_t m_prefabStageGeneration = 0u;
         EditorBackgroundTaskTracker m_backgroundTasks;
         ListenerID m_sceneSourcePathChangedListener = InvalidListenerID;
         ListenerID m_sceneDirtyStateChangedListener = InvalidListenerID;
         ListenerID m_sceneLoadListener = InvalidListenerID;
+        ListenerID m_sceneLoadSucceededListener = InvalidListenerID;
         ListenerID m_sceneUnloadListener = InvalidListenerID;
         ListenerID m_gameObjectMarkedDestroyListener = InvalidListenerID;
         bool m_importedResourceTrimScheduled = false;

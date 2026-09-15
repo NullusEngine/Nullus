@@ -3,7 +3,10 @@
 #include "RenderDef.h"
 
 #include <array>
+#include <cstddef>
 #include <cstdint>
+#include <filesystem>
+#include <memory>
 #include <mutex>
 #include <optional>
 #include <string_view>
@@ -29,6 +32,10 @@ namespace NLS::Render::UI
         float advance = 0.0f;
         float bearingX = 0.0f;
         float bearingY = 0.0f;
+        // Rasterized bitmap size in pixels. Producers need it to place the glyph
+        // quad; tofu supplies a proportional box instead of nothing.
+        float width = 0.0f;
+        float height = 0.0f;
         bool fallback = false;
         uint64_t lastUsedFrame = 0u;
     };
@@ -44,6 +51,9 @@ namespace NLS::Render::UI
         uint32_t rowHeight = 0u;
         bool dirty = false;
         uint64_t retireFrame = 0u;
+        // RGBA8 page pixels. White RGB with the glyph coverage in alpha, which is
+        // what the UI overlay samples for text and icons.
+        std::vector<uint8_t> pixels;
     };
 
     struct NLS_RENDER_API UIFontAtlasDiagnostics
@@ -61,6 +71,16 @@ namespace NLS::Render::UI
     class NLS_RENDER_API UIFontAtlas final
     {
     public:
+        UIFontAtlas();
+        ~UIFontAtlas();
+
+        // TrueType bytes used to rasterize real glyph bitmaps. Without font data
+        // the atlas keeps deterministic metrics and a visible tofu cell so missing
+        // data stays observable instead of silently rendering nothing.
+        bool SetFontData(const uint8_t* data, size_t byteCount);
+        bool LoadFontFromFile(const std::filesystem::path& path);
+        [[nodiscard]] bool HasFontData() const;
+
         void Configure(uint32_t pageWidth, uint32_t pageHeight, uint32_t maxPages);
         void SetCompletedFrame(uint64_t completedFrame) { m_completedFrame = completedFrame; }
 
@@ -79,12 +99,17 @@ namespace NLS::Render::UI
         [[nodiscard]] std::optional<UIFontGlyph> Find(UIFontGlyphKey key) const;
         [[nodiscard]] const std::vector<UIFontAtlasPage>& GetPages() const { return m_pages; }
         [[nodiscard]] const UIFontAtlasDiagnostics& GetDiagnostics() const { return m_diagnostics; }
+        // Bumped whenever page pixels change, so uploaders can skip unchanged
+        // frames without hashing the whole atlas.
+        [[nodiscard]] uint64_t GetContentGeneration() const { return m_generation; }
 
         void InvalidateFont(uint64_t fontAssetId, uint64_t retireFrame);
         void CollectRetiredPages(uint64_t completedFrame);
         void Clear();
 
     private:
+        struct FontRasterizerState;
+
         struct GlyphKeyHash
         {
             size_t operator()(UIFontGlyphKey key) const noexcept;
@@ -102,5 +127,13 @@ namespace NLS::Render::UI
         std::vector<UIFontAtlasPage> m_pages;
         std::unordered_map<UIFontGlyphKey, UIFontGlyph, GlyphKeyHash> m_glyphs;
         UIFontAtlasDiagnostics m_diagnostics;
+        std::vector<uint8_t> m_fontData;
+        std::unique_ptr<FontRasterizerState> m_fontState;
+        uint64_t m_generation = 1u;
     };
+
+    // Process-wide atlas for producers that do not own one (the document paint
+    // path, for example). The font is loaded lazily from the engine font asset.
+    NLS_RENDER_API UIFontAtlas& GetSharedUIFontAtlas();
+    NLS_RENDER_API void SetSharedUIFontAtlasFontPath(std::filesystem::path fontPath);
 }

@@ -15,7 +15,8 @@ struct ImVec2;
 
 namespace NLS::Engine
 {
-class GameObject;
+  class GameObject;
+  namespace Components { class Component; }
 }
 
 namespace NLS::Scripting
@@ -69,7 +70,10 @@ public:
     static std::string NormalizeSearchText(std::string_view p_value);
     static std::string MakeDisplayName(const meta::Type& p_type);
     static std::string GetComponentMenuPath(const meta::Type& p_type);
+    static std::vector<meta::Type> GetRequiredComponentTypes(const meta::Type& p_type);
     static bool IsTypeAddableToGameObject(const meta::Type& p_type, const Engine::GameObject* p_GameObject);
+    static std::string GetAddabilityReason(const meta::Type& p_type, const Engine::GameObject* p_gameObject);
+    static std::string GetRemovalBlockReason(const Engine::Components::Component* p_component);
     static std::vector<ComponentSearchEntry> BuildComponentEntries(
         Engine::GameObject* p_GameObject,
         std::string_view p_query = {},
@@ -89,7 +93,9 @@ private:
     bool TryCommitEntry(const ComponentSearchEntry& p_entry);
     void DrawCategoryNodes(const std::vector<ComponentCategoryNode>& p_nodes);
     void DrawCategoryNode(const ComponentCategoryNode& p_node);
+    void DrawMenuEntry(const ComponentSearchEntry& p_entry);
     void DrawSearchResults();
+    void DrawSearchEntry(const ComponentSearchEntry& p_entry);
     void SyncQueryFromBuffer();
     void SetStatusMessage(std::string p_message, bool p_isError);
 
@@ -102,7 +108,10 @@ private:
     bool m_statusIsError = false;
     bool m_popupRequested = false;
     bool m_popupOpen = false;
+    bool m_popupDismissRequested = false;
     float m_anchorMinX = 0.0f;
+    float m_anchorMinY = 0.0f;
+    float m_anchorMaxX = 0.0f;
     float m_anchorMaxY = 0.0f;
     char m_queryBuffer[256] = {};
 };

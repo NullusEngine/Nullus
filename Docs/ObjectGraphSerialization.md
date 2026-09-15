@@ -5,7 +5,7 @@ Nullus scene and prefab persistence is centered on `Runtime/Engine/Serialize`.
 The document model stores objects as GUID-backed `ObjectRecord` entries. Ordinary object state is written through reflection fields. Graph structure is explicit:
 
 - `$owned` expresses lifecycle ownership, such as Scene to GameObject or GameObject to Component.
-- Non-owning object references use Unity-style object identifiers with `fileID`, `guid`, `type`, and optional `filePath` fields. Local object references use a non-zero `fileID`, an empty `guid`, and `type` set to `NonAssetType`.
+- Non-owning object references use engine-style object identifiers with `fileID`, `guid`, `type`, and optional `filePath` fields. Local object references use a non-zero `fileID`, an empty `guid`, and `type` set to `NonAssetType`.
 - External asset references use the same object identifier shape, but require a non-zero `fileID`, a valid asset `guid`, and an asset `type`; `filePath` is only a hint.
 - Prefab changes are represented as patch operations, not as ad hoc object-specific payloads.
 

@@ -71,11 +71,21 @@ function(nls_configure_test_target target_name)
         NLS_UI
         NLS_Engine
         NLS_Scripting
-        EditorProject
         GameProject
         LauncherProject
         DirectXTex::DirectXTex
     )
+
+    # Unit tests exercise automatic ComponentEditor descriptor discovery too.
+    # EditorProject is static, so retain descriptor-only implementation units.
+    if(MSVC)
+        target_link_libraries(${target_name} PRIVATE EditorProject)
+        target_link_options(${target_name} PRIVATE "/WHOLEARCHIVE:$<TARGET_FILE:EditorProject>")
+    elseif(APPLE)
+        target_link_libraries(${target_name} PRIVATE "-Wl,-force_load,$<TARGET_FILE:EditorProject>" EditorProject)
+    else()
+        target_link_libraries(${target_name} PRIVATE "-Wl,--whole-archive" EditorProject "-Wl,--no-whole-archive")
+    endif()
 
     nls_target_precompile_headers(${target_name} "${CMAKE_SOURCE_DIR}/Tests/NullusTestsPch.h")
 

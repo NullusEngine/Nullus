@@ -59,6 +59,24 @@ namespace NLS::Editor::Core
 			return *static_cast<const T*>(m_panels.at(p_id).get());
 		}
 
+		/// <summary>
+		/// Adds a panel that was created outside this manager (for example a
+		/// scripted editor window built at runtime from a managed descriptor).
+		/// The manager takes ownership and keeps it for the panel lifetime so
+		/// the canvas and the window menu always reference a live object.
+		/// </summary>
+		UI::APanel& AddPanel(const std::string& p_id, std::unique_ptr<UI::APanel> p_panel)
+		{
+			auto& stored = *m_panels.emplace(p_id, std::move(p_panel)).first->second;
+			m_canvas.AddPanel(stored);
+			return stored;
+		}
+
+		/// <summary>
+		/// Returns true when a panel with the given id is already stored.
+		/// </summary>
+		bool HasPanel(const std::string& p_id) const { return m_panels.find(p_id) != m_panels.end(); }
+
 		void DestroyPanels()
 		{
 			m_canvas.RemoveAllPanels();

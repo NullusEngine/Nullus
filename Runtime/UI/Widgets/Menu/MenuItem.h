@@ -27,6 +27,7 @@ namespace NLS::UI::Widgets
 	public:
 		std::string name;
 		std::string shortcut;
+		std::string tooltip;
 		bool checkable;
 		bool checked;
 		NLS::Event<> ClickedEvent;

@@ -25,6 +25,12 @@ namespace NLS::Editor::Assets
 {
 namespace
 {
+std::string MakeObjectReferencePickerEntryKey(const ObjectReferencePickerEntry& entry)
+{
+    return GetEditorAssetDragPayloadPath(entry.payload) + "|" +
+        GetEditorAssetDragPayloadSubAssetKey(entry.payload);
+}
+
 std::vector<EditorAssetRoot> g_objectReferencePickerAssetRoots;
 std::vector<ObjectReferencePickerEntry> g_objectReferencePickerEntries;
 ObjectReferencePickerEntriesProvider g_objectReferencePickerEntriesProvider;
@@ -2714,11 +2720,23 @@ std::optional<EditorAssetDragPayload> MakeAssetBrowserItemDragPayload(
     const AssetDatabaseFacade* database)
 {
     if (item.kind == AssetBrowserItemKind::Folder ||
-        item.dragResourcePath.empty() ||
-        !item.assetId.IsValid())
+        item.dragResourcePath.empty())
     {
         return std::nullopt;
     }
+
+    // UI documents are valid source assets even before the asynchronous asset
+    // import has produced a metadata AssetId. Their normalized project path is
+    // already a stable reference and is sufficient for the Inspector picker.
+    // Keep the stricter AssetId requirement for every other source/generated
+    // asset so a path-only payload cannot accidentally represent an imported
+    // sub-asset or a resource that needs database identity.
+    const bool isUiDocumentSource =
+        item.kind == AssetBrowserItemKind::SourceAsset &&
+        NLS::Core::Assets::InferAssetType(item.dragResourcePath) ==
+            NLS::Core::Assets::AssetType::UIDocument;
+    if (!item.assetId.IsValid() && !isUiDocumentSource)
+        return std::nullopt;
 
     if (database != nullptr &&
         item.kind == AssetBrowserItemKind::GeneratedSubAsset &&
@@ -2769,6 +2787,30 @@ std::optional<EditorAssetDragPayload> MakeAssetBrowserItemDragPayload(
         item.kind == AssetBrowserItemKind::GeneratedSubAsset);
 }
 
+bool ShouldUseEditorAssetDragPayload(const AssetBrowserItem& item)
+{
+    if (item.kind != AssetBrowserItemKind::SourceAsset)
+        return false;
+
+    if (item.type == AssetBrowserItemType::Model ||
+        item.type == AssetBrowserItemType::Prefab ||
+        item.type == AssetBrowserItemType::Material ||
+        item.type == AssetBrowserItemType::Texture ||
+        item.type == AssetBrowserItemType::Shader)
+    {
+        return true;
+    }
+
+    if (item.type == AssetBrowserItemType::Script &&
+        IsScriptAssetPath(item.dragResourcePath))
+    {
+        return true;
+    }
+
+    return NLS::Core::Assets::InferAssetType(item.dragResourcePath) ==
+        NLS::Core::Assets::AssetType::UIDocument;
+}
+
 void SetObjectReferencePickerAssetRoots(std::vector<EditorAssetRoot> roots)
 {
     g_objectReferencePickerAssetRoots = std::move(roots);
@@ -2803,18 +2845,67 @@ bool ShouldDeferObjectReferencePickerEntriesRefresh()
         static_cast<bool>(g_objectReferencePickerEntriesProvider);
 }
 
+std::vector<ObjectReferencePickerEntry> AppendObjectReferencePickerEntriesFromAssetRoots(
+    std::vector<ObjectReferencePickerEntry> entries)
+{
+    // UI documents are authoring sources. They must stay selectable while the
+    // importer has not published an artifact yet, so the mounted asset roots are
+    // scanned and merged without duplicating what the database already offered.
+    const auto diskEntries =
+        BuildObjectReferencePickerEntriesFromAssetRoots(g_objectReferencePickerAssetRoots);
+    if (diskEntries.empty())
+        return entries;
+
+    std::unordered_set<std::string> knownEntries;
+    knownEntries.reserve(entries.size() + diskEntries.size());
+    for (const auto& entry : entries)
+        knownEntries.insert(MakeObjectReferencePickerEntryKey(entry));
+
+    for (auto entry : diskEntries)
+    {
+        if (!knownEntries.insert(MakeObjectReferencePickerEntryKey(entry)).second)
+            continue;
+        entries.push_back(std::move(entry));
+    }
+
+    std::stable_sort(
+        entries.begin(),
+        entries.end(),
+        [](const ObjectReferencePickerEntry& p_left, const ObjectReferencePickerEntry& p_right)
+        {
+            return p_left.displayName < p_right.displayName;
+        });
+    return entries;
+}
+
+void AppendObjectReferencePickerAuthoringDocuments()
+{
+    g_objectReferencePickerEntries =
+        AppendObjectReferencePickerEntriesFromAssetRoots(std::move(g_objectReferencePickerEntries));
+}
+
 bool RefreshObjectReferencePickerEntries()
 {
     if (!g_objectReferencePickerEntriesDirty)
         return true;
 
-    if (g_objectReferencePickerEntriesProvider)
+    // Without a database provider the mounted roots are still a usable
+    // catalog, which keeps UI documents assignable in builds whose asset
+    // browser has not published a snapshot yet.
+    if (!g_objectReferencePickerEntriesProvider)
     {
-        g_objectReferencePickerEntries = g_objectReferencePickerEntriesProvider();
+        auto entries = AppendObjectReferencePickerEntriesFromAssetRoots({});
+        if (entries.empty())
+            return false;
+        g_objectReferencePickerEntries = std::move(entries);
         g_objectReferencePickerEntriesDirty = false;
         return true;
     }
-    return false;
+
+    g_objectReferencePickerEntries =
+        AppendObjectReferencePickerEntriesFromAssetRoots(g_objectReferencePickerEntriesProvider());
+    g_objectReferencePickerEntriesDirty = false;
+    return true;
 }
 
 std::vector<ObjectReferencePickerEntry> GetObjectReferencePickerEntries()
@@ -2958,6 +3049,107 @@ std::vector<ObjectReferencePickerEntry> BuildObjectReferencePickerEntries(
                 });
             }
         });
+
+    std::stable_sort(
+        entries.begin(),
+        entries.end(),
+        [](const ObjectReferencePickerEntry& p_left, const ObjectReferencePickerEntry& p_right)
+        {
+            return p_left.displayName < p_right.displayName;
+        });
+    entries.erase(
+        std::unique(
+            entries.begin(),
+            entries.end(),
+            [](const ObjectReferencePickerEntry& p_left, const ObjectReferencePickerEntry& p_right)
+            {
+                return p_left.displayName == p_right.displayName;
+            }),
+        entries.end());
+    return entries;
+}
+
+std::vector<ObjectReferencePickerEntry> BuildObjectReferencePickerEntriesFromAssetRoots(
+    const std::vector<EditorAssetRoot>& roots)
+{
+    std::vector<ObjectReferencePickerEntry> entries;
+    for (const auto& root : roots)
+    {
+        if (root.path.empty() || root.mountPath.empty())
+            continue;
+
+        std::error_code rootError;
+        if (!std::filesystem::is_directory(root.path, rootError) || rootError)
+            continue;
+
+        std::error_code iterationError;
+        for (std::filesystem::recursive_directory_iterator iterator(
+                 root.path,
+                 std::filesystem::directory_options::skip_permission_denied,
+                 iterationError),
+             end;
+             !iterationError && iterator != end;
+             iterator.increment(iterationError))
+        {
+            const auto path = iterator->path();
+            std::error_code entryError;
+            if (iterator->is_directory(entryError))
+            {
+                // Generated data and tool folders never contain authoring
+                // documents, so the scan stops at them.
+                const auto folderName = path.filename().generic_string();
+                if (folderName == "Library" || (!folderName.empty() && folderName.front() == '.'))
+                    iterator.disable_recursion_pending();
+                continue;
+            }
+            if (entryError)
+                continue;
+            if (NLS::Core::Assets::InferAssetType(path) != NLS::Core::Assets::AssetType::UIDocument)
+                continue;
+
+            std::error_code relativeError;
+            const auto relative = std::filesystem::relative(path, root.path, relativeError);
+            if (relativeError)
+                continue;
+            const auto mountedPath = NormalizeEditorProjectAssetPath(root.mountPath / relative);
+            if (mountedPath.empty())
+                continue;
+
+            const auto stem = path.stem().generic_string();
+            if (stem.empty())
+                continue;
+            const auto subAssetKey = "ui-document:" + stem;
+            if (!CanStoreEditorAssetDragPayload(
+                    mountedPath,
+                    NLS::Core::Assets::AssetId {},
+                    subAssetKey))
+            {
+                continue;
+            }
+
+            // The .meta identity is optional: a document that has never been
+            // imported still assigns by resource path, and the reference
+            // upgrades to the stable AssetId as soon as import publishes one.
+            NLS::Core::Assets::AssetId assetId {};
+            if (const auto meta = NLS::Core::Assets::AssetMeta::Load(
+                    NLS::Core::Assets::GetAssetMetaPath(path)))
+            {
+                assetId = meta->id;
+            }
+
+            entries.push_back({
+                mountedPath + " / " + subAssetKey,
+                MakeEditorAssetDragPayload(
+                    mountedPath,
+                    assetId,
+                    subAssetKey,
+                    NLS::Core::Assets::ArtifactType::UIDocument,
+                    false,
+                    false,
+                    false)
+            });
+        }
+    }
 
     std::stable_sort(
         entries.begin(),

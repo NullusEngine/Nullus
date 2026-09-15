@@ -47,6 +47,10 @@ struct ProjectDebugManifest
     std::filesystem::path visualStudioScriptsFilter;
     std::filesystem::path visualStudioEngineFilter;
     std::filesystem::path visualStudioProject;
+    // Editor-scripts project (Assets/**/Editor/**/*.cs). Present in the same
+    // generated workspace and solution so scripted editor code is editable and
+    // debuggable without opening the engine sources.
+    std::filesystem::path visualStudioEditorProject;
     std::filesystem::path visualStudioCodeWorkspace;
     std::filesystem::path visualStudioExtension;
     std::filesystem::path editorExecutable;

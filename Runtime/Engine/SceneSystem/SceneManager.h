@@ -2,6 +2,7 @@
 
 
 #include <functional>
+#include <memory>
 #include <optional>
 #include <string>
 #include "SceneSystem/Scene.h"
@@ -93,6 +94,23 @@ namespace NLS::Engine::SceneSystem
 		*/
 		void UnloadCurrentScene();
 
+        /**
+         * Create an isolated in-memory Play scene from the current Edit scene.
+         * The Edit scene remains owned by the manager and is restored verbatim
+         * when DiscardPlaySandbox succeeds. This never represents a disk scene
+         * load and therefore does not fire SceneLoadSucceededEvent.
+         */
+        bool BeginPlaySandbox(std::string* p_error = nullptr);
+
+        /**
+         * Stop discarding the active Play scene and restore the suspended Edit
+         * scene. A failure leaves the current Play scene active so callers can
+         * keep editor mutation history frozen.
+         */
+        bool DiscardPlaySandbox(std::string* p_error = nullptr);
+
+        [[nodiscard]] bool IsPlaySandboxActive() const;
+
 		/**
 		* Return true if a scene is currently loaded
 		*/
@@ -143,13 +161,27 @@ namespace NLS::Engine::SceneSystem
 
 	public:
 		NLS::Event<> SceneLoadEvent;
+		// Fired only after a scene replacement has committed successfully.  The
+		// legacy SceneLoadEvent remains the activation notification used by
+		// runtime/editor views and can also be emitted by the failed-load fallback.
+		NLS::Event<> SceneLoadSucceededEvent;
 		NLS::Event<> SceneUnloadEvent;
 		NLS::Event<const std::string&> CurrentSceneSourcePathChangedEvent;
 		NLS::Event<bool> CurrentSceneDirtyStateChangedEvent;
 
 	private:
+
+        bool ReplacePlaySandbox(std::unique_ptr<Scene> p_replacement, std::string* p_error = nullptr);
+
 		const std::string m_sceneRootFolder;
 		Scene* m_currentScene = nullptr;
+
+        // During Play, m_currentScene points at this ObjectGraph clone while
+        // m_editSceneBeforePlay remains alive and untouched. Keep ownership
+        // explicit so ordinary scene unload paths cannot delete either twice.
+        Scene* m_editSceneBeforePlay = nullptr;
+        std::unique_ptr<Scene> m_playSceneSandbox;
+        bool m_playSandboxDirty = false;
 
 		bool m_currentSceneLoadedFromPath = false;
 		std::string m_currentSceneSourcePath = "";

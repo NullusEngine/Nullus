@@ -35,6 +35,7 @@
     <None Include="@NLS_META_PARSER_TEMPLATES_DIR@/MetaGenerated.h.tt" Link="Templates/MetaGenerated.h.tt" CopyToOutputDirectory="PreserveNewest" />
     <None Include="@NLS_META_PARSER_TEMPLATES_DIR@/HeaderGenerated.cpp.tt" Link="Templates/HeaderGenerated.cpp.tt" CopyToOutputDirectory="PreserveNewest" />
     <None Include="@NLS_META_PARSER_TEMPLATES_DIR@/HeaderGenerated.h.tt" Link="Templates/HeaderGenerated.h.tt" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="@NLS_META_PARSER_TEMPLATES_DIR@/EditorExtensionDescriptors.cpp.tt" Link="Templates/EditorExtensionDescriptors.cpp.tt" CopyToOutputDirectory="PreserveNewest" />
     <None Include="@NLS_META_PARSER_LAUNCH_SETTINGS@" Link="Properties/launchSettings.json" />
   </ItemGroup>
 </Project>

@@ -381,7 +381,10 @@ namespace NLS::Engine::Serialize
     {
     public:
         std::string format = "Nullus.ObjectGraph.Scene";
-        int version = 1;
+        // New documents use v2.  The reader and instantiator still accept v1
+        // records, where a component simply has no graph-owned `enabled`
+        // property and defaults to enabled.
+        int version = 2;
         NLS::Guid documentId;
         ObjectId root;
         std::optional<ObjectIdentifier> basePrefab;

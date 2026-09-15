@@ -83,7 +83,7 @@ public:
     FUNCTION(Scriptable)
     const std::string& GetName() const
     {
-        return m_name;
+        return name;
     }
     /**
      * Defines a new name for the actor
@@ -92,7 +92,7 @@ public:
     FUNCTION(Scriptable)
     void SetName(const std::string& p_name)
     {
-        m_name = p_name;
+        name = p_name;
     }
     /**
      * Returns true if the actor is not marked as destroyed
@@ -109,7 +109,7 @@ public:
     FUNCTION(Scriptable)
     void SetTag(const std::string& p_tag)
     {
-        m_tag = p_tag.empty() ? "Untagged" : p_tag;
+        tag = p_tag.empty() ? "Untagged" : p_tag;
     }
     /**
      * Return the current tag of the actor
@@ -117,23 +117,23 @@ public:
     FUNCTION(Scriptable)
     const std::string& GetTag() const
     {
-        return m_tag;
+        return tag;
     }
 
     FUNCTION()
     void SetLayer(int p_layer)
     {
         const int clampedLayer = p_layer < 0 ? 0 : (p_layer > 31 ? 31 : p_layer);
-        if (m_layer == clampedLayer)
+        if (layer == clampedLayer)
             return;
-        m_layer = clampedLayer;
+        layer = clampedLayer;
         MarkRenderStateChanged();
     }
 
     FUNCTION()
     int GetLayer() const
     {
-        return m_layer;
+        return layer;
     }
     /**
      * Called when the actor enter in collision with another physical object
@@ -318,11 +318,15 @@ public:
 
 protected:
     std::vector<std::unique_ptr<Components::Component>> m_vComponents;
-    bool m_active;
-    std::string m_name;
+    PROPERTY(DisplayName("Active"), Getter(GetActive), Setter(SetActive))
+    bool active;
+    PROPERTY(DisplayName("Name"), Getter(GetName), Setter(SetName))
+    std::string name;
     /* Settings */
-    std::string m_tag;
-    int m_layer = 0;
+    PROPERTY(DisplayName("Tag"), Getter(GetTag), Setter(SetTag))
+    std::string tag;
+    PROPERTY(DisplayName("Layer"), Getter(GetLayer), Setter(SetLayer))
+    int layer = 0;
 
     /* Internal settings */
     bool m_destroyed = false;

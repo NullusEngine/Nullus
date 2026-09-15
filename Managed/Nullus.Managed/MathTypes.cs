@@ -216,6 +216,63 @@ public struct Color(float r, float g, float b, float a = 1)
         a.A + (b.A - a.A) * Mathf.Clamp01(t));
 }
 
+[StructLayout(LayoutKind.Sequential)]
+public struct Rect(float x, float y, float width, float height)
+{
+    public float X = x, Y = y, Width = width, Height = height;
+    public float x { readonly get => X; set => X = value; }
+    public float y { readonly get => Y; set => Y = value; }
+    public float width { readonly get => Width; set => Width = value; }
+    public float height { readonly get => Height; set => Height = value; }
+}
+
+[StructLayout(LayoutKind.Sequential)]
+public struct Vector2Int(int x, int y)
+{
+    public int X = x, Y = y;
+    public int x { readonly get => X; set => X = value; }
+    public int y { readonly get => Y; set => Y = value; }
+    public static Vector2Int zero => new(0, 0);
+}
+
+[StructLayout(LayoutKind.Sequential)]
+public struct Vector3Int(int x, int y, int z)
+{
+    public int X = x, Y = y, Z = z;
+    public int x { readonly get => X; set => X = value; }
+    public int y { readonly get => Y; set => Y = value; }
+    public int z { readonly get => Z; set => Z = value; }
+    public static Vector3Int zero => new(0, 0, 0);
+}
+
+[StructLayout(LayoutKind.Sequential)]
+public struct RectInt(int x, int y, int width, int height)
+{
+    public int X = x, Y = y, Width = width, Height = height;
+    public int x { readonly get => X; set => X = value; }
+    public int y { readonly get => Y; set => Y = value; }
+    public int width { readonly get => Width; set => Width = value; }
+    public int height { readonly get => Height; set => Height = value; }
+}
+
+[StructLayout(LayoutKind.Sequential)]
+public struct Bounds(Vector3 center, Vector3 size)
+{
+    public Vector3 Center = center;
+    public Vector3 Size = size;
+    public Vector3 center { readonly get => Center; set => Center = value; }
+    public Vector3 size { readonly get => Size; set => Size = value; }
+}
+
+[StructLayout(LayoutKind.Sequential)]
+public struct BoundsInt(Vector3Int position, Vector3Int size)
+{
+    public Vector3Int Position = position;
+    public Vector3Int Size = size;
+    public Vector3Int position { readonly get => Position; set => Position = value; }
+    public Vector3Int size { readonly get => Size; set => Size = value; }
+}
+
 public readonly struct Ray(Vector3 origin, Vector3 direction)
 {
     public Vector3 origin { get; } = origin;

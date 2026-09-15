@@ -13,7 +13,9 @@ namespace NLS::Editor::Shortcuts
         Ctrl = 1 << 0,
         Shift = 1 << 1,
         Alt = 1 << 2,
-        Super = 1 << 3
+        Super = 1 << 3,
+        // A logical primary modifier: Ctrl on Windows/Linux and Command on macOS.
+        Primary = 1 << 4
     };
 
     using ShortcutModifiers = uint8_t;
@@ -57,6 +59,28 @@ namespace NLS::Editor::Shortcuts
     inline bool HasModifier(const ShortcutModifiers p_modifiers, const EShortcutModifier p_modifier)
     {
         return (p_modifiers & ToModifierMask(p_modifier)) != 0;
+    }
+
+    inline EShortcutModifier GetPrimaryModifierForCurrentPlatform()
+    {
+#if defined(__APPLE__)
+        return EShortcutModifier::Super;
+#else
+        return EShortcutModifier::Ctrl;
+#endif
+    }
+
+    inline ShortcutModifiers NormalizeShortcutModifiersForCurrentPlatform(
+        const ShortcutModifiers p_modifiers)
+    {
+        auto result = static_cast<ShortcutModifiers>(
+            p_modifiers & static_cast<ShortcutModifiers>(~ToModifierMask(EShortcutModifier::Primary)));
+
+        if (HasModifier(p_modifiers, EShortcutModifier::Primary))
+            result = static_cast<ShortcutModifiers>(
+                result | ToModifierMask(GetPrimaryModifierForCurrentPlatform()));
+
+        return result;
     }
 
     inline ShortcutBinding ShortcutBinding::Unassigned()
@@ -120,6 +144,16 @@ namespace NLS::Editor::Shortcuts
         return !(*this == p_other);
     }
 
+    inline bool AreShortcutBindingsEquivalentForCurrentPlatform(
+        const ShortcutBinding& p_left,
+        const ShortcutBinding& p_right)
+    {
+        return p_left.assigned == p_right.assigned &&
+            p_left.primaryKey == p_right.primaryKey &&
+            NormalizeShortcutModifiersForCurrentPlatform(p_left.modifiers) ==
+                NormalizeShortcutModifiersForCurrentPlatform(p_right.modifiers);
+    }
+
     inline bool ShortcutBinding::operator<(const ShortcutBinding& p_other) const
     {
         return std::tie(assigned, primaryKey, modifiers) <
@@ -162,14 +196,27 @@ namespace NLS::Editor::Shortcuts
             result += p_part;
         };
 
-        if (HasModifier(p_binding.modifiers, EShortcutModifier::Ctrl))
-            append("Ctrl");
-        if (HasModifier(p_binding.modifiers, EShortcutModifier::Shift))
+        const auto modifiers = NormalizeShortcutModifiersForCurrentPlatform(p_binding.modifiers);
+
+#if defined(__APPLE__)
+        if (HasModifier(modifiers, EShortcutModifier::Super))
+            append("Cmd");
+        if (HasModifier(modifiers, EShortcutModifier::Shift))
             append("Shift");
-        if (HasModifier(p_binding.modifiers, EShortcutModifier::Alt))
+        if (HasModifier(modifiers, EShortcutModifier::Alt))
             append("Alt");
-        if (HasModifier(p_binding.modifiers, EShortcutModifier::Super))
+        if (HasModifier(modifiers, EShortcutModifier::Ctrl))
+            append("Ctrl");
+#else
+        if (HasModifier(modifiers, EShortcutModifier::Ctrl))
+            append("Ctrl");
+        if (HasModifier(modifiers, EShortcutModifier::Shift))
+            append("Shift");
+        if (HasModifier(modifiers, EShortcutModifier::Alt))
+            append("Alt");
+        if (HasModifier(modifiers, EShortcutModifier::Super))
             append("Super");
+#endif
 
         append(KeyToDisplayString(p_binding.primaryKey));
         return result;

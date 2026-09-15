@@ -14,8 +14,7 @@ internal sealed record ReflectMethodInfo(
     bool IsPrivate,
     string? ReturnTypeName = null,
     List<string>? ParameterTypeNames = null,
-    bool IsScriptable = false,
-    string? PropertyName = null);
+    bool IsScriptable = false);
 
 internal sealed record ReflectBaseInfo(string TypeName);
 
@@ -31,7 +30,7 @@ internal sealed record MethodCandidateInfo(
     bool IsStatic,
     bool IsPrivate,
     bool IsConst,
-    string? PropertyName,
+    bool IsFunction,
     bool IsScriptable = false);
 
 internal sealed record ReflectTypeInfo(

@@ -36,6 +36,50 @@ TEST(EditorShortcutConflictTests, BlocksDuplicateGlobalBindings)
     EXPECT_TRUE(conflicts[0].blocking);
 }
 
+TEST(EditorShortcutConflictTests, TreatsLogicalPrimaryAsThePlatformPrimaryModifier)
+{
+    EditorShortcutService service;
+    service.RegisterCommand(Command(
+        "edit.undo",
+        ShortcutContexts::Global,
+        ShortcutBinding::FromKey(EKey::KEY_Z, EShortcutModifier::Primary)));
+    service.RegisterCommand(Command(
+        "edit.redo",
+        ShortcutContexts::Global,
+        ShortcutBinding::FromKey(EKey::KEY_Y)));
+
+    const auto conflicts = service.ValidateBinding(
+        "edit.redo",
+        ShortcutBinding::FromKey(EKey::KEY_Z, GetPrimaryModifierForCurrentPlatform()));
+
+    ASSERT_EQ(conflicts.size(), 1u);
+    EXPECT_EQ(conflicts[0].type, EShortcutConflictType::DuplicateGlobal);
+}
+
+TEST(EditorShortcutConflictTests, ChecksAlternateBindingsForCollisions)
+{
+    EditorShortcutService service;
+    auto redo = Command(
+        "edit.redo",
+        ShortcutContexts::Global,
+        ShortcutBinding::FromKey(EKey::KEY_Y, EShortcutModifier::Primary));
+    redo.alternateBindings.push_back(
+        ShortcutBinding::FromKey(EKey::KEY_Z, EShortcutModifier::Primary | EShortcutModifier::Shift));
+    service.RegisterCommand(std::move(redo));
+    service.RegisterCommand(Command(
+        "custom.command",
+        ShortcutContexts::Global,
+        ShortcutBinding::FromKey(EKey::KEY_N)));
+
+    const auto conflicts = service.ValidateBinding(
+        "custom.command",
+        ShortcutBinding::FromKey(EKey::KEY_Z, EShortcutModifier::Primary | EShortcutModifier::Shift));
+
+    ASSERT_EQ(conflicts.size(), 1u);
+    EXPECT_EQ(conflicts[0].type, EShortcutConflictType::DuplicateGlobal);
+    EXPECT_EQ(conflicts[0].commandIds[1], "edit.redo");
+}
+
 TEST(EditorShortcutConflictTests, BlocksDuplicateBindingsInSameContext)
 {
     EditorShortcutService service;

@@ -1,6 +1,7 @@
 #pragma once
 
 #include <array>
+#include <cstdint>
 #include <filesystem>
 #include <string>
 
@@ -50,5 +51,6 @@ namespace NLS::Editor::Panels
         std::array<char, 256u> m_nameBuffer {};
         std::array<char, 1024u> m_textBuffer {};
         std::string m_buffersNodeGuid;
+        uint64_t m_buffersDocumentRevision = 0u;
     };
 }

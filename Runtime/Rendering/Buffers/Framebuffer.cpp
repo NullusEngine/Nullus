@@ -117,6 +117,7 @@ NLS::Render::Buffers::Framebuffer::~Framebuffer()
 
 void NLS::Render::Buffers::Framebuffer::Release()
 {
+	std::scoped_lock lock(m_resourceMutex);
 	ResetCurrentResources();
 	for (auto& resourceSet : m_retiredResourceSets)
 		resourceSet.Reset();
@@ -153,6 +154,12 @@ void NLS::Render::Buffers::Framebuffer::PruneRetiredResources()
 }
 
 void NLS::Render::Buffers::Framebuffer::Resize(uint16_t p_width, uint16_t p_height, bool p_forceUpdate)
+{
+	std::scoped_lock lock(m_resourceMutex);
+	ResizeLocked(p_width, p_height, p_forceUpdate);
+}
+
+void NLS::Render::Buffers::Framebuffer::ResizeLocked(uint16_t p_width, uint16_t p_height, bool p_forceUpdate)
 {
 	if (!p_forceUpdate && p_width == m_width && p_height == m_height)
 		return;
@@ -203,6 +210,7 @@ void NLS::Render::Buffers::Framebuffer::Resize(uint16_t p_width, uint16_t p_heig
 
 void NLS::Render::Buffers::Framebuffer::SetOptimizedColorClearValue(float r, float g, float b, float a)
 {
+	std::scoped_lock lock(m_resourceMutex);
 	const auto clearValue = NLS::Render::RHI::RHITextureDesc::OptimizedClearValue::Color(r, g, b, a);
 
 	if (SameOptimizedColorClearValue(m_colorOptimizedClearValue, clearValue))
@@ -210,20 +218,42 @@ void NLS::Render::Buffers::Framebuffer::SetOptimizedColorClearValue(float r, flo
 
 	m_colorOptimizedClearValue = clearValue;
 	if (m_explicitRenderTexture != nullptr)
-		Resize(m_width, m_height, true);
+		ResizeLocked(m_width, m_height, true);
 }
 
-const std::shared_ptr<NLS::Render::RHI::RHITexture>& NLS::Render::Buffers::Framebuffer::GetExplicitTextureHandle() const
+std::shared_ptr<NLS::Render::RHI::RHITexture> NLS::Render::Buffers::Framebuffer::GetExplicitTextureHandle() const
 {
+	std::scoped_lock lock(m_resourceMutex);
 	return m_explicitRenderTexture;
 }
 
-const std::shared_ptr<NLS::Render::RHI::RHITexture>& NLS::Render::Buffers::Framebuffer::GetExplicitDepthStencilTextureHandle() const
+std::shared_ptr<NLS::Render::RHI::RHITexture> NLS::Render::Buffers::Framebuffer::GetExplicitDepthStencilTextureHandle() const
 {
+	std::scoped_lock lock(m_resourceMutex);
 	return m_explicitDepthStencilTexture;
 }
 
+NLS::Render::Buffers::Framebuffer::ExplicitResourceSnapshot
+NLS::Render::Buffers::Framebuffer::CaptureExplicitResourceSnapshot(
+	const std::string& colorViewDebugName,
+	const std::string& depthStencilViewDebugName) const
+{
+	std::scoped_lock lock(m_resourceMutex);
+	ExplicitResourceSnapshot snapshot;
+	snapshot.colorTexture = m_explicitRenderTexture;
+	snapshot.depthStencilTexture = m_explicitDepthStencilTexture;
+	snapshot.colorView = GetOrCreateExplicitColorViewLocked(colorViewDebugName);
+	snapshot.depthStencilView = GetOrCreateExplicitDepthStencilViewLocked(depthStencilViewDebugName);
+	return snapshot;
+}
+
 std::shared_ptr<NLS::Render::RHI::RHITextureView> NLS::Render::Buffers::Framebuffer::GetOrCreateExplicitColorView(const std::string& debugName) const
+{
+	std::scoped_lock lock(m_resourceMutex);
+	return GetOrCreateExplicitColorViewLocked(debugName);
+}
+
+std::shared_ptr<NLS::Render::RHI::RHITextureView> NLS::Render::Buffers::Framebuffer::GetOrCreateExplicitColorViewLocked(const std::string& debugName) const
 {
 	if (m_explicitRenderTexture == nullptr)
 		return nullptr;
@@ -247,6 +277,12 @@ std::shared_ptr<NLS::Render::RHI::RHITextureView> NLS::Render::Buffers::Framebuf
 }
 
 std::shared_ptr<NLS::Render::RHI::RHITextureView> NLS::Render::Buffers::Framebuffer::GetOrCreateExplicitDepthStencilView(const std::string& debugName) const
+{
+	std::scoped_lock lock(m_resourceMutex);
+	return GetOrCreateExplicitDepthStencilViewLocked(debugName);
+}
+
+std::shared_ptr<NLS::Render::RHI::RHITextureView> NLS::Render::Buffers::Framebuffer::GetOrCreateExplicitDepthStencilViewLocked(const std::string& debugName) const
 {
 	if (m_explicitDepthStencilTexture == nullptr)
 		return nullptr;

@@ -365,6 +365,51 @@ namespace
 using namespace NLS;
 using namespace NLS::Engine::SceneSystem;
 
+namespace
+{
+    void PopulateEmptyLightedScene(Scene& scene)
+    {
+        auto& directionalLightGo = scene.CreateGameObject("Directional Light");
+        auto directionalLight = directionalLightGo.AddComponent<Engine::Components::LightComponent>();
+        if (directionalLight)
+        {
+            directionalLight->SetLightType(Render::Settings::ELightType::DIRECTIONAL);
+            directionalLight->SetIntensity(0.75f);
+        }
+        if (auto tr = directionalLightGo.GetTransform())
+        {
+            tr->SetLocalPosition({0.0f, 10.0f, 0.0f});
+            tr->SetLocalRotation(Maths::Quaternion({60.0f, 40.0f, 0.0f}));
+        }
+
+        auto& ambientLightGo = scene.CreateGameObject("Ambient Light");
+        auto ambientLight = ambientLightGo.AddComponent<Engine::Components::LightComponent>();
+        if (ambientLight)
+        {
+            ambientLight->SetLightType(Render::Settings::ELightType::AMBIENT_SPHERE);
+            ambientLight->SetRange(10000.0f);
+            ambientLight->SetIntensity(0.1f);
+        }
+
+        auto& skyboxGo = scene.CreateGameObject("Skybox");
+        AppendSceneManagerTrace("adding SkyBoxComponent");
+        skyboxGo.AddComponent<Engine::Components::SkyBoxComponent>();
+        AppendSceneManagerTrace("SkyBoxComponent added");
+
+        auto& camera = scene.CreateGameObject("Main Camera");
+        if (auto cameraComponent = camera.AddComponent<Engine::Components::CameraComponent>())
+        {
+            cameraComponent->SetClearColor({0.08f, 0.12f, 0.2f});
+            cameraComponent->SetFrustumGeometryCulling(true);
+        }
+        if (auto tr = camera.GetTransform())
+        {
+            tr->SetLocalPosition({0.0f, 0.0f, 0.0f});
+            tr->SetLocalRotation(Maths::Quaternion::Identity);
+        }
+    }
+}
+
 SceneManager::SceneManager(const std::string& p_sceneRootFolder)
     : m_sceneRootFolder(p_sceneRootFolder)
 {
@@ -373,6 +418,11 @@ SceneManager::SceneManager(const std::string& p_sceneRootFolder)
 
 SceneManager::~SceneManager()
 {
+    if (IsPlaySandboxActive())
+    {
+        std::string sandboxError;
+        static_cast<void>(DiscardPlaySandbox(&sandboxError));
+    }
     UnloadCurrentScene();
 }
 
@@ -390,14 +440,157 @@ void SceneManager::LoadAndPlayDelayed(const std::string& p_path, bool p_absolute
     m_delayedLoadCall = [this, p_path, p_absolute]
     {
         std::string previousSourcePath = GetCurrentSceneSourcePath();
-        LoadScene(p_path, p_absolute);
+        if (!LoadScene(p_path, p_absolute))
+            return;
         StoreCurrentSceneSourcePath(previousSourcePath);
-        GetCurrentScene()->Play();
+        if (auto* scene = GetCurrentScene())
+            scene->Play();
     };
+}
+
+bool SceneManager::BeginPlaySandbox(std::string* p_error)
+{
+    if (IsPlaySandboxActive())
+    {
+        if (p_error)
+            *p_error = "A Play scene sandbox is already active.";
+        return false;
+    }
+
+    if (!m_currentScene)
+    {
+        if (p_error)
+            *p_error = "There is no Edit scene to clone for Play mode.";
+        return false;
+    }
+
+    if (m_currentScene->IsPlaying())
+    {
+        if (p_error)
+            *p_error = "The current scene is already running and cannot become an Edit scene sandbox.";
+        return false;
+    }
+
+    // Build the entire clone before publishing it as the current scene. An
+    // invalid graph or failed instantiation therefore leaves Edit untouched.
+    const auto document = Engine::Serialize::ObjectGraphSerializer::SerializeScene(*m_currentScene);
+    if (document.Validate().HasErrors())
+    {
+        if (p_error)
+            *p_error = "The current Edit scene could not be serialized for Play mode.";
+        return false;
+    }
+
+    Engine::Serialize::LoadPolicy policy;
+    policy.deferAssetReferenceResolution = true;
+    policy.invalidReferencePolicy = Engine::Serialize::InvalidReferencePolicy::Preserve;
+    policy.suppressGameObjectCreatedEvents = true;
+    auto result = Engine::Serialize::ObjectGraphInstantiator::InstantiateScene(document, policy);
+    if (!result.scene)
+    {
+        if (p_error)
+            *p_error = "The Play scene sandbox could not be instantiated from the Edit scene.";
+        return false;
+    }
+
+    m_editSceneBeforePlay = m_currentScene;
+    m_playSceneSandbox = std::move(result.scene);
+    m_currentScene = m_playSceneSandbox.get();
+    m_playSandboxDirty = false;
+
+    // This is a view activation, not a disk load. In particular, do not emit
+    // SceneLoadSucceededEvent: EditorUndoService treats that as a real scene
+    // replacement and clears the global history.
+    SceneLoadEvent.Invoke();
+    return true;
+}
+
+bool SceneManager::ReplacePlaySandbox(std::unique_ptr<Scene> p_replacement, std::string* p_error)
+{
+    if (!p_replacement)
+    {
+        if (p_error)
+            *p_error = "A replacement Play scene sandbox is required.";
+        return false;
+    }
+
+    if (!IsPlaySandboxActive() ||
+        m_currentScene != m_playSceneSandbox.get() ||
+        !m_editSceneBeforePlay)
+    {
+        if (p_error)
+            *p_error = "The active Play scene sandbox lifecycle is inconsistent.";
+        return false;
+    }
+
+    const bool wasPlaying = m_playSceneSandbox->IsPlaying();
+    if (wasPlaying)
+        m_playSceneSandbox->Stop();
+
+    auto previousSandbox = std::move(m_playSceneSandbox);
+    m_playSceneSandbox = std::move(p_replacement);
+    m_currentScene = m_playSceneSandbox.get();
+    m_playSandboxDirty = false;
+    if (wasPlaying)
+        m_playSceneSandbox->Play();
+
+    // Destruction callbacks must observe another Play scene, never the
+    // suspended Edit scene. The event below then rebuilds editor views from
+    // the replacement without emitting a successful disk-load notification.
+    previousSandbox.reset();
+    SceneLoadEvent.Invoke();
+    return true;
+}
+
+bool SceneManager::DiscardPlaySandbox(std::string* p_error)
+{
+    if (!IsPlaySandboxActive())
+    {
+        if (p_error)
+            *p_error = "There is no active Play scene sandbox to discard.";
+        return false;
+    }
+
+    if (m_currentScene != m_playSceneSandbox.get() || !m_editSceneBeforePlay)
+    {
+        if (p_error)
+            *p_error = "The Play scene sandbox lifecycle is inconsistent.";
+        return false;
+    }
+
+    auto sandbox = std::move(m_playSceneSandbox);
+    if (sandbox->IsPlaying())
+        sandbox->Stop();
+
+    // Publish the suspended Edit scene before sandbox destruction so every
+    // destruction callback resolves the current scene to the durable state.
+    m_currentScene = m_editSceneBeforePlay;
+    m_editSceneBeforePlay = nullptr;
+    m_playSandboxDirty = false;
+    sandbox.reset();
+
+    // Mirror the activation notification used by existing editor views without
+    // announcing a successful disk load or unloading the retained Edit scene.
+    SceneLoadEvent.Invoke();
+    return true;
+}
+
+bool SceneManager::IsPlaySandboxActive() const
+{
+    return m_playSceneSandbox != nullptr;
 }
 
 void SceneManager::LoadEmptyScene()
 {
+    if (IsPlaySandboxActive())
+    {
+        auto replacement = std::make_unique<Scene>();
+        std::string sandboxError;
+        if (!ReplacePlaySandbox(std::move(replacement), &sandboxError))
+            return;
+        return;
+    }
+
     UnloadCurrentScene();
     m_lastLoadedSceneDocument.reset();
 
@@ -405,11 +598,23 @@ void SceneManager::LoadEmptyScene()
     MarkCurrentSceneClean();
 
     SceneLoadEvent.Invoke();
+    SceneLoadSucceededEvent.Invoke();
 }
 
 void SceneManager::LoadEmptyLightedScene()
 {
     AppendSceneManagerTrace("LoadEmptyLightedScene begin");
+    if (IsPlaySandboxActive())
+    {
+        auto replacement = std::make_unique<Scene>();
+        PopulateEmptyLightedScene(*replacement);
+        std::string sandboxError;
+        if (!ReplacePlaySandbox(std::move(replacement), &sandboxError))
+            return;
+        AppendSceneManagerTrace("LoadEmptyLightedScene end");
+        return;
+    }
+
     UnloadCurrentScene();
     m_lastLoadedSceneDocument.reset();
 
@@ -417,47 +622,10 @@ void SceneManager::LoadEmptyLightedScene()
     MarkCurrentSceneClean();
 
     SceneLoadEvent.Invoke();
-
-    auto& directionalLightGo = m_currentScene->CreateGameObject("Directional Light");
-    auto directionalLight = directionalLightGo.AddComponent<Engine::Components::LightComponent>();
-    if (directionalLight)
-    {
-        directionalLight->SetLightType(Render::Settings::ELightType::DIRECTIONAL);
-        directionalLight->SetIntensity(0.75f);
-    }
-    if (auto tr = directionalLightGo.GetTransform())
-    {
-        tr->SetLocalPosition({0.0f, 10.0f, 0.0f});
-        tr->SetLocalRotation(Maths::Quaternion({60.0f, 40.0f, 0.0f}));
-    }
-
-    auto& ambientLightGo = m_currentScene->CreateGameObject("Ambient Light");
-    auto ambientLight = ambientLightGo.AddComponent<Engine::Components::LightComponent>();
-    if (ambientLight)
-    {
-        ambientLight->SetLightType(Render::Settings::ELightType::AMBIENT_SPHERE);
-        ambientLight->SetRange(10000.0f);
-        ambientLight->SetIntensity(0.1f);
-    }
-
-    auto& skyboxGo = m_currentScene->CreateGameObject("Skybox");
-    AppendSceneManagerTrace("adding SkyBoxComponent");
-    skyboxGo.AddComponent<Engine::Components::SkyBoxComponent>();
-    AppendSceneManagerTrace("SkyBoxComponent added");
-
-    auto& camera = m_currentScene->CreateGameObject("Main Camera");
-    if (auto cameraComponent = camera.AddComponent<Engine::Components::CameraComponent>())
-    {
-        cameraComponent->SetClearColor({0.08f, 0.12f, 0.2f});
-        cameraComponent->SetFrustumGeometryCulling(true);
-    }
-    if (auto tr = camera.GetTransform())
-    {
-        tr->SetLocalPosition({0.0f, 0.0f, 0.0f});
-        tr->SetLocalRotation(Maths::Quaternion::Identity);
-    }
+    PopulateEmptyLightedScene(*m_currentScene);
 
     AppendSceneManagerTrace("LoadEmptyLightedScene end");
+    SceneLoadSucceededEvent.Invoke();
 }
 
 bool SceneManager::LoadScene(const std::string& p_path, bool p_absolute)
@@ -471,6 +639,8 @@ bool SceneManager::LoadScene(
     const SceneLoadProgressCallback& p_progressCallback)
 {
     namespace Profiling = NLS::Base::Profiling;
+
+    const bool replacingPlaySandbox = IsPlaySandboxActive();
 
     std::string completePath = (p_absolute ? "" : m_sceneRootFolder) + p_path;
     const auto scenePath = std::filesystem::path(completePath);
@@ -521,7 +691,8 @@ bool SceneManager::LoadScene(
                 scope.AddCounter("objectCount", document->objects.size());
         }
     }
-    m_lastLoadedSceneDocument.reset();
+    if (!replacingPlaySandbox)
+        m_lastLoadedSceneDocument.reset();
     if (!document.has_value() || document->format != "Nullus.ObjectGraph.Scene")
         return false;
 
@@ -537,18 +708,24 @@ bool SceneManager::LoadScene(
         scope.AddCounter("objectCount", document->objects.size());
     }
 
-    ReportSceneLoadProgress(p_progressCallback, 0.20f, "Unloading previous scene");
+    if (!replacingPlaySandbox)
     {
+        ReportSceneLoadProgress(p_progressCallback, 0.20f, "Unloading previous scene");
         Profiling::PerformanceStageScope scope(
             Profiling::PerformanceStageDomain::Unknown,
             "SceneLoad.UnloadPreviousScene",
             Profiling::PerformanceStageThread::Main);
         UnloadCurrentScene();
     }
+    else
+    {
+        ReportSceneLoadProgress(p_progressCallback, 0.20f, "Preparing replacement Play scene");
+    }
 
     Engine::Serialize::LoadPolicy loadPolicy;
     loadPolicy.deferAssetReferenceResolution = true;
     loadPolicy.invalidReferencePolicy = Engine::Serialize::InvalidReferencePolicy::Preserve;
+    loadPolicy.suppressGameObjectCreatedEvents = replacingPlaySandbox;
     Engine::Serialize::SceneInstantiationResult sceneResult;
     {
         Profiling::PerformanceStageScope scope(
@@ -579,6 +756,9 @@ bool SceneManager::LoadScene(
     auto& scene = sceneResult.scene;
     if (!scene)
     {
+        if (replacingPlaySandbox)
+            return false;
+
         m_currentScene = new Scene();
         m_lastLoadedSceneDocument.reset();
         {
@@ -590,6 +770,16 @@ bool SceneManager::LoadScene(
         }
         MarkCurrentSceneClean();
         return false;
+    }
+
+    if (replacingPlaySandbox)
+    {
+        std::string sandboxError;
+        if (!ReplacePlaySandbox(std::move(scene), &sandboxError))
+            return false;
+
+        ReportSceneLoadProgress(p_progressCallback, 1.0f, "Scene loaded");
+        return true;
     }
 
     m_currentScene = scene.release();
@@ -610,13 +800,14 @@ bool SceneManager::LoadScene(
         StoreCurrentSceneSourcePath(completePath);
         MarkCurrentSceneClean();
     }
+    SceneLoadSucceededEvent.Invoke();
     ReportSceneLoadProgress(p_progressCallback, 1.0f, "Scene loaded");
     return true;
 }
 
 bool SceneManager::SaveCurrentScene(const std::string& p_path)
 {
-    if (!m_currentScene || p_path.empty())
+    if (IsPlaySandboxActive() || !m_currentScene || p_path.empty())
         return false;
 
     if (!SaveSceneToPath(*m_currentScene, p_path))
@@ -662,6 +853,17 @@ bool SceneManager::SaveSceneToPath(const Scene& p_scene, const std::string& p_pa
 
 void SceneManager::UnloadCurrentScene()
 {
+    if (IsPlaySandboxActive())
+    {
+        // Runtime scene replacement during Play must not expose or destroy the
+        // suspended Edit scene. Keep the sandbox active with an empty runtime
+        // scene; the destructor explicitly discards it before normal teardown.
+        auto replacement = std::make_unique<Scene>();
+        std::string sandboxError;
+        static_cast<void>(ReplacePlaySandbox(std::move(replacement), &sandboxError));
+        return;
+    }
+
     m_lastLoadedSceneDocument.reset();
     if (m_currentScene)
     {
@@ -701,6 +903,9 @@ bool SceneManager::IsCurrentSceneLoadedFromDisk() const
 
 void SceneManager::StoreCurrentSceneSourcePath(const std::string& p_path)
 {
+    if (IsPlaySandboxActive())
+        return;
+
     if (m_currentSceneSourcePath == p_path && m_currentSceneLoadedFromPath)
         return;
 
@@ -711,6 +916,9 @@ void SceneManager::StoreCurrentSceneSourcePath(const std::string& p_path)
 
 void SceneManager::ForgetCurrentSceneSourcePath()
 {
+    if (IsPlaySandboxActive())
+        return;
+
     if (m_currentSceneSourcePath.empty() && !m_currentSceneLoadedFromPath)
         return;
 
@@ -721,6 +929,14 @@ void SceneManager::ForgetCurrentSceneSourcePath()
 
 void SceneManager::MarkCurrentSceneDirty()
 {
+    if (IsPlaySandboxActive())
+    {
+        if (m_currentScene)
+            m_currentScene->MarkRenderContentChanged();
+        m_playSandboxDirty = true;
+        return;
+    }
+
     if (m_currentScene)
         m_currentScene->MarkRenderContentChanged();
 
@@ -733,6 +949,12 @@ void SceneManager::MarkCurrentSceneDirty()
 
 void SceneManager::MarkCurrentSceneClean()
 {
+    if (IsPlaySandboxActive())
+    {
+        m_playSandboxDirty = false;
+        return;
+    }
+
     if (!m_currentSceneDirty)
         return;
 

@@ -124,6 +124,7 @@ struct NLS_SCRIPTING_API ManagedBehaviourManifestEntry
         std::string kind;
         std::vector<std::string> aliases;
         bool serialized = true;
+        ScriptFieldMetadata metadata;
     };
 
     std::string assetPath;
@@ -199,6 +200,10 @@ public:
     static std::filesystem::path LocateHostFxr(const std::filesystem::path& dotnetRoot = {});
     void SetDotnetRoot(std::filesystem::path dotnetRoot)
     {
+        // hostfxr resolves framework paths with native separators. CMake's
+        // generated paths commonly use '/', which becomes an invalid mixed
+        // root once hostpolicy appends Windows separators.
+        dotnetRoot.make_preferred();
         m_dotnetRoot = std::move(dotnetRoot);
     }
     ScriptStatus Load(const std::filesystem::path& runtimeConfig, const std::filesystem::path& assembly);
@@ -215,24 +220,28 @@ public:
 
 private:
 #if defined(_WIN32)
-#define NLS_CORECLR_DELEGATE_CALLTYPE __stdcall
-    using HostFxrCloseFn = int32_t (NLS_CORECLR_DELEGATE_CALLTYPE *)(void*);
-    using HostFxrGetRuntimeDelegateFn = int32_t (NLS_CORECLR_DELEGATE_CALLTYPE *)(void*, int32_t, void**);
-    using LoadAssemblyAndGetFunctionPointerFn = int (NLS_CORECLR_DELEGATE_CALLTYPE *)(
+    // hostfxr exports use __cdecl, while the CoreCLR delegates returned by
+    // hostfxr use __stdcall. Keep the two ABIs explicit for Win32 hosts.
+    using HostFxrCloseFn = int32_t (__cdecl *)(void*);
+    using HostFxrGetRuntimeDelegateFn = int32_t (__cdecl *)(void*, int32_t, void**);
+    using LoadAssemblyAndGetFunctionPointerFn = int (__stdcall *)(
         const wchar_t*, const wchar_t*, const wchar_t*, const wchar_t*, void*, void**);
 #else
-#define NLS_CORECLR_DELEGATE_CALLTYPE
     using HostFxrCloseFn = int32_t (*)(void*);
     using HostFxrGetRuntimeDelegateFn = int32_t (*)(void*, int32_t, void**);
     using LoadAssemblyAndGetFunctionPointerFn = int (*)(
         const char*, const char*, const char*, const char*, void*, void**);
 #endif
 #if defined(_WIN32)
-    using HostFxrErrorWriterFn = void (NLS_CORECLR_DELEGATE_CALLTYPE *)(const wchar_t*);
+    using HostFxrErrorWriterFn = void (__cdecl *)(const wchar_t*);
 #else
     using HostFxrErrorWriterFn = void (*)(const char*);
 #endif
-    using HostFxrSetErrorWriterFn = HostFxrErrorWriterFn (NLS_CORECLR_DELEGATE_CALLTYPE *)(HostFxrErrorWriterFn);
+#if defined(_WIN32)
+    using HostFxrSetErrorWriterFn = HostFxrErrorWriterFn (__cdecl *)(HostFxrErrorWriterFn);
+#else
+    using HostFxrSetErrorWriterFn = HostFxrErrorWriterFn (*)(HostFxrErrorWriterFn);
+#endif
 
     std::filesystem::path m_runtimeConfig;
     std::filesystem::path m_assembly;

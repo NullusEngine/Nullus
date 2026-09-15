@@ -2,12 +2,16 @@
 
 #include "Panels/ComponentSearchPanel.h"
 
+#include <imgui.h>
+#include "ImGui/imgui_internal.h"
+
 #include "Assets/AssetMeta.h"
 #include "Assets/BuiltInScriptRegistry.h"
 #include "Reflection/RuntimeMetaProperties.h"
 #include "Components/CameraComponent.h"
 #include "Components/Component.h"
 #include "Components/LightComponent.h"
+#include "Components/MeshFilter.h"
 #include "Components/MeshRenderer.h"
 #include "Components/SkyBoxComponent.h"
 #include "Components/TransformComponent.h"
@@ -198,7 +202,9 @@ TEST_F(ReflectionRuntimeTestFixture, BuildComponentEntriesIncludesRegisteredEngi
     ASSERT_NE(transformMover, nullptr);
     ASSERT_TRUE(transformMover->scriptAsset.has_value());
     EXPECT_TRUE(transformMover->scriptAsset->assetId.IsValid());
-    EXPECT_EQ(transformMover->scriptAsset->sourcePath, "TransformMover.cs");
+    // Built-in scripts expose a project-relative logical path; the real file
+    // lives in Assets/Engine/Scripts and is tracked separately on the descriptor.
+    EXPECT_EQ(transformMover->scriptAsset->sourcePath, "Assets/Engine/TransformMover.cs");
     EXPECT_EQ(transformMover->menuPath, "Scripts/Engine/C#");
     EXPECT_TRUE(transformMover->scriptAsset->isComponent);
     EXPECT_TRUE(ComponentSearchPanel::TryAddComponentFromEntry(&actor, *transformMover));
@@ -207,7 +213,7 @@ TEST_F(ReflectionRuntimeTestFixture, BuildComponentEntriesIncludesRegisteredEngi
     const auto* registered = NLS::Editor::Assets::BuiltInScriptRegistry::FindByAssetId(
         transformMover->scriptAsset->assetId);
     ASSERT_NE(registered, nullptr);
-    EXPECT_EQ(registered->asset.sourcePath, "TransformMover.cs");
+    EXPECT_EQ(registered->asset.sourcePath, "Assets/Engine/TransformMover.cs");
 }
 
 TEST_F(ReflectionRuntimeTestFixture, ScriptImporterDistinguishesComponentsFromUtilitySources)
@@ -240,7 +246,7 @@ TEST_F(ReflectionRuntimeTestFixture, ScriptImporterDistinguishesComponentsFromUt
         "local example = [[return FakeModule]]"));
 }
 
-TEST_F(ReflectionRuntimeTestFixture, AddingConcreteScriptBindsAssetAndAllowsAnotherLanguage)
+TEST_F(ReflectionRuntimeTestFixture, ConcreteScriptsAreRepeatableByDefault)
 {
     const TemporaryScriptAssets scriptAssets;
     ASSERT_TRUE(scriptAssets.Ready());
@@ -268,7 +274,48 @@ TEST_F(ReflectionRuntimeTestFixture, AddingConcreteScriptBindsAssetAndAllowsAnot
     }
     EXPECT_EQ(scriptCount, 2u);
 
-    EXPECT_FALSE(ComponentSearchPanel::TryAddComponentFromEntry(&actor, *csharp));
+    EXPECT_TRUE(ComponentSearchPanel::TryAddComponentFromEntry(&actor, *csharp));
+    EXPECT_EQ(actor.GetComponents().size(), 4u);
+}
+
+TEST_F(ReflectionRuntimeTestFixture, BuiltInComponentMetadataBlocksDuplicatesAndAddsRequirements)
+{
+    auto actor = MakeGameObject();
+    const auto rendererType = Type::GetFromName("NLS::Engine::Components::MeshRenderer");
+    const auto filterType = Type::GetFromName("NLS::Engine::Components::MeshFilter");
+    ASSERT_TRUE(rendererType.IsValid());
+    ASSERT_TRUE(filterType.IsValid());
+
+    const auto required = ComponentSearchPanel::GetRequiredComponentTypes(rendererType);
+    ASSERT_EQ(required.size(), 1u);
+    EXPECT_EQ(required.front(), filterType);
+
+    ComponentSearchEntry renderer;
+    renderer.componentType = rendererType;
+    renderer.displayName = "Mesh Renderer";
+    renderer.isAddable = true;
+    ASSERT_TRUE(ComponentSearchPanel::TryAddComponentFromEntry(&actor, renderer));
+    ASSERT_NE(actor.GetComponent<NLS::Engine::Components::MeshFilter>(), nullptr);
+    ASSERT_NE(actor.GetComponent<NLS::Engine::Components::MeshRenderer>(), nullptr);
+
+    EXPECT_FALSE(ComponentSearchPanel::IsTypeAddableToGameObject(rendererType, &actor));
+    EXPECT_EQ(
+        ComponentSearchPanel::GetAddabilityReason(rendererType, &actor),
+        "This component does not allow multiple instances");
+}
+
+TEST_F(ReflectionRuntimeTestFixture, RequiredComponentCannotBeRemovedWhileItIsTheOnlyProvider)
+{
+    auto actor = MakeGameObject();
+    auto* filter = actor.AddComponent<NLS::Engine::Components::MeshFilter>();
+    auto* renderer = actor.AddComponent<NLS::Engine::Components::MeshRenderer>();
+    ASSERT_NE(filter, nullptr);
+    ASSERT_NE(renderer, nullptr);
+
+    EXPECT_EQ(
+        ComponentSearchPanel::GetRemovalBlockReason(filter),
+        "Mesh Renderer requires Mesh Filter");
+    EXPECT_TRUE(ComponentSearchPanel::GetRemovalBlockReason(renderer).empty());
 }
 
 TEST_F(ReflectionRuntimeTestFixture, BuildComponentEntriesFiltersBaseAndTransformTypes)
@@ -296,6 +343,51 @@ TEST_F(ReflectionRuntimeTestFixture, PickerViewModeUsesCategoriesForEmptyQueryAn
     EXPECT_EQ(ComponentSearchPanel::GetViewModeForQuery(""), ComponentPickerViewMode::Categories);
     EXPECT_EQ(ComponentSearchPanel::GetViewModeForQuery("   "), ComponentPickerViewMode::Categories);
     EXPECT_EQ(ComponentSearchPanel::GetViewModeForQuery("mesh"), ComponentPickerViewMode::SearchResults);
+}
+
+TEST_F(ReflectionRuntimeTestFixture, ComponentPickerPopupAnchorsToTheButtonAndStaysInsideTheViewport)
+{
+    ImGuiContext* context = ImGui::CreateContext();
+    ASSERT_NE(context, nullptr);
+
+    ImGui::GetIO().DisplaySize = ImVec2(800.0f, 600.0f);
+    unsigned char* fontPixels = nullptr;
+    int fontWidth = 0;
+    int fontHeight = 0;
+    ImGui::GetIO().Fonts->GetTexDataAsRGBA32(&fontPixels, &fontWidth, &fontHeight);
+    ASSERT_NE(fontPixels, nullptr);
+
+    ImGui::NewFrame();
+    ImGui::Begin("ComponentPickerHost");
+    {
+        auto actor = MakeGameObject();
+        ComponentSearchPanel picker;
+        picker.SetAnchorRect(ImVec2(100.0f, 460.0f), ImVec2(500.0f, 500.0f));
+        picker.OpenForGameObject(&actor);
+        picker.Draw();
+
+        // BeginPopup assigns an internal generated window name, so looking it
+        // up by the user-facing popup ID is not reliable. The open-popup stack
+        // owns the actual window created by this frame.
+        ImGuiWindow* popup = context->OpenPopupStack.empty()
+            ? nullptr
+            : context->OpenPopupStack.back().Window;
+        EXPECT_NE(popup, nullptr);
+        if (popup != nullptr)
+        {
+            EXPECT_GE(popup->Pos.x, 0.0f);
+            EXPECT_GE(popup->Pos.y, 0.0f);
+            EXPECT_LE(popup->Pos.x + popup->Size.x, 800.0f);
+            EXPECT_LT(popup->Pos.y + popup->Size.y, 460.0f);
+            EXPECT_NEAR(
+                popup->Pos.x,
+                (100.0f + 500.0f - popup->Size.x) * 0.5f,
+                1.0f);
+        }
+    }
+    ImGui::End();
+    ImGui::Render();
+    ImGui::DestroyContext(context);
 }
 
 TEST_F(ReflectionRuntimeTestFixture, BuildComponentMenuTreeUsesMetadataCategories)

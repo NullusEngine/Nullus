@@ -94,7 +94,7 @@ namespace NLS::meta
                 >::type*
             )
         {
-            // Unity-style Object instances are identity objects and are not
+            // engine-style Object instances are identity objects and are not
             // returned by value from reflection constructors. They can still
             // be dynamically produced and wrapped as object pointers.
             data.AddConstructor<T, true, std::is_base_of<NLS::Object, T>::value>( { } );

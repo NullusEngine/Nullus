@@ -965,6 +965,23 @@ void CompleteLiveGameObjectSubtreeFromPrefab(
             MakePrefabInstanceObjectId(instanceSeed, componentRecord->id));
     }
 
+    // A refresh must reconcile the live instance with the source graph before
+    // local overrides are replayed. Leaving unconsumed components here turns a
+    // structural override from a temporary undo overlay into permanent state.
+    std::vector<NLS::Engine::Components::Component*> extraComponents;
+    for (const auto& component : liveObject.GetComponents())
+    {
+        auto* candidate = component.get();
+        if (candidate != nullptr &&
+            candidate != liveObject.GetTransform() &&
+            consumedComponents.find(candidate) == consumedComponents.end())
+        {
+            extraComponents.push_back(candidate);
+        }
+    }
+    for (auto* component : extraComponents)
+        liveObject.RemoveComponent(component);
+
     std::unordered_set<GameObject*> consumedChildren;
     for (const auto& childId : ReadOwnedArray(sourceRecord, "children"))
     {
@@ -984,6 +1001,18 @@ void CompleteLiveGameObjectSubtreeFromPrefab(
         consumedChildren.insert(child);
         CompleteLiveGameObjectSubtreeFromPrefab(graph, *childRecord, *child, instance);
     }
+
+    // Children are scene-owned, so detach unmatched local children instead of
+    // deleting them. Their structural patch will reattach/recreate them when a
+    // retained override is replayed below.
+    std::vector<GameObject*> extraChildren;
+    for (auto* child : liveObject.GetChildren())
+    {
+        if (child != nullptr && consumedChildren.find(child) == consumedChildren.end())
+            extraChildren.push_back(child);
+    }
+    for (auto* child : extraChildren)
+        child->DetachFromParent();
 }
 
 void RestoreLiveGameObjectSubtree(
@@ -1299,9 +1328,19 @@ bool RefreshConnectedInstanceFromPrefab(
         return false;
 
     const auto localPatches = instance.localPatches;
+    const auto previousSourceRoot = instance.SourceGraph().root;
+    const auto previousRoot = instance.sourceToInstance.find(previousSourceRoot);
+    const auto previousRootInstance = previousRoot != instance.sourceToInstance.end()
+        ? std::optional<ObjectId>(previousRoot->second)
+        : std::nullopt;
     instance.sourceGraph = prefab.graph;
     instance.sourceToInstance.clear();
     instance.sourceByInstanceObject.clear();
+    // Refresh reconciles the live hierarchy but must not replace the root's
+    // ObjectGraph identity while it is still the same prefab source root.
+    // Undo records use this mapping to distinguish connected instances.
+    if (previousRootInstance.has_value() && previousSourceRoot == instance.sourceGraph.root)
+        instance.sourceToInstance.emplace(instance.sourceGraph.root, *previousRootInstance);
     instance.preservedAssetReferences = NLS::Engine::Assets::CollectPrefabAssetReferences(prefab.graph);
     instance.preservedResolvedAssets = prefab.resolvedAssets;
     instance.nestedInstances = BuildNestedInstanceRecords(
@@ -2591,6 +2630,35 @@ PrefabEditorOperationResult PrefabEditorWorkflow::RevertAllOverrides(PrefabInsta
             result,
             {NLS::Core::Assets::AssetDependencyKind::SourceAssetGuid, instance.sceneAssetId.ToString(), {}});
     }
+    result.status = PrefabEditorOperationStatus::Committed;
+    return result;
+}
+
+PrefabEditorOperationResult PrefabEditorWorkflow::RefreshConnectedInstance(
+    PrefabInstanceRecord& instance,
+    const NLS::Engine::Assets::PrefabArtifact& prefab) const
+{
+    PrefabEditorOperationResult result;
+    result.status = PrefabEditorOperationStatus::Rejected;
+    if (!instance.instanceRoot)
+    {
+        AddDiagnostic(
+            result,
+            "prefab-refresh-instance-root-missing",
+            "The connected prefab instance no longer has a live root object.");
+        return result;
+    }
+
+    if (!RefreshConnectedInstanceFromPrefab(instance, prefab))
+    {
+        AddDiagnostic(
+            result,
+            "prefab-refresh-instance-failed",
+            "The connected prefab instance could not be rebuilt from the source asset.");
+        return result;
+    }
+
+    result.instance = instance;
     result.status = PrefabEditorOperationStatus::Committed;
     return result;
 }

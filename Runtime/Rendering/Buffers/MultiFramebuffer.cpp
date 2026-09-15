@@ -123,7 +123,18 @@ namespace NLS::Render::Buffers
 		bool withDepth,
 		DepthAttachmentDesc depthAttachment)
 	{
-		Release();
+		std::scoped_lock lock(m_resourceMutex);
+		InitLocked(width, height, colorAttachments, withDepth, depthAttachment);
+	}
+
+	void MultiFramebuffer::InitLocked(
+		uint16_t width,
+		uint16_t height,
+		const std::vector<AttachmentDesc>& colorAttachments,
+		bool withDepth,
+		DepthAttachmentDesc depthAttachment)
+	{
+		ReleaseLocked();
 		m_width = width;
 		m_height = height;
 		m_withDepth = withDepth;
@@ -132,7 +143,7 @@ namespace NLS::Render::Buffers
 		if (width == 0u || height == 0u)
 			return;
 
-		if (!Allocate(width, height))
+		if (!AllocateLocked(width, height))
 		{
 			m_width = 0u;
 			m_height = 0u;
@@ -140,6 +151,12 @@ namespace NLS::Render::Buffers
 	}
 
 	void MultiFramebuffer::Resize(uint16_t width, uint16_t height)
+	{
+		std::scoped_lock lock(m_resourceMutex);
+		ResizeLocked(width, height);
+	}
+
+	void MultiFramebuffer::ResizeLocked(uint16_t width, uint16_t height)
 	{
 		if (width == m_width && height == m_height)
 			return;
@@ -153,7 +170,7 @@ namespace NLS::Render::Buffers
 			return;
 		}
 
-		if (Allocate(width, height))
+		if (AllocateLocked(width, height))
 		{
 			m_width = width;
 			m_height = height;
@@ -162,6 +179,7 @@ namespace NLS::Render::Buffers
 
 	bool MultiFramebuffer::IsInitialized() const
 	{
+		std::scoped_lock lock(m_resourceMutex);
 		if (m_withDepth && m_explicitDepthTexture != nullptr)
 			return true;
 
@@ -175,6 +193,12 @@ namespace NLS::Render::Buffers
 	}
 
 	void MultiFramebuffer::Release()
+	{
+		std::scoped_lock lock(m_resourceMutex);
+		ReleaseLocked();
+	}
+
+	void MultiFramebuffer::ReleaseLocked()
 	{
 		ResetCurrentResources();
 		for (auto& resourceSet : m_retiredResourceSets)
@@ -211,7 +235,7 @@ namespace NLS::Render::Buffers
 		}
 	}
 
-	bool MultiFramebuffer::Allocate(uint16_t width, uint16_t height)
+	bool MultiFramebuffer::AllocateLocked(uint16_t width, uint16_t height)
 	{
 		auto& driver = NLS::Render::Context::RequireLocatedDriver("MultiFramebuffer::Allocate");
 		auto device = NLS::Render::Context::DriverRendererAccess::GetExplicitDevice(driver);
@@ -272,8 +296,21 @@ namespace NLS::Render::Buffers
 		return true;
 	}
 
+	std::vector<std::shared_ptr<NLS::Render::RHI::RHITexture>> MultiFramebuffer::GetExplicitColorTextureHandles() const
+	{
+		std::scoped_lock lock(m_resourceMutex);
+		return m_explicitColorTextures;
+	}
+
+	std::shared_ptr<NLS::Render::RHI::RHITexture> MultiFramebuffer::GetExplicitDepthTextureHandle() const
+	{
+		std::scoped_lock lock(m_resourceMutex);
+		return m_explicitDepthTexture;
+	}
+
 	std::shared_ptr<NLS::Render::RHI::RHITextureView> MultiFramebuffer::GetOrCreateExplicitColorView(size_t index, const std::string& debugName) const
 	{
+		std::scoped_lock lock(m_resourceMutex);
 		if (index >= m_explicitColorTextures.size() || m_explicitColorTextures[index] == nullptr)
 			return nullptr;
 
@@ -299,6 +336,7 @@ namespace NLS::Render::Buffers
 
 	std::shared_ptr<NLS::Render::RHI::RHITextureView> MultiFramebuffer::GetOrCreateExplicitDepthView(const std::string& debugName) const
 	{
+		std::scoped_lock lock(m_resourceMutex);
 		if (m_explicitDepthTexture == nullptr)
 			return nullptr;
 

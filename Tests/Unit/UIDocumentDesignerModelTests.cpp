@@ -86,7 +86,10 @@ TEST(UIDocumentDesignerModelTests, NewDocumentIsRuntimeValidAndEmpty)
         &diagnostics);
     ASSERT_TRUE(document.has_value());
     EXPECT_TRUE(diagnostics.empty());
-    EXPECT_EQ(document->GetSchemaVersion(), NLS::Engine::UI::UIDocument::CurrentSchemaVersion);
+    // Copy the imported constant before comparing: binding it to a reference
+    // would ODR-use the DLL-imported static member, which MinGW does not export.
+    const uint32_t expectedSchemaVersion = NLS::Engine::UI::UIDocument::CurrentSchemaVersion;
+    EXPECT_EQ(document->GetSchemaVersion(), expectedSchemaVersion);
     EXPECT_EQ(document->GetRootDefinition().name, "Hud");
     EXPECT_TRUE(document->GetRootDefinition().children.empty());
 }

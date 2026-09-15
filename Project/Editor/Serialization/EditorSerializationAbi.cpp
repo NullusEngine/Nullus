@@ -98,7 +98,7 @@ std::optional<T> DecodeSpecialValue(const uint8_t* input, const uint32_t size)
         &error);
     if (!decoded.has_value() || !decoded->IsValid())
         return std::nullopt;
-    return decoded->GetValue<T>();
+    return decoded->template GetValue<T>();
 }
 
 std::vector<uint8_t> EncodeExposedReferenceValue(const Engine::Serialize::ExposedReference& value)

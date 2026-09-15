@@ -44,7 +44,7 @@ return Module
 
 脚本实例上的 `self.gameObject`、`self.transform` 和组件成员使用与 C# 相同的对象图。Lua 的全局表 `Nullus` 提供 `Find`、`FindWithTag`、`Instantiate`、`Destroy`、`GetComponent`、`AddComponent`、`Time`、`Input` 和 `SceneManager`。组件查询可以传入 `"Transform"`、`"Camera"`、`"Light"`、`"UICanvas"`，或清单中注册的脚本类型名。
 
-需要一套可运行的自检界面时，把 `TestProject/Assets/ScriptTestPanel.ui` 指到 UI Canvas，并把 `TestProject/Assets/UiScriptTest.lua` 挂到同一个 GameObject：脚本会按名字更新计数文本、进度条和开关，`NullusUnitTests` 里的 `ScriptRuntimeTests.LuaUiScriptDrivesTheProjectUiCanvasDocument` 会用同一份文件和脚本跑一遍。
+需要一套可运行的自检界面时，把 `TestProject/Assets/ScriptTestPanel.ui` 指到 UI Canvas，并把 `TestProject/Assets/UiScriptTest.lua` 挂到同一个 GameObject：脚本会按名字更新计数文本、进度条和开关。`NullusUnitTests` 里的 `ScriptRuntimeTests.LuaUiScriptDrivesTheProjectUiCanvasDocument` 用内置夹具覆盖同一套按名字驱动的 Canvas 脚本流程，因此在没有本地 TestProject 目录的 CI 检出中也能运行。
 
 Editor 的“创建 C# 脚本”和“创建 Lua 脚本”从 `Assets/Editor/ScriptTemplates` 读取模板。C# 模板使用 `#SCRIPTNAME#` 替换为文件名对应的类型名；模板文件缺失时创建操作会失败并记录诊断。
 

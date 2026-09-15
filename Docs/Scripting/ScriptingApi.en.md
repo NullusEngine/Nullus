@@ -44,7 +44,7 @@ return Module
 
 `self.gameObject`, `self.transform`, and component members use the same object graph as C#. The Lua global table `Nullus` exposes `Find`, `FindWithTag`, `Instantiate`, `Destroy`, `GetComponent`, `AddComponent`, `Time`, `Input`, and `SceneManager`. Component queries accept `"Transform"`, `"Camera"`, `"Light"`, `"UICanvas"`, or a script type name registered in the manifest.
 
-For a ready-made self-check UI, point a UI Canvas at `TestProject/Assets/ScriptTestPanel.ui` and put `TestProject/Assets/UiScriptTest.lua` on the same GameObject: the script updates the counter text, progress bar, and toggle by name. `ScriptRuntimeTests.LuaUiScriptDrivesTheProjectUiCanvasDocument` runs that same document and script.
+For a ready-made self-check UI, point a UI Canvas at `TestProject/Assets/ScriptTestPanel.ui` and put `TestProject/Assets/UiScriptTest.lua` on the same GameObject: the script updates the counter text, progress bar, and toggle by name. `ScriptRuntimeTests.LuaUiScriptDrivesTheProjectUiCanvasDocument` covers the same name-driven canvas scripting flow with a self-contained fixture so it also runs in CI checkouts without the local project folder.
 
 The Editor's Create C# Script and Create Lua Script actions read their templates from `Assets/Editor/ScriptTemplates`. The C# template replaces `#SCRIPTNAME#` with the type name derived from the file name; a missing template fails the creation action and records a diagnostic.
 

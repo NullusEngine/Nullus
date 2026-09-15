@@ -497,7 +497,7 @@ TEST(NativeSerializedStreamTests, CodecRoundTripsAnimationCurveGradientAndExpose
             ADD_FAILURE() << "Special serialized value failed to decode.";
             return result;
         }
-        return decoded->GetValue<T>();
+        return decoded->template GetValue<T>();
     };
 
     const auto decodedCurve = roundTrip(curve);

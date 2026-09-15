@@ -2690,10 +2690,77 @@ TEST(ScriptRuntimeTests, LuaRotatingCubeScriptCreatesAndRotatesScenePrimitive)
 
 TEST(ScriptRuntimeTests, LuaUiScriptDrivesTheProjectUiCanvasDocument)
 {
-    const auto root = FindNullusRoot();
-    ASSERT_FALSE(root.empty()) << "Could not locate the Nullus checkout from the test working directory.";
-    const auto documentPath = root / "TestProject" / "Assets" / "ScriptTestPanel.ui";
-    const auto scriptPath = root / "TestProject" / "Assets" / "UiScriptTest.lua";
+    // The TestProject folder is a local scratch project, so the test writes its
+    // own copy of the ScriptTestPanel.ui / UiScriptTest.lua self-check instead of
+    // depending on files that are not part of the repository.
+    const auto root = std::filesystem::temp_directory_path() /
+        ("NullusLuaUiScript-" + NLS::Core::Assets::AssetId::New().ToString());
+    std::filesystem::create_directories(root);
+    const auto documentPath = root / "ScriptTestPanel.ui";
+    const auto scriptPath = root / "UiScriptTest.lua";
+    {
+        std::ofstream document(documentPath, std::ios::binary);
+        document << R"JSON({
+  "documentId": "3c1f0a54-8d2b-4f6e-9c31-5a7d2e8b4105",
+  "version": 1,
+  "root": {
+    "name": "ScriptTestPanel",
+    "type": "Panel",
+    "nodeGuid": "a1f2b3c4-9999-4e99-8e99-00000000000a",
+    "layout": { "mode": "Overlay", "size": [1920.0, 1080.0] },
+    "children": [
+      { "name": "Status", "type": "Text", "nodeGuid": "b8a1c0d2-2222-4a22-8a22-000000000002", "text": "waiting for script" },
+      { "name": "Counter", "type": "Text", "nodeGuid": "b8a1c0d2-3333-4a33-8a33-000000000003", "text": "Frames: 0" },
+      { "name": "Progress", "type": "ProgressBar", "nodeGuid": "b8a1c0d2-4444-4a44-8a44-000000000004" },
+      { "name": "Auto", "type": "Toggle", "nodeGuid": "b8a1c0d2-5555-4a55-8a55-000000000005" }
+    ]
+  }
+}
+)JSON";
+    }
+    {
+        std::ofstream script(scriptPath, std::ios::binary);
+        script << R"LUA(local Module = {}
+
+local SWEEP_SECONDS = 4.0
+
+function Module:Awake()
+    self.canvas = self.gameObject:GetComponent("UICanvas")
+    self.frames = 0
+    self.elapsed = 0.0
+    self.checked = false
+end
+
+function Module:Update()
+    if self.canvas == nil then
+        return
+    end
+
+    self.frames = self.frames + 1
+    self.elapsed = self.elapsed + Nullus.Time.deltaTime
+
+    self.canvas:SetText("Counter", string.format("Frames: %d", self.frames))
+
+    local sweep = self.elapsed % SWEEP_SECONDS
+    self.canvas:SetValue("Progress", sweep / SWEEP_SECONDS)
+    if sweep < Nullus.Time.deltaTime then
+        self.checked = not self.checked
+        self.canvas:SetChecked("Auto", self.checked)
+    end
+
+    self.canvas:SetText(
+        "Status",
+        string.format(
+            "doc gen %d | %.1fs | auto %s | progress %d%%",
+            self.canvas:GetDocumentGeneration(),
+            self.elapsed,
+            self.checked and "on" or "off",
+            math.floor(sweep / SWEEP_SECONDS * 100.0)))
+end
+
+return Module
+)LUA";
+    }
     ASSERT_TRUE(std::filesystem::exists(documentPath)) << documentPath.string();
     ASSERT_TRUE(std::filesystem::exists(scriptPath)) << scriptPath.string();
 

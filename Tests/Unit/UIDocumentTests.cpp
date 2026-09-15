@@ -918,6 +918,7 @@ TEST(UIDocumentTests, FontAtlasRasterizesRealGlyphsFromTrueTypeData)
     for (int depth = 0; depth < 6 && fontPath.empty(); ++depth)
     {
         const std::filesystem::path candidates[] = {
+            searchRoot / "App" / relativeFont,
             searchRoot / relativeFont,
             searchRoot / "build" / "bin" / "Debug" / relativeFont,
             searchRoot / "App" / "Win64_Debug_Runtime_Shared" / relativeFont};

@@ -145,6 +145,13 @@ public:
     [[nodiscard]] const Serialization::SerializedObject& GetSerializedObject() const { return m_serializedObject; }
 
 private:
+    enum class BoundBackendKind : uint8_t
+    {
+        None,
+        Accessor,
+        NativeReflection
+    };
+
     void BeginInspectorGUI(ComponentEditorContext& context) { m_context = &context; }
     void EndInspectorGUI() { m_context = nullptr; }
 
@@ -177,6 +184,12 @@ protected:
 private:
     Serialization::SerializedObject m_serializedObject;
     ComponentEditorContext* m_context = nullptr;
+    // Snapshot of the binding produced by the last UpdateSerializedObject()
+    // call.  The Inspector rebinds component editors every frame, so comparing
+    // against this snapshot keeps a multi-frame staged preview alive until it
+    // is committed or discarded.
+    InspectorTargetSet m_boundTargets;
+    BoundBackendKind m_boundBackend = BoundBackendKind::None;
     friend class InspectorView;
 };
 

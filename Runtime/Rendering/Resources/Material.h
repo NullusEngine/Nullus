@@ -492,6 +492,7 @@ public:
         MaterialMutationRecord* mutations,
         size_t capacity,
         size_t& mutationCount);
+    static uint64_t GetLiveRegistryGeneration() noexcept;
     static bool IsLive(const Material* material) noexcept;
     uint64_t GetBindingRevision() const;
     uint64_t GetExplicitBindingSetCreationCount() const;

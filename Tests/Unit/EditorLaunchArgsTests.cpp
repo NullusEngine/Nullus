@@ -1891,6 +1891,23 @@ TEST(EditorLaunchArgsTests, SceneViewHoverDragForcesStaticFrameRenderWhileActive
         << "A released cold prefab drag must keep rendering until the background hot-cache instance can be committed.";
 }
 
+TEST(EditorLaunchArgsTests, SceneViewStaticFrameCacheFollowsEditorSetting)
+{
+    const auto source = ReadTextFile("Project/Editor/Panels/SceneView.cpp");
+    const auto functionStart = source.find("bool Editor::Panels::SceneView::ShouldUseStaticFrameCache() const");
+    ASSERT_NE(functionStart, std::string::npos);
+    const auto functionEnd = source.find("uint64_t Editor::Panels::SceneView::BuildStaticFrameCacheKey", functionStart);
+    ASSERT_NE(functionEnd, std::string::npos);
+    const auto body = source.substr(functionStart, functionEnd - functionStart);
+
+    EXPECT_NE(
+        body.find("GetRenderingSettingsObject().enableSceneViewStaticFrameCache"),
+        std::string::npos)
+        << "Scene View static caching must follow the editor setting instead of being unconditionally enabled.";
+    EXPECT_EQ(body.find("return true;"), std::string::npos)
+        << "A hard-coded true bypasses the default-off profiling setting.";
+}
+
 TEST(EditorLaunchArgsTests, SceneViewValidationReadbackWaitsForVisibleSceneLoadResources)
 {
     const auto source = ReadTextFile("Project/Editor/Panels/SceneView.cpp");

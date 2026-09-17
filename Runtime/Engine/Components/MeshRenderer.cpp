@@ -47,6 +47,13 @@ namespace
         return NormalizeMaterialArtifactPath(lhs) == NormalizeMaterialArtifactPath(rhs);
     }
 
+    const void* ResolveMaterialAssetDatabaseIdentity()
+    {
+        if (!NLS::Core::ServiceLocator::Contains<NLS::Engine::Assets::RuntimeAssetDatabase>())
+            return nullptr;
+        return &NLS_SERVICE(NLS::Engine::Assets::RuntimeAssetDatabase);
+    }
+
 }
 
 MeshRenderer::MeshRenderer()
@@ -64,6 +71,7 @@ MeshRenderer::MeshRenderer(const MeshRenderer& other)
 {
     m_materials.resize((std::max)(other.m_materials.size(), other.m_materialPaths.size()), nullptr);
     m_failedMaterialPaths.resize(m_materialPaths.size());
+    m_materialSlotResolutions.clear();
     m_owner = nullptr;
 }
 
@@ -79,6 +87,7 @@ MeshRenderer& MeshRenderer::operator=(const MeshRenderer& other)
     m_materials.resize((std::max)(other.m_materials.size(), m_materialPaths.size()), nullptr);
     m_failedMaterialPaths.clear();
     m_failedMaterialPaths.resize(m_materialPaths.size());
+    m_materialSlotResolutions.clear();
     m_materialNames = other.m_materialNames;
     userMatrixValues = other.userMatrixValues;
     customBoundingSphere = other.customBoundingSphere;
@@ -248,6 +257,49 @@ MeshRenderer::Material* MeshRenderer::ResolveMaterialSlot(const size_t p_index)
     if (p_index >= m_materialPaths.size())
         return nullptr;
 
+    const NLS::InstanceID referenceInstanceId =
+        p_index < materials.size() ? materials[p_index].GetInstanceID() : NLS::InstanceID_None;
+    const void* const assetDatabaseIdentity = ResolveMaterialAssetDatabaseIdentity();
+    const uint64_t liveRegistryGeneration = Material::GetLiveRegistryGeneration();
+
+    // Steady-state fast path.  While the reference, this renderer's revision and the runtime
+    // asset database instance are unchanged the previous resolution is still valid, so the hot
+    // render path skips the persistence lock, the asset database lookups and the filesystem path
+    // normalization that MaterialArtifactPathMatches performs.
+    if (p_index < m_materialSlotResolutions.size())
+    {
+        const auto& cached = m_materialSlotResolutions[p_index];
+        if (cached.material != nullptr &&
+            cached.renderRevision == m_renderRevision &&
+            cached.referenceInstanceId == referenceInstanceId &&
+            cached.assetDatabaseIdentity == assetDatabaseIdentity &&
+            cached.liveRegistryGeneration == liveRegistryGeneration)
+        {
+            return cached.material;
+        }
+    }
+
+    // Failed resolutions are recorded but never fast-pathed, so a material that is registered
+    // later is still discovered on the next call.
+    const auto recordResolution = [&](Material* p_material) -> Material*
+    {
+        if (m_materialSlotResolutions.size() <= p_index)
+            m_materialSlotResolutions.resize(p_index + 1u);
+        auto& entry = m_materialSlotResolutions[p_index];
+        entry.material = p_material;
+        entry.referenceInstanceId = referenceInstanceId;
+        entry.assetDatabaseIdentity = assetDatabaseIdentity;
+        entry.liveRegistryGeneration = Material::GetLiveRegistryGeneration();
+        // Resolving through the material manager below can raise the revision itself, so the
+        // recorded revision has to be read after that work.
+        entry.renderRevision = m_renderRevision;
+        return p_material;
+    };
+
+    auto& resolvedMaterial = m_materials[p_index];
+    if (resolvedMaterial != nullptr && !Material::IsLive(resolvedMaterial))
+        resolvedMaterial = nullptr;
+
     NLS::Engine::Serialize::ObjectIdentifier identifier;
     const auto path = p_index < materials.size() &&
                       NLS::Engine::Serialize::PersistentManager::Instance().InstanceIDToObjectIdentifier(materials[p_index].GetInstanceID(), identifier) &&
@@ -256,13 +308,13 @@ MeshRenderer::Material* MeshRenderer::ResolveMaterialSlot(const size_t p_index)
         : m_materialPaths[p_index];
 
     if (path.empty())
-        return m_materials[p_index];
+        return recordResolution(resolvedMaterial);
 
-    if (m_materials[p_index] != nullptr && MaterialArtifactPathMatches(m_materials[p_index]->path, path))
-        return m_materials[p_index];
+    if (resolvedMaterial != nullptr && MaterialArtifactPathMatches(resolvedMaterial->path, path))
+        return recordResolution(resolvedMaterial);
 
     if (!Core::ServiceLocator::Contains<Core::ResourceManagement::MaterialManager>())
-        return m_materials[p_index];
+        return recordResolution(resolvedMaterial);
 
     auto& materialManager = NLS_SERVICE(Core::ResourceManagement::MaterialManager);
     auto* material = materialManager.FindRegisteredMaterialByEquivalentArtifactPath(path);
@@ -273,17 +325,17 @@ MeshRenderer::Material* MeshRenderer::ResolveMaterialSlot(const size_t p_index)
             NLS::Engine::Serialize::PersistentManager::Instance().InstanceIDToObjectIdentifier(materials[p_index].GetInstanceID(), identifier) &&
             !NLS::Engine::Serialize::BindResolvedObjectReference(*material, materials[p_index]))
         {
-            return m_materials[p_index];
+            return recordResolution(m_materials[p_index]);
         }
-        m_materials[p_index] = material;
+        resolvedMaterial = material;
         m_materialPaths[p_index] = material->path;
         m_failedMaterialPaths[p_index].clear();
         MarkRenderStateChanged();
-        return material;
+        return recordResolution(material);
     }
 
     m_failedMaterialPaths[p_index] = path;
-    return nullptr;
+    return recordResolution(nullptr);
 }
 
 MeshRenderer::Material* MeshRenderer::ResolveMaterialAtIndex(const uint32_t p_index)

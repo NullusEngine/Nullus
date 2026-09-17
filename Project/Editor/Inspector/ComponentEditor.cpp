@@ -154,11 +154,36 @@ void ComponentEditor::UpdateSerializedObject(const PropertyNode& componentNode)
         targets.targets = {componentNode.target};
     targets.Normalize();
 
+    const bool useAccessorStream = Serialization::AccessorSerializedBackend::Supports(targets);
+    const bool nativeReflectionTargets = !useAccessorStream && !targets.Empty() && std::all_of(
+        targets.targets.begin(), targets.targets.end(), [](const InspectorTargetHandle& target)
+        {
+            const auto* object = Serialization::NativeReflectionSerializedBackend::Resolve(target);
+            return object != nullptr;
+        });
+    const auto backendKind = useAccessorStream
+        ? BoundBackendKind::Accessor
+        : (nativeReflectionTargets ? BoundBackendKind::NativeReflection : BoundBackendKind::None);
+
+    // The Inspector rebinds every component editor before drawing it. Rebuilding
+    // the stream here would throw away an in-flight preview: ImGui stages a drag
+    // on the frames that report a change and only commits on release, so the
+    // staged value has to survive until that same edit applies or is discarded.
+    if (m_serializedObject.HasModifiedProperties() &&
+        m_boundBackend == backendKind &&
+        m_boundTargets == targets)
+    {
+        return;
+    }
+
+    m_boundTargets = targets;
+    m_boundBackend = backendKind;
+
     // Getter/setter-backed component state has a native byte-stream backend of
     // its own. Do not reconstruct an Inspector presentation merely to reach
     // those properties: UI Canvas shares the same SerializedObject contract as
     // reflected components.
-    if (Serialization::AccessorSerializedBackend::Supports(targets))
+    if (useAccessorStream)
     {
         m_serializedObject.Reset(
             std::move(targets),
@@ -171,12 +196,6 @@ void ComponentEditor::UpdateSerializedObject(const PropertyNode& componentNode)
     // managed callers without going through a UI binding bridge.
     // Script components are handled above by AccessorSerializedBackend, whose
     // TypeTree is built from ScriptFieldDescriptor.
-    const bool nativeReflectionTargets = !targets.Empty() && std::all_of(
-        targets.targets.begin(), targets.targets.end(), [](const InspectorTargetHandle& target)
-        {
-            const auto* object = Serialization::NativeReflectionSerializedBackend::Resolve(target);
-            return object != nullptr;
-        });
     if (nativeReflectionTargets)
     {
         auto backend = Serialization::NativeReflectionSerializedBackend::Create();

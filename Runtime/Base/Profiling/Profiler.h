@@ -32,6 +32,7 @@ constexpr ProfilerCapabilityFlags ProfilerCapability_None = 0u;
 constexpr ProfilerCapabilityFlags ProfilerCapability_CPUScopes = 1u << 0u;
 constexpr ProfilerCapabilityFlags ProfilerCapability_GPUScopes = 1u << 1u;
 constexpr ProfilerCapabilityFlags ProfilerCapability_EditorTimeline = 1u << 2u;
+constexpr ProfilerCapabilityFlags ProfilerCapability_AcceptsGpuContext = 1u << 3u;
 
 class IProfilerDestination;
 class ProfilerDestinationRegistration;
@@ -68,6 +69,7 @@ private:
 struct NLS_BASE_API ProfilerGpuScopeEvent
 {
     void* nativeCommandBuffer = nullptr;
+    void* nativeCommandQueue = nullptr;
     std::string name;
     std::string sourceFunction;
     std::string threadName;
@@ -102,6 +104,7 @@ public:
     virtual void BeginGpuScope(const ProfilerGpuScopeEvent& event);
     virtual void EndGpuScope(const ProfilerGpuScopeEvent& event);
     virtual void InitializeGpuContext(const ProfilerGpuContextEvent& event);
+    virtual void ClearGpuContext(void* nativeDevice);
     virtual void SubmitGpuCommandLists(const ProfilerGpuCommandListSubmitEvent& event);
     virtual ProfilerDestinationState GetState() const = 0;
 };
@@ -128,6 +131,11 @@ public:
     static void EndScope(const ProfilerScopeEvent& event);
     static ProfilerGpuScopeEvent BeginGpuScope(
         void* nativeCommandBuffer,
+        std::string_view name,
+        std::string_view sourceFunction);
+    static ProfilerGpuScopeEvent BeginGpuScope(
+        void* nativeCommandBuffer,
+        void* nativeCommandQueue,
         std::string_view name,
         std::string_view sourceFunction);
     static void EndGpuScope(const ProfilerGpuScopeEvent& event);

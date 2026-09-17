@@ -45,6 +45,7 @@ namespace NLS::Engine::Rendering
 	{
 		std::unordered_map<std::string, NLS::Render::Resources::Texture2D*> declaredTexturesByNormalizedPath;
 		std::unordered_map<std::string, NLS::Render::Resources::Texture2D*> resourcesByNormalizedPath;
+		std::unordered_map<const NLS::Render::Resources::Material*, bool> declaredTexturesResolvedByMaterial;
 		bool resourceIndexBuilt = false;
 	};
 
@@ -405,11 +406,26 @@ namespace
 		return true;
 	}
 
+	bool HasResolvedDeclaredMaterialTexturesCached(
+		const NLS::Render::Resources::Material& material,
+		RenderSceneDeclaredTextureLookupCache& cache)
+	{
+		const auto found = cache.declaredTexturesResolvedByMaterial.find(&material);
+		if (found != cache.declaredTexturesResolvedByMaterial.end())
+			return found->second;
+
+		const bool resolved = HasResolvedDeclaredMaterialTextures(material);
+		cache.declaredTexturesResolvedByMaterial.emplace(&material, resolved);
+		return resolved;
+	}
+
 	bool TryBindDeclaredMaterialTexturesFromCache(
 		NLS::Render::Resources::Material& material,
 		RenderSceneDeclaredTextureLookupCache& cache,
 		RenderSceneSyncStats& stats)
 	{
+		// Binding may change the resolved-texture state, so the per-frame memo must be dropped.
+		cache.declaredTexturesResolvedByMaterial.erase(&material);
 		if (!NLS::Core::ServiceLocator::Contains<NLS::Core::ResourceManagement::TextureManager>())
 			return false;
 
@@ -971,6 +987,41 @@ bool RenderScene::PrimitiveInputStamp::operator==(const PrimitiveInputStamp& oth
 				ownerActive == other.ownerActive;
 }
 
+bool RenderScene::IntrinsicLODGroupRecordMatches(
+	const LODGroupRecord& record,
+	const RenderPrimitive& primitive,
+	const NLS::Render::Resources::Mesh& mesh) const
+{
+	// This mirrors exactly what the intrinsic registration path writes, so a match means the
+	// record can be left untouched and the per-frame lookup rebuild can be skipped.
+	if (!record.selectsMeshLOD ||
+		record.hysteresis != 0.0f ||
+		record.forcedLOD.has_value() ||
+		record.maxLOD != (std::numeric_limits<uint32_t>::max)() ||
+		record.minLOD != mesh.GetMinLOD() ||
+		record.worldReferencePoint != primitive.worldPosition ||
+		record.worldSize != std::max(primitive.modelBoundingSphere.radius * 2.0f, 1.0f) ||
+		record.boundsSphereRadius != primitive.modelBoundingSphere.radius ||
+		record.levels.size() != mesh.GetLODCount())
+	{
+		return false;
+	}
+
+	for (uint32_t lodIndex = 0u; lodIndex < mesh.GetLODCount(); ++lodIndex)
+	{
+		const auto& level = record.levels[lodIndex];
+		if (level.screenRelativeThreshold != mesh.GetLODScreenSize(lodIndex) ||
+			level.fadeDurationSeconds != 0.0f ||
+			!level.resident ||
+			level.primitiveHandles.size() != 1u ||
+			!(level.primitiveHandles.front() == primitive.handle))
+		{
+			return false;
+		}
+	}
+	return true;
+}
+
 RenderSceneSyncStats RenderScene::Synchronize(
 	SceneSystem::Scene& scene,
 	const RenderSceneSyncOptions& options)
@@ -996,6 +1047,8 @@ RenderSceneSyncStats RenderScene::Synchronize(
 		*m_lastSceneSynchronizationStamp == synchronizationStamp &&
 		m_lastMeshMutationEpoch == meshMutationEpoch &&
 		!trackedMaterialMutation;
+	const bool importedHierarchyHLODEnabled =
+		ResolveLargeSceneSettings(options).enableHLOD;
 
 	std::unordered_map<Components::MeshRenderer*, NLS::InstanceID> liveMeshRenderers;
 	if (fastAccessMembershipChanged)
@@ -1031,11 +1084,17 @@ RenderSceneSyncStats RenderScene::Synchronize(
 			if (fastAccessMembershipChanged)
 				liveMeshRenderers.emplace(meshRenderer, meshRenderer->GetInstanceID());
 			auto& primitive = FindOrCreatePrimitive(*meshRenderer, stats);
-			const auto inputStamp = BuildPrimitiveInputStamp(*meshRenderer, primitive, options);
-			if (CanReuseSynchronizedPrimitive(primitive, inputStamp))
+			const auto inputStamp = BuildPrimitiveInputStamp(*meshRenderer, primitive, options, declaredTextureCache);
+			if (CanReuseSynchronizedPrimitive(primitive, inputStamp, declaredTextureCache))
 				continue;
 			SynchronizePrimitive(primitive, options, stats, declaredTextureCache);
-			primitive.lastInputStamp = BuildPrimitiveInputStamp(*meshRenderer, primitive, options);
+			// SynchronizePrimitive only reads owner/transform/material state, so the
+			// stamp computed above is still valid afterwards. The one exception is
+			// the no-MeshFilter fallback, which reads primitive.mesh and must be rebuilt
+			// once the primitive has been resynchronized.
+			primitive.lastInputStamp = primitive.meshFilter == nullptr
+				? BuildPrimitiveInputStamp(*meshRenderer, primitive, options, declaredTextureCache)
+				: inputStamp;
 		}
 	}
 	else
@@ -1054,45 +1113,72 @@ RenderSceneSyncStats RenderScene::Synchronize(
 	m_lastSceneSynchronizationStamp = synchronizationStamp;
 	m_lastMeshMutationEpoch = meshMutationEpoch;
 	if (!canReuseSceneSynchronization)
+	{
+		NLS_PROFILE_NAMED_SCOPE("RenderScene::Synchronize::RefreshTrackedMaterialStates");
 		RefreshTrackedMaterialStates();
+	}
 	{
 		NLS_PROFILE_NAMED_SCOPE("RenderScene::Synchronize::RefreshSpatialIndex");
 		RefreshSpatialIndex(options);
 	}
 	if (!canReuseSceneSynchronization)
 	{
-		NLS_PROFILE_NAMED_SCOPE("RenderScene::Synchronize::RebuildImportedHierarchyHLODRecords");
-		RebuildImportedHierarchyHLODRecords(scene);
-		for (auto& primitive : m_primitives)
+		if (importedHierarchyHLODEnabled)
 		{
-			if (!primitive.occupied || primitive.tombstoned)
-				continue;
-			const bool hasIntrinsicGroup = primitive.lodGroup.has_value() &&
-				primitive.lodGroup->index < m_representationRegistry->lodGroups.size() &&
-				m_representationRegistry->lodGroups[primitive.lodGroup->index].selectsMeshLOD;
-			if (primitive.mesh == nullptr || primitive.mesh->GetLODCount() <= 1u)
+			NLS_PROFILE_NAMED_SCOPE("RenderScene::Synchronize::RebuildImportedHierarchyHLODRecords");
+			RebuildImportedHierarchyHLODRecords(scene);
+		}
+		else
+		{
+			NLS_PROFILE_NAMED_SCOPE("RenderScene::Synchronize::ClearImportedHierarchyHLODRecords");
+			ClearImportedHierarchyHLODRecords();
+		}
+		{
+			NLS_PROFILE_NAMED_SCOPE("RenderScene::Synchronize::RegisterIntrinsicLODGroups");
+			bool representationLookupDirty = false;
+			for (auto& primitive : m_primitives)
 			{
-				if (hasIntrinsicGroup)
+				if (!primitive.occupied || primitive.tombstoned)
+					continue;
+				const bool hasIntrinsicGroup = primitive.lodGroup.has_value() &&
+					primitive.lodGroup->index < m_representationRegistry->lodGroups.size() &&
+					m_representationRegistry->lodGroups[primitive.lodGroup->index].selectsMeshLOD;
+				if (primitive.mesh == nullptr || primitive.mesh->GetLODCount() <= 1u)
 				{
-					m_representationRegistry->lodGroups[primitive.lodGroup->index] = {};
-					primitive.lodGroup.reset();
-					m_representationRegistry->RebuildLookup();
+					if (hasIntrinsicGroup)
+					{
+						m_representationRegistry->lodGroups[primitive.lodGroup->index] = {};
+						primitive.lodGroup.reset();
+						representationLookupDirty = true;
+					}
+					continue;
 				}
-				continue;
+				if (primitive.lodGroup.has_value() && !hasIntrinsicGroup)
+					continue;
+				if (hasIntrinsicGroup &&
+					IntrinsicLODGroupRecordMatches(
+						m_representationRegistry->lodGroups[primitive.lodGroup->index],
+						primitive,
+						*primitive.mesh))
+				{
+					continue;
+				}
+				LODGroupRecord group;
+				if (hasIntrinsicGroup)
+					group.groupHandle = *primitive.lodGroup;
+				group.selectsMeshLOD = true;
+				group.worldReferencePoint = primitive.worldPosition;
+				group.worldSize = std::max(primitive.modelBoundingSphere.radius * 2.0f, 1.0f);
+				group.boundsSphereRadius = primitive.modelBoundingSphere.radius;
+				group.minLOD = primitive.mesh->GetMinLOD();
+				for (uint32_t lod = 0u; lod < primitive.mesh->GetLODCount(); ++lod)
+					group.levels.push_back({primitive.mesh->GetLODScreenSize(lod), {primitive.handle}});
+				bool membershipChanged = false;
+				RegisterLODGroup(group, false, &membershipChanged);
+				representationLookupDirty = representationLookupDirty || membershipChanged;
 			}
-			if (primitive.lodGroup.has_value() && !hasIntrinsicGroup)
-				continue;
-			LODGroupRecord group;
-			if (hasIntrinsicGroup)
-				group.groupHandle = *primitive.lodGroup;
-			group.selectsMeshLOD = true;
-			group.worldReferencePoint = primitive.worldPosition;
-			group.worldSize = std::max(primitive.modelBoundingSphere.radius * 2.0f, 1.0f);
-			group.boundsSphereRadius = primitive.modelBoundingSphere.radius;
-			group.minLOD = primitive.mesh->GetMinLOD();
-			for (uint32_t lod = 0u; lod < primitive.mesh->GetLODCount(); ++lod)
-				group.levels.push_back({primitive.mesh->GetLODScreenSize(lod), {primitive.handle}});
-			RegisterLODGroup(group);
+			if (representationLookupDirty)
+				m_representationRegistry->RebuildLookup();
 		}
 	}
 	if (!m_lastDirtySyncHandles.empty() || !m_lastRemovedHandles.empty())
@@ -1535,29 +1621,45 @@ void RenderScene::ClearRepresentationRecords()
 	}
 }
 
+void RenderScene::ClearImportedHierarchyHLODRecords(const bool rebuildLookup)
+{
+	if (m_importedHierarchyHLODClusterHandles.empty())
+		return;
+
+	m_spatialCandidateSnapshotCache.reset();
+	if (m_representationRegistry != nullptr)
+	{
+		for (auto& primitive : m_primitives)
+		{
+			if (!primitive.hlodCluster.has_value())
+				continue;
+
+			const auto found = std::find(
+				m_importedHierarchyHLODClusterHandles.begin(),
+				m_importedHierarchyHLODClusterHandles.end(),
+				*primitive.hlodCluster);
+			if (found != m_importedHierarchyHLODClusterHandles.end())
+				primitive.hlodCluster.reset();
+		}
+
+		for (const auto handle : m_importedHierarchyHLODClusterHandles)
+		{
+			if (handle.index < m_representationRegistry->hlodClusters.size())
+				m_representationRegistry->hlodClusters[handle.index] = {};
+		}
+	}
+
+	m_importedHierarchyHLODClusterHandles.clear();
+	if (rebuildLookup && m_representationRegistry != nullptr)
+		m_representationRegistry->RebuildLookup();
+}
+
 void RenderScene::RebuildImportedHierarchyHLODRecords(const SceneSystem::Scene& scene)
 {
 	m_spatialCandidateSnapshotCache.reset();
+	ClearImportedHierarchyHLODRecords(false);
 	if (m_representationRegistry == nullptr)
 		m_representationRegistry = std::make_unique<RepresentationRegistry>();
-
-	for (auto& primitive : m_primitives)
-	{
-		if (!primitive.hlodCluster.has_value())
-			continue;
-		const auto found = std::find(
-			m_importedHierarchyHLODClusterHandles.begin(),
-			m_importedHierarchyHLODClusterHandles.end(),
-			*primitive.hlodCluster);
-		if (found != m_importedHierarchyHLODClusterHandles.end())
-			primitive.hlodCluster.reset();
-	}
-	for (const auto handle : m_importedHierarchyHLODClusterHandles)
-	{
-		if (handle.index < m_representationRegistry->hlodClusters.size())
-			m_representationRegistry->hlodClusters[handle.index] = {};
-	}
-	m_importedHierarchyHLODClusterHandles.clear();
 
 	struct ImportedHierarchyHLODScope
 	{
@@ -1651,30 +1753,82 @@ void RenderScene::RebuildImportedHierarchyHLODRecords(const SceneSystem::Scene& 
 			std::max(clusterWorldBounds->size.x, clusterWorldBounds->size.y),
 			std::max(clusterWorldBounds->size.z, 1.0f));
 
-		const auto handle = RegisterHLODCluster(cluster);
+		const auto handle = RegisterHLODCluster(cluster, false);
 		m_importedHierarchyHLODClusterHandles.push_back(handle);
 	}
 
 	m_representationRegistry->RebuildLookup();
 }
 
-SceneLODGroupHandle RenderScene::RegisterLODGroup(const LODGroupRecord& group)
+namespace
+{
+	bool LODGroupMembershipMatches(const LODGroupRecord& lhs, const LODGroupRecord& rhs)
+	{
+		if (lhs.levels.size() != rhs.levels.size())
+			return false;
+		for (size_t levelIndex = 0u; levelIndex < lhs.levels.size(); ++levelIndex)
+		{
+			const auto& lhsHandles = lhs.levels[levelIndex].primitiveHandles;
+			const auto& rhsHandles = rhs.levels[levelIndex].primitiveHandles;
+			if (lhsHandles.size() != rhsHandles.size())
+				return false;
+			for (size_t handleIndex = 0u; handleIndex < lhsHandles.size(); ++handleIndex)
+			{
+				if (!(lhsHandles[handleIndex] == rhsHandles[handleIndex]))
+					return false;
+			}
+		}
+		return true;
+	}
+}
+
+SceneLODGroupHandle RenderScene::RegisterLODGroup(
+	const LODGroupRecord& group,
+	const bool rebuildLookup,
+	bool* const outMembershipChanged)
 {
 	m_spatialCandidateSnapshotCache.reset();
 	if (m_representationRegistry == nullptr)
 		m_representationRegistry = std::make_unique<RepresentationRegistry>();
 
-	auto record = group;
-	if (!record.groupHandle.IsValid())
-		record.groupHandle = { static_cast<uint32_t>(m_representationRegistry->lodGroups.size()) };
-
-	const auto handle = record.groupHandle;
+	const bool creatingRecord = !group.groupHandle.IsValid();
+	const auto handle = creatingRecord
+		? SceneLODGroupHandle { static_cast<uint32_t>(m_representationRegistry->lodGroups.size()) }
+		: group.groupHandle;
 	if (handle.index >= m_representationRegistry->lodGroups.size())
 		m_representationRegistry->lodGroups.resize(static_cast<size_t>(handle.index) + 1u);
-	m_representationRegistry->lodGroups[handle.index] = record;
+
+	// Registration runs every frame for intrinsic LOD groups. Only the volatile fields change
+	// while membership stays stable, so updating in place avoids copying the level vectors.
+	auto& stored = m_representationRegistry->lodGroups[handle.index];
+	const bool membershipChanged = creatingRecord || !LODGroupMembershipMatches(stored, group);
+	if (membershipChanged)
+	{
+		stored = group;
+		stored.groupHandle = handle;
+	}
+	else
+	{
+		stored.hysteresis = group.hysteresis;
+		stored.worldReferencePoint = group.worldReferencePoint;
+		stored.worldSize = group.worldSize;
+		stored.boundsSphereRadius = group.boundsSphereRadius;
+		stored.minLOD = group.minLOD;
+		stored.maxLOD = group.maxLOD;
+		stored.forcedLOD = group.forcedLOD;
+		stored.selectsMeshLOD = group.selectsMeshLOD;
+		for (size_t levelIndex = 0u; levelIndex < stored.levels.size(); ++levelIndex)
+		{
+			stored.levels[levelIndex].screenRelativeThreshold =
+				group.levels[levelIndex].screenRelativeThreshold;
+			stored.levels[levelIndex].fadeDurationSeconds =
+				group.levels[levelIndex].fadeDurationSeconds;
+			stored.levels[levelIndex].resident = group.levels[levelIndex].resident;
+		}
+	}
 	m_representationRegistry->ResizeLODHistories();
 
-	for (const auto& level : record.levels)
+	for (const auto& level : stored.levels)
 	{
 		for (const auto primitiveHandle : level.primitiveHandles)
 		{
@@ -1683,12 +1837,15 @@ SceneLODGroupHandle RenderScene::RegisterLODGroup(const LODGroupRecord& group)
 			m_primitives[primitiveHandle.index].lodGroup = handle;
 		}
 	}
-	m_representationRegistry->RebuildLookup();
+	if (rebuildLookup)
+		m_representationRegistry->RebuildLookup();
+	if (outMembershipChanged != nullptr)
+		*outMembershipChanged = membershipChanged;
 
 	return handle;
 }
 
-SceneHLODClusterHandle RenderScene::RegisterHLODCluster(const HLODClusterRecord& cluster)
+SceneHLODClusterHandle RenderScene::RegisterHLODCluster(const HLODClusterRecord& cluster, const bool rebuildLookup)
 {
 	m_spatialCandidateSnapshotCache.reset();
 	if (m_representationRegistry == nullptr)
@@ -1711,7 +1868,8 @@ SceneHLODClusterHandle RenderScene::RegisterHLODCluster(const HLODClusterRecord&
 	}
 	if (record.proxyPrimitive.has_value() && IsPrimitiveHandleLive(*record.proxyPrimitive))
 		m_primitives[record.proxyPrimitive->index].hlodCluster = handle;
-	m_representationRegistry->RebuildLookup();
+	if (rebuildLookup)
+		m_representationRegistry->RebuildLookup();
 
 	return handle;
 }
@@ -2190,7 +2348,8 @@ void RenderScene::SynchronizePrimitive(
 RenderScene::PrimitiveInputStamp RenderScene::BuildPrimitiveInputStamp(
 	Components::MeshRenderer& meshRenderer,
 	const RenderPrimitive& primitive,
-	const RenderSceneSyncOptions& options) const
+	const RenderSceneSyncOptions& options,
+	RenderSceneDeclaredTextureLookupCache& declaredTextureCache) const
 {
 	PrimitiveInputStamp stamp;
 	stamp.owner = meshRenderer.gameobject();
@@ -2235,7 +2394,8 @@ RenderScene::PrimitiveInputStamp RenderScene::BuildPrimitiveInputStamp(
 		stamp.materialParameterRevision = material->GetParameterRevision();
 		stamp.materialRenderStateRevision = material->GetRenderStateRevision();
 			if (!material->GetTextureResourcePaths().empty())
-				stamp.explicitMaterialTexturesResolved = HasResolvedDeclaredMaterialTextures(*material);
+				stamp.explicitMaterialTexturesResolved =
+					HasResolvedDeclaredMaterialTexturesCached(*material, declaredTextureCache);
 		}
 
 	return stamp;
@@ -2243,7 +2403,8 @@ RenderScene::PrimitiveInputStamp RenderScene::BuildPrimitiveInputStamp(
 
 bool RenderScene::CanReuseSynchronizedPrimitive(
 	const RenderPrimitive& primitive,
-	const PrimitiveInputStamp& stamp) const
+	const PrimitiveInputStamp& stamp,
+	RenderSceneDeclaredTextureLookupCache& declaredTextureCache) const
 {
 	if (!primitive.occupied || primitive.tombstoned)
 		return false;
@@ -2272,7 +2433,7 @@ bool RenderScene::CanReuseSynchronizedPrimitive(
 		auto* material = slot.stamp.material;
 		if (material != nullptr &&
 			!material->GetTextureResourcePaths().empty() &&
-			!HasResolvedDeclaredMaterialTextures(*material))
+			!HasResolvedDeclaredMaterialTexturesCached(*material, declaredTextureCache))
 		{
 			return false;
 		}
@@ -2328,7 +2489,7 @@ NLS::Render::Resources::Material* RenderScene::ResolveMaterialForMesh(
 				TryBindDeclaredMaterialTexturesFromCache(*material, declaredTextureCache, stats);
 			if (options.requireExplicitMaterialTextures &&
 				hasExplicitMaterialPath &&
-				!HasResolvedDeclaredMaterialTextures(*material))
+				!HasResolvedDeclaredMaterialTexturesCached(*material, declaredTextureCache))
 			{
 				return nullptr;
 			}

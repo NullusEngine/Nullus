@@ -142,6 +142,12 @@ namespace
 		return epoch;
 	}
 
+	std::atomic<uint64_t>& MaterialLiveRegistryGeneration()
+	{
+		static std::atomic<uint64_t> generation { 1u };
+		return generation;
+	}
+
 	constexpr size_t kMaterialMutationJournalCapacity = 4096u;
 
 	struct MaterialMutationJournalEntry
@@ -185,6 +191,7 @@ namespace
 
 		std::lock_guard lock(LiveMaterialRegistryMutex());
 		LiveMaterialRegistry().insert(material);
+		MaterialLiveRegistryGeneration().fetch_add(1u, std::memory_order_relaxed);
 	}
 
 	void UnregisterLiveMaterial(NLS::Render::Resources::Material* material)
@@ -194,6 +201,7 @@ namespace
 
 		std::lock_guard lock(LiveMaterialRegistryMutex());
 		LiveMaterialRegistry().erase(material);
+		MaterialLiveRegistryGeneration().fetch_add(1u, std::memory_order_relaxed);
 	}
 
 	NLS::Render::RHI::SamplerDesc BuildDefaultSamplerDesc(const std::string& bindingName)
@@ -2702,6 +2710,11 @@ namespace NLS::Render::Resources
 				return false;
 		}
 		return true;
+	}
+
+	uint64_t Material::GetLiveRegistryGeneration() noexcept
+	{
+		return MaterialLiveRegistryGeneration().load(std::memory_order_acquire);
 	}
 
 	bool Material::IsLive(const Material* material) noexcept

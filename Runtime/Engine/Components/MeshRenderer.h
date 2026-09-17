@@ -135,6 +135,19 @@ namespace NLS::Engine::Components
         std::vector<std::string> m_materialPaths;
         std::vector<std::string> m_failedMaterialPaths;
         std::vector<std::string> m_materialNames;
+
+        // Steady-state memo for ResolveMaterialSlot.  Rediscovering a slot costs a global
+        // persistence lock, runtime asset database lookups and filesystem path normalization,
+        // which the render synchronisation path evaluates for every primitive every frame.
+        struct MaterialSlotResolution
+        {
+            Material* material = nullptr;
+            NLS::InstanceID referenceInstanceId = NLS::InstanceID_None;
+            const void* assetDatabaseIdentity = nullptr;
+            uint64_t renderRevision = 0u;
+            uint64_t liveRegistryGeneration = 0u;
+        };
+        std::vector<MaterialSlotResolution> m_materialSlotResolutions;
         PROPERTY(DisplayName("User Matrix"), Getter(GetUserMatrixValues), Setter(SetUserMatrixValues))
         Maths::Matrix4 userMatrixValues;
         PROPERTY(DisplayName("Custom Bounding Sphere"), Getter(GetCustomBoundingSphere), Setter(SetCustomBoundingSphere))

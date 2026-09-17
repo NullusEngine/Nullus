@@ -178,7 +178,8 @@ bool AcceptsGPUContextInitialization(const ProfilerDestinationState& state)
 {
     return state.enabled &&
         state.availability == ProfilerAvailability::Available &&
-        ((state.capabilities & ProfilerCapability_GPUScopes) != 0u ||
+        ((state.capabilities & ProfilerCapability_AcceptsGpuContext) != 0u ||
+            (state.capabilities & ProfilerCapability_GPUScopes) != 0u ||
             (state.capabilities & ProfilerCapability_EditorTimeline) != 0u);
 }
 
@@ -259,6 +260,11 @@ void IProfilerDestination::EndGpuScope(const ProfilerGpuScopeEvent& event)
 void IProfilerDestination::InitializeGpuContext(const ProfilerGpuContextEvent& event)
 {
     (void)event;
+}
+
+void IProfilerDestination::ClearGpuContext(void* nativeDevice)
+{
+    (void)nativeDevice;
 }
 
 void IProfilerDestination::SubmitGpuCommandLists(const ProfilerGpuCommandListSubmitEvent& event)
@@ -381,18 +387,29 @@ void Profiler::ReplayGpuContextIfAvailable(IProfilerDestination& destination)
 
 void Profiler::ClearGpuContext(void* nativeDevice)
 {
-    std::lock_guard lock(g_profilerMutex);
-    if (!g_hasGpuContext)
-        return;
-    if (nativeDevice != nullptr && g_lastGpuContext.nativeDevice != nativeDevice)
-        return;
+    auto registrations = GetRegisteredDestinations();
+    {
+        std::lock_guard lock(g_profilerMutex);
+        if (g_hasGpuContext &&
+            (nativeDevice == nullptr || g_lastGpuContext.nativeDevice == nativeDevice))
+        {
+            g_lastGpuContext = {};
+            g_hasGpuContext = false;
+        }
+    }
 
-    g_lastGpuContext = {};
-    g_hasGpuContext = false;
+    for (const auto& registration : registrations)
+    {
+        ProfilerDestinationLease lease(registration);
+        if (lease)
+            lease->ClearGpuContext(nativeDevice);
+    }
 }
 
 void Profiler::ResetForTesting()
 {
+    ClearGpuContext(nullptr);
+
     ProfilerDestinationRegistrations retiredRegistrations;
     {
         std::lock_guard lock(g_profilerMutex);
@@ -515,6 +532,15 @@ ProfilerGpuScopeEvent Profiler::BeginGpuScope(
     const std::string_view name,
     const std::string_view sourceFunction)
 {
+    return BeginGpuScope(nativeCommandBuffer, nullptr, name, sourceFunction);
+}
+
+ProfilerGpuScopeEvent Profiler::BeginGpuScope(
+    void* nativeCommandBuffer,
+    void* nativeCommandQueue,
+    const std::string_view name,
+    const std::string_view sourceFunction)
+{
     ProfilerGpuScopeEvent event;
 
     const bool enabled = IsEnabled();
@@ -530,6 +556,7 @@ ProfilerGpuScopeEvent Profiler::BeginGpuScope(
     }
 
     event.nativeCommandBuffer = nativeCommandBuffer;
+    event.nativeCommandQueue = nativeCommandQueue;
     event.name = name.empty() ? std::string(sourceFunction) : std::string(name);
     event.sourceFunction = std::string(sourceFunction);
     event.threadName = g_threadName;

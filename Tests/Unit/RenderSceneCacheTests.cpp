@@ -1343,6 +1343,19 @@ TEST(RenderSceneCacheTests, MutableTransformAccessUpdatesPrimitiveWorldMatrixWit
     EXPECT_EQ(renderScene.GatherVisibleCommands({}).opaques.size(), 1u);
 }
 
+TEST(RenderSceneCacheTests, MaterialSlotResolutionDropsDestroyedCachedMaterial)
+{
+    RenderableFixture fixture;
+    auto* transientMaterial = new NLS::Render::Resources::Material(fixture.shader);
+    transientMaterial->path.clear();
+    fixture.meshRenderer->FillWithMaterial(*transientMaterial);
+
+    ASSERT_EQ(fixture.meshRenderer->ResolveMaterialAtIndex(0u), transientMaterial);
+    delete transientMaterial;
+
+    EXPECT_EQ(fixture.meshRenderer->ResolveMaterialAtIndex(0u), nullptr);
+}
+
 TEST(RenderSceneCacheTests, MeshContentRevisionChangeInvalidatesRetainedPrimitive)
 {
     RenderableFixture fixture;
@@ -4000,13 +4013,14 @@ TEST(RenderSceneCacheTests, GatherVisibleCommandsAppliesImportedHierarchyHLODMet
     proxyRenderer->FillWithMaterial(fixture.material);
 
     NLS::Engine::Rendering::RenderScene renderScene;
-    NLS::Engine::Rendering::RenderSceneSyncOptions syncOptions;
-    syncOptions.defaultMaterial = &fixture.material;
-    ASSERT_EQ(renderScene.Synchronize(fixture.scene, syncOptions).rebuiltCachedCommandCount, 3u);
-
     NLS::Engine::Rendering::LargeSceneSettings largeSceneSettings;
     largeSceneSettings.enableSpatialIndex = false;
     largeSceneSettings.enableHLOD = true;
+    NLS::Engine::Rendering::RenderSceneSyncOptions syncOptions;
+    syncOptions.defaultMaterial = &fixture.material;
+    syncOptions.largeSceneSettings = &largeSceneSettings;
+    ASSERT_EQ(renderScene.Synchronize(fixture.scene, syncOptions).rebuiltCachedCommandCount, 3u);
+
     NLS::Engine::Rendering::RenderSceneVisibilityOptions visibilityOptions;
     visibilityOptions.cameraPosition = {0.0f, 0.0f, 500.0f};
     visibilityOptions.largeSceneSettings = &largeSceneSettings;
@@ -4070,13 +4084,14 @@ TEST(RenderSceneCacheTests, ImportedHierarchyHLODUsesWorldBoundsForSelection)
     proxyRenderer->FillWithMaterial(fixture.material);
 
     NLS::Engine::Rendering::RenderScene renderScene;
-    NLS::Engine::Rendering::RenderSceneSyncOptions syncOptions;
-    syncOptions.defaultMaterial = &fixture.material;
-    ASSERT_EQ(renderScene.Synchronize(fixture.scene, syncOptions).rebuiltCachedCommandCount, 3u);
-
     NLS::Engine::Rendering::LargeSceneSettings largeSceneSettings;
     largeSceneSettings.enableSpatialIndex = false;
     largeSceneSettings.enableHLOD = true;
+    NLS::Engine::Rendering::RenderSceneSyncOptions syncOptions;
+    syncOptions.defaultMaterial = &fixture.material;
+    syncOptions.largeSceneSettings = &largeSceneSettings;
+    ASSERT_EQ(renderScene.Synchronize(fixture.scene, syncOptions).rebuiltCachedCommandCount, 3u);
+
     NLS::Engine::Rendering::RenderSceneVisibilityOptions visibilityOptions;
     visibilityOptions.cameraPosition = {0.0f, 0.0f, 500.0f};
     visibilityOptions.largeSceneSettings = &largeSceneSettings;
@@ -4141,13 +4156,14 @@ TEST(RenderSceneCacheTests, EditorInspectionRootKeepsImportedHierarchyHLODChildr
     proxyRenderer->FillWithMaterial(fixture.material);
 
     NLS::Engine::Rendering::RenderScene renderScene;
-    NLS::Engine::Rendering::RenderSceneSyncOptions syncOptions;
-    syncOptions.defaultMaterial = &fixture.material;
-    ASSERT_EQ(renderScene.Synchronize(fixture.scene, syncOptions).rebuiltCachedCommandCount, 3u);
-
     NLS::Engine::Rendering::LargeSceneSettings largeSceneSettings;
     largeSceneSettings.enableSpatialIndex = false;
     largeSceneSettings.enableHLOD = true;
+    NLS::Engine::Rendering::RenderSceneSyncOptions syncOptions;
+    syncOptions.defaultMaterial = &fixture.material;
+    syncOptions.largeSceneSettings = &largeSceneSettings;
+    ASSERT_EQ(renderScene.Synchronize(fixture.scene, syncOptions).rebuiltCachedCommandCount, 3u);
+
     NLS::Engine::Rendering::RenderSceneVisibilityOptions visibilityOptions;
     visibilityOptions.cameraPosition = {0.0f, 0.0f, 500.0f};
     visibilityOptions.largeSceneSettings = &largeSceneSettings;
@@ -4226,13 +4242,14 @@ TEST(RenderSceneCacheTests, ImportedHierarchyHLODMetadataScopesRepeatedSourceKey
     addInstance("1", *childMeshA1, *childMeshB1, *proxyMesh1);
 
     NLS::Engine::Rendering::RenderScene renderScene;
-    NLS::Engine::Rendering::RenderSceneSyncOptions syncOptions;
-    syncOptions.defaultMaterial = &fixture.material;
-    ASSERT_EQ(renderScene.Synchronize(fixture.scene, syncOptions).rebuiltCachedCommandCount, 7u);
-
     NLS::Engine::Rendering::LargeSceneSettings largeSceneSettings;
     largeSceneSettings.enableSpatialIndex = false;
     largeSceneSettings.enableHLOD = true;
+    NLS::Engine::Rendering::RenderSceneSyncOptions syncOptions;
+    syncOptions.defaultMaterial = &fixture.material;
+    syncOptions.largeSceneSettings = &largeSceneSettings;
+    ASSERT_EQ(renderScene.Synchronize(fixture.scene, syncOptions).rebuiltCachedCommandCount, 7u);
+
     NLS::Engine::Rendering::RenderSceneVisibilityOptions visibilityOptions;
     visibilityOptions.cameraPosition = {0.0f, 0.0f, 500.0f};
     visibilityOptions.largeSceneSettings = &largeSceneSettings;
@@ -4255,6 +4272,96 @@ TEST(RenderSceneCacheTests, ImportedHierarchyHLODMetadataScopesRepeatedSourceKey
     delete childMeshB1;
     delete proxyMesh0;
     delete proxyMesh1;
+}
+
+TEST(RenderSceneCacheTests, ImportedHierarchyHLODRecordsAreSkippedAndClearedWhenDisabled)
+{
+    RenderableFixture fixture;
+    auto* childMeshB = CreateTriangleMesh(0u, {{0.0f, 0.0f, 0.0f}, 1.0f});
+    auto* proxyMesh = CreateTriangleMesh(0u, {{0.0f, 0.0f, 0.0f}, 3.0f});
+
+    auto& cluster = fixture.scene.CreateGameObject("ImportedCluster");
+    cluster.SetSourceObjectKey("node/cluster");
+    cluster.SetLargeSceneHLODMetadata(std::string(
+        "{\"children\":[\"node/childA\",\"node/childB\"],"
+        "\"clusterKey\":\"node/cluster\","
+        "\"proxySubAssetKey\":\"hlod-proxy:node/cluster\","
+        "\"source\":\"imported-hierarchy\"}"));
+
+    auto* childA = fixture.meshRenderer->gameobject();
+    ASSERT_NE(childA, nullptr);
+    childA->SetName("ChildA");
+    childA->SetParent(cluster);
+    childA->SetSourceObjectKey("node/childA");
+
+    auto& childB = fixture.scene.CreateGameObject("ChildB");
+    childB.SetParent(cluster);
+    childB.SetSourceObjectKey("node/childB");
+    auto* childBFilter = childB.AddComponent<NLS::Engine::Components::MeshFilter>();
+    auto* childBRenderer = childB.AddComponent<NLS::Engine::Components::MeshRenderer>();
+    ASSERT_NE(childBFilter, nullptr);
+    ASSERT_NE(childBRenderer, nullptr);
+    childBFilter->SetMesh(childMeshB);
+    childBRenderer->FillWithMaterial(fixture.material);
+
+    auto& proxy = fixture.scene.CreateGameObject("__HLODProxy_Cluster");
+    proxy.SetParent(cluster);
+    proxy.SetActive(false);
+    proxy.SetSourceObjectKey("hlod-proxy:node/cluster");
+    auto* proxyFilter = proxy.AddComponent<NLS::Engine::Components::MeshFilter>();
+    auto* proxyRenderer = proxy.AddComponent<NLS::Engine::Components::MeshRenderer>();
+    ASSERT_NE(proxyFilter, nullptr);
+    ASSERT_NE(proxyRenderer, nullptr);
+    proxyFilter->SetMesh(proxyMesh);
+    proxyRenderer->FillWithMaterial(fixture.material);
+
+    NLS::Engine::Rendering::LargeSceneSettings disabledSettings;
+    disabledSettings.enableSpatialIndex = false;
+    disabledSettings.enableHLOD = false;
+    NLS::Engine::Rendering::LargeSceneSettings enabledSettings = disabledSettings;
+    enabledSettings.enableHLOD = true;
+
+    NLS::Engine::Rendering::RenderScene renderScene;
+    NLS::Engine::Rendering::RenderSceneSyncOptions syncOptions;
+    syncOptions.defaultMaterial = &fixture.material;
+    syncOptions.largeSceneSettings = &disabledSettings;
+    ASSERT_EQ(renderScene.Synchronize(fixture.scene, syncOptions).rebuiltCachedCommandCount, 3u);
+
+    NLS::Engine::Rendering::RenderSceneVisibilityOptions visibilityOptions;
+    visibilityOptions.cameraPosition = {0.0f, 0.0f, 500.0f};
+    visibilityOptions.largeSceneSettings = &enabledSettings;
+    auto visible = renderScene.GatherVisibleCommands(
+        visibilityOptions,
+        NLS::Engine::Rendering::RenderSceneVisibilityMode::Serial);
+    auto telemetry = renderScene.GetLastLargeSceneTelemetryForTesting();
+    EXPECT_EQ(telemetry.culledByReason[
+        static_cast<size_t>(NLS::Engine::Rendering::CullReason::HLODChildSuppressed)], 0u);
+    EXPECT_EQ(telemetry.activeHLODClusterCount, 0u);
+
+    syncOptions.largeSceneSettings = &enabledSettings;
+    ASSERT_EQ(renderScene.Synchronize(fixture.scene, syncOptions).rebuiltCachedCommandCount, 0u);
+    visible = renderScene.GatherVisibleCommands(
+        visibilityOptions,
+        NLS::Engine::Rendering::RenderSceneVisibilityMode::Serial);
+    telemetry = renderScene.GetLastLargeSceneTelemetryForTesting();
+    ASSERT_EQ(visible.opaques.size(), 1u);
+    EXPECT_EQ(visible.opaques.front().second.mesh, proxyMesh);
+    EXPECT_EQ(telemetry.culledByReason[
+        static_cast<size_t>(NLS::Engine::Rendering::CullReason::HLODChildSuppressed)], 2u);
+    EXPECT_EQ(telemetry.activeHLODClusterCount, 1u);
+
+    syncOptions.largeSceneSettings = &disabledSettings;
+    ASSERT_EQ(renderScene.Synchronize(fixture.scene, syncOptions).rebuiltCachedCommandCount, 0u);
+    visible = renderScene.GatherVisibleCommands(
+        visibilityOptions,
+        NLS::Engine::Rendering::RenderSceneVisibilityMode::Serial);
+    telemetry = renderScene.GetLastLargeSceneTelemetryForTesting();
+    EXPECT_EQ(telemetry.culledByReason[
+        static_cast<size_t>(NLS::Engine::Rendering::CullReason::HLODChildSuppressed)], 0u);
+    EXPECT_EQ(telemetry.activeHLODClusterCount, 0u);
+
+    delete childMeshB;
+    delete proxyMesh;
 }
 
 TEST(RenderSceneCacheTests, SynchronizeKeepsManuallyRegisteredHLODClusters)

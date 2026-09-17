@@ -209,6 +209,10 @@ TEST(EditorSettingsRegistryTests, SearchMatchesCategoryNameAndReflectedPropertyL
     ASSERT_EQ(lightGridMatches.size(), 1u);
     EXPECT_EQ(lightGridMatches[0]->id, "editor.rendering");
 
+    auto staticCacheMatches = registry.Search("Scene View Static Cache");
+    ASSERT_EQ(staticCacheMatches.size(), 1u);
+    EXPECT_EQ(staticCacheMatches[0]->id, "editor.rendering");
+
     EXPECT_TRUE(registry.Search("does-not-exist").empty());
 }
 

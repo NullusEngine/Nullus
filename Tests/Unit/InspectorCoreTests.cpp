@@ -1146,6 +1146,90 @@ TEST(InspectorCoreTests, ComponentEnabledHeaderUsesCanonicalAccessorByteStream)
     EXPECT_FALSE(transformEnabled.SetBoolValue(false));
 }
 
+TEST(InspectorCoreTests, TransformLocalPositionStreamEditAppliesThroughUndo)
+{
+    ScopedInspectorUndoService undoScope;
+    Engine::GameObject object("Transform stream edit");
+    auto* transform = object.GetTransform();
+    ASSERT_NE(transform, nullptr);
+
+    Serialization::SerializedTargetSet targets;
+    targets.targets.push_back(InspectorTargetHandle::FromObject(*transform, InspectorTargetKind::NativeObject));
+    targets.Normalize();
+    ASSERT_TRUE(Serialization::AccessorSerializedBackend::Supports(targets));
+
+    Serialization::SerializedObject serialized(
+        targets,
+        Serialization::AccessorSerializedBackend::Create());
+    ASSERT_TRUE(serialized.IsValid()) << serialized.GetLastError();
+
+    const auto localPosition = serialized.FindProperty("localPosition");
+    ASSERT_TRUE(localPosition);
+    EXPECT_TRUE(localPosition.IsEditable());
+
+    ASSERT_TRUE(localPosition.SetValue(meta::Variant(NLS::Maths::Vector3 {1.0f, 2.0f, 3.0f})));
+    EXPECT_TRUE(serialized.HasModifiedProperties());
+    ASSERT_TRUE(serialized.ApplyModifiedProperties()) << serialized.GetLastError();
+
+    const auto applied = transform->GetLocalPosition();
+    EXPECT_FLOAT_EQ(applied.x, 1.0f);
+    EXPECT_FLOAT_EQ(applied.y, 2.0f);
+    EXPECT_FLOAT_EQ(applied.z, 3.0f);
+
+    ASSERT_TRUE(undoScope.Get().RequestUndo().Succeeded());
+    const auto restored = transform->GetLocalPosition();
+    EXPECT_FLOAT_EQ(restored.x, 0.0f);
+    EXPECT_FLOAT_EQ(restored.y, 0.0f);
+    EXPECT_FLOAT_EQ(restored.z, 0.0f);
+    ASSERT_TRUE(undoScope.Get().RequestRedo().Succeeded());
+    const auto reapplied = transform->GetLocalPosition();
+    EXPECT_FLOAT_EQ(reapplied.x, 1.0f);
+    EXPECT_FLOAT_EQ(reapplied.y, 2.0f);
+    EXPECT_FLOAT_EQ(reapplied.z, 3.0f);
+}
+
+TEST(InspectorCoreTests, ComponentEditorKeepsStagedPreviewAcrossPerFrameRebind)
+{
+    ScopedInspectorUndoService undoScope;
+    Engine::GameObject object("Staged preview");
+    auto* transform = object.GetTransform();
+    ASSERT_NE(transform, nullptr);
+
+    PropertyNode componentNode;
+    componentNode.path = PropertyPath("GameObject.Components.TransformComponent[0]");
+    componentNode.target = InspectorTargetHandle::FromObject(*transform, InspectorTargetKind::NativeObject);
+    SetPropertyNodeTargets(componentNode, {componentNode.target});
+    componentNode.isComponent = true;
+    componentNode.isTransform = true;
+
+    Inspector::DefaultComponentEditor editor;
+    editor.UpdateSerializedObject(componentNode);
+    auto& serialized = editor.GetSerializedObject();
+    ASSERT_TRUE(serialized.IsValid()) << serialized.GetLastError();
+
+    const auto localPosition = serialized.FindProperty("localPosition");
+    ASSERT_TRUE(localPosition);
+    // A drag stages its value on the frame that reports the change.
+    ASSERT_TRUE(localPosition.SetValue(meta::Variant(NLS::Maths::Vector3 {4.0f, 5.0f, 6.0f})));
+
+    // The Inspector rebinds component editors every frame before drawing. That
+    // rebind must not discard the staged drag preview.
+    editor.UpdateSerializedObject(componentNode);
+    EXPECT_TRUE(serialized.HasModifiedProperties());
+    const auto staged = serialized.FindProperty("localPosition");
+    ASSERT_TRUE(staged);
+    const auto stagedValue = staged.GetValue();
+    ASSERT_TRUE(stagedValue.IsValid());
+    EXPECT_FLOAT_EQ(stagedValue.GetValue<NLS::Maths::Vector3>().x, 4.0f);
+
+    // Releasing the drag commits the staged preview through the undo boundary.
+    ASSERT_TRUE(serialized.ApplyModifiedProperties()) << serialized.GetLastError();
+    const auto applied = transform->GetLocalPosition();
+    EXPECT_FLOAT_EQ(applied.x, 4.0f);
+    EXPECT_FLOAT_EQ(applied.y, 5.0f);
+    EXPECT_FLOAT_EQ(applied.z, 6.0f);
+}
+
 TEST(InspectorCoreTests, ImporterReimportCompletionRejectsStaleRevisionWithoutChangingDraft)
 {
     const auto target = InspectorTargetHandle::FromAsset(

@@ -1504,7 +1504,7 @@ bool Editor::Panels::SceneView::ShouldUseStaticFrameCache() const
 {
     // Scene render revisions are part of the cache key and are raised by
     // render-affecting component changes, including runtime script updates.
-    return true;
+    return Settings::EditorSettings::GetRenderingSettingsObject().enableSceneViewStaticFrameCache;
 }
 
 uint64_t Editor::Panels::SceneView::BuildStaticFrameCacheKey(

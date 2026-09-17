@@ -37,6 +37,30 @@ Use `NLS_GPU_PROFILE_SCOPE(nativeCommandBuffer)` or `NLS_GPU_PROFILE_NAMED_SCOPE
 
 RHI code should prefer the backend-neutral `RHICommandBuffer::BeginGpuProfileScope()` and `EndGpuProfileScope()` hooks. The DX12 backend bridges those hooks to TimelineProfiler's D3D12 timestamp profiler when `NLS_ENABLE_TIMELINE_PROFILER=ON` and the native DX12 device/queues have initialized the GPU profiler. Other backends keep CPU profiling available and report GPU scope support as unavailable/unsupported.
 
+When Tracy is enabled on Windows, the DX12 command-buffer bridge also carries the native command queue. Nullus creates one Tracy D3D12 context for each profileable direct/compute queue and for copy queues only when the device reports copy-queue timestamp support. Queue calibration failures leave that queue unprofiled without disabling CPU scopes or other queues.
+
+## Tracy Capture
+
+`NLS_ENABLE_TRACY=ON` builds the Tracy client destination. Prefer `NLS_BUILD_TRACY_PROFILER=OFF` for normal Editor builds and obtain the matching Tracy tools separately. The vendored release tools are `tracy-profiler`, `tracy-capture`, and `tracy-csvexport`; if the exact vendored patch has no official binary release, build those tools from the vendored `ThirdParty/Tracy` source so the client/server protocol versions match.
+
+The Editor sends one Tracy CPU frame mark per editor frame. DX12 command-list submission batches also advance the corresponding Tracy GPU context, so one capture contains CPU scopes and GPU pass timings on the same timeline. The shared `NLS_PROFILE_*` facade remains the instrumentation contract; do not add Tracy-specific calls at engine call sites.
+
+Example headless capture:
+
+```powershell
+tracy-capture -o Build\Tracy\capture.tracy -f -s 30
+App\Win64_RelWithDebInfo_Runtime_Shared\Editor.exe --backend dx12 path\to\Project.nullus
+tracy-csvexport --truncated_mean=95 Build\Tracy\capture.tracy > Build\Tracy\cpu-total.csv
+tracy-csvexport -e --truncated_mean=95 Build\Tracy\capture.tracy > Build\Tracy\cpu-self.csv
+tracy-csvexport -g Build\Tracy\capture.tracy > Build\Tracy\gpu-events.csv
+```
+
+Start the capture before launching the Editor, trigger the workload (including Play mode) while the capture window is open, and compare only captures with matching build, project, scene, backend, and frame count. Use the CSV exports to rank CPU total/self and GPU pass time first; use the Tracy GUI when call-stack or frame correlation is needed. Use RenderDoc for draw/shader/resource detail after Tracy identifies a pass or queue, and use TimelineProfiler for the in-editor DX12 GPU timeline when Tracy is not connected.
+
+For steady-state Editor or Play-mode work, attach Tracy after Editor startup and asset restore have completed; otherwise the capture can be dominated by startup work and can end before steady rendering begins. Keep the capture-first order only when startup itself is the target.
+
+Before measuring render performance, confirm `Editor/Rendering > Rendering > Scene View Static Cache` is disabled. It defaults to off so an unchanged Scene View cannot skip renderer submission and inflate the captured frame rate.
+
 ## Destination Switches
 
 Profiling is controlled through CMake options:
@@ -66,4 +90,5 @@ TimelineProfiler is source-integrated into the UI module instead of being a stan
 - `TimelineProfiler: Disabled`: the build option is off. Reconfigure with `NLS_ENABLE_TIMELINE_PROFILER=ON`.
 - `TimelineProfiler: Unavailable`: the destination was enabled but cannot be initialized or used in the current environment.
 - `Tracy destination is not enabled or ThirdParty/Tracy is unavailable`: build with `NLS_ENABLE_TRACY=ON` and make sure `ThirdParty/Tracy` is present.
-- GPU timeline data unavailable: CPU scopes remain valid. GPU timeline support is currently DX12 TimelineProfiler-specific and requires the native DX12 device plus graphics queue to be initialized.
+- Tracy connects but GPU scopes are missing: verify the build is Windows/DX12, the queue has timestamp calibration support, and the Editor was launched with `--backend dx12`. CPU scopes remain valid when GPU support is unavailable.
+- TimelineProfiler GPU data unavailable: CPU scopes remain valid. TimelineProfiler GPU support requires the native DX12 device plus graphics queue to be initialized; Tracy GPU capture uses its own DX12 queue contexts when `NLS_ENABLE_TRACY=ON`.

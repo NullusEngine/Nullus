@@ -73,6 +73,25 @@ TEST(EditorSettingsPersistenceTests, SavesAndLoadsLightGridRenderingSetting)
     rendering.enableLightGrid = true;
 }
 
+TEST(EditorSettingsPersistenceTests, SceneViewStaticCacheDefaultsOffAndRoundTrips)
+{
+    auto path = MakeTempSettingsPath("scene-view-static-cache.json");
+    auto registry = MakeRegistry();
+
+    auto& rendering = NLS::Editor::Settings::EditorSettings::GetRenderingSettingsObject();
+    rendering = {};
+    EXPECT_FALSE(rendering.enableSceneViewStaticFrameCache);
+
+    rendering.enableSceneViewStaticFrameCache = true;
+    ASSERT_TRUE(NLS::Editor::Settings::EditorSettingsPersistence::Save(path, registry));
+
+    rendering.enableSceneViewStaticFrameCache = false;
+    ASSERT_TRUE(NLS::Editor::Settings::EditorSettingsPersistence::Load(path, registry));
+
+    EXPECT_TRUE(rendering.enableSceneViewStaticFrameCache);
+    rendering = {};
+}
+
 TEST(EditorSettingsPersistenceTests, SavesAndLoadsLargeSceneSettings)
 {
     auto path = MakeTempSettingsPath("large-scene.json");

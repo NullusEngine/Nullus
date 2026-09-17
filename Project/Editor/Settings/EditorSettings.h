@@ -48,6 +48,10 @@ namespace NLS::Editor::Settings
     STRUCT(EditorRenderingSettingsObject)
     {
         GENERATED_BODY()
+        PROPERTY(
+            DisplayName("Scene View Static Cache"),
+            Tooltip("Skips Scene View rendering while camera, scene, and editor state are unchanged. Keep disabled when measuring real render performance."))
+        bool enableSceneViewStaticFrameCache = false;
         PROPERTY()
         bool enableLightGrid = true;
     };

@@ -770,7 +770,11 @@ namespace NLS::Render::Backend
 		BeginDx12DebugEvent(m_commandList.Get(), debugLabel);
 		m_debugEventScopeStack.push_back({ DebugEventScopeKind::GpuProfile, debugLabel });
 
-		auto event = NLS::Base::Profiling::Profiler::BeginGpuScope(m_commandList.Get(), name, sourceFunction);
+		auto event = NLS::Base::Profiling::Profiler::BeginGpuScope(
+			m_commandList.Get(),
+			m_queue,
+			name,
+			sourceFunction);
 		if (event.active)
 			m_gpuProfileScopeStack.push_back(std::move(event));
 #else

@@ -322,8 +322,13 @@ namespace NLS::Engine::Rendering
 			uint64_t frameSerial = 0u) const;
 		[[nodiscard]] bool IsPrimitiveHandleLive(ScenePrimitiveHandle handle) const;
 		void ClearRepresentationRecords();
-		SceneLODGroupHandle RegisterLODGroup(const LODGroupRecord& group);
-		SceneHLODClusterHandle RegisterHLODCluster(const HLODClusterRecord& cluster);
+		// Batch callers can defer RebuildLookup and perform one rebuild after the
+		// whole batch; the lookup rebuild cost scales with the number of records.
+		SceneLODGroupHandle RegisterLODGroup(
+			const LODGroupRecord& group,
+			bool rebuildLookup = true,
+			bool* outMembershipChanged = nullptr);
+		SceneHLODClusterHandle RegisterHLODCluster(const HLODClusterRecord& cluster, bool rebuildLookup = true);
 		void ClearRepresentationRecordsForTesting();
 		SceneLODGroupHandle RegisterLODGroupForTesting(const LODGroupRecord& group);
 		SceneHLODClusterHandle RegisterHLODClusterForTesting(const HLODClusterRecord& cluster);
@@ -482,10 +487,16 @@ namespace NLS::Engine::Rendering
 		[[nodiscard]] PrimitiveInputStamp BuildPrimitiveInputStamp(
 			Components::MeshRenderer& meshRenderer,
 			const RenderPrimitive& primitive,
-			const RenderSceneSyncOptions& options) const;
+			const RenderSceneSyncOptions& options,
+			RenderSceneDeclaredTextureLookupCache& declaredTextureCache) const;
 		[[nodiscard]] bool CanReuseSynchronizedPrimitive(
 			const RenderPrimitive& primitive,
-			const PrimitiveInputStamp& stamp) const;
+			const PrimitiveInputStamp& stamp,
+			RenderSceneDeclaredTextureLookupCache& declaredTextureCache) const;
+		[[nodiscard]] bool IntrinsicLODGroupRecordMatches(
+			const LODGroupRecord& record,
+			const RenderPrimitive& primitive,
+			const NLS::Render::Resources::Mesh& mesh) const;
 		void MarkPrimitiveDirtyForSnapshot(const RenderPrimitive& primitive);
 		void RemoveMissingPrimitives(
 			const std::unordered_map<Components::MeshRenderer*, NLS::InstanceID>& liveMeshRenderers,
@@ -560,6 +571,7 @@ namespace NLS::Engine::Rendering
 		void FinalizeOpaqueQueue(RenderSceneVisibleQueues::SceneDrawables& opaques) const;
 		void AssignVisibleObjectIndices(RenderSceneVisibleQueues& output) const;
 		void RefreshSyncTelemetry(const RenderSceneSyncStats& stats);
+		void ClearImportedHierarchyHLODRecords(bool rebuildLookup = true);
 		void RebuildImportedHierarchyHLODRecords(const SceneSystem::Scene& scene);
 		[[nodiscard]] bool HasTrackedMaterialMutation();
 		void RefreshTrackedMaterialStates();

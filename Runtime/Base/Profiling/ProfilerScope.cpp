@@ -39,6 +39,15 @@ ProfilerGpuScope::ProfilerGpuScope(
 {
 }
 
+ProfilerGpuScope::ProfilerGpuScope(
+    void* nativeCommandBuffer,
+    void* nativeCommandQueue,
+    const std::string_view name,
+    const std::string_view sourceFunction)
+    : m_event(Profiler::BeginGpuScope(nativeCommandBuffer, nativeCommandQueue, name, sourceFunction))
+{
+}
+
 ProfilerGpuScope::~ProfilerGpuScope()
 {
     Profiler::EndGpuScope(m_event);

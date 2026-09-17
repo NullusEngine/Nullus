@@ -26,6 +26,11 @@ class NLS_BASE_API ProfilerGpuScope
 {
 public:
     ProfilerGpuScope(void* nativeCommandBuffer, std::string_view name, std::string_view sourceFunction);
+    ProfilerGpuScope(
+        void* nativeCommandBuffer,
+        void* nativeCommandQueue,
+        std::string_view name,
+        std::string_view sourceFunction);
     ~ProfilerGpuScope();
 
     ProfilerGpuScope(const ProfilerGpuScope&) = delete;

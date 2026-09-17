@@ -145,6 +145,7 @@ private:
     std::chrono::steady_clock::time_point m_lastThumbnailTelemetrySummaryWriteTime {};
     bool m_thumbnailTelemetrySummaryWriteAttemptLogged = false;
     bool m_logNextUpdateStages = false;
+    bool m_tracyWasConnected = false;
     float m_fixedAccumulator = 0.0f;
     double m_scriptTime = 0.0;
     double m_scriptUnscaledTime = 0.0;

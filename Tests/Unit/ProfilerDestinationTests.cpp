@@ -87,6 +87,7 @@ public:
 
     void BeginGpuScope(const NLS::Base::Profiling::ProfilerGpuScopeEvent& event) override
     {
+        lastGpuCommandQueue = event.nativeCommandQueue;
         events.push_back({ "gpu-begin", event.name, event.threadName });
     }
 
@@ -101,6 +102,12 @@ public:
         lastGpuContextQueueCount = event.nativeCommandQueues.size();
     }
 
+    void ClearGpuContext(void* nativeDevice) override
+    {
+        ++clearGpuContextCalls;
+        lastClearedGpuDevice = nativeDevice;
+    }
+
     NLS::Base::Profiling::ProfilerDestinationState GetState() const override
     {
         return m_state;
@@ -110,6 +117,9 @@ public:
     std::vector<RecordedEvent> events;
     int gpuContextInitializeCalls = 0;
     size_t lastGpuContextQueueCount = 0u;
+    int clearGpuContextCalls = 0;
+    void* lastGpuCommandQueue = nullptr;
+    void* lastClearedGpuDevice = nullptr;
 };
 
 class UnavailableProfilerDestination final : public NLS::Base::Profiling::IProfilerDestination
@@ -602,6 +612,28 @@ TEST_F(ProfilerDestinationTest, GpuScopeRoutesOnlyToGpuCapableDestinations)
     EXPECT_EQ(BaseProfiler::GetSessionStats().droppedEventCount, 1u);
 }
 
+TEST_F(ProfilerDestinationTest, GpuScopeCarriesNativeCommandQueue)
+{
+    using namespace NLS::Base::Profiling;
+
+    int commandBuffer = 0;
+    int commandQueue = 0;
+    RecordingProfilerDestination destination;
+    destination.m_state.capabilities = ProfilerCapability_GPUScopes;
+    ScopedProfilerDestinationRegistration destinationRegistration(destination);
+    BaseProfiler::SetEnabled(true);
+
+    const auto scope = BaseProfiler::BeginGpuScope(
+        &commandBuffer,
+        &commandQueue,
+        "Queued GPU Pass",
+        __FUNCTION__);
+    BaseProfiler::EndGpuScope(scope);
+
+    ASSERT_EQ(destination.events.size(), 2u);
+    EXPECT_EQ(destination.lastGpuCommandQueue, &commandQueue);
+}
+
 TEST_F(ProfilerDestinationTest, UnregisterSkipsEndForAlreadyBegunGpuScope)
 {
     using namespace NLS::Base::Profiling;
@@ -696,6 +728,35 @@ TEST_F(ProfilerDestinationTest, ReplaysGpuContextWhenDestinationBecomesAvailable
     EXPECT_EQ(timeline.lastGpuContextQueueCount, 1u);
 }
 
+TEST_F(ProfilerDestinationTest, AcceptsGpuContextCapabilityEnablesLateInitialization)
+{
+    using namespace NLS::Base::Profiling;
+
+    RecordingProfilerDestination destination(ProfilerDestinationId::Tracy);
+    destination.m_state.enabled = false;
+    destination.m_state.availability = ProfilerAvailability::Disabled;
+    destination.m_state.capabilities = ProfilerCapability_None;
+    ScopedProfilerDestinationRegistration destinationRegistration(destination);
+    BaseProfiler::SetEnabled(true);
+
+    int fakeDevice = 0;
+    int fakeQueue = 0;
+    ProfilerGpuContextEvent context;
+    context.nativeDevice = &fakeDevice;
+    context.nativeCommandQueues.push_back(&fakeQueue);
+    context.frameLatency = 2u;
+    BaseProfiler::InitializeGpuContext(context);
+    EXPECT_EQ(destination.gpuContextInitializeCalls, 0);
+
+    destination.m_state.enabled = true;
+    destination.m_state.availability = ProfilerAvailability::Available;
+    destination.m_state.capabilities = ProfilerCapability_CPUScopes | ProfilerCapability_AcceptsGpuContext;
+    BaseProfiler::ReplayGpuContextIfAvailable(destination);
+
+    EXPECT_EQ(destination.gpuContextInitializeCalls, 1);
+    EXPECT_EQ(destination.lastGpuContextQueueCount, 1u);
+}
+
 TEST_F(ProfilerDestinationTest, ClearingGpuContextOnlyRemovesMatchingNativeDevice)
 {
     using namespace NLS::Base::Profiling;
@@ -747,9 +808,24 @@ TEST_F(ProfilerDestinationTest, ResetForTestingClearsDestinationsAndCounters)
 
     BaseProfiler::ResetForTesting();
     EXPECT_FALSE(BaseProfiler::IsEnabled());
+    EXPECT_EQ(destination.clearGpuContextCalls, 1);
     EXPECT_EQ(BaseProfiler::GetDestinationCountForTesting(), 0u);
     EXPECT_EQ(BaseProfiler::GetSessionStats().acceptedEventCount, 0u);
     EXPECT_EQ(BaseProfiler::GetSessionStats().droppedEventCount, 0u);
+}
+
+TEST_F(ProfilerDestinationTest, ClearGpuContextForwardsNativeDeviceToDestinations)
+{
+    using namespace NLS::Base::Profiling;
+
+    int fakeDevice = 0;
+    RecordingProfilerDestination destination;
+    ScopedProfilerDestinationRegistration destinationRegistration(destination);
+
+    BaseProfiler::ClearGpuContext(&fakeDevice);
+
+    EXPECT_EQ(destination.clearGpuContextCalls, 1);
+    EXPECT_EQ(destination.lastClearedGpuDevice, &fakeDevice);
 }
 
 TEST_F(ProfilerDestinationTest, DisabledProfilerDoesNotCallDestinations)
@@ -781,7 +857,7 @@ TEST_F(ProfilerDestinationTest, TracyProfilerReportsUnavailableWhenThirdPartyIsN
     {
         EXPECT_EQ(state.availability, ProfilerAvailability::Available);
         EXPECT_TRUE(state.enabled);
-        EXPECT_TRUE(state.lastError.empty());
+        EXPECT_NE(state.capabilities & ProfilerCapability_CPUScopes, 0u);
     }
     else
     {
@@ -794,6 +870,40 @@ TEST_F(ProfilerDestinationTest, TracyProfilerReportsUnavailableWhenThirdPartyIsN
     EXPECT_FALSE(state.enabled);
     EXPECT_NE(state.lastError.find("Tracy"), std::string::npos);
 #endif
+}
+
+TEST_F(ProfilerDestinationTest, TracyGpuLifecycleIsSafeWithoutConnection)
+{
+    using namespace NLS::Base::Profiling;
+
+    int fakeDevice = 0;
+    int fakeQueue = 0;
+    int fakeCommandBuffer = 0;
+
+    TracyProfiler tracy;
+    ProfilerGpuContextEvent context;
+    context.nativeDevice = &fakeDevice;
+    context.nativeCommandQueues.push_back(&fakeQueue);
+    context.frameLatency = 2u;
+    tracy.InitializeGpuContext(context);
+
+    ProfilerGpuScopeEvent scope;
+    scope.nativeCommandBuffer = &fakeCommandBuffer;
+    scope.nativeCommandQueue = &fakeQueue;
+    scope.name = "Disconnected GPU Scope";
+    scope.sourceFunction = __FUNCTION__;
+    tracy.BeginGpuScope(scope);
+    tracy.EndGpuScope(scope);
+
+    ProfilerGpuCommandListSubmitEvent submit;
+    submit.nativeCommandQueue = &fakeQueue;
+    submit.nativeCommandLists.push_back(&fakeCommandBuffer);
+    tracy.SubmitGpuCommandLists(submit);
+    tracy.ClearGpuContext(&fakeDevice);
+    TracyProfiler::MarkFrame();
+
+    const auto state = tracy.GetState();
+    EXPECT_FALSE(state.enabled);
 }
 
 TEST_F(ProfilerDestinationTest, TimelineSinkFormatsAvailabilityStates)

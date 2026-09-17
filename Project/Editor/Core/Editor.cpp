@@ -1273,6 +1273,7 @@ void Editor::Core::Editor::BeginProfilerFrame()
 {
     m_validationCameraMotionPendingForFrame = true;
     RefreshProfilerRecordingState();
+    NLS::Base::Profiling::TracyProfiler::MarkFrame();
     m_panelsManager.GetPanelAs<Panels::ProfilerPanel>("Profiler").BeginProfilerFrame();
     UpdateValidationTimelineTraceExport();
 }
@@ -1562,6 +1563,9 @@ void Editor::Core::Editor::RefreshProfilerRecordingState()
 
     const bool tracyConnected = NLS::Base::Profiling::TracyProfiler::IsConnected();
     NLS::Base::Profiling::Profiler::SetEnabled(tracyConnected || recording);
+    if (tracyConnected && !m_tracyWasConnected)
+        NLS::Base::Profiling::Profiler::ReplayGpuContextIfAvailable(g_tracyProfiler);
+    m_tracyWasConnected = tracyConnected;
 }
 
 bool Editor::Core::Editor::IsProfilerRecordingEnabled()

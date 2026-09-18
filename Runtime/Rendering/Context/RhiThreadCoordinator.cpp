@@ -3133,6 +3133,9 @@ namespace NLS::Render::Context
 
                 void Execute(uint32_t index)
                 {
+                    // Runs on a job worker, so without this scope parallel RHI command recording is
+                    // invisible in traces and cannot be distinguished from the serial fallback.
+                    NLS_PROFILE_NAMED_SCOPE("RhiThreadCoordinator::RecordParallelCommandWorkUnit");
                     const auto workUnitIndex = (*parallelEligibleIndices)[static_cast<size_t>(index)];
                     batch->recordedWorkUnits[workUnitIndex] = RecordSingleParallelCommandWorkUnit(
                         *impl,

@@ -72,6 +72,10 @@ namespace
 		NLS::Render::Core::CompositeRenderer& renderer,
 		const std::chrono::steady_clock::time_point retirementDeadline)
 	{
+		// This call blocks until a frame-context slot retires or the deadline expires, and it is
+		// the dominant unmeasured cost of ThreadedCapture when the GPU is saturated.  Without this
+		// scope the wait is invisible and looks like capture overhead.
+		NLS_PROFILE_NAMED_SCOPE("DeferredSceneRenderer::BeginFrame::ReservePreparedFrameResources");
 		auto* provider = renderer.GetFrameObjectBindingProvider();
 		if (auto* engineProvider = dynamic_cast<NLS::Engine::Rendering::EngineFrameObjectBindingProvider*>(provider);
 			engineProvider != nullptr)

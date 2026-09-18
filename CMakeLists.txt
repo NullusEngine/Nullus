@@ -82,11 +82,17 @@ if(MSVC)
         endif()
     endif()
     add_compile_options(${_nls_msvc_compile_options})
-    # Release remains optimized (/O2), but Mixed debugging still needs
-    # portable native symbols for Editor and the first-party runtime DLLs.
-    # Keep this at the build-graph boundary so every native project uses the
-    # same PDB contract instead of only the top-level executable.
-    add_compile_options("$<$<CONFIG:Release>:/Zi>")
+    # Debug and Release both need portable native symbols for Editor and the
+    # first-party runtime DLLs. Keep both configurations explicit instead of
+    # relying on generator defaults, so stale or blank per-config cache flags
+    # cannot silently drop the debugger metadata.
+    add_compile_options(
+        "$<$<CONFIG:Debug>:/Zi>"
+        "$<$<CONFIG:Release>:/Zi>")
+    set(CMAKE_EXE_LINKER_FLAGS_DEBUG
+        "${CMAKE_EXE_LINKER_FLAGS_DEBUG} /DEBUG")
+    set(CMAKE_SHARED_LINKER_FLAGS_DEBUG
+        "${CMAKE_SHARED_LINKER_FLAGS_DEBUG} /DEBUG")
     set(CMAKE_EXE_LINKER_FLAGS_RELEASE
         "${CMAKE_EXE_LINKER_FLAGS_RELEASE} /DEBUG")
     set(CMAKE_SHARED_LINKER_FLAGS_RELEASE

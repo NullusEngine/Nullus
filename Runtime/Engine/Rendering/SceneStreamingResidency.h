@@ -91,6 +91,10 @@ namespace NLS::Engine::Rendering
 		std::optional<uint64_t> fallbackDependencyId;
 
 		[[nodiscard]] bool IsValid() const { return dependencyId != 0u; }
+
+		// Lets callers re-register the same dependency every frame without
+		// disturbing residency bookkeeping or invalidating cached plans.
+		bool operator==(const StreamingResourceDependency&) const = default;
 	};
 
 	struct NLS_ENGINE_API ResidencyTicket
@@ -152,11 +156,17 @@ namespace NLS::Engine::Rendering
 	public:
 		void RegisterDependency(const StreamingResourceDependency& dependency);
 		void RegisterPrimitiveDependency(ScenePrimitiveHandle primitive, uint64_t dependencyId);
+		// Returns the stored dependency so callers can decide whether an
+		// already-registered id already carries the payload they need. Returns
+		// nullptr when the id is unknown.
+		[[nodiscard]] const StreamingResourceDependency* TryGetDependency(uint64_t dependencyId) const;
 
-		[[nodiscard]] StreamingResidencyPlan Plan(
+		// Returns member-backed storage so the cached dependency closure is not
+		// re-copied (artifact ids included) on every frame.
+		[[nodiscard]] const StreamingResidencyPlan& Plan(
 			const StreamingResidencyPlanInput& input,
 			const LargeSceneSettings& settings);
-		[[nodiscard]] StreamingCommitResult Commit(
+		[[nodiscard]] const StreamingCommitResult& Commit(
 			const StreamingResidencyPlan& plan,
 			const LargeSceneSettings& settings,
 			const StreamingResidencyFramePins& framePins);
@@ -184,6 +194,19 @@ namespace NLS::Engine::Rendering
 		};
 
 		[[nodiscard]] const StreamingResourceDependency* FindDependency(uint64_t dependencyId) const;
+		// Cached plan interest. The dependency closure only depends on which
+		// primitives are being rendered, so it is rebuilt only when that set
+		// changes; per-frame ticket aging still runs on every Plan call.
+		StreamingResidencyPlan m_lastPlan;
+		bool m_hasCachedPlanInterest = false;
+		std::vector<ScenePrimitiveHandle> m_cachedVisiblePrimitiveHandles;
+		std::vector<ScenePrimitiveHandle> m_cachedRepresentationStreamingInterest;
+		std::unordered_map<uint64_t, uint32_t> m_cachedRequestCounts;
+		std::unordered_set<uint64_t> m_planVisitedDependencyIds;
+		std::unordered_set<PrimitiveDependencyBinding, PrimitiveDependencyBindingHash>
+			m_planPrimitiveDependencyBindings;
+		StreamingCommitResult m_lastCommitResult;
+		std::unordered_set<uint64_t> m_commitResultDependencyIds;
 		void AppendDependencyClosure(
 			uint64_t dependencyId,
 			StreamingResidencyPlan& plan,

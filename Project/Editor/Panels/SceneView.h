@@ -145,6 +145,7 @@ namespace NLS::Editor::Panels
         void DrawPreRenderViewportOverlay() override;
         void OnAfterDrawWidgets() override;
         void DrawViewportOverlay() override;
+        void ApplyViewSettings() override;
 
 		private:
             class ViewportDragDropTarget;

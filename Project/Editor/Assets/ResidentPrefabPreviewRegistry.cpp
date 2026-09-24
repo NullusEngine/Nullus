@@ -1426,7 +1426,8 @@ ResidentPrefabPreviewRegistry::RegisterPrefabSnapshotForScene(
     const std::string& subAssetKey,
     const std::string& artifactPath,
     const std::string& runtimeCacheIdentity,
-    const NLS::Engine::Assets::PrefabArtifact& prefab)
+    const NLS::Engine::Assets::PrefabArtifact& prefab,
+    const std::vector<ImportedPrefabRendererDependencyTemplate>* dependencyTemplates)
 {
     if (runtimeCacheIdentity.empty() || !assetId.IsValid())
         return std::nullopt;
@@ -1457,7 +1458,9 @@ ResidentPrefabPreviewRegistry::RegisterPrefabSnapshotForScene(
     }
 
     auto snapshot = std::make_shared<const PreviewRenderableSnapshot>(
-        BuildPreviewRenderableSnapshot(prefab));
+        dependencyTemplates != nullptr
+            ? BuildPreviewRenderableSnapshot(prefab, *dependencyTemplates)
+            : BuildPreviewRenderableSnapshot(prefab));
     if (snapshot->drawItems.empty())
         return std::nullopt;
 
@@ -1594,21 +1597,71 @@ ResidentPrefabPreviewRegistry::EnsureLivePrefabSnapshotForScene(
     // Always probe again, including when another scene instance registered the
     // snapshot first. Different instances can reach resource readiness at
     // different times, and the registry only promotes richer valid packages.
-    (void)AttachRegisteredResourcesForLivePrefab(
+    bool completeLiveCandidate = false;
+    const bool attachedLive = AttachRegisteredResourcesForLivePrefab(
         assetId,
         sourceByInstanceObject,
         meshManager,
         materialManager,
         textureManager,
-        resourceLifetimeRegistry);
-    (void)AttachRegisteredResourcesForPrefab(
-        assetId,
-        prefab,
-        meshManager,
-        materialManager,
-        textureManager,
-        resourceLifetimeRegistry);
+        resourceLifetimeRegistry,
+        &completeLiveCandidate);
+    if (!attachedLive || !completeLiveCandidate || !CanSkipPrefabResourceFallback(
+            assetId, lookupIdentity, meshManager, materialManager, textureManager))
+    {
+        (void)AttachRegisteredResourcesForPrefab(
+            assetId,
+            prefab,
+            meshManager,
+            materialManager,
+            textureManager,
+            resourceLifetimeRegistry);
+    }
     return sceneLease;
+}
+
+bool ResidentPrefabPreviewRegistry::CanSkipPrefabResourceFallback(
+    const NLS::Core::Assets::AssetId& assetId,
+    const std::string& lookupIdentity,
+    const NLS::Core::ResourceManagement::MeshManager& meshManager,
+    const NLS::Core::ResourceManagement::MaterialManager& materialManager,
+    const NLS::Core::ResourceManagement::TextureManager* textureManager) const
+{
+    const auto identityPrefix = "prefab:" + assetId.ToString() + ":";
+    const auto lookupPrefix = lookupIdentity + "\x1f";
+    std::lock_guard lock(m_mutex);
+    std::unordered_set<std::string> targetKeys;
+    for (const auto& [key, entry] : m_entries)
+    {
+        if (entry.runtimeCacheIdentity.rfind(identityPrefix, 0u) == 0u)
+            targetKeys.insert(key);
+    }
+    for (const auto& [alias, key] : m_aliases)
+    {
+        if (alias.rfind(identityPrefix, 0u) == 0u && m_entries.contains(key))
+            targetKeys.insert(key);
+    }
+    if (targetKeys.size() != 1u)
+        return false;
+
+    const auto& key = *targetKeys.begin();
+    const auto& entry = m_entries.at(key);
+    const bool matchesLookup = entry.runtimeCacheIdentity == lookupIdentity ||
+        std::any_of(m_aliases.begin(), m_aliases.end(), [&](const auto& alias)
+        {
+            return alias.second == key && alias.first.rfind(lookupPrefix, 0u) == 0u;
+        });
+    const auto& source = entry.sourceSnapshot != nullptr
+        ? entry.sourceSnapshot
+        : entry.snapshot;
+    return matchesLookup && PreviewSnapshotTopologyComplete(source) &&
+        PreviewSnapshotTopologyComplete(entry.snapshot) &&
+        entry.snapshot->drawItems.size() == source->drawItems.size() &&
+        entry.resources != nullptr &&
+        entry.resources->sourceExpectedDrawItemCount == source->expectedDrawItemCount &&
+        entry.resources->drawItems.size() == source->drawItems.size() &&
+        entry.resources->IsCompleteForSource() &&
+        entry.resources->IsValidFor(meshManager, materialManager, textureManager);
 }
 
 std::optional<ResidentPrefabPreviewRegistry::Lease> ResidentPrefabPreviewRegistry::Acquire(
@@ -1861,8 +1914,11 @@ bool ResidentPrefabPreviewRegistry::AttachRegisteredResourcesForLivePrefab(
     NLS::Core::ResourceManagement::MeshManager& meshManager,
     NLS::Core::ResourceManagement::MaterialManager& materialManager,
     NLS::Core::ResourceManagement::TextureManager* textureManager,
-    NLS::Core::ResourceManagement::ResourceLifetimeRegistry& resourceLifetimeRegistry)
+    NLS::Core::ResourceManagement::ResourceLifetimeRegistry& resourceLifetimeRegistry,
+    bool* completeLiveCandidate)
 {
+    if (completeLiveCandidate != nullptr)
+        *completeLiveCandidate = false;
     if (!assetId.IsValid() || sourceByInstanceObject.empty())
     {
         NLS_LOG_INFO(
@@ -1964,6 +2020,8 @@ bool ResidentPrefabPreviewRegistry::AttachRegisteredResourcesForLivePrefab(
             ? found->second.snapshot->drawItems.size()
             : 0u;
         const bool candidateComplete = resources->IsCompleteForSource();
+        if (completeLiveCandidate != nullptr && candidateComplete)
+            *completeLiveCandidate = true;
         const bool existingComplete = existingResourcesValid &&
             found->second.resources->IsCompleteForSource();
         if (existingResourcesValid &&

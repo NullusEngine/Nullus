@@ -4,6 +4,7 @@
 #include <mutex>
 #include <string>
 #include <string_view>
+#include <vector>
 
 #include "RenderDef.h"
 #include "Rendering/RHI/Core/RHIResource.h"
@@ -30,11 +31,28 @@ namespace NLS::Render::RHI
 namespace NLS::Render::Backend
 {
 #if defined(_WIN32)
-	struct DX12InitialUploadCommandObjects final
+		NLS_RENDER_API bool BeginDX12InitialBufferUploadBatch(
+			ID3D12Device* device, ID3D12CommandQueue* queue, const std::vector<uint64_t>& bufferSizes,
+			struct DX12InitialUploadCommandObjects* commandObjects);
+	NLS_RENDER_API bool EndDX12InitialBufferUploadBatch();
+	NLS_RENDER_API bool BeginDX12InitialTextureUploadBatch(ID3D12Device* device, ID3D12CommandQueue* queue);
+	NLS_RENDER_API bool EndDX12InitialTextureUploadBatch();
+	// Submitted initial-upload batches stay in flight so the caller can keep
+	// decoding and recording the next batch instead of waiting on a fence after
+	// every submission. WaitForDX12InitialUploads drains them and reports how
+	// many batches failed.
+	NLS_RENDER_API bool HasPendingDX12InitialUploads();
+	NLS_RENDER_API size_t GetPendingDX12InitialUploadStagingBytes();
+	NLS_RENDER_API size_t WaitForDX12InitialUploads();
+		struct DX12InitialUploadCommandObjects final
 	{
 		std::mutex mutex;
-		Microsoft::WRL::ComPtr<ID3D12CommandAllocator> allocator;
-		Microsoft::WRL::ComPtr<ID3D12GraphicsCommandList> commandList;
+			Microsoft::WRL::ComPtr<ID3D12CommandAllocator> allocator;
+			Microsoft::WRL::ComPtr<ID3D12GraphicsCommandList> commandList;
+			std::mutex bufferHeapMutex;
+			Microsoft::WRL::ComPtr<ID3D12Heap> currentBufferHeap;
+			uint64_t currentBufferHeapOffset = 0u;
+			uint64_t currentBufferHeapSize = 0u;
 	};
 #else
 	struct DX12InitialUploadCommandObjects;
@@ -67,7 +85,8 @@ namespace NLS::Render::Backend
 		NLS::Render::RHI::ResourceState m_state = NLS::Render::RHI::ResourceState::Unknown;
 		bool m_valid = false;
 #if defined(_WIN32)
-		Microsoft::WRL::ComPtr<ID3D12Resource> m_resource;
+			Microsoft::WRL::ComPtr<ID3D12Resource> m_resource;
+			Microsoft::WRL::ComPtr<ID3D12Heap> m_placementHeap;
 		void* m_persistentlyMappedUploadData = nullptr;
 #endif
 	};

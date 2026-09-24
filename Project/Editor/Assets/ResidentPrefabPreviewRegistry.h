@@ -278,7 +278,8 @@ public:
         const std::string& subAssetKey,
         const std::string& artifactPath,
         const std::string& runtimeCacheIdentity,
-        const NLS::Engine::Assets::PrefabArtifact& prefab);
+        const NLS::Engine::Assets::PrefabArtifact& prefab,
+        const std::vector<ImportedPrefabRendererDependencyTemplate>* dependencyTemplates = nullptr);
 
     // Ensures a scene-owned snapshot exists before attaching resources from a
     // live instance. The loaded PrefabArtifact supplies canonical topology;
@@ -331,7 +332,8 @@ public:
         NLS::Core::ResourceManagement::MeshManager& meshManager,
         NLS::Core::ResourceManagement::MaterialManager& materialManager,
         NLS::Core::ResourceManagement::TextureManager* textureManager,
-        NLS::Core::ResourceManagement::ResourceLifetimeRegistry& resourceLifetimeRegistry);
+        NLS::Core::ResourceManagement::ResourceLifetimeRegistry& resourceLifetimeRegistry,
+        bool* completeLiveCandidate = nullptr);
     [[nodiscard]] bool HasSnapshotForRuntimeCacheIdentity(
         const std::string& runtimeCacheIdentity) const;
 
@@ -405,6 +407,12 @@ private:
         const std::filesystem::path& projectRoot,
         const NLS::Core::Assets::AssetId& assetId);
     std::string ResolveKeyLocked(const std::string& identity, const std::string& freshnessFingerprint) const;
+    [[nodiscard]] bool CanSkipPrefabResourceFallback(
+        const NLS::Core::Assets::AssetId& assetId,
+        const std::string& lookupIdentity,
+        const NLS::Core::ResourceManagement::MeshManager& meshManager,
+        const NLS::Core::ResourceManagement::MaterialManager& materialManager,
+        const NLS::Core::ResourceManagement::TextureManager* textureManager) const;
     void RemoveAliasesForKeyLocked(const std::string& key);
     void ReleaseLease(const std::string& key, bool sceneLease);
     std::shared_ptr<const std::vector<uint8_t>> TakePreparedMeshPayload(

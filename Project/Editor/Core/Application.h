@@ -10,6 +10,7 @@
 #include "Rendering/Settings/EGraphicsBackend.h"
 #include "Rendering/Settings/DriverSettings.h"
 #include "Core/EditorCameraPerformanceBenchmark.h"
+#include "Core/EditorLaunchArgs.h"
 
 namespace NLS
 {
@@ -28,10 +29,12 @@ namespace NLS
 			* @param p_backendOverride optional backend override from command line
 			* @param p_renderDocOverride optional one-shot RenderDoc override from command line
 			*/
-			Application(const std::string& p_projectPath, const std::string& p_projectName,
-			            std::optional<Render::Settings::EGraphicsBackend> p_backendOverride = std::nullopt,
-			            std::optional<Render::Settings::RenderDocSettings> p_renderDocOverride = std::nullopt,
-			            std::optional<Render::Settings::EngineDiagnosticsSettings> p_diagnosticsOverride = std::nullopt);
+            Application(const std::string& p_projectPath, const std::string& p_projectName,
+                std::optional<Render::Settings::EGraphicsBackend> p_backendOverride = std::nullopt,
+                std::optional<Render::Settings::RenderDocSettings> p_renderDocOverride = std::nullopt,
+                std::optional<Render::Settings::EngineDiagnosticsSettings> p_diagnosticsOverride = std::nullopt,
+                Launch::StartupResourcePipeline p_startupResourcePipeline = Launch::DefaultStartupResourcePipeline(),
+                bool p_dx12DebugLayer = false);
 
 			/**
 			* Destructor

@@ -178,10 +178,10 @@ namespace NLS::Render::Resources
 		return GetRuntimeData()->shaderLabPassState;
 	}
 
-	std::string Shader::GetShaderLabLightMode() const
-	{
-		return GetRuntimeData()->shaderLabLightMode;
-	}
+		const std::string& Shader::GetShaderLabLightMode() const
+		{
+			return GetRuntimeData()->shaderLabLightMode;
+		}
 
 	std::string Shader::GetImportedArtifactSourcePath() const
 	{

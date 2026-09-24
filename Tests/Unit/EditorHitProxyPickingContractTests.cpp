@@ -129,3 +129,21 @@ TEST(EditorHitProxyPickingContractTests, SelectionOutlinePathStaysSeparateFromPi
     EXPECT_EQ(header.find("PickingReadbackLifecycle"), std::string::npos);
     EXPECT_EQ(source.find("PickingReadbackLifecycle"), std::string::npos);
 }
+
+TEST(EditorHitProxyPickingContractTests, LargeSelectionOutlineMaskRejectsHiddenGeometry)
+{
+    const std::string source = ReadRepositoryTextFile(
+        "Project/Editor/Rendering/SelectionOutlineMaskRenderer.cpp");
+
+    const auto branchStart = source.find("Large selections skip the extra occluded pass");
+    ASSERT_NE(branchStart, std::string::npos)
+        << "The large-selection mask branch must stay explicit so its depth policy is reviewable.";
+
+    const auto captureCall = source.find("CaptureMaskDrawCommandsForGroups", branchStart);
+    ASSERT_NE(captureCall, std::string::npos);
+    const auto branch = source.substr(captureCall, 400u);
+    EXPECT_NE(branch.find("CreateSelectionMaskVisiblePipelineState(pso)"), std::string::npos)
+        << "Large selections must still depth-test against the scene so hidden geometry cannot offset the outline.";
+    EXPECT_EQ(branch.find("CreateSelectionMaskOccludedPipelineState(pso)"), std::string::npos)
+        << "Large selections must not use the depth-always occluded pipeline for the visible mask.";
+}

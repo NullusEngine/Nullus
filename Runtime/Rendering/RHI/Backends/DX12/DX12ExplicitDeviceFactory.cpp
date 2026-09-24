@@ -201,8 +201,33 @@ namespace NLS::Render::Backend
 			}
 
 			std::shared_ptr<NLS::Render::RHI::RHIBuffer> CreateBuffer(
-				const NLS::Render::RHI::RHIBufferDesc& desc,
-				const NLS::Render::RHI::RHIBufferUploadDesc& uploadDesc) override;
+					const NLS::Render::RHI::RHIBufferDesc& desc,
+					const NLS::Render::RHI::RHIBufferUploadDesc& uploadDesc) override;
+			bool BeginInitialBufferUploadBatch(const std::vector<uint64_t>& bufferSizes = {}) override
+			{
+				return BeginDX12InitialBufferUploadBatch(
+					m_device.Get(), m_graphicsQueue.Get(), bufferSizes, m_initialUploadCommandObjects.get());
+			}
+			bool EndInitialBufferUploadBatch() override
+			{
+				return EndDX12InitialBufferUploadBatch();
+			}
+			bool BeginInitialTextureUploadBatch() override
+			{
+				return BeginDX12InitialTextureUploadBatch(m_device.Get(), m_graphicsQueue.Get());
+			}
+			bool EndInitialTextureUploadBatch() override
+			{
+				return EndDX12InitialTextureUploadBatch();
+			}
+			bool HasPendingInitialUploads() override
+			{
+				return HasPendingDX12InitialUploads();
+			}
+			size_t WaitForInitialUploads() override
+			{
+				return WaitForDX12InitialUploads();
+			}
 			std::shared_ptr<NLS::Render::RHI::RHITexture> CreateTexture(
 				const NLS::Render::RHI::RHITextureDesc& desc,
 				const NLS::Render::RHI::RHITextureUploadDesc& uploadDesc) override;

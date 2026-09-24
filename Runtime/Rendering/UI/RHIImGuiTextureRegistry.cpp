@@ -54,8 +54,7 @@ namespace NLS::Render::UI
         const UiTextureSynchronizationScope synchronizationScope)
     {
         if (textureView == nullptr ||
-            synchronizationScope != UiTextureSynchronizationScope::PreviousFrameOrStatic ||
-            !IsPreviousFrameOrStaticTextureReadable(textureView))
+            synchronizationScope != UiTextureSynchronizationScope::PreviousFrameOrStatic)
         {
             return {};
         }
@@ -75,6 +74,11 @@ namespace NLS::Render::UI
 
             m_liveViewToId.erase(liveEntry);
         }
+
+        // A live view was validated when first registered. Re-reading its resource state
+        // here races render-thread RTV/SRV transitions for frame-varying view targets.
+        if (!IsPreviousFrameOrStaticTextureReadable(textureView))
+            return {};
 
         const UiTextureId id { m_nextId++, 1u };
         RHIImGuiTextureRegistryEntry entry;

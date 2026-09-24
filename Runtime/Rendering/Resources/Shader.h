@@ -59,7 +59,7 @@ namespace NLS::Render::Resources
 		bool HasParameterStructs() const;
 		ShaderCompiler::ShaderSourceLanguage GetSourceLanguage() const;
 		std::optional<NLS::Render::ShaderLab::ShaderLabPassState> GetShaderLabPassState() const;
-		std::string GetShaderLabLightMode() const;
+			const std::string& GetShaderLabLightMode() const;
 		std::string GetImportedArtifactSourcePath() const;
 		std::string GetImportedArtifactSubAssetKey() const;
 		std::vector<ShaderCompiledArtifact> GetCompiledArtifacts() const;

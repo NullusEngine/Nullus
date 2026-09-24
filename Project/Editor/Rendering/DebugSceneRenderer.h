@@ -75,10 +75,10 @@ class DebugSceneRenderer : public Engine::Rendering::DeferredSceneRenderer
 	    std::optional<NLS::Render::Context::FrameSnapshot> BuildFrameSnapshot(
 			const NLS::Render::Data::FrameDescriptor& frameDescriptor) const override;
 	    NLS::Render::Context::PreparedRenderSceneBuilder BuildPreparedRenderSceneBuilder(
-	        const NLS::Render::Context::FrameSnapshot& snapshot) const override;
+	        const NLS::Render::Context::FrameSnapshot& snapshot) override;
 	    bool ShouldPublishCullReasonDebugSnapshots() const override;
 	    uint64_t GetCullReasonDebugSnapshotMaxEntries() const override;
-	    std::vector<const Engine::GameObject*> GetEditorInspectionRoots() const override;
+	    std::vector<NLS::InstanceID> GetEditorInspectionRoots() const override;
 	    void OnThreadedFramePublished(uint64_t publishedFrameId) override;
 	    void OnThreadedFramePublishFailed() override;
 

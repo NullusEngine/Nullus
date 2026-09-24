@@ -1513,22 +1513,30 @@ namespace NLS::Render::Resources
 		if (lightMode.empty())
 			return m_shader;
 
-		if (!m_shaderLabSourcePathExplicit && m_shaderLabPassShadersByLightMode.empty())
-		{
-			if (m_shader != nullptr && !m_shader->GetShaderLabLightMode().empty())
-				return m_shader->GetShaderLabLightMode() == lightMode ? m_shader : nullptr;
-			return lightMode == "Forward" ? m_shader : nullptr;
-		}
+			if (!m_shaderLabSourcePathExplicit && m_shaderLabPassShadersByLightMode.empty())
+			{
+				if (m_shader != nullptr)
+				{
+					const auto& shaderLightMode = m_shader->GetShaderLabLightMode();
+					if (!shaderLightMode.empty())
+						return shaderLightMode == lightMode ? m_shader : nullptr;
+				}
+				return lightMode == "Forward" ? m_shader : nullptr;
+			}
 
-		const auto found = m_shaderLabPassShadersByLightMode.find(std::string(lightMode));
-		if (found != m_shaderLabPassShadersByLightMode.end() &&
-			found->second != nullptr &&
-			found->second->GetShaderLabLightMode() == lightMode)
-		{
-			return found->second;
-		}
+			// This lookup runs for every prepared scene draw. Keep it allocation-free:
+			// constructing std::string(lightMode) for find() creates a heap allocation
+			// even on a cache hit in Debug builds.
+			for (const auto& [key, shader] : m_shaderLabPassShadersByLightMode)
+			{
+				if (key == lightMode && shader != nullptr &&
+					shader->GetShaderLabLightMode() == lightMode)
+				{
+					return shader;
+				}
+			}
 
-		for (const auto& [_, shader] : m_shaderLabPassShadersByLightMode)
+			for (const auto& [_, shader] : m_shaderLabPassShadersByLightMode)
 		{
 			if (shader != nullptr && shader->GetShaderLabLightMode() == lightMode)
 				return shader;
@@ -1581,7 +1589,7 @@ namespace NLS::Render::Resources
 			return;
 
 		const auto sourcePath = shader->GetImportedArtifactSourcePath();
-		const auto lightMode = shader->GetShaderLabLightMode();
+			const auto& lightMode = shader->GetShaderLabLightMode();
 		if (sourcePath.empty() || lightMode.empty())
 			return;
 		if (!m_shaderLabSourcePath.empty() && !ShaderLabSourceIdentityMatches(sourcePath, m_shaderLabSourcePath))
@@ -1590,13 +1598,13 @@ namespace NLS::Render::Resources
 		if (m_shaderLabSourcePath.empty())
 			m_shaderLabSourcePath = sourcePath;
 
-		const auto [_, inserted] = m_shaderLabPassShadersByLightMode.try_emplace(lightMode, shader);
-		if (!inserted)
-			return;
+		const auto [registered, inserted] = m_shaderLabPassShadersByLightMode.try_emplace(lightMode, shader);
 		const bool becomesPrimaryShader = m_shader == nullptr || lightMode == "Forward";
-		const bool primaryShaderChanged = becomesPrimaryShader && m_shader != shader;
+		const bool primaryShaderChanged = becomesPrimaryShader && m_shader != registered->second;
+		if (!inserted && !primaryShaderChanged)
+			return;
 		if (becomesPrimaryShader)
-			m_shader = shader;
+			m_shader = registered->second;
 
 		if (primaryShaderChanged)
 		{

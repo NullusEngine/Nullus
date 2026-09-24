@@ -4,6 +4,7 @@
 #include "Core/Utils/String.h"
 #include "Core/Application.h"
 #include "Core/EditorLaunchArgs.h"
+#include "Assets/EditorStartupAssetPreimport.h"
 #include "Debug/Logger.h"
 #include "Rendering/Settings/GraphicsBackendUtils.h"
 #include <chrono>
@@ -17,6 +18,8 @@ static bool TryRun(const std::string& projectPath, const std::string& projectNam
                   std::optional<Render::Settings::EGraphicsBackend> backendOverride,
                   const std::optional<Render::Settings::RenderDocSettings>& renderDocOverride,
                   const std::optional<Render::Settings::EngineDiagnosticsSettings>& diagnosticsOverride,
+                  Editor::Launch::StartupResourcePipeline startupResourcePipeline,
+                  bool dx12DebugLayer,
                   std::chrono::steady_clock::time_point launchBegin);
 
 namespace
@@ -94,6 +97,44 @@ int main(int argc, char** argv)
 		return EXIT_FAILURE;
 	}
 
+	if (launchArgs.prewarmAssetsOnly)
+	{
+		NLS::Editor::Assets::StartupAssetPreimportOptions preimportOptions;
+		preimportOptions.projectRoot = projectPath;
+		preimportOptions.forceReimport = true;
+		const auto preimport = NLS::Editor::Assets::RunBlockingStartupAssetPreimport(
+			preimportOptions,
+			[](const NLS::Editor::Assets::ImportProgressEvent& event)
+			{
+				const auto label = NLS::Editor::Assets::FormatStartupAssetPreimportProgressLabel(event);
+				std::printf("%s\n", label.c_str());
+			});
+		if (preimport.succeeded && !preimport.hadRunningJobsAfterCompletion)
+		{
+			std::printf(
+				"Asset prewarm completed: %zu imported / %zu planned.\n",
+				preimport.importedAssetCount,
+				preimport.plannedAssetCount);
+			return EXIT_SUCCESS;
+		}
+
+		std::fprintf(
+			stderr,
+			"Asset prewarm failed: %zu imported / %zu planned.\n",
+			preimport.importedAssetCount,
+			preimport.plannedAssetCount);
+		for (const auto& diagnostic : preimport.diagnostics)
+		{
+			std::fprintf(
+				stderr,
+				"  %s: %s (%s)\n",
+				diagnostic.code.c_str(),
+				diagnostic.message.c_str(),
+				diagnostic.path.generic_string().c_str());
+		}
+		return EXIT_FAILURE;
+	}
+
 	const bool ran = TryRun(
 		projectPath,
 		projectName,
@@ -104,6 +145,8 @@ int main(int argc, char** argv)
 		launchArgs.hasDiagnosticsOverride
 			? std::optional<Render::Settings::EngineDiagnosticsSettings>(launchArgs.diagnosticsSettings)
 			: std::nullopt,
+		launchArgs.startupResourcePipeline,
+		launchArgs.dx12DebugLayer,
 		launchBegin);
 	return ran ? EXIT_SUCCESS : EXIT_FAILURE;
 }
@@ -112,6 +155,8 @@ static bool TryRun(const std::string& projectPath, const std::string& projectNam
                    std::optional<Render::Settings::EGraphicsBackend> backendOverride,
                    const std::optional<Render::Settings::RenderDocSettings>& renderDocOverride,
                    const std::optional<Render::Settings::EngineDiagnosticsSettings>& diagnosticsOverride,
+                   const Editor::Launch::StartupResourcePipeline startupResourcePipeline,
+                   const bool dx12DebugLayer,
                    const std::chrono::steady_clock::time_point launchBegin)
 {
 	auto errorEvent =
@@ -131,7 +176,9 @@ static bool TryRun(const std::string& projectPath, const std::string& projectNam
 			projectName,
 			backendOverride,
 			renderDocOverride,
-			diagnosticsOverride);
+			diagnosticsOverride,
+			startupResourcePipeline,
+			dx12DebugLayer);
 		if (app->DidShowEditorWindow())
 		{
 			NLS_LOG_INFO(

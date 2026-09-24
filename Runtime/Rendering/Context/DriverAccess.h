@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Rendering/Context/AsyncMeshRuntimeUpload.h"
+#include "Rendering/Context/AsyncTextureRuntimeUpload.h"
 
 #include <cstddef>
 #include <cstdint>
@@ -397,6 +398,30 @@ namespace NLS::Render::Context
             Driver& driver,
             uint64_t requestId);
         static MeshRuntimeUploadDiagnostics GetMeshRuntimeUploadDiagnostics(
+            const Driver& driver);
+
+        struct TextureRuntimeUploadDiagnostics
+        {
+            size_t pendingRequestCount = 0u;
+            size_t completedResultCount = 0u;
+            uint64_t requestedCount = 0u;
+            uint64_t recordedCount = 0u;
+            uint64_t consumedCount = 0u;
+            uint64_t failedCount = 0u;
+            uint64_t canceledCount = 0u;
+            size_t pendingStagingBytes = 0u;
+        };
+
+        static uint64_t RequestTextureRuntimeUpload(
+            Driver& driver,
+            TextureRuntimeUploadRequest request);
+        static TextureRuntimeUploadResult ConsumeTextureRuntimeUploadResult(
+            Driver& driver,
+            uint64_t requestId);
+        static void CancelTextureRuntimeUpload(
+            Driver& driver,
+            uint64_t requestId);
+        static TextureRuntimeUploadDiagnostics GetTextureRuntimeUploadDiagnostics(
             const Driver& driver);
     };
 

@@ -10,6 +10,7 @@
 #include <filesystem>
 #include <optional>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace NLS::Editor::Assets
@@ -173,6 +174,15 @@ struct AssetPreimportPlan
 
 struct AssetPreimportRequest
 {
+    AssetPreimportRequest() = default;
+    AssetPreimportRequest(
+        const AssetPreimportReason requestReason,
+        std::vector<std::filesystem::path> requestChangedPaths)
+        : reason(requestReason)
+        , changedPaths(std::move(requestChangedPaths))
+    {
+    }
+
     AssetPreimportReason reason = AssetPreimportReason::EditorStartup;
     std::vector<std::filesystem::path> changedPaths;
     std::vector<std::string> candidateAssetPaths;
@@ -180,6 +190,9 @@ struct AssetPreimportRequest
     bool startupCacheValidatedArtifactPayloads = false;
     // Source contents, dependencies, and manifest freshness were verified by the startup cache.
     bool startupCacheValidatedManifestFreshness = false;
+    // Explicit prewarm tooling may intentionally rebuild every candidate even
+    // when its manifest is current.
+    bool forceRebuildAll = false;
 };
 
 class AssetPreimportScheduler

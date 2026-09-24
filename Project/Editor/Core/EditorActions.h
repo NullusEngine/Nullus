@@ -142,59 +142,11 @@ namespace NLS::Editor::Core
 
 		#pragma region SETTINGS
 		/**
-		* A simple enumeration that define two GameObject spawn modes
-		*/
-		enum class EGameObjectSpawnMode { ORIGIN, FRONT };
-
-		/**
-		* Defines if new GameObjects should be spawned at origin
-		* @param p_value
-		*/
-		void SetGameObjectSpawnAtOrigin(bool p_value);
-
-		/**
-		* Defines how new GameObjects should be spawned
-		* @param p_value
-		*/
-		void SetGameObjectSpawnMode(EGameObjectSpawnMode p_value);
-
-		/**
 		* Reset the editor layout
 		*/
 		void ResetLayout();
 		void ApplyLayoutPreset(const std::string& p_presetId);
 
-		/**
-		* Defines the scene view camera speed
-		* @param p_speed
-		*/
-		void SetSceneViewCameraSpeed(int p_speed);
-
-		/**
-		* Returns the scene view camera speed
-		*/
-		int GetSceneViewCameraSpeed();
-
-		/**
-		* Defines the asset view camera speed
-		* @param p_speed
-		*/
-		void SetAssetViewCameraSpeed(int p_speed);
-
-		/**
-		* Returns the asset view camera speed
-		*/
-		int GetAssetViewCameraSpeed();
-
-		/**
-		* Resets the scene view camera position to the default one
-		*/
-		void ResetSceneViewCameraPosition();
-
-		/**
-		* Resets the scene view camera position to the default one
-		*/
-		void ResetAssetViewCameraPosition();
 		#pragma endregion
 
 		#pragma region GAME
@@ -242,12 +194,6 @@ namespace NLS::Editor::Core
 		* @param p_parent
 		*/
 		template<typename T> Engine::GameObject* CreateMonoComponentGameObject(bool p_focusOnCreation = true, Engine::GameObject* p_parent = nullptr);
-
-		/**
-		* Calculate the position where to spawn the GameObject using the current camera position and forward
-		* @param p_distanceToCamera
-		*/
-		Maths::Vector3 CalculateGameObjectSpawnPoint(float p_distanceToCamera);
 
 		/**
 		* Create an empty GameObject
@@ -513,8 +459,12 @@ namespace NLS::Editor::Core
 		*/
 			void DelayAction(std::function<void()> p_action, uint32_t p_frames = 1);
 			void ScheduleImportedResourceTrim();
-			bool TrackBackgroundTask(std::function<void()> task);
-			bool TrackOpportunisticBackgroundTask(std::function<void()> task);
+			bool TrackBackgroundTask(
+				std::function<void()> task,
+				NLS::Base::Jobs::JobPriority priority = NLS::Base::Jobs::JobPriority::Normal);
+			bool TrackOpportunisticBackgroundTask(
+				std::function<void()> task,
+				NLS::Base::Jobs::JobPriority priority = NLS::Base::Jobs::JobPriority::Normal);
         struct SceneMutationToken
         {
             uint64_t mainSceneGeneration = 0u;
@@ -566,7 +516,6 @@ namespace NLS::Editor::Core
 		Context& m_context;
 		PanelsManager& m_panelsManager;
 
-		EGameObjectSpawnMode m_gameObjectSpawnMode = EGameObjectSpawnMode::ORIGIN;
 		EEditorMode m_editorMode = EEditorMode::EDIT;
 
 		std::vector<std::pair<uint32_t, std::function<void()>>> m_delayedActions;

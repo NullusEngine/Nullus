@@ -19,12 +19,19 @@ namespace NLS::Editor::Core
         EditorBackgroundTaskTracker(const EditorBackgroundTaskTracker&) = delete;
         EditorBackgroundTaskTracker& operator=(const EditorBackgroundTaskTracker&) = delete;
 
-        bool Track(std::function<void()> task);
-        bool TrackOpportunistic(std::function<void()> task);
+        bool Track(
+            std::function<void()> task,
+            NLS::Base::Jobs::JobPriority priority = NLS::Base::Jobs::JobPriority::Normal);
+        bool TrackOpportunistic(
+            std::function<void()> task,
+            NLS::Base::Jobs::JobPriority priority = NLS::Base::Jobs::JobPriority::Normal);
         void StopAndComplete();
 
     private:
-        bool Track(std::function<void()> task, bool warnWhenCapacityReached);
+        bool Track(
+            std::function<void()> task,
+            bool warnWhenCapacityReached,
+            NLS::Base::Jobs::JobPriority priority);
         void PruneCompletedLocked();
 
         const size_t m_capacity = 0u;

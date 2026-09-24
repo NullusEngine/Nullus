@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <deque>
 #include <mutex>
 
 namespace NLS::Core::Assets
@@ -14,15 +15,15 @@ std::mutex& ArtifactLoadTelemetryMutex()
     return mutex;
 }
 
-std::vector<ArtifactLoadTelemetryRecord>& ArtifactLoadTelemetryRecords()
+std::deque<ArtifactLoadTelemetryRecord>& ArtifactLoadTelemetryRecords()
 {
-    static std::vector<ArtifactLoadTelemetryRecord> records;
+    static std::deque<ArtifactLoadTelemetryRecord> records;
     return records;
 }
 
-std::vector<ArtifactLoadBudgetMissRecord>& ArtifactLoadBudgetMissRecords()
+std::deque<ArtifactLoadBudgetMissRecord>& ArtifactLoadBudgetMissRecords()
 {
-    static std::vector<ArtifactLoadBudgetMissRecord> records;
+    static std::deque<ArtifactLoadBudgetMissRecord> records;
     return records;
 }
 
@@ -33,10 +34,10 @@ std::atomic_bool& ArtifactLoadTelemetryEnabledFlag()
 }
 
 template <typename T>
-void PushBounded(std::vector<T>& records, const T& record, const size_t maxRecords)
+void PushBounded(std::deque<T>& records, const T& record, const size_t maxRecords)
 {
     if (records.size() >= maxRecords)
-        records.erase(records.begin());
+        records.pop_front();
     records.push_back(record);
 }
 }
@@ -69,7 +70,8 @@ std::vector<ArtifactLoadTelemetryRecord> SnapshotArtifactLoadTelemetry()
         return {};
 
     std::lock_guard<std::mutex> lock(ArtifactLoadTelemetryMutex());
-    return ArtifactLoadTelemetryRecords();
+    const auto& records = ArtifactLoadTelemetryRecords();
+    return {records.begin(), records.end()};
 }
 
 std::vector<ArtifactLoadTelemetryStageSummary> SummarizeArtifactLoadTelemetry()
@@ -80,7 +82,8 @@ std::vector<ArtifactLoadTelemetryStageSummary> SummarizeArtifactLoadTelemetry()
     std::vector<ArtifactLoadTelemetryRecord> records;
     {
         std::lock_guard<std::mutex> lock(ArtifactLoadTelemetryMutex());
-        records = ArtifactLoadTelemetryRecords();
+        const auto& storedRecords = ArtifactLoadTelemetryRecords();
+        records.assign(storedRecords.begin(), storedRecords.end());
     }
 
     std::vector<ArtifactLoadTelemetryStageSummary> summaries;
@@ -117,7 +120,8 @@ std::vector<ArtifactLoadBudgetMissRecord> SnapshotArtifactLoadBudgetMisses()
         return {};
 
     std::lock_guard<std::mutex> lock(ArtifactLoadTelemetryMutex());
-    return ArtifactLoadBudgetMissRecords();
+    const auto& records = ArtifactLoadBudgetMissRecords();
+    return {records.begin(), records.end()};
 }
 
 void ClearArtifactLoadTelemetry()

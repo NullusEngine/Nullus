@@ -11287,6 +11287,22 @@ void AssetThumbnailService::DropGpuPreviewResourceQueueOwnershipForTesting(
     m_queuedThumbnailLaneByCacheKey.erase(cacheKey);
 }
 
+void AssetThumbnailService::DropReadyResidentOwnershipForTesting(
+    const AssetThumbnailRequest& request)
+{
+    const auto cacheKey = BuildAssetThumbnailCacheKey(request);
+    const auto presentationKey = BuildAssetThumbnailPresentationKey(request);
+    RemoveQueuedCacheKeyOccurrences(cacheKey);
+    m_queuedRequestsByCacheKey.erase(cacheKey);
+    m_queuedThumbnailLaneByCacheKey.erase(cacheKey);
+    m_gpuPreviewResourcePendingRequestsByCacheKey.erase(cacheKey);
+    m_gpuPreviewResourcePendingDeferredCacheKeys.erase(cacheKey);
+    m_gpuPreviewResourcePendingDeferralsByCacheKey.erase(cacheKey);
+    m_gpuPreviewResidentPartialRevisionByCacheKey.erase(cacheKey);
+    m_resolvedPreviewRequestsByCacheKey.erase(cacheKey);
+    m_residentPreviewRequestsByPresentationKey.erase(presentationKey);
+}
+
 void AssetThumbnailService::DropGpuPreviewQueueLaneMembershipForTesting(
     const AssetThumbnailRequest& request)
 {
@@ -11350,6 +11366,11 @@ void AssetThumbnailService::QueueTerminalAndLateFreshResultForTesting(
 size_t AssetThumbnailService::GetResidentPreviewOwnerCountForTesting() const
 {
     return m_residentPreviewRequestsByPresentationKey.size();
+}
+
+size_t AssetThumbnailService::GetReadyResidentMarkerCountForTesting() const
+{
+    return m_gpuPreviewReadyResidentCacheKeys.size();
 }
 #endif
 
@@ -11944,6 +11965,128 @@ bool AssetThumbnailService::TryPublishResidentCompletionPromotion(
     return true;
 }
 
+bool AssetThumbnailService::ReconcileReadyResidentPreviewMarkers()
+{
+    if (m_gpuPreviewReadyResidentCacheKeys.empty())
+        return false;
+
+    const auto isResidentOwner = [](const AssetThumbnailRequest& request)
+    {
+        return request.residentPrefabPreviewSource.has_value() &&
+            request.residentPrefabPreviewSource->HasIdentity();
+    };
+
+    std::unordered_map<std::string, std::string> liveAliasByPresentationKey;
+    bool liveAliasIndexBuilt = false;
+    const auto buildLiveAliasIndex = [this, &isResidentOwner, &liveAliasByPresentationKey,
+                                      &liveAliasIndexBuilt]()
+    {
+        if (liveAliasIndexBuilt)
+            return;
+
+        liveAliasIndexBuilt = true;
+        liveAliasByPresentationKey.reserve(
+            m_queuedRequestsByCacheKey.size() +
+            m_gpuPreviewResourcePendingRequestsByCacheKey.size() +
+            m_resolvedPreviewRequestsByCacheKey.size());
+        const auto addOwners = [&isResidentOwner, &liveAliasByPresentationKey](const auto& owners)
+        {
+            for (const auto& [cacheKey, request] : owners)
+            {
+                if (!isResidentOwner(request))
+                    continue;
+                const auto presentationKey = BuildAssetThumbnailPresentationKey(request);
+                if (!presentationKey.empty())
+                    liveAliasByPresentationKey.try_emplace(presentationKey, cacheKey);
+            }
+        };
+        // Prefer a queued owner because it can be submitted immediately.
+        addOwners(m_queuedRequestsByCacheKey);
+        addOwners(m_gpuPreviewResourcePendingRequestsByCacheKey);
+        addOwners(m_resolvedPreviewRequestsByCacheKey);
+    };
+
+    size_t prunedMarkerCount = 0u;
+    size_t migratedMarkerCount = 0u;
+    bool hasLiveMarker = false;
+    std::vector<std::string> migratedAliasCacheKeys;
+    migratedAliasCacheKeys.reserve(m_gpuPreviewReadyResidentCacheKeys.size());
+
+    for (auto iterator = m_gpuPreviewReadyResidentCacheKeys.begin();
+         iterator != m_gpuPreviewReadyResidentCacheKeys.end();)
+    {
+        const auto markerCacheKey = *iterator;
+        const AssetThumbnailRequest* exactOwner = nullptr;
+        bool hasExactResidentOwner = false;
+        const auto inspectExactOwner = [&markerCacheKey, &isResidentOwner, &exactOwner,
+                                        &hasExactResidentOwner](const auto& owners)
+        {
+            const auto found = owners.find(markerCacheKey);
+            if (found == owners.end())
+                return;
+            if (exactOwner == nullptr)
+                exactOwner = &found->second;
+            hasExactResidentOwner = hasExactResidentOwner || isResidentOwner(found->second);
+        };
+
+        inspectExactOwner(m_queuedRequestsByCacheKey);
+        inspectExactOwner(m_gpuPreviewResourcePendingRequestsByCacheKey);
+        inspectExactOwner(m_resolvedPreviewRequestsByCacheKey);
+        if (hasExactResidentOwner)
+        {
+            hasLiveMarker = true;
+            ++iterator;
+            continue;
+        }
+
+        std::string presentationKey;
+        if (const auto tracked = m_gpuPreviewResourcePresentationKeyByCacheKey.find(markerCacheKey);
+            tracked != m_gpuPreviewResourcePresentationKeyByCacheKey.end())
+        {
+            presentationKey = tracked->second;
+        }
+        else if (exactOwner != nullptr)
+        {
+            presentationKey = BuildAssetThumbnailPresentationKey(*exactOwner);
+        }
+
+        buildLiveAliasIndex();
+        const auto alias = liveAliasByPresentationKey.find(presentationKey);
+        if (!presentationKey.empty() && alias != liveAliasByPresentationKey.end())
+        {
+            migratedAliasCacheKeys.push_back(alias->second);
+            iterator = m_gpuPreviewReadyResidentCacheKeys.erase(iterator);
+            ++migratedMarkerCount;
+            hasLiveMarker = true;
+            continue;
+        }
+
+        iterator = m_gpuPreviewReadyResidentCacheKeys.erase(iterator);
+        ++prunedMarkerCount;
+    }
+
+    for (const auto& aliasCacheKey : migratedAliasCacheKeys)
+        m_gpuPreviewReadyResidentCacheKeys.insert(aliasCacheKey);
+
+    if (migratedMarkerCount != 0u)
+    {
+        RecordThumbnailGpuPreviewQueueDecisionTelemetry(
+            "ready-resident-markers-migrated-alias|count=" +
+                std::to_string(migratedMarkerCount),
+            nullptr,
+            m_queuedRequestsByCacheKey.size());
+    }
+    if (prunedMarkerCount != 0u)
+    {
+        RecordThumbnailGpuPreviewQueueDecisionTelemetry(
+            "ready-resident-markers-pruned=no-live-owner|count=" +
+                std::to_string(prunedMarkerCount),
+            nullptr,
+            m_queuedRequestsByCacheKey.size());
+    }
+    return hasLiveMarker;
+}
+
 void AssetThumbnailService::TrackGpuPreviewResourceRequestStart(
     const std::string& cacheKey,
     const AssetThumbnailRequest& request)
@@ -12434,51 +12577,7 @@ bool AssetThumbnailService::HasQueuedReadyResidentThumbnail()
     // before the scheduler samples this signal.
     RestoreGpuPreviewResourceContinuationRequests();
     PromoteCompletedResidentPreviewOwners();
-
-    // A completion promotion is authoritative even while the request is
-    // moving between pending/resolved/queued owner tables. The marker is only
-    // inserted by Restore/Promote after an exact registry snapshot reported
-    // complete, so do not repeat the weak-registry lookup here. Repeating it
-    // created a race where the scheduler observed a valid promotion marker but
-    // the registry handle was temporarily unavailable and kept the request on
-    // the heavy cooldown. PopNextGpuPreviewCacheKey performs the final live
-    // completion check before consuming the marker.
-    for (const auto& cacheKey : m_gpuPreviewReadyResidentCacheKeys)
-    {
-        if (const auto queued = m_queuedRequestsByCacheKey.find(cacheKey);
-            queued != m_queuedRequestsByCacheKey.end() &&
-            queued->second.residentPrefabPreviewSource.has_value() &&
-            queued->second.residentPrefabPreviewSource->HasIdentity())
-        {
-            return true;
-        }
-        if (const auto pending = m_gpuPreviewResourcePendingRequestsByCacheKey.find(cacheKey);
-            pending != m_gpuPreviewResourcePendingRequestsByCacheKey.end() &&
-            pending->second.residentPrefabPreviewSource.has_value() &&
-            pending->second.residentPrefabPreviewSource->HasIdentity())
-        {
-            return true;
-        }
-        if (const auto resolved = m_resolvedPreviewRequestsByCacheKey.find(cacheKey);
-            resolved != m_resolvedPreviewRequestsByCacheKey.end() &&
-            resolved->second.residentPrefabPreviewSource.has_value() &&
-            resolved->second.residentPrefabPreviewSource->HasIdentity())
-        {
-            return true;
-        }
-    }
-
-    RecordThumbnailGpuPreviewQueueDecisionTelemetry(
-        "resident-ready-scan=empty|markers=" +
-            std::to_string(m_gpuPreviewReadyResidentCacheKeys.size()) +
-            "|queued=" + std::to_string(m_queuedRequestsByCacheKey.size()) +
-            "|pending=" +
-            std::to_string(m_gpuPreviewResourcePendingRequestsByCacheKey.size()) +
-            "|resolved=" +
-            std::to_string(m_resolvedPreviewRequestsByCacheKey.size()),
-        nullptr,
-        m_queuedRequestsByCacheKey.size());
-    return false;
+    return ReconcileReadyResidentPreviewMarkers();
 }
 
 bool AssetThumbnailService::HasQueuedNonGpuThumbnailWork() const
@@ -13216,123 +13315,21 @@ std::optional<std::string> AssetThumbnailService::PopNextGpuPreviewCacheKey(
     auto popReadyResidentPreview = [this, &noteDequeuedCacheKey]()
         -> std::optional<std::string>
     {
-        const auto isResidentOwner = [](const AssetThumbnailRequest& request)
-        {
-            return request.residentPrefabPreviewSource.has_value() &&
-                request.residentPrefabPreviewSource->HasIdentity();
-        };
-
-        // Deferred manifest resolution and repeated UI lookups can rotate the
-        // physical cache key while retaining one presentation identity. A
-        // completion marker belongs to that presentation, not to whichever
-        // alias happened to be queued when the registry finished. Resolve the
-        // marker's presentation once, then migrate it to the live owner key.
-        const auto markerPresentationKey = [this](const std::string& cacheKey)
-            -> std::string
-        {
-            if (const auto found = m_gpuPreviewResourcePresentationKeyByCacheKey.find(cacheKey);
-                found != m_gpuPreviewResourcePresentationKeyByCacheKey.end())
-            {
-                return found->second;
-            }
-            const auto findExact = [&cacheKey](const auto& owners) -> std::string
-            {
-                const auto found = owners.find(cacheKey);
-                return found == owners.end()
-                    ? std::string {}
-                    : BuildAssetThumbnailPresentationKey(found->second);
-            };
-            if (auto presentation = findExact(m_queuedRequestsByCacheKey); !presentation.empty())
-                return presentation;
-            if (auto presentation = findExact(m_gpuPreviewResourcePendingRequestsByCacheKey);
-                !presentation.empty())
-            {
-                return presentation;
-            }
-            return findExact(m_resolvedPreviewRequestsByCacheKey);
-        };
-        const auto findAliasOwner = [this, &isResidentOwner](const std::string& presentationKey)
-            -> std::optional<std::string>
-        {
-            if (presentationKey.empty())
-                return std::nullopt;
-            const auto find = [&presentationKey, &isResidentOwner](const auto& owners)
-                -> std::optional<std::string>
-            {
-                for (const auto& [cacheKey, request] : owners)
-                {
-                    if (isResidentOwner(request) &&
-                        BuildAssetThumbnailPresentationKey(request) == presentationKey)
-                    {
-                        return cacheKey;
-                    }
-                }
-                return std::nullopt;
-            };
-            if (auto alias = find(m_queuedRequestsByCacheKey); alias.has_value())
-                return alias;
-            if (auto alias = find(m_gpuPreviewResourcePendingRequestsByCacheKey); alias.has_value())
-                return alias;
-            if (auto alias = find(m_resolvedPreviewRequestsByCacheKey); alias.has_value())
-                return alias;
-            if (const auto resident = m_residentPreviewRequestsByPresentationKey.find(presentationKey);
-                resident != m_residentPreviewRequestsByPresentationKey.end())
-            {
-                const auto cacheKey = BuildAssetThumbnailCacheKey(resident->second);
-                if (!cacheKey.empty())
-                    return cacheKey;
-            }
-            return std::nullopt;
-        };
+        ReconcileReadyResidentPreviewMarkers();
 
         for (auto iterator = m_gpuPreviewReadyResidentCacheKeys.begin();
              iterator != m_gpuPreviewReadyResidentCacheKeys.end();)
         {
-            const auto markerCacheKey = *iterator;
-            auto cacheKey = markerCacheKey;
+            const auto cacheKey = *iterator;
             auto request = m_queuedRequestsByCacheKey.find(cacheKey);
             if (request == m_queuedRequestsByCacheKey.end())
             {
-                const auto alias = findAliasOwner(markerPresentationKey(markerCacheKey));
-                if (alias.has_value() && *alias != markerCacheKey)
-                {
-                    m_gpuPreviewReadyResidentCacheKeys.erase(markerCacheKey);
-                    m_gpuPreviewReadyResidentCacheKeys.insert(*alias);
-                    RecordThumbnailGpuPreviewQueueDecisionTelemetry(
-                        "ready-resident-marker-migrated-alias",
-                        nullptr,
-                        m_queuedRequestsByCacheKey.size());
-                    // Insertion may rehash the unordered set. Restart from a
-                    // fresh iterator and process the migrated marker normally.
-                    iterator = m_gpuPreviewReadyResidentCacheKeys.begin();
-                    continue;
-                }
-            }
-            if (request == m_queuedRequestsByCacheKey.end())
-            {
-                const bool hasOtherOwner =
-                    m_gpuPreviewResourcePendingRequestsByCacheKey.find(cacheKey) !=
-                        m_gpuPreviewResourcePendingRequestsByCacheKey.end() ||
-                    m_resolvedPreviewRequestsByCacheKey.find(cacheKey) !=
-                        m_resolvedPreviewRequestsByCacheKey.end();
-                if (!hasOtherOwner)
-                {
-                    RecordThumbnailGpuPreviewQueueDecisionTelemetry(
-                        "ready-resident-marker-cleared=no-owner",
-                        nullptr,
-                        m_queuedRequestsByCacheKey.size());
-                    iterator = m_gpuPreviewReadyResidentCacheKeys.erase(iterator);
-                }
-                else
-                    ++iterator;
+                ++iterator;
                 continue;
             }
-            if (!isResidentOwner(request->second))
+            if (!request->second.residentPrefabPreviewSource.has_value() ||
+                !request->second.residentPrefabPreviewSource->HasIdentity())
             {
-                RecordThumbnailGpuPreviewQueueDecisionTelemetry(
-                    "ready-resident-marker-cleared=non-resident-owner",
-                    &request->second,
-                    m_queuedRequestsByCacheKey.size());
                 iterator = m_gpuPreviewReadyResidentCacheKeys.erase(iterator);
                 continue;
             }

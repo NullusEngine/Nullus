@@ -21,6 +21,7 @@
 #include "Rendering/RHI/Core/RHIResource.h"
 #include "Rendering/RHI/Backends/DX12/DX12Device.h"
 #include "Rendering/Settings/DriverSettings.h"
+#include "Threading/ExecutionThreadBudget.h"
 
 namespace
 {
@@ -151,6 +152,100 @@ TEST(EditorLaunchArgsTests, RejectsRemovedDebugCliFlags)
 {
     std::vector<std::string> storage;
     char** argv = MutableArgv({"Editor.exe", "--log-editor-fps", "TestProject.nullus"}, storage);
+
+    const auto parsed = NLS::Editor::Launch::ParseEditorArgs(static_cast<int>(storage.size()), argv);
+
+    EXPECT_TRUE(parsed.hasError);
+}
+
+TEST(EditorLaunchArgsTests, ParsesAssetPrewarmAndStartupResourcePipeline)
+{
+    std::vector<std::string> storage;
+    char** argv = MutableArgv({
+        "Editor.exe",
+        "--editor-prewarm-assets",
+        "--editor-startup-resource-pipeline",
+        "legacy",
+        "TestProject.nullus"
+    }, storage);
+
+    const auto parsed = NLS::Editor::Launch::ParseEditorArgs(static_cast<int>(storage.size()), argv);
+
+    EXPECT_FALSE(parsed.hasError);
+    EXPECT_TRUE(parsed.prewarmAssetsOnly);
+    EXPECT_EQ(
+        parsed.startupResourcePipeline,
+        NLS::Editor::Launch::StartupResourcePipeline::Legacy);
+    EXPECT_EQ(parsed.projectPathArgument, "TestProject.nullus");
+}
+
+TEST(EditorLaunchArgsTests, Dx12DebugLayerIsOptInForEditor)
+{
+    std::vector<std::string> storage;
+    char** argv = MutableArgv({"Editor.exe", "TestProject.nullus"}, storage);
+    const auto defaultArgs = NLS::Editor::Launch::ParseEditorArgs(static_cast<int>(storage.size()), argv);
+    EXPECT_FALSE(defaultArgs.hasError);
+    EXPECT_FALSE(defaultArgs.dx12DebugLayer);
+
+    argv = MutableArgv({"Editor.exe", "--editor-dx12-debug-layer", "TestProject.nullus"}, storage);
+    const auto validationArgs = NLS::Editor::Launch::ParseEditorArgs(static_cast<int>(storage.size()), argv);
+    EXPECT_FALSE(validationArgs.hasError);
+    EXPECT_TRUE(validationArgs.dx12DebugLayer);
+    EXPECT_EQ(validationArgs.projectPathArgument, "TestProject.nullus");
+}
+
+TEST(EditorLaunchArgsTests, DefaultStartupResourcePipelineFollowsBuildConfiguration)
+{
+    std::vector<std::string> storage;
+    char** argv = MutableArgv({"Editor.exe", "TestProject.nullus"}, storage);
+    const auto parsed = NLS::Editor::Launch::ParseEditorArgs(static_cast<int>(storage.size()), argv);
+
+    EXPECT_FALSE(parsed.hasError);
+    EXPECT_EQ(parsed.startupResourcePipeline, NLS::Editor::Launch::DefaultStartupResourcePipeline());
+#if defined(_WIN32)
+    EXPECT_EQ(parsed.startupResourcePipeline, NLS::Editor::Launch::StartupResourcePipeline::Pipelined);
+#else
+    EXPECT_EQ(parsed.startupResourcePipeline, NLS::Editor::Launch::StartupResourcePipeline::Async);
+#endif
+}
+
+TEST(EditorLaunchArgsTests, ExplicitAsyncOverridesDebugStartupResourcePipelineDefault)
+{
+    std::vector<std::string> storage;
+    char** argv = MutableArgv({
+        "Editor.exe",
+        "--editor-startup-resource-pipeline",
+        "async",
+        "TestProject.nullus"
+    }, storage);
+
+    const auto parsed = NLS::Editor::Launch::ParseEditorArgs(static_cast<int>(storage.size()), argv);
+
+    EXPECT_FALSE(parsed.hasError);
+    EXPECT_EQ(parsed.startupResourcePipeline, NLS::Editor::Launch::StartupResourcePipeline::Async);
+    EXPECT_EQ(parsed.projectPathArgument, "TestProject.nullus");
+}
+
+TEST(EditorLaunchArgsTests, ParsesPipelinedStartupResourcePipeline)
+{
+    std::vector<std::string> storage;
+    char** argv = MutableArgv({
+        "Editor.exe", "--editor-startup-resource-pipeline", "pipelined", "TestProject.nullus"
+    }, storage);
+    const auto parsed = NLS::Editor::Launch::ParseEditorArgs(static_cast<int>(storage.size()), argv);
+    EXPECT_FALSE(parsed.hasError);
+    EXPECT_EQ(parsed.startupResourcePipeline, NLS::Editor::Launch::StartupResourcePipeline::Pipelined);
+}
+
+TEST(EditorLaunchArgsTests, RejectsInvalidStartupResourcePipeline)
+{
+    std::vector<std::string> storage;
+    char** argv = MutableArgv({
+        "Editor.exe",
+        "--editor-startup-resource-pipeline",
+        "invalid",
+        "TestProject.nullus"
+    }, storage);
 
     const auto parsed = NLS::Editor::Launch::ParseEditorArgs(static_cast<int>(storage.size()), argv);
 
@@ -594,11 +689,11 @@ TEST(EditorLaunchArgsTests, EditorJobWorkersShareOneHardwareBudget)
         {1u, 1u, 1u},
         {2u, 1u, 1u},
         {4u, 1u, 1u},
-        {8u, 2u, 3u},
-        {12u, 3u, 6u},
-        {16u, 4u, 9u},
-        {20u, 1u, 16u},
-        {64u, 15u, 16u}
+        {8u, 2u, 1u},
+        {12u, 4u, 1u},
+        {16u, 5u, 2u},
+        {20u, 6u, 3u},
+        {64u, 13u, 6u}
     };
 
     for (const auto& testCase : cases)
@@ -606,31 +701,39 @@ TEST(EditorLaunchArgsTests, EditorJobWorkersShareOneHardwareBudget)
         const auto budget = NLS::Editor::Core::ResolveEditorJobWorkerBudget(testCase.hardwareConcurrency);
         EXPECT_EQ(budget.foregroundWorkerCount, testCase.expectedForeground);
         EXPECT_EQ(budget.backgroundWorkerCount, testCase.expectedBackground);
-        const uint32_t resolvedHardware = testCase.hardwareConcurrency == 0u ? 4u : testCase.hardwareConcurrency;
-        const uint32_t expectedTotalBudget = std::min(
-            31u,
-            std::max(2u, resolvedHardware > 3u ? resolvedHardware - 3u : 2u));
-        EXPECT_LE(budget.foregroundWorkerCount + budget.backgroundWorkerCount, expectedTotalBudget);
+        const auto poolBudget = NLS::Base::Threading::ResolveExecutionPoolBudget(
+            testCase.hardwareConcurrency);
+        // The rendering TaskGraph and the Jobs pools must fit inside the same budget.
+        EXPECT_EQ(budget.foregroundWorkerCount, poolBudget.jobsForegroundWorkerCount);
+        EXPECT_EQ(budget.backgroundWorkerCount, poolBudget.jobsBackgroundWorkerCount);
+        EXPECT_EQ(
+            poolBudget.taskGraphWorkerCount +
+                budget.foregroundWorkerCount +
+                budget.backgroundWorkerCount,
+            poolBudget.totalPoolWorkerCount);
+        EXPECT_EQ(
+            budget.foregroundWorkerCount + budget.backgroundWorkerCount,
+            poolBudget.jobsWorkerCount);
     }
 }
 
 TEST(EditorLaunchArgsTests, EditorJobWorkerOverrideKeepsTheSameTotalBudget)
 {
     const auto twoWorkers = NLS::Editor::Core::ResolveEditorJobWorkerBudget(20u, 2u);
-    EXPECT_EQ(twoWorkers.foregroundWorkerCount, 15u);
+    EXPECT_EQ(twoWorkers.foregroundWorkerCount, 7u);
     EXPECT_EQ(twoWorkers.backgroundWorkerCount, 2u);
 
     const auto eightWorkers = NLS::Editor::Core::ResolveEditorJobWorkerBudget(20u, 8u);
-    EXPECT_EQ(eightWorkers.foregroundWorkerCount, 9u);
+    EXPECT_EQ(eightWorkers.foregroundWorkerCount, 1u);
     EXPECT_EQ(eightWorkers.backgroundWorkerCount, 8u);
 
     const auto sixteenWorkers = NLS::Editor::Core::ResolveEditorJobWorkerBudget(20u, 16u);
     EXPECT_EQ(sixteenWorkers.foregroundWorkerCount, 1u);
-    EXPECT_EQ(sixteenWorkers.backgroundWorkerCount, 16u);
+    EXPECT_EQ(sixteenWorkers.backgroundWorkerCount, 8u);
 
     const auto clampedWorkers = NLS::Editor::Core::ResolveEditorJobWorkerBudget(64u, 64u);
     EXPECT_EQ(clampedWorkers.backgroundWorkerCount, 16u);
-    EXPECT_EQ(clampedWorkers.foregroundWorkerCount, 15u);
+    EXPECT_EQ(clampedWorkers.foregroundWorkerCount, 3u);
 }
 
 TEST(EditorLaunchArgsTests, JobSystemReportsEffectiveBackgroundWorkerCount)
@@ -1298,9 +1401,7 @@ TEST(EditorLaunchArgsTests, DeferredSceneRendererDoesNotCaptureLightingForEmptyS
 
     const auto shouldCapture = body.find("shouldCaptureDeferredScene");
     ASSERT_NE(shouldCapture, std::string::npos);
-    const auto captureLighting = body.find("DeferredSceneRenderer::BeginFrame::CaptureLighting", shouldCapture);
-    ASSERT_NE(captureLighting, std::string::npos);
-    const auto captureGuard = body.rfind("if (!shouldCaptureDeferredScene)", captureLighting);
+    const auto captureGuard = body.find("else if (!shouldCaptureDeferredScene)", shouldCapture);
     ASSERT_NE(captureGuard, std::string::npos)
         << "Startup scene-load placeholder frames may have helper/grid passes but zero deferred scene drawables. "
            "They must not enqueue the fullscreen lighting draw, otherwise the empty lighting pass can replace the "
@@ -1311,6 +1412,19 @@ TEST(EditorLaunchArgsTests, DeferredSceneRendererDoesNotCaptureLightingForEmptyS
     ASSERT_NE(skipPublish, std::string::npos)
         << "An empty scene-load placeholder frame must not publish an empty threaded deferred package over the "
            "previous viewport output; the first publish should happen when a real scene drawable is revealed.";
+
+    const auto builderStart = source.find(
+        "DeferredSceneRenderer::BuildDeferredPreparedRenderSceneBuilder");
+    ASSERT_NE(builderStart, std::string::npos);
+    const auto captureGuardInBuilder = source.find(
+        "if (captureInput.drawables != nullptr && captureInput.recordedDrawCommands != nullptr)",
+        builderStart);
+    ASSERT_NE(captureGuardInBuilder, std::string::npos)
+        << "Deferred scene capture must remain inside the prepared builder so an empty scene can skip the "
+           "entire capture path without producing a lighting draw.";
+    const auto captureLoop = source.find("CaptureThreadedDeferredDraws(", captureGuardInBuilder);
+    ASSERT_NE(captureLoop, std::string::npos)
+        << "The prepared builder must own the deferred draw capture that used to run directly in BeginFrame.";
 }
 
 TEST(EditorLaunchArgsTests, DeferredSceneRendererDrawPathDiagnosticsAreFrameBounded)
@@ -2109,7 +2223,7 @@ TEST(EditorLaunchArgsTests, ReplacingPrefabStageUsesTheSameUndoInvalidationPath)
 TEST(EditorLaunchArgsTests, SceneLoadMeshArtifactLoadsAreOpportunistic)
 {
     const auto actionsSource = ReadTextFile("Project/Editor/Core/EditorActions.cpp");
-    const auto functionStart = actionsSource.find("bool StartMeshArtifactLoad");
+    const auto functionStart = actionsSource.rfind("bool StartMeshArtifactLoad");
     ASSERT_NE(functionStart, std::string::npos);
     const auto functionEnd = actionsSource.find("enum class RendererResourceResolutionTaskPopPreference", functionStart);
     ASSERT_NE(functionEnd, std::string::npos);
@@ -2625,9 +2739,10 @@ TEST(EditorLaunchArgsTests, SceneRestoreGeneratedModelPrefabInstantiationPrewarm
         instantiateBody.find("request.deferAssetReferenceResolution = deferGeneratedModelResources;"),
         std::string::npos);
     EXPECT_NE(
-        instantiateBody.find("request.synchronousAssetReferencePrewarm = true;"),
+        instantiateBody.find(
+            "request.synchronousAssetReferencePrewarm = synchronousAssetReferencePrewarm;"),
         std::string::npos)
-        << "Generated scene prefabs must prewarm renderer resources before the restored scene is published.";
+        << "Generated scene prefabs must honor the selected startup resource pipeline.";
     EXPECT_NE(
         instantiateBody.find("request.skipDeferredAssetReferenceCacheLookup = deferGeneratedModelResources;"),
         std::string::npos);
@@ -2737,13 +2852,21 @@ TEST(EditorLaunchArgsTests, SceneLoadTexturePrewarmWaitsForMeshTasksToDrain)
 
     const auto meshPendingState = stepBody.find(
         "const bool hasPendingMeshTasks = HasPendingMeshRendererResourceTasks(*state);");
-    const auto meshDrainCheck = stepBody.find("if (!hasPendingMeshTasks)", meshPendingState);
+    const auto meshPhase = stepBody.find("const bool meshArtifactPhaseActive =");
+    const auto materialPrewarm = stepBody.find("PrewarmRendererResourceMaterialArtifacts(*state);");
     const auto texturePrewarm = stepBody.find("PrewarmRendererResourceMaterialTextures(*state);");
+    const auto completionGate = stepBody.find("if (!meshArtifactPhaseActive)");
     ASSERT_NE(meshPendingState, std::string::npos);
-    ASSERT_NE(meshDrainCheck, std::string::npos);
+    ASSERT_NE(meshPhase, std::string::npos);
+    ASSERT_NE(materialPrewarm, std::string::npos);
     ASSERT_NE(texturePrewarm, std::string::npos);
-    EXPECT_LT(meshDrainCheck, texturePrewarm)
-        << "Texture prewarm must not consume high-priority worker capacity before scene meshes are ready.";
+    ASSERT_NE(completionGate, std::string::npos);
+    EXPECT_LT(meshPendingState, meshPhase);
+    EXPECT_LT(meshPhase, completionGate);
+    EXPECT_LT(materialPrewarm, completionGate)
+        << "Material requests should start concurrently with mesh work without pumping completions.";
+    EXPECT_LT(completionGate, texturePrewarm)
+        << "Texture requests and completion pumping must wait until the mesh artifact phase drains.";
 
     const auto materialPump = stepBody.find("materialManager.PumpAsyncLoadsForPaths");
     const auto texturePump = stepBody.find("textureManager.PumpAsyncLoadsForPaths");
@@ -2801,10 +2924,12 @@ TEST(EditorLaunchArgsTests, SceneLoadMeshArtifactFallsBackWhenOpportunisticQueue
     ASSERT_NE(end, std::string::npos);
     const auto body = actionsSource.substr(start, end - start);
 
-    EXPECT_NE(body.find("TrackOpportunisticBackgroundTask(loadMeshArtifact)"), std::string::npos)
+    EXPECT_NE(body.find("TrackOpportunisticBackgroundTask("), std::string::npos)
         << "Scene-load mesh reads should use spare background capacity first.";
-    EXPECT_NE(body.find("TrackBackgroundTask(std::move(loadMeshArtifact))"), std::string::npos)
+    EXPECT_NE(body.find("TrackBackgroundTask("), std::string::npos)
         << "A full opportunistic queue must not strand required scene resources indefinitely.";
+    EXPECT_NE(body.find("NLS::Base::Jobs::JobPriority::High"), std::string::npos)
+        << "Scene-load mesh artifact jobs must outrank material and texture prewarm jobs.";
 }
 
 TEST(EditorLaunchArgsTests, AssetBrowserWatcherStartupSchedulingFailureDoesNotCrashOrSuppressRetry)
@@ -2973,6 +3098,71 @@ TEST(EditorLaunchArgsTests, SceneLoadMaterialBindingUsesMaterialManagerArtifactL
         << "Material lookup still needs a correctness fallback when the single-entry artifact index is stale or overwritten.";
     EXPECT_LT(indexedLookup, fallbackLookup)
         << "The normalized material artifact index must stay on the hot path; the full resource-table scan is only a miss fallback.";
+}
+
+TEST(EditorLaunchArgsTests, InspectorMaterialDrawUsesRegisteredLookupWithoutSynchronousLoad)
+{
+    const auto source = ReadTextFile("Project/Editor/Inspector/AssetTargetAdapter.cpp");
+
+    const auto aliveStart = source.find("bool IsMaterialTargetAlive");
+    ASSERT_NE(aliveStart, std::string::npos);
+    const auto aliveEnd = source.find("void MarkMaterialUndoScopeSaved", aliveStart);
+    ASSERT_NE(aliveEnd, std::string::npos);
+    const auto aliveBody = source.substr(aliveStart, aliveEnd - aliveStart);
+    EXPECT_NE(aliveBody.find("FindRegisteredMaterial(handle)"), std::string::npos);
+    EXPECT_EQ(aliveBody.find("ResolveMaterial(handle)"), std::string::npos)
+        << "Inspector action availability must not synchronously load a material while drawing.";
+
+    const auto versionStart = source.find("uint64_t AssetTargetAdapter::GetStructureVersion");
+    ASSERT_NE(versionStart, std::string::npos);
+    const auto versionEnd = source.find("InspectorPresentation AssetTargetAdapter::BuildPresentation", versionStart);
+    ASSERT_NE(versionEnd, std::string::npos);
+    const auto versionBody = source.substr(versionStart, versionEnd - versionStart);
+    EXPECT_NE(versionBody.find("FindRegisteredMaterial(*target)"), std::string::npos);
+    EXPECT_EQ(versionBody.find("ResolveMaterial(*target)"), std::string::npos)
+        << "Per-frame Inspector structure invalidation must use the registered-material index only.";
+
+    const auto actionsStart = source.find("std::vector<InspectorTargetAction> AssetTargetAdapter::GetActions");
+    ASSERT_NE(actionsStart, std::string::npos);
+    const auto actionsEnd = source.find("bool AssetTargetAdapter::ExecuteAction", actionsStart);
+    ASSERT_NE(actionsEnd, std::string::npos);
+    const auto actionsBody = source.substr(actionsStart, actionsEnd - actionsStart);
+    EXPECT_NE(actionsBody.find("IsMaterialTargetAlive(*target)"), std::string::npos);
+    EXPECT_EQ(actionsBody.find("ResolveMaterial(*target)"), std::string::npos)
+        << "Inspector target actions must not retry a failed material load every frame.";
+}
+
+TEST(EditorLaunchArgsTests, InspectorPrefabOverrideMarkersUseCachedPresentationStates)
+{
+    const auto inspectorSource = ReadTextFile("Project/Editor/Inspector/InspectorView.cpp");
+    EXPECT_EQ(
+        inspectorSource.find("GetPrefabOverrideState("),
+        std::string::npos)
+        << "Inspector draw paths must read prefab markers from the presentation refreshed once per dirty revision instead of re-discovering the full prefab graph per control.";
+    EXPECT_NE(
+        inspectorSource.find("m_prefabOverrideQuery->GetState"),
+        std::string::npos)
+        << "Inspector controls must share the revision-scoped prefab override query instead of re-discovering the prefab graph.";
+
+    const auto prefabInspectorSource = ReadTextFile("Project/Editor/Inspector/PrefabInspectorSupport.cpp");
+    const auto refreshStart = prefabInspectorSource.find("void RefreshPrefabOverrideStates");
+    ASSERT_NE(refreshStart, std::string::npos);
+    const auto refreshEnd = prefabInspectorSource.find("PrefabOverrideState GetPrefabOverrideState", refreshStart);
+    ASSERT_NE(refreshEnd, std::string::npos);
+    const auto refreshBody = prefabInspectorSource.substr(refreshStart, refreshEnd - refreshStart);
+    EXPECT_NE(refreshBody.find("tree.auxiliary"), std::string::npos)
+        << "GameObject header rows live in the presentation auxiliary tree and must share the same prefab snapshot cache.";
+
+    EXPECT_NE(
+        prefabInspectorSource.find("GetPrefabOverrideMarkersForObject"),
+        std::string::npos)
+        << "Inspector markers must use marker-only discovery instead of materializing override base/local values.";
+
+    const auto nativeAdapterSource = ReadTextFile("Project/Editor/Inspector/NativeReflectionAdapter.cpp");
+    EXPECT_EQ(
+        nativeAdapterSource.find("RefreshPrefabOverrideStates("),
+        std::string::npos)
+        << "Native presentation should build chrome only; InspectorView owns the single dirty-revision prefab refresh.";
 }
 
 TEST(EditorLaunchArgsTests, SceneLoadMeshBindingDoesNotScanCachedMeshesWhileArtifactLoadIsPending)
@@ -3410,8 +3600,10 @@ TEST(EditorLaunchArgsTests, SceneViewSuppressesVisibleTextureRequestsWhileSceneL
     const auto actionsSource = ReadTextFile("Project/Editor/Core/EditorActions.cpp");
     EXPECT_NE(actionsSource.find("revealed="), std::string::npos)
         << "Scene-load diagnostics should report how many renderer-resource objects have become visible.";
-    EXPECT_NE(actionsSource.find("options.allowProgressiveRevealBeforeAllResourcesReady = true"), std::string::npos)
-        << "Scene-load startup should allow mesh-ready objects to appear before the material tail drains.";
+    EXPECT_NE(actionsSource.find(
+        "options.allowProgressiveRevealBeforeAllResourcesReady =\n"
+        "        !prioritizeMeshArtifactLoadsUntilSaturated"), std::string::npos)
+        << "Startup must not publish a partially resolved scene, while interactive scene open may still reveal progressively.";
     EXPECT_EQ(actionsSource.find("if (!HasResolvedMaterialBindings(*meshRenderer))"), std::string::npos)
         << "Scene-load progressive reveal should not keep Scene View empty while waiting for explicit material artifacts.";
 }

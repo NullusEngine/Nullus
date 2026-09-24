@@ -47,3 +47,10 @@ Engine::SceneSystem::Scene* Editor::Panels::GameView::GetScene()
 {
 	return m_sceneManager.GetCurrentScene();
 }
+
+Engine::Rendering::BaseSceneRenderer::SceneDescriptor Editor::Panels::GameView::CreateSceneDescriptor()
+{
+	auto descriptor = AView::CreateSceneDescriptor();
+	descriptor.trustSceneRenderContentRevision = true;
+	return descriptor;
+}

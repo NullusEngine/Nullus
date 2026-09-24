@@ -79,7 +79,7 @@ TEST(SceneStreamingResidencyTests, PrimitiveDependencyRegistrationUsesHashSetFor
 	EXPECT_NE(header.find("primitiveDependencyBindings"), std::string::npos);
 
 	const auto registerStart = source.find("void SceneStreamingResidency::RegisterPrimitiveDependency");
-	const auto planStart = source.find("StreamingResidencyPlan SceneStreamingResidency::Plan", registerStart);
+	const auto planStart = source.find("SceneStreamingResidency::Plan(", registerStart);
 	ASSERT_NE(registerStart, std::string::npos);
 	ASSERT_NE(planStart, std::string::npos);
 	const auto registerBody = source.substr(registerStart, planStart - registerStart);

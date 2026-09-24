@@ -1576,6 +1576,72 @@ TEST(RenderFrameworkContractTests, MeshRuntimeUploadPublishesOnlyAfterRhiPump)
     EXPECT_EQ(completed.mesh->GetIndexCount(), 3u);
 }
 
+TEST(RenderFrameworkContractTests, TextureRuntimeUploadBatchesAndPublishesAfterCompletion)
+{
+    using namespace NLS::Render;
+
+    Context::Driver driver(MakeContractDriverSettings());
+    ScopedLocatedDriver locatedDriver(driver);
+    auto* impl = Context::DriverTestAccess::GetImplForTesting(driver);
+    ASSERT_NE(impl, nullptr);
+    impl->explicitDevice = std::make_shared<ContractDevice>();
+
+    Context::TextureRuntimeUploadRequest request;
+    request.desc.extent = { 2u, 1u, 1u };
+    request.desc.dimension = RHI::TextureDimension::Texture2D;
+    request.desc.format = RHI::TextureFormat::RGBA8;
+    request.desc.colorSpace = RHI::TextureColorSpace::SRGB;
+    request.desc.mipLevels = 1u;
+    request.desc.usage = RHI::TextureUsageFlags::Sampled;
+    request.desc.debugName = "ContractTextureRuntimeUpload";
+    request.debugName = request.desc.debugName;
+    request.mips.push_back({
+        0u,
+        2u,
+        1u,
+        8u,
+        8u,
+        {
+            255u, 0u, 0u, 255u,
+            0u, 255u, 0u, 255u,
+        }
+    });
+
+    const uint64_t requestId = Context::DriverResourceAccess::RequestTextureRuntimeUpload(
+        driver,
+        std::move(request));
+    ASSERT_NE(requestId, 0u);
+
+    auto commandBuffer = std::make_shared<ContractCommandBuffer>();
+    auto uploadContext = std::make_shared<ContractUploadContext>();
+    auto completion = std::make_shared<ContractCompletionToken>(RHI::RHICompletionStatus{
+        RHI::RHICompletionStatusCode::Success,
+        "upload complete"
+    });
+    uploadContext->nextBatchSubmission.accepted = true;
+    uploadContext->nextBatchSubmission.acceptedTextureUploads = 1u;
+    uploadContext->nextBatchSubmission.completion = completion;
+
+    RHI::RHIFrameContext frameContext;
+    frameContext.commandBuffer = commandBuffer;
+    frameContext.uploadContext = uploadContext;
+    frameContext.frameFence = std::make_shared<ContractFence>();
+
+    EXPECT_EQ(
+        Context::Detail::RecordPendingTextureRuntimeUploads(*impl, frameContext, *commandBuffer),
+        1u);
+    EXPECT_EQ(uploadContext->submitBatchCalls, 1u);
+    EXPECT_EQ(uploadContext->lastBatchTextureUploadCount, 1u);
+
+    EXPECT_EQ(
+        Context::Detail::RecordPendingTextureRuntimeUploads(*impl, frameContext, *commandBuffer),
+        0u);
+    const auto completed = impl->completedTextureRuntimeUploads.find(requestId);
+    ASSERT_NE(completed, impl->completedTextureRuntimeUploads.end());
+    EXPECT_TRUE(completed->second.success);
+    EXPECT_NE(completed->second.texture, nullptr);
+}
+
 TEST(RenderFrameworkContractTests, MeshRuntimeUploadRhiPumpDefersGpuMeshMaterialization)
 {
     using namespace NLS::Render;

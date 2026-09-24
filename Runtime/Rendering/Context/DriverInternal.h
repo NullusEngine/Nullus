@@ -15,6 +15,7 @@
 
 #include "Rendering/Context/ThreadedRenderingLifecycle.h"
 #include "Rendering/Context/AsyncMeshRuntimeUpload.h"
+#include "Rendering/Context/AsyncTextureRuntimeUpload.h"
 #include "Rendering/Data/PipelineState.h"
 #include "Rendering/RHI/Core/RHISwapchain.h"
 #include "Rendering/Resources/Mesh.h"
@@ -22,6 +23,7 @@
 #include "Rendering/Tooling/RenderDocCaptureController.h"
 #include "Rendering/UI/RHIImGuiOverlayRenderer.h"
 #include "Rendering/UI/RHIImGuiTextureRegistry.h"
+#include "TaskGraph/TaskGraph.h"
 
 namespace NLS::Render::RHI
 {
@@ -34,6 +36,16 @@ namespace NLS::Render::RHI
 
 namespace NLS::Render::Context
 {
+    namespace Detail
+    {
+        /**
+         * Shared state of one asynchronous RHI submission. Defined in
+         * RhiThreadCoordinator.cpp; DriverImpl only keeps it alive while the stage
+         * graph is in flight.
+         */
+        struct ThreadedRhiSubmissionExecution;
+    }
+
     struct CompletedReadbackTextureRecord
     {
         std::weak_ptr<Render::RHI::RHITexture> texture;
@@ -107,6 +119,28 @@ namespace NLS::Render::Context
             std::string diagnostic;
         };
 
+        struct PendingTextureRuntimeUpload
+        {
+            uint64_t requestId = 0u;
+            TextureRuntimeUploadRequest request;
+        };
+
+        struct RecordedTextureRuntimeUpload
+        {
+            uint64_t requestId = 0u;
+            std::shared_ptr<Render::RHI::RHITexture> texture;
+            std::shared_ptr<Render::RHI::RHICompletionToken> completion;
+            size_t byteCount = 0u;
+            std::string debugName;
+        };
+
+        struct CompletedTextureRuntimeUpload
+        {
+            bool success = false;
+            std::shared_ptr<Render::RHI::RHITexture> texture;
+            std::string diagnostic;
+        };
+
         Render::Settings::EGraphicsBackend requestedGraphicsBackend = Render::Settings::EGraphicsBackend::NONE;
         Render::Data::PipelineState defaultPipelineState;
         Render::Data::PipelineState pipelineState;
@@ -176,17 +210,36 @@ namespace NLS::Render::Context
         uint64_t meshRuntimeUploadLastRecordedId = 0u;
         uint64_t meshRuntimeUploadLastConsumedId = 0u;
         uint64_t meshRuntimeUploadLastCanceledId = 0u;
+        mutable std::mutex pendingTextureRuntimeUploadMutex;
+        uint64_t nextTextureRuntimeUploadRequestId = 1u;
+        std::vector<PendingTextureRuntimeUpload> pendingTextureRuntimeUploads;
+        std::vector<RecordedTextureRuntimeUpload> recordedTextureRuntimeUploads;
+        std::unordered_map<uint64_t, CompletedTextureRuntimeUpload> completedTextureRuntimeUploads;
+        std::unordered_set<uint64_t> canceledTextureRuntimeUploadRequestIds;
+        std::atomic_uint64_t textureRuntimeUploadRequestedCount{ 0u };
+        std::atomic_uint64_t textureRuntimeUploadRecordedCount{ 0u };
+        std::atomic_uint64_t textureRuntimeUploadConsumedCount{ 0u };
+        std::atomic_uint64_t textureRuntimeUploadFailedCount{ 0u };
+        std::atomic_uint64_t textureRuntimeUploadCanceledCount{ 0u };
         std::function<void()> swapchainWillResizeCallback;
         std::unique_ptr<ThreadedRenderingLifecycle> threadedLifecycle;
+        NLS::Base::TaskGraph::TaskGraph* taskGraph = nullptr;
         bool threadedWorkersRunning = false;
         std::atomic_bool threadedStopRequested{ false };
         std::thread renderSceneWorker;
         std::thread rhiWorker;
-        std::mutex threadedWorkerWakeMutex;
-        std::condition_variable threadedWorkerWake;
-        std::atomic_uint64_t threadedWorkerWakeGeneration{ 0u };
+        NLS::Base::TaskGraph::TaskEvent threadedWorkerWake;
         std::atomic_bool backgroundPreviewPublicationRequested{ false };
         std::timed_mutex threadedRhiSubmissionMutex;
+        // Producer-owned RHI lane. The thread that schedules an asynchronous stage
+        // graph keeps this lane locked until the graph retires, so the RHI worker can
+        // stay a pure pump loop while standalone and UI-only frames remain excluded.
+        std::unique_lock<std::timed_mutex> threadedRhiProducerLane;
+        std::thread::id threadedRhiProducerThreadId {};
+        std::atomic_bool threadedRhiProducerLaneHeld{ false };
+        std::shared_ptr<Detail::ThreadedRhiSubmissionExecution> pendingThreadedRhiSubmission;
+        NLS::Base::TaskGraph::TaskHandle pendingIdleMeshUploadTask;
+        NLS::Base::TaskGraph::TaskCompletion pendingIdleMeshUploadCompletion;
         std::unique_lock<std::timed_mutex> uiStandaloneFrameSubmissionLock;
         std::unique_lock<std::timed_mutex> standaloneFrameSubmissionLock;
         std::atomic_bool uiStandaloneFramePending{ false };
@@ -281,13 +334,6 @@ namespace NLS::Render::Context
             RhiSubmissionFrame* submissionFrame,
             Render::RHI::ResourceStateTrackerStats* preResetTrackerStats,
             Render::RHI::DescriptorAllocatorStats* descriptorStats);
-        NLS_RENDER_API void RecordThreadedRhiWork(
-            DriverImpl& impl,
-            Render::RHI::RHIFrameContext& frameContext,
-            const RenderScenePackage& renderScenePackage,
-            size_t frameContextIndex,
-            AsyncComputeSubmitPlan* submitPlan,
-            RhiSubmissionFrame* submissionFrame);
         NLS_RENDER_API bool CompleteThreadedRhiSubmissionTelemetry(
             DriverImpl& impl,
             Render::RHI::RHIFrameContext& frameContext,
@@ -329,6 +375,10 @@ namespace NLS::Render::Context
         NLS_RENDER_API size_t RecordPendingMeshRuntimeUploads(
             DriverImpl& impl,
             bool createGpuResources = true);
+        NLS_RENDER_API size_t RecordPendingTextureRuntimeUploads(
+            DriverImpl& impl,
+            Render::RHI::RHIFrameContext& frameContext,
+            Render::RHI::RHICommandBuffer& commandBuffer);
         NLS_RENDER_API std::vector<ParallelCommandWorkUnit> BuildParallelCommandWorkUnits(
             const RenderScenePackage& renderScenePackage,
             bool parallelRecordingReady,

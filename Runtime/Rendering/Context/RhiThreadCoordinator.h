@@ -38,6 +38,32 @@ namespace NLS::Render::Context
             Driver& driver,
             RhiSubmissionAttribution attribution,
             bool applyPendingSwapchainResize = true);
+        /**
+         * Producer-side asynchronous submission. The calling thread owns the RHI
+         * submission lane: it takes the next published frame and submits the stage
+         * graph without waiting. Stage nodes then run on TaskGraph workers and on the
+         * RHI named thread, which only pumps its own queue.
+         */
+        static bool TryScheduleNextThreadedSubmission(
+            Driver& driver,
+            RhiSubmissionAttribution attribution);
+        /**
+         * Schedules idle mesh runtime uploads on the RHI named thread when no frame is
+         * in flight, so uploads still progress while the RHI worker only pumps.
+         */
+        static bool TryScheduleIdleMeshRuntimeUploads(Driver& driver);
+        /**
+         * Releases the producer lane once its scheduled work retired and optionally
+         * applies a pending swapchain resize. Must run on the scheduling thread.
+         */
+        static void FinalizeThreadedSubmissionProduction(
+            Driver& driver,
+            bool applyPendingSwapchainResize);
+        /**
+         * Blocks until the producer lane is idle again. Called by the producing thread
+         * on shutdown so an exiting thread never leaves the lane locked.
+         */
+        static void DrainProducerOwnedThreadedSubmission(Driver& driver);
         static void ReadPixels(
             const Driver& driver,
             uint32_t x,

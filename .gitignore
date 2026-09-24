@@ -75,6 +75,11 @@ specs/.tmp/
 ThirdParty/FBX/packages/
 ThirdParty/FBX/sdk/
 
+# Repository-local Tracy profiling tool payloads (installed by the
+# nullus-tracy-performance skill, deployed next to Editor by the build).
+Tools/Tracy/*
+!Tools/Tracy/README.md
+
 # Repository-local .NET SDK bootstrap payloads.
 Tools/Dotnet/packages/
 Tools/Dotnet/windows/

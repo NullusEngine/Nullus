@@ -3315,6 +3315,11 @@ std::optional<NLS::Core::Assets::ArtifactManifest> AutoImportMissingProjectTextu
         std::filesystem::path("texture"),
         serialized
     });
+    writeRequest.dependencies.push_back({
+        NLS::Core::Assets::AssetDependencyKind::PostprocessorVersion,
+        kExternalTextureBuildPipelineDependencyName,
+        std::to_string(kExternalTexturePostprocessorVersion)
+    });
 
     const auto previousManifest = LoadArtifactManifestForSource(request, textureMeta.id, textureTargetPlatform);
     NLS::Core::Assets::ArtifactWriter writer(stagingRoot, artifactRoot);

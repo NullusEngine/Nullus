@@ -9,6 +9,7 @@
 #include <string_view>
 #include <system_error>
 #include <unordered_map>
+#include <unordered_set>
 #include <utility>
 
 #include <Assets/AssetDatabaseFacade.h>
@@ -42,6 +43,7 @@ using NLS::Core::Assets::AssetId;
 #if defined(NLS_ENABLE_TEST_HOOKS)
 Assets::PrefabInstanceRegistry* g_testInstanceRegistry = nullptr;
 std::filesystem::path g_testProjectAssetsPath;
+uint64_t g_markerDiscoveryCount = 0u;
 #endif
 
 struct PrefabInspectorServices
@@ -67,7 +69,7 @@ std::optional<PrefabInspectorServices> ResolvePrefabInspectorServices()
 struct PrefabOverrideSnapshot
 {
     Assets::PrefabInstanceRecord* instance = nullptr;
-    PrefabArtifact source;
+    std::shared_ptr<const PrefabArtifact> source;
     std::vector<Assets::PrefabOverrideDescriptor> overrides;
 };
 
@@ -208,15 +210,15 @@ std::optional<ObjectId> FindSourceComponent(
     return std::nullopt;
 }
 
-PrefabArtifact BuildSourceArtifact(const Assets::PrefabInstanceRecord& instance)
+std::shared_ptr<const PrefabArtifact> BuildSourceArtifact(const Assets::PrefabInstanceRecord& instance)
 {
-    if (const auto* shared = instance.SharedSourcePrefab())
-        return *shared;
+    if (instance.sharedSourcePrefab != nullptr)
+        return instance.sharedSourcePrefab;
 
-    PrefabArtifact source;
-    source.assetId = instance.prefabAssetId;
-    source.graph = instance.SourceGraph();
-    source.generatedModelPrefab = instance.generatedReadOnly;
+    auto source = std::make_shared<PrefabArtifact>();
+    source->assetId = instance.prefabAssetId;
+    source->graph = instance.SourceGraph();
+    source->generatedModelPrefab = instance.generatedReadOnly;
     return source;
 }
 
@@ -243,10 +245,14 @@ PrefabOverrideSnapshot* ResolveSnapshot(
     PrefabOverrideSnapshot snapshot;
     snapshot.instance = instance;
     snapshot.source = BuildSourceArtifact(*instance);
-    if (snapshot.source.graph.objects.empty())
+    if (snapshot.source == nullptr || snapshot.source->graph.objects.empty())
         return nullptr;
 
-    snapshot.overrides = Assets::PrefabUtilityFacade().GetPrefabOverrides(snapshot.source, *instance, true);
+    snapshot.overrides = Assets::PrefabUtilityFacade().GetPrefabOverridesForObject(
+        *snapshot.source,
+        *instance,
+        *owner,
+        true);
     return &cache.emplace(instance, std::move(snapshot)).first->second;
 }
 
@@ -287,7 +293,7 @@ std::vector<Assets::PrefabOverrideDescriptor> CollectOverridesForNode(
         return {};
 
     const auto sourceComponent = component != nullptr
-        ? FindSourceComponent(*snapshot.instance, snapshot.source, *component)
+        ? FindSourceComponent(*snapshot.instance, *snapshot.source, *component)
         : std::optional<ObjectId> {};
     std::vector<Assets::PrefabOverrideDescriptor> result;
     for (const auto& descriptor : snapshot.overrides)
@@ -328,22 +334,12 @@ std::vector<Assets::PrefabOverrideDescriptor> CollectOverridesForNode(
     return result;
 }
 
-void RefreshNodeOverrides(PropertyNode& node, PrefabSnapshotCache& cache)
+void RefreshNodeOverrides(PropertyNode& node, PrefabOverrideQuery& query)
 {
-    node.prefabOverride = PrefabOverrideState::None;
-    if (auto* snapshot = ResolveSnapshot(node.target, cache))
-    {
-        const auto overrides = CollectOverridesForNode(node, *snapshot);
-        if (!overrides.empty())
-        {
-            node.prefabOverride = node.isComponent
-                ? PrefabOverrideState::StructuralOverride
-                : PrefabOverrideState::PropertyOverride;
-        }
-    }
+    node.prefabOverride = query.GetState(node);
 
     for (auto& child : node.children)
-        RefreshNodeOverrides(child, cache);
+        RefreshNodeOverrides(child, query);
 }
 
 std::string DescribeFailure(const Assets::PrefabOperationResult& result)
@@ -406,7 +402,8 @@ std::optional<PrefabInstanceUndoSnapshot> CaptureInstanceUndoSnapshot(
     snapshot.identity = *identity;
     snapshot.localPatches = instance.localPatches;
     const auto source = BuildSourceArtifact(instance);
-    snapshot.overrides = Assets::PrefabUtilityFacade().GetPrefabOverrides(source, instance, true);
+    if (source != nullptr)
+        snapshot.overrides = Assets::PrefabUtilityFacade().GetPrefabOverrides(*source, instance, true);
     return snapshot;
 }
 
@@ -782,7 +779,7 @@ bool RestorePrefabUndoState(
             instanceRegistry,
             state.prefabAssetId,
             state.prefabSubAssetKey);
-        auto source = std::make_shared<const PrefabArtifact>(BuildSourceArtifact(*currentPrimary));
+        auto source = BuildSourceArtifact(*currentPrimary);
         if (RestorePrefabInstanceSnapshots(instanceRegistry, state, desiredSnapshots, source, error))
             return true;
 
@@ -937,7 +934,7 @@ bool ApplyInitialPrefabRevert(
         return false;
     }
 
-    const auto source = std::make_shared<const PrefabArtifact>(BuildSourceArtifact(*primary));
+    const auto source = BuildSourceArtifact(*primary);
     SynchronizeLocalPatches(*primary, state.requestedOverrides);
     const auto result = Assets::PrefabUtilityFacade().RevertOverrideGroup(*primary, state.requestedOverrides);
     if (result.status != Assets::PrefabOperationStatus::Committed)
@@ -1351,6 +1348,224 @@ std::vector<PrefabInspectorAction> BuildActions(
     };
 }
 
+uint64_t MixGuidFingerprint(uint64_t hash, const NLS::Guid& guid)
+{
+    for (const auto byte : guid.GetBytes())
+    {
+        hash ^= static_cast<uint64_t>(byte);
+        hash *= 1099511628211ull;
+    }
+    return hash;
+}
+
+// Local patches are the only prefab-override state that survives selection
+// changes. Hashing their identities keeps the cached marker index honest
+// without serializing any live object.
+uint64_t ComputeLocalPatchFingerprint(const Assets::PrefabInstanceRecord& instance)
+{
+    uint64_t hash = 1469598103934665603ull;
+    const auto mix = [&hash](const uint64_t value)
+    {
+        hash ^= value;
+        hash *= 1099511628211ull;
+    };
+
+    mix(instance.localPatches.size());
+    for (const auto& patch : instance.localPatches)
+    {
+        mix(static_cast<uint64_t>(patch.type));
+        mix(patch.hasIndex ? 1u : 0u);
+        mix(static_cast<uint64_t>(patch.index));
+        hash = MixGuidFingerprint(hash, patch.target.GetGuid());
+        hash = MixGuidFingerprint(hash, patch.object.GetGuid());
+        for (const auto character : patch.property)
+            mix(static_cast<uint64_t>(static_cast<unsigned char>(character)) + 1u);
+        mix(0u);
+    }
+    return hash;
+}
+
+struct SourceObjectOverrideStates
+{
+    std::unordered_set<std::string> properties;
+};
+
+// Per (prefab instance, selected live object) marker index. Building it is the
+// expensive discovery pass; every Inspector node afterwards is answered from
+// these tables instead of rescanning serialized properties or override lists.
+struct OwnerOverrideIndex
+{
+    const Assets::PrefabInstanceRecord* instance = nullptr;
+    const void* registryIdentity = nullptr;
+    uint64_t registryRevision = 0u;
+    uint64_t patchFingerprint = 0u;
+    const void* sourceIdentity = nullptr;
+    std::shared_ptr<const PrefabArtifact> source;
+    bool hasInstance = false;
+    std::unordered_map<ObjectId, SourceObjectOverrideStates> propertiesBySource;
+    std::unordered_set<ObjectId> structuralSources;
+    std::unordered_set<ObjectId> structuralOwnerSources;
+    std::unordered_map<const Component*, ObjectId> sourceByComponent;
+    bool componentSourcesBuilt = false;
+};
+
+void BuildOwnerOverrideIndex(
+    OwnerOverrideIndex& index,
+    Assets::PrefabInstanceRegistry& registry,
+    Assets::PrefabInstanceRecord& instance,
+    GameObject& owner)
+{
+    index = OwnerOverrideIndex {};
+    index.instance = &instance;
+    index.registryIdentity = &registry;
+    index.registryRevision = registry.GetRevision();
+    index.patchFingerprint = ComputeLocalPatchFingerprint(instance);
+
+    index.source = BuildSourceArtifact(instance);
+    index.sourceIdentity = instance.sharedSourcePrefab != nullptr
+        ? static_cast<const void*>(instance.sharedSourcePrefab.get())
+        : static_cast<const void*>(&instance.sourceGraph);
+    if (index.source == nullptr || index.source->graph.objects.empty())
+        return;
+
+    index.hasInstance = true;
+#if defined(NLS_ENABLE_TEST_HOOKS)
+    ++g_markerDiscoveryCount;
+#endif
+    const auto overrides = Assets::PrefabUtilityFacade().GetPrefabOverrideMarkersForObject(
+        *index.source,
+        instance,
+        owner,
+        true);
+    for (const auto& descriptor : overrides)
+    {
+        if (IsStructuralOverride(descriptor))
+        {
+            index.structuralSources.insert(descriptor.sourceObject);
+            index.structuralSources.insert(descriptor.patch.target);
+            index.structuralSources.insert(descriptor.patch.object);
+            if (descriptor.propertyPath == "components")
+            {
+                index.structuralOwnerSources.insert(descriptor.sourceObject);
+                index.structuralOwnerSources.insert(descriptor.patch.target);
+            }
+            continue;
+        }
+
+        if ((descriptor.kind == Assets::PrefabOverrideKind::Property ||
+                descriptor.kind == Assets::PrefabOverrideKind::DefaultOverride) &&
+            descriptor.patch.type == PatchOperationType::ReplaceProperty)
+        {
+            index.propertiesBySource[descriptor.sourceObject].properties.insert(descriptor.propertyPath);
+        }
+    }
+}
+
+// Mirrors PrefabEditorWorkflow's component-to-source matching (nth component of
+// a type maps to the nth source component of that type) but resolves the whole
+// owner once instead of rescanning every component per Inspector row.
+void BuildComponentSourceMap(
+    OwnerOverrideIndex& index,
+    const GameObject& owner,
+    const ObjectId& sourceOwner)
+{
+    index.componentSourcesBuilt = true;
+    index.sourceByComponent.clear();
+    if (index.source == nullptr)
+        return;
+
+    const auto* sourceOwnerRecord = FindObjectRecord(index.source->graph, sourceOwner);
+    if (sourceOwnerRecord == nullptr)
+        return;
+
+    const auto sourceComponents = GetOwnedReferences(*sourceOwnerRecord, "components");
+    std::unordered_map<std::string, std::vector<ObjectId>> sourceIdsByType;
+    sourceIdsByType.reserve(sourceComponents.size());
+    for (const auto& sourceComponent : sourceComponents)
+    {
+        const auto* record = FindObjectRecord(index.source->graph, sourceComponent);
+        if (record == nullptr)
+            continue;
+        sourceIdsByType[record->typeName].push_back(sourceComponent);
+    }
+
+    std::unordered_map<std::string, size_t> nextSourceIndex;
+    nextSourceIndex.reserve(sourceIdsByType.size());
+    for (const auto& candidate : owner.GetComponents())
+    {
+        if (candidate == nullptr)
+            continue;
+
+        const std::string typeName = candidate->GetType().GetName();
+        const auto ids = sourceIdsByType.find(typeName);
+        if (ids == sourceIdsByType.end())
+            continue;
+
+        auto& next = nextSourceIndex[typeName];
+        if (next >= ids->second.size())
+            continue;
+
+        index.sourceByComponent.emplace(candidate.get(), ids->second[next]);
+        ++next;
+    }
+}
+
+std::optional<ObjectId> ResolveSourceComponent(
+    OwnerOverrideIndex& index,
+    const GameObject& owner,
+    const ObjectId& sourceOwner,
+    const Component& component)
+{
+    if (!index.componentSourcesBuilt)
+        BuildComponentSourceMap(index, owner, sourceOwner);
+
+    const auto found = index.sourceByComponent.find(&component);
+    return found != index.sourceByComponent.end() ? std::optional<ObjectId> {found->second} : std::nullopt;
+}
+
+PrefabOverrideState ComputeNodeOverrideState(OwnerOverrideIndex& index, const PropertyNode& node)
+{
+    if (!index.hasInstance || index.instance == nullptr)
+        return PrefabOverrideState::None;
+
+    auto* owner = ResolveGameObject(node.target);
+    if (owner == nullptr)
+        return PrefabOverrideState::None;
+
+    const auto sourceOwner = FindSourceObject(*index.instance, *owner);
+    if (!sourceOwner.has_value())
+        return PrefabOverrideState::None;
+
+    ObjectId sourceObject = *sourceOwner;
+    if (const auto* component = dynamic_cast<const Component*>(
+            NativeReflectionAdapter::ResolveObject(node.target)); component != nullptr)
+    {
+        const auto sourceComponent = ResolveSourceComponent(index, *owner, *sourceOwner, *component);
+        if (!sourceComponent.has_value())
+            return PrefabOverrideState::None;
+        sourceObject = *sourceComponent;
+    }
+
+    if (node.isComponent)
+    {
+        const bool structural =
+            index.structuralSources.find(sourceObject) != index.structuralSources.end() ||
+            index.structuralOwnerSources.find(*sourceOwner) != index.structuralOwnerSources.end();
+        return structural ? PrefabOverrideState::StructuralOverride : PrefabOverrideState::None;
+    }
+
+    if (node.fieldName.empty())
+        return PrefabOverrideState::None;
+
+    const auto found = index.propertiesBySource.find(sourceObject);
+    if (found == index.propertiesBySource.end())
+        return PrefabOverrideState::None;
+
+    return found->second.properties.find(node.fieldName) != found->second.properties.end()
+        ? PrefabOverrideState::PropertyOverride
+        : PrefabOverrideState::None;
+}
+
 bool ResolveNodeSnapshot(
     const PropertyNode& node,
     PrefabSnapshotCache& cache,
@@ -1365,14 +1580,189 @@ bool ResolveNodeSnapshot(
 }
 } // namespace
 
+struct PrefabOverrideQuery::Impl
+{
+    std::unordered_map<const GameObject*, OwnerOverrideIndex> indexesByOwner;
+    std::unordered_map<std::string, PrefabOverrideState> states;
+    std::unordered_map<const GameObject*, OwnerOverrideIndex*> resolvedThisRefresh;
+    std::unordered_map<const GameObject*, const Assets::PrefabInstanceRecord*> instanceByOwner;
+    const void* registryIdentity = nullptr;
+    uint64_t registryRevision = 0u;
+    uint64_t refreshSerial = 0u;
+};
+
+PrefabOverrideQuery::PrefabOverrideQuery()
+    : m_impl(std::make_unique<Impl>())
+{
+}
+
+PrefabOverrideQuery::~PrefabOverrideQuery() = default;
+
+void PrefabOverrideQuery::BeginRefresh()
+{
+    if (const auto services = ResolvePrefabInspectorServices();
+        services.has_value() && services->instanceRegistry != nullptr)
+    {
+        auto& registry = *services->instanceRegistry;
+        const uint64_t revision = registry.GetRevision();
+        if (m_impl->registryIdentity != &registry || m_impl->registryRevision != revision)
+        {
+            m_impl->registryIdentity = &registry;
+            m_impl->registryRevision = revision;
+            m_impl->indexesByOwner.clear();
+            m_impl->instanceByOwner.clear();
+        }
+        else if (m_impl->indexesByOwner.size() >= 128u)
+        {
+            // Bounded selection cache: a long editing session must not retain
+            // every prefab instance the user has inspected.
+            m_impl->indexesByOwner.clear();
+        }
+    }
+
+    ++m_impl->refreshSerial;
+    if (m_impl->refreshSerial == 0u)
+        m_impl->refreshSerial = 1u;
+    m_impl->states.clear();
+    m_impl->resolvedThisRefresh.clear();
+}
+
+void PrefabOverrideQuery::InvalidateAll()
+{
+    m_impl->indexesByOwner.clear();
+    m_impl->instanceByOwner.clear();
+    m_impl->states.clear();
+    m_impl->resolvedThisRefresh.clear();
+}
+
+PrefabOverrideState PrefabOverrideQuery::GetState(const PropertyNode& node)
+{
+    if (GetPropertyNodeTargets(node).size() > 1u)
+        return PrefabOverrideState::None;
+
+    std::string key = node.path.ToString();
+    key += "|";
+    key += node.fieldName;
+    key += "|";
+    key += node.isComponent ? "component" : "property";
+    key += "|";
+    key += std::to_string(node.target.instanceId);
+    key += "|";
+    key += node.target.objectIdentifier.guid.ToString();
+    key += ":";
+    key += std::to_string(node.target.objectIdentifier.localIdentifierInFile);
+    if (const auto found = m_impl->states.find(key); found != m_impl->states.end())
+        return found->second;
+
+    PrefabOverrideState state = PrefabOverrideState::None;
+    if (auto* owner = ResolveGameObject(node.target))
+    {
+        OwnerOverrideIndex* index = nullptr;
+        if (const auto resolved = m_impl->resolvedThisRefresh.find(owner);
+            resolved != m_impl->resolvedThisRefresh.end())
+        {
+            index = resolved->second;
+        }
+        else
+        {
+            const auto services = ResolvePrefabInspectorServices();
+            if (services.has_value() && services->instanceRegistry != nullptr)
+            {
+                auto& registry = *services->instanceRegistry;
+                if (auto* instance = registry.FindInstance(*owner);
+                    instance != nullptr && !instance->unpacked && instance->prefabAssetId.IsValid())
+                {
+                    const auto patchFingerprint = ComputeLocalPatchFingerprint(*instance);
+                    const void* sourceIdentity = instance->sharedSourcePrefab != nullptr
+                        ? static_cast<const void*>(instance->sharedSourcePrefab.get())
+                        : static_cast<const void*>(&instance->sourceGraph);
+
+                    auto& candidate = m_impl->indexesByOwner[owner];
+                    const bool matches =
+                        candidate.instance == instance &&
+                        candidate.registryIdentity == &registry &&
+                        candidate.registryRevision == registry.GetRevision() &&
+                        candidate.patchFingerprint == patchFingerprint &&
+                        candidate.sourceIdentity == sourceIdentity;
+                    if (!matches)
+                        BuildOwnerOverrideIndex(candidate, registry, *instance, *owner);
+                    index = &candidate;
+                }
+            }
+
+            m_impl->resolvedThisRefresh.emplace(owner, index);
+        }
+
+        if (index != nullptr)
+            state = ComputeNodeOverrideState(*index, node);
+    }
+    m_impl->states.emplace(std::move(key), state);
+    return state;
+}
+
+bool PrefabOverrideQuery::HasInstance(const InspectorTargetHandle& target) const
+{
+    const auto services = ResolvePrefabInspectorServices();
+    if (!services.has_value() || services->instanceRegistry == nullptr)
+        return false;
+
+    auto* owner = ResolveGameObject(target);
+    if (owner == nullptr)
+        return false;
+
+    auto& registry = *services->instanceRegistry;
+    const uint64_t revision = registry.GetRevision();
+    if (m_impl->registryIdentity != &registry || m_impl->registryRevision != revision)
+    {
+        m_impl->registryIdentity = &registry;
+        m_impl->registryRevision = revision;
+        m_impl->indexesByOwner.clear();
+        m_impl->instanceByOwner.clear();
+    }
+
+    const Assets::PrefabInstanceRecord* instance = nullptr;
+    if (const auto found = m_impl->instanceByOwner.find(owner);
+        found != m_impl->instanceByOwner.end())
+    {
+        instance = found->second;
+    }
+    else
+    {
+        instance = registry.FindInstance(*owner);
+        m_impl->instanceByOwner.emplace(owner, instance);
+    }
+
+    return instance != nullptr && !instance->unpacked && instance->prefabAssetId.IsValid();
+}
+
+void RefreshPrefabOverrideStates(
+    InspectorPresentation& tree,
+    PrefabOverrideQuery& query)
+{
+    query.BeginRefresh();
+    for (auto& root : tree.roots)
+        RefreshNodeOverrides(root, query);
+    for (auto& node : tree.auxiliary)
+        RefreshNodeOverrides(node, query);
+}
+
 void RefreshPrefabOverrideStates(InspectorPresentation& tree)
 {
-    PrefabSnapshotCache cache;
-    for (auto& root : tree.roots)
-        RefreshNodeOverrides(root, cache);
+    PrefabOverrideQuery query;
+    RefreshPrefabOverrideStates(tree, query);
 }
 
 #if defined(NLS_ENABLE_TEST_HOOKS)
+uint64_t TestHooks::GetPrefabOverrideMarkerDiscoveryCountForTesting()
+{
+    return g_markerDiscoveryCount;
+}
+
+void TestHooks::ResetPrefabOverrideMarkerDiscoveryCountForTesting()
+{
+    g_markerDiscoveryCount = 0u;
+}
+
 TestHooks::ScopedPrefabInspectorServicesForTesting::ScopedPrefabInspectorServicesForTesting(
     Assets::PrefabInstanceRegistry& instanceRegistry,
     std::filesystem::path projectAssetsPath)
@@ -1427,11 +1817,19 @@ std::vector<PrefabInspectorAction> GetPrefabInspectorActions(const InspectorTarg
 
     PrefabSnapshotCache cache;
     auto* snapshot = ResolveSnapshot(*target, cache);
+    if (snapshot == nullptr || snapshot->source == nullptr || snapshot->instance == nullptr)
+        return {};
+
+    auto fullSnapshot = *snapshot;
+    fullSnapshot.overrides = Assets::PrefabUtilityFacade().GetPrefabOverrides(
+        *fullSnapshot.source,
+        *fullSnapshot.instance,
+        true);
     return BuildActions(
-        snapshot != nullptr ? snapshot->overrides : std::vector<Assets::PrefabOverrideDescriptor> {},
+        fullSnapshot.overrides,
         false,
         true,
-        snapshot);
+        &fullSnapshot);
 }
 
 bool ExecutePrefabInspectorAction(
@@ -1474,13 +1872,24 @@ bool ExecutePrefabInspectorAction(
     PrefabSnapshotCache cache;
     auto* snapshot = ResolveSnapshot(*target, cache);
     auto* owner = ResolveGameObject(*target);
-    if (snapshot == nullptr || owner == nullptr || snapshot->overrides.empty())
+    if (snapshot == nullptr || snapshot->source == nullptr || snapshot->instance == nullptr || owner == nullptr)
+    {
+        error = "The selected target has no prefab overrides.";
+        return false;
+    }
+
+    auto fullSnapshot = *snapshot;
+    fullSnapshot.overrides = Assets::PrefabUtilityFacade().GetPrefabOverrides(
+        *fullSnapshot.source,
+        *fullSnapshot.instance,
+        true);
+    if (fullSnapshot.overrides.empty())
     {
         error = "The selected target has no prefab overrides.";
         return false;
     }
     return action == PrefabInspectorActionKind::Apply
-        ? ApplyOverridesToSource(*snapshot, snapshot->overrides, error)
-        : RevertOverridesOnInstance(*snapshot, snapshot->overrides, error);
+        ? ApplyOverridesToSource(fullSnapshot, fullSnapshot.overrides, error)
+        : RevertOverridesOnInstance(fullSnapshot, fullSnapshot.overrides, error);
 }
 } // namespace NLS::Editor::Inspector

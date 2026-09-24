@@ -34,7 +34,13 @@ namespace NLS::meta
         void ArrayWrapperContainer<T, ContainerType>::Insert(size_t index, const Argument &value)
         {
             if constexpr (std::is_copy_constructible_v<T>)
+            {
+                // Invalid reflected arguments carry a null data pointer. Treat
+                // them as a no-op instead of letting GetValue dereference null.
+                if (value.GetPtr() == nullptr)
+                    return;
                 m_array.insert( m_array.begin( ) + index, value.GetValue<T>( ) );
+            }
         }
 
         template<typename T, typename ContainerType>

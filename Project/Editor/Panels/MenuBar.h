@@ -4,6 +4,7 @@
 #include <UI/Panels/PanelWindow.h>
 #include <UI/Widgets/Menu/MenuItem.h>
 #include <UI/Widgets/Menu/MenuList.h>
+#include <UI/Widgets/Texts/Text.h>
 
 #include <functional>
 
@@ -22,12 +23,6 @@ namespace NLS::Editor::Panels
 		*/
 		MenuBar();
 		
-		/**
-		* Check inputs for menubar shortcuts
-		* @param p_deltaTime
-		*/
-		void HandleShortcuts(float p_deltaTime);
-
         void DrawMenuEntries();
         void DrawDialogs();
 
@@ -48,12 +43,6 @@ namespace NLS::Editor::Panels
         */
         bool RegisterCommand(const std::string& p_menuPath, std::function<void()> p_execute);
 
-		/**
-		* @note This needs to be called after all other panels have been intialized, as the content of other
-		* panels is required to initialize some settings
-		*/
-		void InitializeSettingsMenu();
-
 	private:
 		void CreateFileMenu();
         void CreateEditMenu();
@@ -62,11 +51,17 @@ namespace NLS::Editor::Panels
 		void createGameObjectsMenu();
 		void CreateResourcesMenu();
 		void CreateLayoutMenu();
+		void CreateToolsMenu();
+		void CreateDebuggingMenu();
 		void CreateHelpMenu();
 
 		void UpdateToggleableItems();
 		void UpdateShortcutLabels();
 		void OpenEveryWindows(bool p_state);
+		void RefreshTracyProfilerStatus();
+		void OpenTracyProfiler();
+		void OpenTracyCaptureFolder();
+		void RefreshDebuggingMenuStatus();
 
 	private:
 		PanelMap m_panels;
@@ -76,7 +71,6 @@ namespace NLS::Editor::Panels
         ShortcutSettingsPanel m_shortcutSettingsPanel;
         ProjectSettings* m_projectSettingsPanel = nullptr;
 		UI::Widgets::MenuList* m_editMenu = nullptr;
-		UI::Widgets::MenuList* m_settingsMenu = nullptr;
 		UI::Widgets::MenuList* m_windowMenu = nullptr;
 		UI::Widgets::MenuItem* m_newSceneItem = nullptr;
 		UI::Widgets::MenuItem* m_saveSceneItem = nullptr;
@@ -85,5 +79,15 @@ namespace NLS::Editor::Panels
 		UI::Widgets::MenuItem* m_redoItem = nullptr;
 		UI::Widgets::MenuItem* m_renderDocCaptureItem = nullptr;
 		UI::Widgets::MenuItem* m_renderDocOpenLatestItem = nullptr;
+		UI::Widgets::MenuList* m_toolsMenu = nullptr;
+		UI::Widgets::MenuItem* m_tracyOpenProfilerItem = nullptr;
+		UI::Widgets::MenuItem* m_tracyOpenCaptureFolderItem = nullptr;
+		UI::Widgets::Text* m_tracyToolStatusText = nullptr;
+		UI::Widgets::Text* m_tracyClientStatusText = nullptr;
+		UI::Widgets::MenuList* m_debuggingMenu = nullptr;
+		UI::Widgets::MenuItem* m_wireframeModeItem = nullptr;
+		UI::Widgets::MenuItem* m_renderDocEnabledItem = nullptr;
+		UI::Widgets::MenuItem* m_renderDocAutoOpenItem = nullptr;
+		UI::Widgets::Text* m_renderDocStatusText = nullptr;
 	};
 }

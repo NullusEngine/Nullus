@@ -24,6 +24,7 @@ Editor::Panels::AViewControllable::AViewControllable(
 
 void Editor::Panels::AViewControllable::Update(float p_deltaTime)
 {
+	ApplyViewSettings();
 	m_cameraController.HandleInputs(p_deltaTime);
 	AView::Update(p_deltaTime);
 }
@@ -55,16 +56,6 @@ Editor::Core::CameraController& Editor::Panels::AViewControllable::GetCameraCont
 NLS::Render::Entities::Camera* Editor::Panels::AViewControllable::GetCamera()
 {
 	return &m_camera;
-}
-
-const Maths::Vector3& Editor::Panels::AViewControllable::GetGridColor() const
-{
-	return m_gridColor;
-}
-
-void Editor::Panels::AViewControllable::SetGridColor(const Maths::Vector3& p_color)
-{
-	m_gridColor = p_color;
 }
 
 void Editor::Panels::AViewControllable::ResetGridColor()

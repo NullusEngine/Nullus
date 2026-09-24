@@ -49,6 +49,13 @@ struct EditorRuntimeAssetDatabaseLoadStats
     size_t runtimeDependencyBuildCount = 0u;
 };
 
+enum class StartupResourcePrewarmMode
+{
+    Async,
+    Legacy,
+    Pipelined
+};
+
 #if defined(NLS_ENABLE_TEST_HOOKS)
 std::optional<NLS::Engine::Assets::RuntimeAssetDatabase> LoadEditorRuntimeAssetDatabaseForTesting(
     const std::filesystem::path& projectRoot,
@@ -72,7 +79,8 @@ class Context
     Context(const std::string& p_projectPath, const std::string& p_projectName,
             std::optional<Render::Settings::EGraphicsBackend> p_backendOverride = std::nullopt,
             std::optional<Render::Settings::RenderDocSettings> p_renderDocOverride = std::nullopt,
-            std::optional<Render::Settings::EngineDiagnosticsSettings> p_diagnosticsOverride = std::nullopt);
+            std::optional<Render::Settings::EngineDiagnosticsSettings> p_diagnosticsOverride = std::nullopt,
+            bool p_dx12DebugLayer = false);
 
     /**
      * Destructor
@@ -128,6 +136,8 @@ class Context
 
     const Render::Settings::EngineDiagnosticsSettings& GetDiagnosticsSettings() const;
     bool IsSceneRenderingAvailable() const { return m_sceneRenderingAvailable; }
+    void SetStartupResourcePrewarmMode(const StartupResourcePrewarmMode mode) { m_startupResourcePrewarmMode = mode; }
+    [[nodiscard]] StartupResourcePrewarmMode GetStartupResourcePrewarmMode() const { return m_startupResourcePrewarmMode; }
     [[nodiscard]] NLS::Editor::Assets::AssetThumbnailFeatureConfig GetAssetThumbnailFeatureConfig() const;
     void MarkEditorWindowShown() { m_editorWindowShown = true; }
     [[nodiscard]] bool IsEditorWindowShown() const { return m_editorWindowShown; }
@@ -277,6 +287,7 @@ private:
     bool m_taskProgressVisible = false;
     bool m_sceneRenderingAvailable = false;
     bool m_editorWindowShown = false;
+    StartupResourcePrewarmMode m_startupResourcePrewarmMode = StartupResourcePrewarmMode::Async;
     NLS::ListenerID m_sceneLoadListener = NLS::InvalidListenerID;
     NLS::ListenerID m_sceneComponentAddedListener = NLS::InvalidListenerID;
 };

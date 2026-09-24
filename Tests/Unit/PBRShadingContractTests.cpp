@@ -2088,7 +2088,8 @@ TEST(PBRShadingContractTests, DeferredShadersCompileThroughNativeDxcForDxilSpirv
     const auto gbufferVertex = ExtractFunctionDefinition(parsedGbuffer->hlslSource, "VSMain");
     ASSERT_FALSE(gbufferVertex.empty());
     EXPECT_NE(gbufferVertex.find("SV_InstanceID"), std::string::npos);
-    EXPECT_NE(gbufferVertex.find("ObjectData[u_ObjectIndex + instanceId]"), std::string::npos);
+    EXPECT_NE(gbufferVertex.find("InstanceObjectIndices[u_ObjectIndex + instanceId]"), std::string::npos);
+    EXPECT_NE(gbufferVertex.find("ObjectData[objectSlot]"), std::string::npos);
     EXPECT_EQ(gbufferVertex.find("u_Model"), std::string::npos);
 
     struct ShaderLabVariant

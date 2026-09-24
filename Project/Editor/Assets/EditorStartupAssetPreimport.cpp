@@ -3354,6 +3354,14 @@ StartupAssetPreimportResult RunBlockingStartupAssetPreimport(
         cacheAnalysis = AnalyzeStartupAssetPreimportCache(options.projectRoot, startupStampPath);
     result.cacheValidationProfile = cacheAnalysis.profile;
     LogStartupCacheValidationProfile(result.cacheValidationProfile);
+    if (options.forceReimport)
+    {
+        cacheAnalysis.cacheHit = false;
+        cacheAnalysis.changedSourcePaths = cacheAnalysis.currentSourceAssetPaths;
+        cacheAnalysis.targetedRefreshSourceAssetPaths = cacheAnalysis.currentSourceAssetPaths;
+        cacheAnalysis.profile.missReason = "forced-prewarm-reimport";
+        NLS_LOG_INFO("[StartupAssetPreimport] Forced prewarm reimport enabled; all startup source assets will be replanned.");
+    }
     if (cacheAnalysis.cacheHit)
     {
         if (cacheAnalysis.patchLoadedIndexOnCacheHit && cacheAnalysis.loadedIndex.has_value())
@@ -3472,9 +3480,10 @@ StartupAssetPreimportResult RunBlockingStartupAssetPreimport(
         "Assets");
     const auto planBegin = std::chrono::steady_clock::now();
     AssetPreimportRequest planRequest;
+    planRequest.reason = AssetPreimportReason::EditorStartup;
+    planRequest.forceRebuildAll = options.forceReimport;
     if (cacheAnalysis.changedSourcePaths.has_value() && !cacheAnalysis.changedSourcePaths->empty())
     {
-        planRequest.reason = AssetPreimportReason::EditorStartup;
         planRequest.changedPaths = *cacheAnalysis.changedSourcePaths;
         planRequest.candidateAssetPaths = cacheAnalysis.candidatePreimportAssetPaths;
         planRequest.startupCacheValidatedArtifactPayloads = cacheAnalysis.startupCacheValidatedArtifactPayloads;
@@ -3499,7 +3508,7 @@ StartupAssetPreimportResult RunBlockingStartupAssetPreimport(
     result.succeeded = scheduler.RunAlreadyPlanned(
         database,
         tracker,
-        {AssetPreimportReason::EditorStartup, {}},
+        planRequest,
         plan);
     result.importedAssetCount =
         database.GetCompletedImportCount() >= internalImportCount

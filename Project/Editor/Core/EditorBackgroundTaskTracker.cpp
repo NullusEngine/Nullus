@@ -44,17 +44,24 @@ namespace NLS::Editor::Core
         StopAndComplete();
     }
 
-    bool EditorBackgroundTaskTracker::Track(std::function<void()> task)
+    bool EditorBackgroundTaskTracker::Track(
+        std::function<void()> task,
+        const NLS::Base::Jobs::JobPriority priority)
     {
-        return Track(std::move(task), true);
+        return Track(std::move(task), true, priority);
     }
 
-    bool EditorBackgroundTaskTracker::TrackOpportunistic(std::function<void()> task)
+    bool EditorBackgroundTaskTracker::TrackOpportunistic(
+        std::function<void()> task,
+        const NLS::Base::Jobs::JobPriority priority)
     {
-        return Track(std::move(task), false);
+        return Track(std::move(task), false, priority);
     }
 
-    bool EditorBackgroundTaskTracker::Track(std::function<void()> task, const bool warnWhenCapacityReached)
+    bool EditorBackgroundTaskTracker::Track(
+        std::function<void()> task,
+        const bool warnWhenCapacityReached,
+        const NLS::Base::Jobs::JobPriority priority)
     {
         if (!task)
             return false;
@@ -70,6 +77,7 @@ namespace NLS::Editor::Core
         desc.userData = payload;
         desc.cancelFunction = DeleteTaskPayloadIfUnclaimed;
         desc.cancelUserData = payload;
+        desc.priority = priority;
         desc.debugName = "EditorActions::TrackBackgroundTask";
         desc.function = [](void* userData)
         {

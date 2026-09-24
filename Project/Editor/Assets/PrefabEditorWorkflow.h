@@ -175,13 +175,20 @@ public:
         NLS::Core::Assets::AssetId prefabAssetId,
         const std::string& prefabSubAssetKey = {});
     PrefabHierarchyPresentation GetPresentation(const NLS::Engine::GameObject& object) const;
+    // Monotonic identity for cache validation. Any registration, removal, or
+    // mapping change invalidates derived per-instance caches even when the
+    // deque element address is reused.
+    [[nodiscard]] uint64_t GetRevision() const { return m_revision; }
 
 private:
+    void BumpRevision();
+
     std::deque<PrefabInstanceRecord> m_instances;
     std::unordered_set<std::string> m_missingPrefabSources;
     std::unordered_set<std::string> m_pendingResourcePrefabSources;
     std::unordered_set<const NLS::Engine::GameObject*> m_failedResourceInstanceRoots;
     std::unordered_set<const NLS::Engine::GameObject*> m_pendingResourceInstanceRoots;
+    uint64_t m_revision = 1u;
 };
 
 struct CreatePrefabFromSelectionRequest
@@ -235,6 +242,11 @@ public:
     std::vector<PrefabOverrideRecord> DiscoverOverrides(
         const NLS::Engine::Assets::PrefabArtifact& prefab,
         const PrefabInstanceRecord& instance) const;
+    std::vector<PrefabOverrideRecord> DiscoverOverridesForObject(
+        const NLS::Engine::Assets::PrefabArtifact& prefab,
+        const PrefabInstanceRecord& instance,
+        NLS::Engine::GameObject& liveObject,
+        bool includeStoredLocalPatches = true) const;
     PrefabEditorOperationResult ApplySelectedOverride(
         NLS::Engine::Assets::PrefabArtifact& prefab,
         const PrefabOverrideRecord& overrideRecord) const;

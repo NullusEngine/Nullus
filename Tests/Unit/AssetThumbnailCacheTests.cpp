@@ -9,6 +9,7 @@
 #include "Assets/ArtifactLoadTelemetry.h"
 #include "Assets/ArtifactManifest.h"
 #include "Assets/EditorThumbnailPreviewRenderer.h"
+#include "Assets/ImportedPrefabRendererDependencyTemplates.h"
 #include "Assets/NativeArtifactContainer.h"
 #include "Assets/PreviewRenderableSnapshot.h"
 #include "Assets/ResidentPrefabPreviewRegistry.h"
@@ -8010,6 +8011,15 @@ TEST(AssetThumbnailCacheTests, ResidentPrefabSceneRegistrationReusesExactSnapsho
         {resolvedMesh});
     ASSERT_FALSE(imported.diagnostics.HasErrors());
 
+    const auto dependencyTemplates = BuildImportedPrefabRendererDependencyTemplates(imported.artifact);
+    const auto preparedSnapshot = BuildPreviewRenderableSnapshot(imported.artifact, dependencyTemplates);
+    const auto ordinarySnapshot = BuildPreviewRenderableSnapshot(imported.artifact);
+    ASSERT_EQ(preparedSnapshot.drawItems.size(), ordinarySnapshot.drawItems.size());
+    ASSERT_FALSE(preparedSnapshot.drawItems.empty());
+    EXPECT_EQ(preparedSnapshot.expectedDrawItemCount, ordinarySnapshot.expectedDrawItemCount);
+    EXPECT_EQ(preparedSnapshot.drawItems.front().meshPath, ordinarySnapshot.drawItems.front().meshPath);
+    EXPECT_EQ(preparedSnapshot.drawItems.front().materialPaths, ordinarySnapshot.drawItems.front().materialPaths);
+
     auto registry = ResidentPrefabPreviewRegistry::Create();
     const auto runtimeIdentity = BuildResidentPrefabRuntimeCacheIdentity(
         prefabAssetId.ToString(),
@@ -8021,8 +8031,10 @@ TEST(AssetThumbnailCacheTests, ResidentPrefabSceneRegistrationReusesExactSnapsho
         "prefab:Hero",
         prefabArtifactPath.generic_string(),
         runtimeIdentity,
-        imported.artifact);
+        imported.artifact,
+        &dependencyTemplates);
     ASSERT_TRUE(first.has_value());
+    ASSERT_EQ(first->Snapshot()->drawItems.size(), preparedSnapshot.drawItems.size());
 
     const auto second = registry->RegisterPrefabSnapshotForScene(
         root,

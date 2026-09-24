@@ -679,16 +679,24 @@ TEST(SceneOcclusionTests, DeferredSceneRendererPreparesHZBFrameResourcesOnlyWhen
 
 	EXPECT_NE(
 		normalizedSource.find(RemoveWhitespace(
-			"if (hzbOcclusionFrameInput.enabled)"
-			"{"
-			"{"
-			"NLS_PROFILE_NAMED_SCOPE(\"DeferredSceneRenderer::BeginFrame::PrepareHZBFrameResources\");"
-			"PrepareHZBFrameResources(BuildDeferredPreparedSceneResourceRequest());"
-			"m_threadedHZBPostSubmitReadback = BuildHZBPostSubmitReadbackRequest(true);"
-			"}")),
+			"const bool hzbResourcesPrepared ="
+			"captureInput.hzbFrameInputEnabled && PrepareHZBFrameResources(deferredResourceRequest);")),
 		std::string::npos)
-		<< "Threaded deferred startup must not create HZB targets, pipelines, or binding sets when "
-		   "current large-scene settings have HZB occlusion disabled.";
+		<< "Prepared deferred capture must gate HZB target preparation on the frame's HZB input.";
+	EXPECT_NE(
+		normalizedSource.find(RemoveWhitespace(
+			"const auto deferredResources = NLS::Render::FrameGraph::CaptureDeferredPreparedSceneResources("
+			"deferredResourceRequest);")),
+		std::string::npos);
+	EXPECT_NE(
+		normalizedSource.find(RemoveWhitespace(
+			"const auto hzbSource = hzbResourcesPrepared"
+			"? NLS::Render::FrameGraph::BuildHZBPreparedComputeDispatchSource(BuildHZBFrameResourceRequest())"
+			": NLS::Render::FrameGraph::PreparedComputeDispatchSource{};")),
+		std::string::npos);
+	EXPECT_NE(normalizedSource.find("captureInput.hzbReadbackHandoff->request=hzbPostSubmitReadback"), std::string::npos);
+	EXPECT_NE(normalizedSource.find("captureInput.hzbReadbackHandoff->ready=true"), std::string::npos);
+	EXPECT_EQ(normalizedSource.find("m_threadedHZBPostSubmitReadback"), std::string::npos);
 	EXPECT_NE(
 		normalizedSource.find(RemoveWhitespace(
 			"if (GetLastHZBOcclusionFrameInput().enabled &&"

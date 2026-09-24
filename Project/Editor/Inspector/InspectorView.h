@@ -102,9 +102,11 @@ private:
     std::string m_arrayClipboardType;
     std::optional<ComponentSnapshot> m_componentClipboard;
     InspectorObjectReferencePickerState m_objectReferencePickerState;
+    std::unique_ptr<PrefabOverrideQuery> m_prefabOverrideQuery;
     std::string m_targetActionError;
     std::string m_prefabActionError;
     std::vector<PrefabInspectorAction> m_prefabActions;
+    bool m_prefabActionsResolved = false;
 
     struct ComponentEditorEntry
     {

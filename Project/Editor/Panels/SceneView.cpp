@@ -734,7 +734,12 @@ Editor::Panels::SceneView::SceneView(
     {
         // Create the overlay renderer during startup while the native progress window is visible.
         NLS_LOG_INFO("[Startup] Creating Scene View renderer");
+        const auto rendererConstructionBegin = std::chrono::steady_clock::now();
         m_renderer = std::make_unique<Editor::Rendering::DebugSceneRenderer>(*EDITOR_CONTEXT(driver));
+        NLS_LOG_INFO(
+            "[Startup] Scene View renderer construction elapsedMs=" +
+            std::to_string(std::chrono::duration_cast<std::chrono::milliseconds>(
+                std::chrono::steady_clock::now() - rendererConstructionBegin).count()));
         SetRequiresRetiredFrameConsumption(true);
         SetRequiresImmediateRetiredFrameReadback(ShouldSceneViewRequestImmediatePickingReadback());
     }
@@ -1300,6 +1305,20 @@ void Editor::Panels::SceneView::EnsureRenderer()
 
     NLS_LOG_INFO("[Startup] Creating Scene View renderer");
     m_renderer = std::make_unique<Editor::Rendering::DebugSceneRenderer>(*EDITOR_CONTEXT(driver));
+}
+
+void Editor::Panels::SceneView::ApplyViewSettings()
+{
+    const auto& viewSettings = Settings::EditorSettings::GetViewSettingsObject();
+    m_cameraController.SetSpeed(viewSettings.sceneViewCameraSpeed);
+    m_gridColor = Maths::Vector3(
+        viewSettings.sceneViewGrid.r,
+        viewSettings.sceneViewGrid.g,
+        viewSettings.sceneViewGrid.b);
+    m_camera.SetClearColor(Maths::Vector3(
+        viewSettings.sceneViewBackground.r,
+        viewSettings.sceneViewBackground.g,
+        viewSettings.sceneViewBackground.b));
 }
 
 void Editor::Panels::SceneView::Update(float p_deltaTime)

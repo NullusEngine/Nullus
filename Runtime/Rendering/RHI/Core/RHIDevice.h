@@ -72,6 +72,23 @@ namespace NLS::Render::RHI
         virtual std::shared_ptr<RHIQueue> GetQueue(QueueType queueType) = 0;
         virtual std::shared_ptr<RHISwapchain> CreateSwapchain(const SwapchainDesc& desc) = 0;
         virtual std::shared_ptr<RHIBuffer> CreateBuffer(const RHIBufferDesc& desc, const RHIBufferUploadDesc& uploadDesc) = 0;
+        // Only for callers that keep every created buffer private until End returns.
+        // Backends without a batch path retain the ordinary synchronous behavior.
+        virtual bool BeginInitialBufferUploadBatch(const std::vector<uint64_t>& bufferSizes = {})
+        {
+            (void)bufferSizes;
+            return false;
+        }
+        virtual bool EndInitialBufferUploadBatch() { return true; }
+        // Keep created textures private until End reports that the upload has completed.
+        // Other backends continue using synchronous CreateTexture uploads.
+        virtual bool BeginInitialTextureUploadBatch() { return false; }
+        virtual bool EndInitialTextureUploadBatch() { return true; }
+        // Backends with a deferred initial-upload queue report and drain in-flight
+        // submissions here. WaitForInitialUploads returns the number of batches
+        // that failed so callers can verify and repair the affected resources.
+        virtual bool HasPendingInitialUploads() { return false; }
+        virtual size_t WaitForInitialUploads() { return 0u; }
         // Initial upload data is caller-owned and only guaranteed to stay valid for this call.
         // Backend implementations must synchronously copy it into backend-owned upload/GPU memory
         // before returning, or fail the call.

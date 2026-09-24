@@ -4,6 +4,7 @@
 #include <chrono>
 #include <cstdint>
 #include <cstring>
+#include <deque>
 #include <mutex>
 #include <string>
 #include <vector>
@@ -173,7 +174,7 @@ namespace NLS::Render::Backend
 			return submissions;
 		}
 
-		void QuarantineDX12InitialUploadSubmissionAfterExecute(
+			void QuarantineDX12InitialUploadSubmissionAfterExecute(
 			ID3D12Device* device,
 			ID3D12Resource* targetResource,
 			const Microsoft::WRL::ComPtr<ID3D12Resource>& uploadBuffer,
@@ -189,7 +190,8 @@ namespace NLS::Render::Backend
 				targetResource->AddRef();
 				submission.targetResource.Attach(targetResource);
 			}
-			submission.uploadBuffer = uploadBuffer;
+
+				submission.uploadBuffer = uploadBuffer;
 			submission.commandAllocator = commandAllocator;
 			submission.commandList = commandList;
 			submission.fence = fence;
@@ -215,7 +217,204 @@ namespace NLS::Render::Backend
 			}
 		}
 
-		NLS::Render::RHI::ResourceState ResolveUploadedTextureState(const NLS::Render::RHI::RHITextureDesc& desc)
+		// A submitted initial-upload batch retains every backend object the GPU
+		// still reads from. Keeping it queued lets the caller record the next
+		// batch during the previous batch's fence interval instead of stalling
+		// the main thread once per batch.
+		struct DX12PendingInitialUpload final
+		{
+			Microsoft::WRL::ComPtr<ID3D12Heap> heap;
+			Microsoft::WRL::ComPtr<ID3D12CommandAllocator> allocator;
+			Microsoft::WRL::ComPtr<ID3D12GraphicsCommandList> commandList;
+			std::vector<Microsoft::WRL::ComPtr<ID3D12Resource>> staging;
+			std::vector<Microsoft::WRL::ComPtr<ID3D12Resource>> targets;
+			Microsoft::WRL::ComPtr<ID3D12Fence> fence;
+			size_t stagingBytes = 0u;
+			std::string debugName;
+		};
+
+		thread_local std::deque<DX12PendingInitialUpload> g_pendingInitialUploads;
+		thread_local size_t g_pendingInitialUploadStagingBytes = 0u;
+		thread_local size_t g_pendingInitialUploadFailureCount = 0u;
+
+		// Bound the staging memory a startup prewarm can keep alive. Exceeding
+		// the window drains the oldest submission, which restores the old
+		// synchronous behavior without losing the overlap for smaller batches.
+		constexpr size_t kMaxPendingInitialUploadStagingBytes = 256u * 1024u * 1024u;
+
+		bool WaitForPendingInitialUpload(DX12PendingInitialUpload pending)
+		{
+			const auto waitBegin = std::chrono::steady_clock::now();
+			const bool completed = WaitForDX12FenceValue(
+				pending.fence.Get(), 1u, pending.debugName);
+			RecordInitialUploadTelemetry(
+				NLS::Core::Assets::ArtifactLoadTelemetryStage::GpuUploadFenceWait,
+				waitBegin,
+				pending.stagingBytes);
+			if (completed)
+				return true;
+
+			for (size_t index = 0u; index < pending.staging.size(); ++index)
+			{
+				QuarantineDX12InitialUploadSubmissionAfterExecute(
+					nullptr,
+					index < pending.targets.size() ? pending.targets[index].Get() : nullptr,
+					pending.staging[index],
+					pending.allocator,
+					pending.commandList,
+					pending.fence,
+					S_OK,
+					pending.debugName);
+			}
+			return false;
+		}
+
+		void QueuePendingInitialUpload(DX12PendingInitialUpload pending)
+		{
+			g_pendingInitialUploadStagingBytes += pending.stagingBytes;
+			g_pendingInitialUploads.push_back(std::move(pending));
+
+			while (!g_pendingInitialUploads.empty() &&
+				g_pendingInitialUploadStagingBytes > kMaxPendingInitialUploadStagingBytes)
+			{
+				auto oldest = std::move(g_pendingInitialUploads.front());
+				g_pendingInitialUploads.pop_front();
+				g_pendingInitialUploadStagingBytes -= oldest.stagingBytes;
+				if (!WaitForPendingInitialUpload(std::move(oldest)))
+					++g_pendingInitialUploadFailureCount;
+			}
+		}
+
+				struct DX12InitialBufferUploadBatch final
+				{
+					ID3D12Device* device = nullptr;
+					ID3D12CommandQueue* queue = nullptr;
+					Microsoft::WRL::ComPtr<ID3D12Heap> heap;
+					UINT64 heapSize = 0u;
+					UINT64 heapOffset = 0u;
+				Microsoft::WRL::ComPtr<ID3D12CommandAllocator> allocator;
+				Microsoft::WRL::ComPtr<ID3D12GraphicsCommandList> commandList;
+				std::vector<Microsoft::WRL::ComPtr<ID3D12Resource>> staging;
+				std::vector<Microsoft::WRL::ComPtr<ID3D12Resource>> targets;
+				size_t stagingBytes = 0u;
+				bool failed = false;
+
+				bool Record(ID3D12Resource* target, const Microsoft::WRL::ComPtr<ID3D12Resource>& upload,
+					const NLS::Render::RHI::DX12::DX12InitialUploadRequest& request)
+				{
+						constexpr size_t kMaxBuffers = 256u;
+					constexpr size_t kMaxStagingBytes = 32u * 1024u * 1024u;
+					if (failed || target == nullptr || staging.size() >= kMaxBuffers ||
+						request.dataSize > kMaxStagingBytes - stagingBytes)
+					{
+						failed = true;
+						return false;
+					}
+					if (commandList == nullptr)
+					{
+						if (FAILED(device->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT,
+							IID_PPV_ARGS(allocator.GetAddressOf()))) ||
+							FAILED(device->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT,
+								allocator.Get(), nullptr, IID_PPV_ARGS(commandList.GetAddressOf()))))
+						{
+							failed = true;
+							return false;
+						}
+					}
+
+						D3D12_RESOURCE_BARRIER barrier{};
+						if (heap != nullptr)
+						{
+							barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_ALIASING;
+							barrier.Aliasing.pResourceAfter = target;
+							commandList->ResourceBarrier(1u, &barrier);
+						}
+						barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+					barrier.Transition.pResource = target;
+					barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_COMMON;
+					barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_DEST;
+					barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+					commandList->ResourceBarrier(1u, &barrier);
+					commandList->CopyBufferRegion(target, request.destinationOffset, upload.Get(), 0u, request.dataSize);
+					barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_DEST;
+					barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_COMMON;
+					commandList->ResourceBarrier(1u, &barrier);
+					staging.push_back(upload);
+					targets.emplace_back(target);
+					stagingBytes += request.dataSize;
+					return true;
+				}
+			};
+
+			thread_local std::unique_ptr<DX12InitialBufferUploadBatch> g_initialBufferUploadBatch;
+
+			struct DX12InitialTextureUploadBatch final
+			{
+				ID3D12Device* device = nullptr;
+				ID3D12CommandQueue* queue = nullptr;
+				Microsoft::WRL::ComPtr<ID3D12CommandAllocator> allocator;
+				Microsoft::WRL::ComPtr<ID3D12GraphicsCommandList> commandList;
+				std::vector<Microsoft::WRL::ComPtr<ID3D12Resource>> staging;
+				std::vector<Microsoft::WRL::ComPtr<ID3D12Resource>> targets;
+				size_t stagingBytes = 0u;
+				bool failed = false;
+
+				bool Record(
+					ID3D12Resource* target,
+					const Microsoft::WRL::ComPtr<ID3D12Resource>& upload,
+					const std::vector<D3D12_PLACED_SUBRESOURCE_FOOTPRINT>& layouts,
+					const size_t uploadBytes,
+					const D3D12_RESOURCE_STATES finalState)
+				{
+					constexpr size_t kMaxTextures = 16u;
+					constexpr size_t kMaxStagingBytes = 128u * 1024u * 1024u;
+					if (failed || target == nullptr || upload == nullptr || layouts.empty() ||
+						staging.size() >= kMaxTextures || uploadBytes > kMaxStagingBytes - stagingBytes)
+					{
+						failed = true;
+						return false;
+					}
+					if (commandList == nullptr &&
+						(FAILED(device->CreateCommandAllocator(
+							D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(allocator.GetAddressOf()))) ||
+						FAILED(device->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT,
+							allocator.Get(), nullptr, IID_PPV_ARGS(commandList.GetAddressOf())))))
+					{
+						failed = true;
+						return false;
+					}
+					for (UINT subresource = 0u; subresource < layouts.size(); ++subresource)
+					{
+						D3D12_TEXTURE_COPY_LOCATION source{};
+						source.pResource = upload.Get();
+						source.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
+						source.PlacedFootprint = layouts[subresource];
+						D3D12_TEXTURE_COPY_LOCATION destination{};
+						destination.pResource = target;
+						destination.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
+						destination.SubresourceIndex = subresource;
+						commandList->CopyTextureRegion(&destination, 0u, 0u, 0u, &source, nullptr);
+					}
+					if (finalState != D3D12_RESOURCE_STATE_COPY_DEST)
+					{
+						D3D12_RESOURCE_BARRIER barrier{};
+						barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+						barrier.Transition.pResource = target;
+						barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_DEST;
+						barrier.Transition.StateAfter = finalState;
+						barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+						commandList->ResourceBarrier(1u, &barrier);
+					}
+					staging.push_back(upload);
+					targets.emplace_back(target);
+					stagingBytes += uploadBytes;
+					return true;
+				}
+			};
+
+			thread_local std::unique_ptr<DX12InitialTextureUploadBatch> g_initialTextureUploadBatch;
+
+			NLS::Render::RHI::ResourceState ResolveUploadedTextureState(const NLS::Render::RHI::RHITextureDesc& desc)
 		{
 			using NLS::Render::RHI::ResourceState;
 			using NLS::Render::RHI::TextureUsageFlags;
@@ -742,13 +941,26 @@ namespace NLS::Render::Backend
 				}
 			}
 
-			uploadBuffer->Unmap(0, nullptr);
-			RecordInitialUploadTelemetry(
-				NLS::Core::Assets::ArtifactLoadTelemetryStage::GpuUploadCpuCopy,
-				cpuCopyBegin,
-				static_cast<size_t>(uploadBufferSize));
+				uploadBuffer->Unmap(0, nullptr);
+				RecordInitialUploadTelemetry(
+					NLS::Core::Assets::ArtifactLoadTelemetryStage::GpuUploadCpuCopy,
+					cpuCopyBegin,
+					static_cast<size_t>(uploadBufferSize));
+				if (g_initialTextureUploadBatch != nullptr &&
+					g_initialTextureUploadBatch->device == m_device &&
+					g_initialTextureUploadBatch->queue == m_graphicsQueue)
+				{
+					outFinalState = ResolveUploadedTextureState(desc);
+					const D3D12_RESOURCE_STATES finalState =
+						outFinalState == NLS::Render::RHI::ResourceState::Unknown
+						? D3D12_RESOURCE_STATE_COMMON
+						: NativeDX12CommandBuffer::ToD3D12ResourceState(outFinalState);
+					return g_initialTextureUploadBatch->Record(
+						textureResource, uploadBuffer, layouts,
+						static_cast<size_t>(uploadBufferSize), finalState);
+				}
 
-				const auto commandSetupBegin = std::chrono::steady_clock::now();
+					const auto commandSetupBegin = std::chrono::steady_clock::now();
 				Microsoft::WRL::ComPtr<ID3D12CommandAllocator> commandAllocator;
 				Microsoft::WRL::ComPtr<ID3D12GraphicsCommandList> commandList;
 				std::unique_lock<std::mutex> commandObjectsLock;
@@ -943,11 +1155,17 @@ namespace NLS::Render::Backend
 			D3D12_RANGE writeRange{};
 			writeRange.Begin = 0;
 			writeRange.End = uploadRequest.dataSize;
-			uploadBuffer->Unmap(0, &writeRange);
-			RecordInitialUploadTelemetry(
-				NLS::Core::Assets::ArtifactLoadTelemetryStage::GpuUploadCpuCopy,
-				cpuCopyBegin,
-				uploadRequest.dataSize);
+				uploadBuffer->Unmap(0, &writeRange);
+				RecordInitialUploadTelemetry(
+					NLS::Core::Assets::ArtifactLoadTelemetryStage::GpuUploadCpuCopy,
+					cpuCopyBegin,
+					uploadRequest.dataSize);
+				if (g_initialBufferUploadBatch != nullptr &&
+					g_initialBufferUploadBatch->device == m_device &&
+					g_initialBufferUploadBatch->queue == m_graphicsQueue)
+				{
+					return g_initialBufferUploadBatch->Record(bufferResource, uploadBuffer, uploadRequest);
+				}
 
 				const auto commandSetupBegin = std::chrono::steady_clock::now();
 				Microsoft::WRL::ComPtr<ID3D12CommandAllocator> commandAllocator;
@@ -1067,6 +1285,204 @@ namespace NLS::Render::Backend
 				uploadRequest.dataSize);
 			return true;
 		}
+		}
+#endif
+
+#if defined(_WIN32)
+		bool BeginDX12InitialBufferUploadBatch(
+			ID3D12Device* device, ID3D12CommandQueue* queue, const std::vector<uint64_t>& bufferSizes,
+			DX12InitialUploadCommandObjects* commandObjects)
+		{
+			constexpr UINT64 kMaxStagingBytes = 32u * 1024u * 1024u;
+				if (device == nullptr || queue == nullptr || g_initialBufferUploadBatch != nullptr ||
+						bufferSizes.size() > 256u)
+				return false;
+			auto batch = std::make_unique<DX12InitialBufferUploadBatch>();
+			batch->device = device;
+			batch->queue = queue;
+			if (!bufferSizes.empty())
+			{
+				UINT64 uploadBytes = 0u;
+				for (const auto size : bufferSizes)
+				{
+					if (size == 0u || size > kMaxStagingBytes - uploadBytes)
+						return false;
+					uploadBytes += size;
+					batch->heapSize += AlignUp(size, D3D12_DEFAULT_RESOURCE_PLACEMENT_ALIGNMENT);
+				}
+				auto createHeap = [&](const UINT64 size, Microsoft::WRL::ComPtr<ID3D12Heap>& heap)
+				{
+					D3D12_HEAP_DESC desc{};
+					desc.SizeInBytes = size;
+					desc.Properties.Type = D3D12_HEAP_TYPE_DEFAULT;
+					desc.Properties.CreationNodeMask = 1u;
+					desc.Properties.VisibleNodeMask = 1u;
+					desc.Alignment = D3D12_DEFAULT_RESOURCE_PLACEMENT_ALIGNMENT;
+					desc.Flags = D3D12_HEAP_FLAG_ALLOW_ONLY_BUFFERS;
+					return SUCCEEDED(device->CreateHeap(&desc, IID_PPV_ARGS(heap.GetAddressOf())));
+				};
+				if (commandObjects != nullptr)
+				{
+					std::lock_guard<std::mutex> lock(commandObjects->bufferHeapMutex);
+					if (commandObjects->currentBufferHeap == nullptr ||
+						batch->heapSize > commandObjects->currentBufferHeapSize - commandObjects->currentBufferHeapOffset)
+					{
+						Microsoft::WRL::ComPtr<ID3D12Heap> nextHeap;
+						if (!createHeap(std::max<UINT64>(64u * 1024u * 1024u, batch->heapSize), nextHeap))
+							return false;
+						commandObjects->currentBufferHeap = std::move(nextHeap);
+						commandObjects->currentBufferHeapOffset = 0u;
+						commandObjects->currentBufferHeapSize =
+							std::max<UINT64>(64u * 1024u * 1024u, batch->heapSize);
+					}
+					batch->heap = commandObjects->currentBufferHeap;
+					batch->heapOffset = commandObjects->currentBufferHeapOffset;
+					commandObjects->currentBufferHeapOffset += batch->heapSize;
+					batch->heapSize = commandObjects->currentBufferHeapOffset;
+				}
+				else if (!createHeap(batch->heapSize, batch->heap))
+				{
+					return false;
+				}
+			}
+			g_initialBufferUploadBatch = std::move(batch);
+			return true;
+	}
+
+	bool EndDX12InitialBufferUploadBatch()
+	{
+		auto batch = std::move(g_initialBufferUploadBatch);
+		if (!batch || batch->failed)
+			return false;
+		if (batch->staging.empty())
+			return true;
+		if (FAILED(batch->commandList->Close()))
+			return false;
+		Microsoft::WRL::ComPtr<ID3D12Fence> fence;
+		if (FAILED(batch->device->CreateFence(0u, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&fence))))
+			return false;
+
+		auto quarantine = [&](HRESULT signalResult)
+		{
+			for (size_t i = 0u; i < batch->staging.size(); ++i)
+			{
+				QuarantineDX12InitialUploadSubmissionAfterExecute(
+					batch->device, batch->targets[i].Get(), batch->staging[i],
+					batch->allocator, batch->commandList, fence, signalResult, "StartupMeshBufferBatch");
+			}
+		};
+		const auto submitBegin = std::chrono::steady_clock::now();
+		{
+			NLS::Render::RHI::DX12::ScopedDX12QueueLock queueLock(batch->queue);
+			ID3D12CommandList* lists[] = {batch->commandList.Get()};
+			batch->queue->ExecuteCommandLists(1u, lists);
+			const HRESULT signal = batch->queue->Signal(fence.Get(), 1u);
+			if (FAILED(signal))
+			{
+				quarantine(signal);
+				return false;
+			}
+		}
+		RecordInitialUploadTelemetry(
+			NLS::Core::Assets::ArtifactLoadTelemetryStage::GpuUploadSubmit,
+			submitBegin, batch->stagingBytes);
+		DX12PendingInitialUpload pending;
+		pending.heap = std::move(batch->heap);
+		pending.allocator = std::move(batch->allocator);
+		pending.commandList = std::move(batch->commandList);
+		pending.staging = std::move(batch->staging);
+		pending.targets = std::move(batch->targets);
+		pending.fence = std::move(fence);
+		pending.stagingBytes = batch->stagingBytes;
+		pending.debugName = "StartupMeshBufferBatch";
+		QueuePendingInitialUpload(std::move(pending));
+		return true;
+	}
+
+	bool BeginDX12InitialTextureUploadBatch(ID3D12Device* device, ID3D12CommandQueue* queue)
+	{
+		if (device == nullptr || queue == nullptr || g_initialTextureUploadBatch != nullptr)
+			return false;
+		g_initialTextureUploadBatch = std::make_unique<DX12InitialTextureUploadBatch>();
+		g_initialTextureUploadBatch->device = device;
+		g_initialTextureUploadBatch->queue = queue;
+		return true;
+	}
+
+	bool EndDX12InitialTextureUploadBatch()
+	{
+		auto batch = std::move(g_initialTextureUploadBatch);
+		if (!batch || batch->failed)
+			return false;
+		if (batch->staging.empty())
+			return true;
+		if (FAILED(batch->commandList->Close()))
+			return false;
+		Microsoft::WRL::ComPtr<ID3D12Fence> fence;
+		if (FAILED(batch->device->CreateFence(0u, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&fence))))
+			return false;
+
+		const auto quarantine = [&](const HRESULT signalResult)
+		{
+			for (size_t i = 0u; i < batch->staging.size(); ++i)
+			{
+				QuarantineDX12InitialUploadSubmissionAfterExecute(
+					batch->device, batch->targets[i].Get(), batch->staging[i],
+					batch->allocator, batch->commandList, fence, signalResult,
+					"StartupTextureBatch");
+			}
+		};
+		const auto submitBegin = std::chrono::steady_clock::now();
+		{
+			NLS::Render::RHI::DX12::ScopedDX12QueueLock queueLock(batch->queue);
+			ID3D12CommandList* lists[] = {batch->commandList.Get()};
+			batch->queue->ExecuteCommandLists(1u, lists);
+			const HRESULT signal = batch->queue->Signal(fence.Get(), 1u);
+			if (FAILED(signal))
+			{
+				quarantine(signal);
+				return false;
+			}
+		}
+		RecordInitialUploadTelemetry(
+			NLS::Core::Assets::ArtifactLoadTelemetryStage::GpuUploadSubmit,
+			submitBegin, batch->stagingBytes);
+		DX12PendingInitialUpload pending;
+		pending.allocator = std::move(batch->allocator);
+		pending.commandList = std::move(batch->commandList);
+		pending.staging = std::move(batch->staging);
+		pending.targets = std::move(batch->targets);
+		pending.fence = std::move(fence);
+		pending.stagingBytes = batch->stagingBytes;
+		pending.debugName = "StartupTextureBatch";
+		QueuePendingInitialUpload(std::move(pending));
+		return true;
+	}
+
+	bool HasPendingDX12InitialUploads()
+	{
+		return !g_pendingInitialUploads.empty();
+	}
+
+	size_t GetPendingDX12InitialUploadStagingBytes()
+	{
+		return g_pendingInitialUploadStagingBytes;
+	}
+
+	size_t WaitForDX12InitialUploads()
+	{
+		while (!g_pendingInitialUploads.empty())
+		{
+			auto pending = std::move(g_pendingInitialUploads.front());
+			g_pendingInitialUploads.pop_front();
+			g_pendingInitialUploadStagingBytes -= pending.stagingBytes;
+			if (!WaitForPendingInitialUpload(std::move(pending)))
+				++g_pendingInitialUploadFailureCount;
+		}
+
+		const size_t failureCount = g_pendingInitialUploadFailureCount;
+		g_pendingInitialUploadFailureCount = 0u;
+		return failureCount;
 	}
 #endif
 
@@ -1157,13 +1573,40 @@ namespace NLS::Render::Backend
 					? D3D12_RESOURCE_STATE_COPY_DEST
 					: D3D12_RESOURCE_STATE_COMMON;
 
-		const HRESULT createResourceResult = device->CreateCommittedResource(
-			&heapProps,
-			D3D12_HEAP_FLAG_NONE,
-			&resourceDesc,
-			initialState,
-			nullptr,
-			IID_PPV_ARGS(&m_resource));
+			const bool useBatchHeap = needsDefaultHeapUpload &&
+				g_initialBufferUploadBatch != nullptr &&
+				g_initialBufferUploadBatch->device == device &&
+				g_initialBufferUploadBatch->queue == m_graphicsQueue &&
+				g_initialBufferUploadBatch->heap != nullptr;
+			HRESULT createResourceResult = E_FAIL;
+			if (useBatchHeap)
+			{
+				auto& batch = *g_initialBufferUploadBatch;
+				const auto allocation = device->GetResourceAllocationInfo(0u, 1u, &resourceDesc);
+				const UINT64 offset = AlignUp(batch.heapOffset, allocation.Alignment);
+				if (batch.failed || allocation.Alignment == 0u ||
+					offset > batch.heapSize || allocation.SizeInBytes > batch.heapSize - offset)
+				{
+					batch.failed = true;
+					return;
+				}
+				createResourceResult = device->CreatePlacedResource(
+					batch.heap.Get(), offset, &resourceDesc, initialState,
+					nullptr, IID_PPV_ARGS(&m_resource));
+				if (SUCCEEDED(createResourceResult))
+				{
+					batch.heapOffset = offset + allocation.SizeInBytes;
+					m_placementHeap = batch.heap;
+				}
+				else
+					batch.failed = true;
+			}
+			else
+			{
+				createResourceResult = device->CreateCommittedResource(
+					&heapProps, D3D12_HEAP_FLAG_NONE, &resourceDesc,
+					initialState, nullptr, IID_PPV_ARGS(&m_resource));
+			}
 		if (FAILED(createResourceResult) || m_resource == nullptr)
 			return;
 

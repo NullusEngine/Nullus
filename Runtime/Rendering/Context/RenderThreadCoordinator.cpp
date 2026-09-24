@@ -337,9 +337,10 @@ namespace NLS::Render::Context
             resolvedSnapshot.frameId = driver.m_impl->nextThreadedFrameId++;
 
         auto resolvedRenderSceneBuilder =
-            [renderSceneBuilder = std::move(renderSceneBuilder), frameId = resolvedSnapshot.frameId]() mutable
+            [renderSceneBuilder = std::move(renderSceneBuilder), frameId = resolvedSnapshot.frameId](
+                const size_t slotIndex) mutable
         {
-            auto renderScenePackage = renderSceneBuilder();
+            auto renderScenePackage = renderSceneBuilder(slotIndex);
             renderScenePackage.frameId = frameId;
             return renderScenePackage;
         };

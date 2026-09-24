@@ -25,7 +25,7 @@ namespace NLS::Editor::Rendering
         uint64_t serial = 0u;
         std::shared_ptr<NLS::Render::RHI::RHITexture> readbackTexture;
         uint64_t readbackGeneration = 0u;
-        std::vector<NLS::Engine::GameObject*> pickRegistry;
+        std::vector<NLS::InstanceID> pickRegistry;
         NLS::Editor::Panels::HitProxyPickingSignature signature {};
 
         bool IsValid() const

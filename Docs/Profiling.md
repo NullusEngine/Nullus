@@ -43,6 +43,8 @@ When Tracy is enabled on Windows, the DX12 command-buffer bridge also carries th
 
 `NLS_ENABLE_TRACY=ON` builds the Tracy client destination. Prefer `NLS_BUILD_TRACY_PROFILER=OFF` for normal Editor builds and obtain the matching Tracy tools separately. The vendored release tools are `tracy-profiler`, `tracy-capture`, and `tracy-csvexport`; if the exact vendored patch has no official binary release, build those tools from the vendored `ThirdParty/Tracy` source so the client/server protocol versions match.
 
+Editor builds deploy the three tool executables from `Tools/Tracy/<version>` into `App/<platform>_<config>_Runtime_*/Tracy/<version>` next to `Editor.exe`, so a packaged output directory carries a protocol-matched profiler. The same tools are exposed in the editor through `Tools > Tracy Profiler`, which shows the resolved paths, launches the GUI profiler, and opens the capture directory.
+
 The Editor sends one Tracy CPU frame mark per editor frame. DX12 command-list submission batches also advance the corresponding Tracy GPU context, so one capture contains CPU scopes and GPU pass timings on the same timeline. The shared `NLS_PROFILE_*` facade remains the instrumentation contract; do not add Tracy-specific calls at engine call sites.
 
 Example headless capture:
@@ -58,6 +60,25 @@ tracy-csvexport -g Build\Tracy\capture.tracy > Build\Tracy\gpu-events.csv
 Start the capture before launching the Editor, trigger the workload (including Play mode) while the capture window is open, and compare only captures with matching build, project, scene, backend, and frame count. Use the CSV exports to rank CPU total/self and GPU pass time first; use the Tracy GUI when call-stack or frame correlation is needed. Use RenderDoc for draw/shader/resource detail after Tracy identifies a pass or queue, and use TimelineProfiler for the in-editor DX12 GPU timeline when Tracy is not connected.
 
 For steady-state Editor or Play-mode work, attach Tracy after Editor startup and asset restore have completed; otherwise the capture can be dominated by startup work and can end before steady rendering begins. Keep the capture-first order only when startup itself is the target.
+
+### Startup Resource Prewarm
+
+Editor startup uses the asynchronous scene-resource pipeline by default. Pass
+`--editor-startup-resource-pipeline legacy` to restore the previous synchronous
+prefab prewarm path for A/B comparison or rollback. Scene mesh artifact jobs are
+high priority; material and texture decoding stay normal priority so queue
+fairness advances geometry without starving textures.
+
+Asset preimport and texture compression can be prepared before a timing run:
+
+```powershell
+Tools\Performance\Warm-NullusProjectAssets.ps1 -ProjectPath .\TestProject\TestProject.nullus
+```
+
+The script runs `Editor.exe --editor-prewarm-assets <project>` without opening
+the editor, forces a complete startup-source import, and verifies available disk
+space before writing artifacts. Record the one-time migration duration
+separately; startup acceptance timing uses the following cache-hit launches.
 
 Before measuring render performance, confirm `Editor/Rendering > Rendering > Scene View Static Cache` is disabled. It defaults to off so an unchanged Scene View cannot skip renderer submission and inflate the captured frame rate.
 

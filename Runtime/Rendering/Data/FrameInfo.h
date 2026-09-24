@@ -200,6 +200,10 @@ namespace NLS::Render::Data
         uint64_t objectDataRevisionTransformMismatchCount = 0;
         uint64_t objectDataRevisionObjectIndexMismatchCount = 0;
         uint64_t objectDataRevisionObjectCountMismatchCount = 0;
+        uint64_t objectDataFastPathHitCount = 0;
+        uint64_t objectDataFastPathFallbackCount = 0;
+        uint64_t drawCommandCopyCount = 0;
+        uint64_t drawCommandMoveCount = 0;
         uint64_t objectDataOverflowDroppedObjectCount = 0;
         uint64_t parallelCommandWorkUnitCount = 0;
         uint64_t parallelRecordingWorkerCount = 0;

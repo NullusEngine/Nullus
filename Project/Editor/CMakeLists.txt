@@ -63,6 +63,7 @@ nls_add_meta_generation(EditorProject "${CMAKE_CURRENT_SOURCE_DIR}" "${EDITOR_HE
 add_executable(Editor ${EDITOR_ENTRY_SOURCE})
 nls_add_windows_app_icon(Editor)
 nls_copy_editor_resources_to_target(Editor)
+nls_copy_tracy_tools_to_target(Editor)
 
 # 指定输出路径
 ###############################################################################

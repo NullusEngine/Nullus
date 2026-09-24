@@ -1831,6 +1831,12 @@ TEST(EditorAssetDatabaseTests, AssetCopiedOrMovedPreimportSkipsWarmSceneAssetsWh
     ASSERT_TRUE(scheduler.Run(database, tracker, AssetPreimportReason::EditorStartup));
     ASSERT_EQ(database.GetCompletedImportCount(), 1u);
 
+    const AssetPreimportRequest copiedOrMovedRequest {
+        AssetPreimportReason::AssetCopiedOrMoved,
+        {std::filesystem::path("Assets") / "Models" / "CopiedHero.gltf"}
+    };
+    ASSERT_FALSE(copiedOrMovedRequest.forceRebuildAll)
+        << "Ordinary file-system preimport requests must not request a forced rebuild.";
     ASSERT_TRUE(scheduler.Run(database, tracker, {
         AssetPreimportReason::AssetCopiedOrMoved,
         {std::filesystem::path("Assets") / "Models" / "CopiedHero.gltf"}

@@ -48,21 +48,25 @@ TEST(ProjectSettingsPanelTests, SettingsModalParticipatesInSceneInputBlocking)
     EXPECT_FALSE(NLS::Editor::Core::DoesEditorModalBlockSceneInput());
 }
 
-TEST(ProjectSettingsPanelTests, RuntimeRestartFieldsAreMarkedByMetadata)
+TEST(ProjectSettingsPanelTests, EditorSettingsExposeNoRestartOnlyFields)
 {
+    // Policy: anything that only takes effect after a restart is surfaced by the
+    // launcher startup panel and stored in the project file, so the editor
+    // settings registry must not carry RequiresRestart fields any more.
     NLS::meta::ReflectionDatabase::Instance();
-    const auto runtimeType = NLS_TYPEOF(NLS::Editor::Settings::EditorRuntimeSettingsObject);
+    NLS::Editor::Settings::EditorSettingsRegistry registry;
+    NLS::Editor::Settings::EditorSettings::RegisterSettingObjects(registry);
 
-    const auto& threadedRendering = runtimeType.GetField("enableThreadedRendering");
-    const auto& powerSavingIdlePacing = runtimeType.GetField("enablePowerSavingIdlePacing");
-    const auto& renderDocEnabled = runtimeType.GetField("renderDocEnabled");
-
-    ASSERT_TRUE(threadedRendering.IsValid());
-    ASSERT_TRUE(powerSavingIdlePacing.IsValid());
-    ASSERT_TRUE(renderDocEnabled.IsValid());
-    EXPECT_NE(threadedRendering.GetMeta().GetProperty<NLS::meta::RequiresRestart>(), nullptr);
-    EXPECT_EQ(powerSavingIdlePacing.GetMeta().GetProperty<NLS::meta::RequiresRestart>(), nullptr);
-    EXPECT_EQ(renderDocEnabled.GetMeta().GetProperty<NLS::meta::RequiresRestart>(), nullptr);
+    for (const auto& object : registry.GetObjects())
+    {
+        for (const auto& field : object.type.GetFields())
+        {
+            if (!field.IsValid())
+                continue;
+            EXPECT_EQ(field.GetMeta().GetProperty<NLS::meta::RequiresRestart>(), nullptr)
+                << object.id << "." << field.GetName();
+        }
+    }
 }
 
 TEST(ProjectSettingsPanelTests, PersistentSettingsExcludeDiagnosticsAndNoOpVisualizerFields)
@@ -114,7 +118,6 @@ TEST(ProjectSettingsPanelTests, RuntimeSettingsBuildDefaultDiagnosticsOnly)
     const auto oldRuntime = runtime;
     runtime.renderDocEnabled = true;
     runtime.renderDocAutoOpenReplayUI = true;
-    runtime.renderDocStartupCaptureAfterFrames = 3;
 
     const auto diagnostics = NLS::Editor::Settings::EditorSettings::BuildDiagnosticsSettings();
 

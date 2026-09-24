@@ -21,8 +21,6 @@ namespace NLS::Editor::Panels
     public:
         EditorTopBar();
 
-        void InitializeSettingsMenu();
-        void HandleShortcuts(float p_deltaTime);
 	void RegisterWindowPanel(const std::string& p_name, UI::PanelWindow& p_panel);
 	// Adds a scripted editor command to the Window or Tools menu.
 	bool RegisterCommand(const std::string& p_menuPath, std::function<void()> p_execute);

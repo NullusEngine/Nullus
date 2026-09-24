@@ -232,7 +232,6 @@ InspectorPresentation NativeReflectionAdapter::BuildPresentation(
         }
 
         presentation.roots.push_back(std::move(gameObjectNode));
-        RefreshPrefabOverrideStates(presentation);
         return presentation;
     }
 
@@ -247,7 +246,6 @@ InspectorPresentation NativeReflectionAdapter::BuildPresentation(
     if (const auto* scriptComponent = dynamic_cast<const NLS::Scripting::ScriptComponent*>(object))
         root.displayName = ScriptSerializedAdapter::GetComponentDisplayName(*scriptComponent);
     presentation.roots.push_back(std::move(root));
-    RefreshPrefabOverrideStates(presentation);
     return presentation;
 }
 

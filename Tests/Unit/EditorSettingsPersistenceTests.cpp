@@ -73,6 +73,37 @@ TEST(EditorSettingsPersistenceTests, SavesAndLoadsLightGridRenderingSetting)
     rendering.enableLightGrid = true;
 }
 
+TEST(EditorSettingsPersistenceTests, ReadsLaunchOptionsPersistedByPreviousEditorBuilds)
+{
+    auto path = MakeTempSettingsPath("legacy-launch-options.json");
+    {
+        std::ofstream file(path);
+        file << R"({"version":1,"objects":{"editor.runtime":{"fields":{"verticalSynchronization":false,"enableThreadedRendering":false,"renderDocStartupCaptureAfterFrames":180,"renderDocEnabled":true}}}})";
+    }
+
+    const auto legacy = NLS::Editor::Settings::EditorSettingsPersistence::ReadLegacyLaunchOptionValues(path);
+
+    ASSERT_TRUE(legacy.verticalSynchronization.has_value());
+    EXPECT_FALSE(*legacy.verticalSynchronization);
+    ASSERT_TRUE(legacy.threadedRendering.has_value());
+    EXPECT_FALSE(*legacy.threadedRendering);
+    ASSERT_TRUE(legacy.renderDocStartupCaptureFrames.has_value());
+    EXPECT_EQ(*legacy.renderDocStartupCaptureFrames, 180);
+
+    std::filesystem::remove(path);
+}
+
+TEST(EditorSettingsPersistenceTests, MissingLegacyLaunchOptionsStayEmpty)
+{
+    const auto path = MakeTempSettingsPath("missing-legacy-launch-options.json");
+    std::filesystem::remove(path);
+
+    const auto legacy = NLS::Editor::Settings::EditorSettingsPersistence::ReadLegacyLaunchOptionValues(path);
+    EXPECT_FALSE(legacy.verticalSynchronization.has_value());
+    EXPECT_FALSE(legacy.threadedRendering.has_value());
+    EXPECT_FALSE(legacy.renderDocStartupCaptureFrames.has_value());
+}
+
 TEST(EditorSettingsPersistenceTests, SceneViewStaticCacheDefaultsOffAndRoundTrips)
 {
     auto path = MakeTempSettingsPath("scene-view-static-cache.json");

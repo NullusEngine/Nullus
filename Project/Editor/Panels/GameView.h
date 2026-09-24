@@ -33,6 +33,7 @@ namespace NLS::Editor::Panels
 		virtual Engine::SceneSystem::Scene* GetScene();
 
 	protected:
-        Engine::SceneSystem::SceneManager& m_sceneManager;
+		Engine::Rendering::BaseSceneRenderer::SceneDescriptor CreateSceneDescriptor() override;
+		Engine::SceneSystem::SceneManager& m_sceneManager;
 	};
 }

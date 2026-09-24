@@ -191,6 +191,7 @@ public:
 	    NLS::Editor::Assets::StartupWatcherPreimportResult CompleteStartupWatcherPreimportGate(
 	        const NLS::Editor::Assets::StartupAssetPreimportProgressSink& progressSink = {});
 	    void SelectProjectFolderForValidation(const std::string& projectRelativePath);
+    [[nodiscard]] bool IsThumbnailPreviewRenderWarmupComplete() const;
 
 	private:
     enum class ProjectBrowserTextDialogKind

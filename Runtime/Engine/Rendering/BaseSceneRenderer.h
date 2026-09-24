@@ -147,6 +147,13 @@ namespace NLS::Engine::Rendering
 		[[nodiscard]] const std::vector<ScenePickablePrimitiveDrawSource>&
 			GetLastVisiblePickablePrimitiveDrawSources() const;
 		[[nodiscard]] bool HasCompletedVisibleMaterialTexturePumpForReadback() const;
+		/**
+		 * Scene-scoped render content revision used as a view frame-cache key input.
+		 * It advances only when this renderer could not reuse its own scene-content
+		 * synchronization fast path, so unrelated resource churn elsewhere in the
+		 * process does not invalidate the cached frame.
+		 */
+		[[nodiscard]] uint64_t GetSceneRenderContentRevision() const;
 				const Render::Data::DrawCallOptimizationStats& GetLastDrawCallOptimizationStats() const;
 #if defined(NLS_ENABLE_TEST_HOOKS)
 				const Render::Data::DrawCallOptimizationStats& GetLastDrawCallOptimizationStatsForTesting() const;
@@ -154,6 +161,7 @@ namespace NLS::Engine::Rendering
 
 	protected:
 		void RefreshSceneLightingDescriptor(SceneSystem::Scene& scene);
+		void SetSceneLightingDescriptor();
 		AllDrawables ParseScene();
 		std::optional<NLS::Render::Context::FrameSnapshot> BuildFrameSnapshot(
 			const Render::Data::FrameDescriptor& frameDescriptor) const override;
@@ -162,7 +170,7 @@ namespace NLS::Engine::Rendering
 			const AllDrawables& drawables);
 		virtual bool ShouldPublishCullReasonDebugSnapshots() const;
 		virtual uint64_t GetCullReasonDebugSnapshotMaxEntries() const;
-		virtual std::vector<const Engine::GameObject*> GetEditorInspectionRoots() const;
+		virtual std::vector<NLS::InstanceID> GetEditorInspectionRoots() const;
 		bool CaptureThreadedPreparedDraw(
 			PipelineState pso,
 			const Drawable& drawable,
@@ -195,9 +203,18 @@ namespace NLS::Engine::Rendering
 			const NLS::Render::Context::FrameSnapshot& snapshot) const;
 		std::optional<LightGridPrepass::PreparedFrameInputs> BuildLightGridFrameInputs(
 			bool hasSkyboxTexture = false) const;
-		const std::shared_ptr<LightGridPrepass>& GetLightGridPrepass() const;
+			const std::shared_ptr<LightGridPrepass>& GetLightGridPrepass() const;
 
-	public:
+			/**
+			 * Cheap, allocation-free gate for "does this frame have scene work at all".
+			 * Used before the per-frame scene pipeline so a frame that cannot publish
+			 * does not pay for parse, visibility, sorting and index assignment.
+			 * Additive scenes are deliberately excluded: ignoring them can only make
+			 * the probe more conservative.
+			 */
+			[[nodiscard]] size_t GetRenderScenePrimitiveCount() const;
+
+		public:
 		static const std::shared_ptr<NLS::Render::RHI::RHIBindingSet>& GetPreparedPassBindingSetPlaceholder();
 		static void ResolvePreparedPassBindingSetPlaceholders(
 			NLS::Render::Context::RenderScenePackage& package,
@@ -239,9 +256,10 @@ namespace NLS::Engine::Rendering
 		RenderScene m_renderScene;
 		std::unordered_map<SceneSystem::Scene*, RenderScene> m_additiveRenderScenes;
 		std::vector<ScenePickablePrimitiveDrawSource> m_lastVisiblePickablePrimitiveDrawSources;
+		uint64_t m_sceneRenderContentRevision = 0u;
+		// Stays valid until the next successful scene parse so editor picking
+		// keeps using the visible-source path on frames that reuse a cached frame.
 		bool m_hasLastVisiblePickablePrimitiveDrawSources = false;
-		std::shared_ptr<NLS::Render::RHI::RHIBindingSet> m_threadedFrameBindingSet;
-		bool m_threadedFrameBindingSetCaptureAttempted = false;
 			mutable std::mutex m_lightGridCompileContextCacheMutex;
 			mutable LightGridCompileContextCache m_lightGridCompileContextCache;
 			mutable NLS::Render::Context::LargeSceneCullReasonDebugSnapshot m_lastCullReasonDebugSnapshot;

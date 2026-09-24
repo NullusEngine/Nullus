@@ -519,6 +519,65 @@ namespace
         }
         return nullptr;
     }
+
+TEST(DeferredSceneRendererMaterialCacheTests, ThreadedDrawCountEstimateCountsCapturableDrawablesOnly)
+{
+    NLS::Render::Settings::DriverSettings settings;
+    settings.graphicsBackend = NLS::Render::Settings::EGraphicsBackend::NONE;
+    settings.enableThreadedRendering = true;
+    settings.threadedFrameSlotCount = 1u;
+
+    NLS::Render::Context::Driver driver(settings);
+    NLS::Core::ServiceLocator::Provide(driver);
+    NLS::Render::Context::DriverTestAccess::PauseThreadedRenderingWorkers(driver);
+
+    NLS::Engine::Rendering::DeferredSceneRenderer::ConstructionOptions options;
+    options.loadPipelineResources = false;
+    NLS::Engine::Rendering::DeferredSceneRenderer renderer(driver, options);
+
+    // The estimate must never touch the GPU: opaque pointers are only compared
+    // against null, and decal resolution is only attempted for real decals.
+    auto* const fakeMesh = reinterpret_cast<NLS::Render::Resources::Mesh*>(0x1);
+    auto* const fakeMaterial = reinterpret_cast<NLS::Render::Resources::Material*>(0x1);
+
+    NLS::Render::Entities::Drawable capturable;
+    capturable.mesh = fakeMesh;
+    capturable.material = fakeMaterial;
+
+    NLS::Render::Entities::Drawable materialLess;
+    materialLess.mesh = fakeMesh;
+
+    NLS::Render::Entities::Drawable meshLess;
+    meshLess.material = fakeMaterial;
+
+    NLS::Engine::Rendering::BaseSceneRenderer::AllDrawables drawables;
+    drawables.opaques.emplace_back(1.0f, capturable);
+    drawables.opaques.emplace_back(2.0f, materialLess);
+    drawables.opaques.emplace_back(3.0f, capturable);
+    drawables.transparents.emplace_back(4.0f, capturable);
+    drawables.transparents.emplace_back(5.0f, meshLess);
+    drawables.skyboxes.emplace_back(0.0f, capturable);
+
+    const auto counts =
+        NLS::Engine::Rendering::DeferredSceneRendererTestAccess::EstimateThreadedDeferredDrawCountsForTesting(
+            renderer,
+            drawables);
+
+    EXPECT_EQ(counts.gBufferDrawCount, 2u) << "Only opaques with a material can be captured.";
+    EXPECT_EQ(counts.transparentDrawCount, 1u) << "Transparents need both a material and a mesh.";
+    EXPECT_EQ(counts.decalDrawCount, 0u);
+    EXPECT_EQ(counts.lightingDrawCount, 1u) << "The composite runs once per captured deferred scene.";
+
+    NLS::Engine::Rendering::BaseSceneRenderer::AllDrawables emptyDrawables;
+    const auto emptyCounts =
+        NLS::Engine::Rendering::DeferredSceneRendererTestAccess::EstimateThreadedDeferredDrawCountsForTesting(
+            renderer,
+            emptyDrawables);
+    EXPECT_EQ(emptyCounts.gBufferDrawCount, 0u);
+    EXPECT_EQ(emptyCounts.decalDrawCount, 0u);
+    EXPECT_EQ(emptyCounts.transparentDrawCount, 0u);
+    EXPECT_EQ(emptyCounts.lightingDrawCount, 0u) << "Nothing to capture means no composite pass.";
+}
 }
 
 TEST(DeferredSceneRendererMaterialCacheTests, HZBOcclusionObservationCanBeDiscardedAndReusedAfterReadbackFailure)
@@ -729,7 +788,14 @@ TEST(DeferredSceneRendererMaterialCacheTests, HZBThreadedPreparedBuilderDoesNotM
     ASSERT_NE(nextFunction, std::string::npos);
     const auto builderBody = source.substr(builderStart, nextFunction - builderStart);
 
-    EXPECT_EQ(builderBody.find("return [this"), std::string::npos);
+    EXPECT_NE(builderBody.find("return [this"), std::string::npos);
+    EXPECT_NE(builderBody.find("EnsureGBufferTargets("), std::string::npos);
+    EXPECT_NE(builderBody.find("PrepareHZBFrameResources(deferredResourceRequest)"), std::string::npos);
+    EXPECT_NE(builderBody.find("CaptureDeferredPreparedSceneResources("), std::string::npos);
+    EXPECT_NE(builderBody.find("BuildHZBPreparedComputeDispatchSource("), std::string::npos);
+    EXPECT_NE(builderBody.find("CaptureThreadedDeferredDraws("), std::string::npos);
+    EXPECT_NE(builderBody.find("hzbReadbackHandoff->request = hzbPostSubmitReadback"), std::string::npos);
+    EXPECT_NE(builderBody.find("hzbReadbackHandoff->ready = true"), std::string::npos);
     EXPECT_EQ(builderBody.find("AdoptHZBPostSubmitReadbackRequest"), std::string::npos);
 }
 
@@ -749,7 +815,8 @@ TEST(DeferredSceneRendererMaterialCacheTests, DebugSceneRendererForwardsThreaded
     ASSERT_NE(builderCall, std::string::npos);
     const auto builderBody = source.substr(builderStart, builderCall + 512u - builderStart);
 
-    EXPECT_NE(builderBody.find("GetThreadedHZBPostSubmitReadbackForPreparedBuilder()"), std::string::npos);
+    EXPECT_NE(builderBody.find("BuildThreadedCaptureInputForPreparedBuilder()"), std::string::npos);
+    EXPECT_EQ(builderBody.find("GetThreadedHZBPostSubmitReadbackForPreparedBuilder()"), std::string::npos);
 }
 
 TEST(DeferredSceneRendererMaterialCacheTests, HZBPollWaitsForExplicitReadbackBeginAckOrNack)
@@ -821,9 +888,9 @@ TEST(DeferredSceneRendererMaterialCacheTests, HZBPublishFailureClearsUnpublished
     ASSERT_NE(failedStart, std::string::npos);
     const auto publishBody = source.substr(publishStart, failedStart - publishStart);
 
-    EXPECT_NE(publishBody.find("if (!published && m_threadedHZBPostSubmitReadback.has_value())"), std::string::npos);
-    EXPECT_NE(publishBody.find("DiscardPendingHZBOcclusionObservationFrame()"), std::string::npos);
-    EXPECT_NE(publishBody.find("m_threadedHZBPostSubmitReadback.reset()"), std::string::npos);
+    EXPECT_NE(publishBody.find("CancelCurrentThreadedHZBReadbackHandoff()"), std::string::npos);
+    EXPECT_NE(publishBody.find("DiscardHZBObservationIfNoReadbackWasPublished()"), std::string::npos);
+    EXPECT_EQ(publishBody.find("m_threadedHZBPostSubmitReadback"), std::string::npos);
 }
 
 TEST(DeferredSceneRendererMaterialCacheTests, HZBPublishFailureKeepsAdoptedReadbackUntilRhiBeginAck)
@@ -843,8 +910,8 @@ TEST(DeferredSceneRendererMaterialCacheTests, HZBPublishFailureKeepsAdoptedReadb
     ASSERT_NE(nextFunction, std::string::npos);
     const auto failedBody = source.substr(failedStart, nextFunction - failedStart);
 
-    EXPECT_NE(failedBody.find("if (m_hzbOcclusionResultReadbackState != nullptr)"), std::string::npos);
-    EXPECT_NE(failedBody.find("return;"), std::string::npos);
+    EXPECT_NE(failedBody.find("CancelCurrentThreadedHZBReadbackHandoff()"), std::string::npos);
+    EXPECT_NE(failedBody.find("DiscardHZBObservationIfNoReadbackWasPublished()"), std::string::npos);
     EXPECT_EQ(failedBody.find("discardReadback = !readbackState->beginAttempted"), std::string::npos);
     EXPECT_EQ(failedBody.find("ClearHZBPendingResultReadback()"), std::string::npos);
 }
@@ -867,10 +934,8 @@ TEST(DeferredSceneRendererMaterialCacheTests, HZBSkippedThreadedPreparationClear
 
     const auto preparedUnavailable = beginFrameBody.find("preparedFrameResourcesAvailable");
     ASSERT_NE(preparedUnavailable, std::string::npos);
-    const auto pipelineUnavailable = beginFrameBody.find("!HasDeferredThreadedPipelineResources()");
-    ASSERT_NE(pipelineUnavailable, std::string::npos);
+    EXPECT_EQ(beginFrameBody.find("!HasDeferredThreadedPipelineResources()"), std::string::npos);
     EXPECT_NE(beginFrameBody.find("DiscardHZBObservationIfNoReadbackWasPublished()", preparedUnavailable), std::string::npos);
-    EXPECT_NE(beginFrameBody.find("DiscardHZBObservationIfNoReadbackWasPublished()", pipelineUnavailable), std::string::npos);
 }
 
 TEST(DeferredSceneRendererMaterialCacheTests, HZBTargetsAllocateMipChainForHierarchicalOcclusion)

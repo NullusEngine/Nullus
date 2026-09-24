@@ -417,10 +417,10 @@ size_t CountPreviewRendererGameObjects(
 }
 
 PreviewRenderableSnapshot BuildPreviewRenderableSnapshot(
-    const NLS::Engine::Assets::PrefabArtifact& prefab)
+    const NLS::Engine::Assets::PrefabArtifact& prefab,
+    const std::vector<ImportedPrefabRendererDependencyTemplate>& templates)
 {
     PreviewRenderableSnapshot snapshot;
-    const auto templates = BuildImportedPrefabRendererDependencyTemplates(prefab);
     snapshot.expectedDrawItemCount = CountPreviewRendererGameObjects(prefab.graph);
     const auto recordsById = BuildObjectRecordIndex(prefab.graph);
     const auto resolvedAssetIds = BuildResolvedAssetIdIndex(prefab);
@@ -458,5 +458,11 @@ PreviewRenderableSnapshot BuildPreviewRenderableSnapshot(
     }
 
     return snapshot;
+}
+
+PreviewRenderableSnapshot BuildPreviewRenderableSnapshot(
+    const NLS::Engine::Assets::PrefabArtifact& prefab)
+{
+    return BuildPreviewRenderableSnapshot(prefab, BuildImportedPrefabRendererDependencyTemplates(prefab));
 }
 }

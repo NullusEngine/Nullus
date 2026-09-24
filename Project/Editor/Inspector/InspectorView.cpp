@@ -56,6 +56,7 @@
 #include "Serialization/NativeReflectionSerializedBackend.h"
 #include "Serialization/ProjectSettingsSerializedBackend.h"
 #include "Panels/ComponentSearchPanel.h"
+#include "Profiling/Profiler.h"
 #include "Settings/TagLayerSettings.h"
 #include "Shortcuts/EditorShortcutService.h"
 #include "EditorProject_MetaGenerated.h"
@@ -444,6 +445,7 @@ void InspectorView::SetTargets(InspectorTargetSet targets)
     m_treeDirty = true;
     m_prefabOverridesDirty = true;
     m_prefabActions.clear();
+    m_prefabActionsResolved = false;
     m_prefabActionError.clear();
     m_componentPicker.ClearTarget();
 }
@@ -457,6 +459,8 @@ void InspectorView::Refresh()
 {
     m_treeDirty = true;
     m_prefabOverridesDirty = true;
+    if (m_prefabOverrideQuery != nullptr)
+        m_prefabOverrideQuery->InvalidateAll();
 }
 
 void InspectorView::SetSearchText(std::string searchText)
@@ -527,6 +531,7 @@ void InspectorView::_Draw_Impl()
 
 void InspectorView::EnsureTree()
 {
+    NLS_PROFILE_NAMED_SCOPE("Inspector::EnsureTree");
     const auto& registry = InspectorRegistry::Get();
     const auto* adapter = registry.ResolveTargetAdapter(m_targets);
     const uint64_t structureVersion = adapter != nullptr ? adapter->GetStructureVersion(m_targets) : 0u;
@@ -539,6 +544,10 @@ void InspectorView::EnsureTree()
     {
         return;
     }
+
+    // BuildPresentation only builds chrome. Prefab override markers are
+    // refreshed after the projected field tree is attached below.
+    m_prefabOverridesDirty = true;
 
     m_tree = adapter != nullptr
         ? adapter->BuildPresentation(m_targets, {m_searchText, false})
@@ -618,16 +627,21 @@ void InspectorView::EnsureTree()
 
 void InspectorView::RefreshPrefabOverridesIfNeeded()
 {
+    NLS_PROFILE_NAMED_SCOPE("Inspector::RefreshPrefabOverrides");
     if (!m_prefabOverridesDirty)
         return;
 
-    RefreshPrefabOverrideStates(m_tree);
-    m_prefabActions = GetPrefabInspectorActions(m_targets);
+    if (m_prefabOverrideQuery == nullptr)
+        m_prefabOverrideQuery = std::make_unique<PrefabOverrideQuery>();
+    RefreshPrefabOverrideStates(m_tree, *m_prefabOverrideQuery);
+    m_prefabActions.clear();
+    m_prefabActionsResolved = false;
     m_prefabOverridesDirty = false;
 }
 
 void InspectorView::DrawToolbar()
 {
+    NLS_PROFILE_NAMED_SCOPE("Inspector::DrawToolbar");
     const float scale = GetUiScale();
     const float iconWidth = 26.0f * scale;
     const float lockWidth = 32.0f * scale;
@@ -659,7 +673,8 @@ void InspectorView::DrawToolbar()
         activeProperty.fieldName = "active";
         activeProperty.displayName = "Active";
         activeProperty.valueType = NLS_TYPEOF(bool);
-        activeProperty.prefabOverride = GetPrefabOverrideState(activeProperty);
+        if (m_prefabOverrideQuery != nullptr)
+            activeProperty.prefabOverride = m_prefabOverrideQuery->GetState(activeProperty);
         const auto activeSerialized = ResolveSerializedProperty(activeProperty);
         const auto activeValue = activeSerialized
             ? activeSerialized.GetValue()
@@ -695,7 +710,8 @@ void InspectorView::DrawToolbar()
         nameProperty.fieldName = "name";
         nameProperty.displayName = "Name";
         nameProperty.valueType = NLS_TYPEOF(std::string);
-        nameProperty.prefabOverride = GetPrefabOverrideState(nameProperty);
+        if (m_prefabOverrideQuery != nullptr)
+            nameProperty.prefabOverride = m_prefabOverrideQuery->GetState(nameProperty);
         const auto nameSerialized = ResolveSerializedProperty(nameProperty);
         const auto nameValue = nameSerialized
             ? nameSerialized.GetValue()
@@ -789,8 +805,16 @@ void InspectorView::DrawToolbar()
                 }
             }
             DrawTooltipIfHovered(canRedo ? std::string {} : redoUnavailableReason);
-            if (!m_prefabActions.empty() && ImGui::BeginMenu("Overrides"))
+            const bool hasPrefabActions = target != nullptr &&
+                m_prefabOverrideQuery != nullptr &&
+                m_prefabOverrideQuery->HasInstance(*target);
+            if (hasPrefabActions && ImGui::BeginMenu("Overrides"))
             {
+                if (!m_prefabActionsResolved)
+                {
+                    m_prefabActions = GetPrefabInspectorActions(m_targets);
+                    m_prefabActionsResolved = true;
+                }
                 for (const auto& action : m_prefabActions)
                 {
                     ImGui::PushID(static_cast<int>(action.kind));
@@ -848,7 +872,8 @@ void InspectorView::DrawToolbar()
             : gameObject->GetTag();
         const int currentTag = Settings::TagLayerSettings::FindTagIndex(currentTagValue);
         const auto tagText = Settings::TagLayerSettings::GetTagAt(currentTag);
-        tagProperty.prefabOverride = GetPrefabOverrideState(tagProperty);
+        if (m_prefabOverrideQuery != nullptr)
+            tagProperty.prefabOverride = m_prefabOverrideQuery->GetState(tagProperty);
         ImGui::SetNextItemWidth(-FLT_MIN);
         const bool tagOverride = tagProperty.prefabOverride != PrefabOverrideState::None;
         if (tagOverride)
@@ -892,7 +917,8 @@ void InspectorView::DrawToolbar()
         const int currentLayer = layerValue.IsValid() ? layerValue.ToInt() : gameObject->GetLayer();
         const auto layerFound = layerChoices.find(currentLayer);
         const auto layerText = layerFound != layerChoices.end() ? layerFound->second : std::string("Layer 0");
-        layerProperty.prefabOverride = GetPrefabOverrideState(layerProperty);
+        if (m_prefabOverrideQuery != nullptr)
+            layerProperty.prefabOverride = m_prefabOverrideQuery->GetState(layerProperty);
         ImGui::SetNextItemWidth(-FLT_MIN);
         const bool layerOverride = layerProperty.prefabOverride != PrefabOverrideState::None;
         if (layerOverride)
@@ -938,6 +964,7 @@ void InspectorView::DrawToolbar()
 
 void InspectorView::DrawGameObject(const PropertyNode& gameObjectNode)
 {
+    NLS_PROFILE_NAMED_SCOPE("Inspector::DrawGameObject");
     size_t componentIndex = 0u;
     for (const auto& component : gameObjectNode.children)
     {
@@ -954,6 +981,7 @@ void InspectorView::DrawGameObject(const PropertyNode& gameObjectNode)
 
 void InspectorView::DrawComponentEditorBody(const PropertyNode& componentNode)
 {
+    NLS_PROFILE_NAMED_SCOPE("Inspector::DrawComponentEditorBody");
     auto* component = dynamic_cast<Engine::Components::Component*>(
         NativeReflectionAdapter::ResolveObject(componentNode.target));
     if (component == nullptr)
@@ -1112,8 +1140,8 @@ void InspectorView::DrawComponentEditorBody(const PropertyNode& componentNode)
             property.metadata.hideInInspector = false;
         if (!options.includeChildren)
             property.children.clear();
-        if (property.prefabOverride == PrefabOverrideState::None)
-            property.prefabOverride = GetPrefabOverrideState(property);
+        if (m_prefabOverrideQuery != nullptr)
+            property.prefabOverride = m_prefabOverrideQuery->GetState(property);
         return property;
     };
 
@@ -1212,6 +1240,7 @@ void InspectorView::DrawComponentEditorBody(const PropertyNode& componentNode)
 
 void InspectorView::DrawComponent(const PropertyNode& componentNode, const size_t componentIndex)
 {
+    NLS_PROFILE_NAMED_SCOPE("Inspector::DrawComponent");
     auto* component = dynamic_cast<Engine::Components::Component*>(NativeReflectionAdapter::ResolveObject(componentNode.target));
     if (component == nullptr)
         return;
@@ -1270,7 +1299,8 @@ void InspectorView::DrawComponent(const PropertyNode& componentNode, const size_
         bool enabled = enabledValue.IsValid() ? enabledValue.GetValue<bool>() : component->IsSelfEnabled();
         if (serializedEnabled)
             enabledProperty.valueState = serializedEnabled.GetValueState();
-        enabledProperty.prefabOverride = GetPrefabOverrideState(enabledProperty);
+        if (m_prefabOverrideQuery != nullptr)
+            enabledProperty.prefabOverride = m_prefabOverrideQuery->GetState(enabledProperty);
         enabledProperty.readOnly = componentNode.isTransform;
         const bool enabledOverride = enabledProperty.prefabOverride != PrefabOverrideState::None;
         if (enabledOverride)
@@ -1355,6 +1385,7 @@ void InspectorView::DrawComponent(const PropertyNode& componentNode, const size_
 
 void InspectorView::DrawProperties(const std::vector<PropertyNode>& properties)
 {
+    NLS_PROFILE_NAMED_SCOPE("Inspector::DrawProperties");
     if (properties.empty())
     {
         ImGui::TextDisabled("No editable properties");
@@ -1574,6 +1605,7 @@ void InspectorView::DrawPrefabOverrideMenu(const PropertyNode& property, const c
 
 bool InspectorView::DrawPropertyValue(const PropertyNode& property)
 {
+    NLS_PROFILE_NAMED_SCOPE("Inspector::DrawPropertyValue");
     const auto serializedProperty = ResolveSerializedProperty(property);
     const bool hasSerializedProperty = static_cast<bool>(serializedProperty);
     auto value = hasSerializedProperty ? serializedProperty.GetValue() : meta::Variant {};
@@ -2004,6 +2036,7 @@ bool InspectorView::DrawObjectReferenceValue(
     meta::Variant& value,
     const std::string& id)
 {
+    NLS_PROFILE_NAMED_SCOPE("Inspector::DrawObjectReferenceValue");
     const std::string display = GetInspectorObjectReferenceDisplay(value, property.valueType);
     const auto commit = [this, &property](meta::Variant updated, const char* action)
     {
@@ -2671,6 +2704,7 @@ void InspectorView::DrawComponentMenu(const PropertyNode& componentNode, const s
 
 void InspectorView::DrawTargetActions()
 {
+    NLS_PROFILE_NAMED_SCOPE("Inspector::DrawTargetActions");
     const auto* adapter = InspectorRegistry::Get().ResolveTargetAdapter(m_targets);
     if (adapter == nullptr)
         return;
@@ -2809,6 +2843,8 @@ void InspectorView::CommitOrCancelAfterItem(const PropertyNode& property)
 void InspectorView::NotifyPropertyChanged(const PropertyNode& property)
 {
     m_prefabOverridesDirty = true;
+    if (m_prefabOverrideQuery != nullptr)
+        m_prefabOverrideQuery->InvalidateAll();
     PropertyChangedEvent.Invoke(property);
 }
 

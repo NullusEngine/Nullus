@@ -3,6 +3,7 @@
 #include "Inspector/EditorSelectionService.h"
 #include "Core/EditorActions.h"
 #include "Core/RecentBackgroundWorkGate.h"
+#include "Profiling/Profiler.h"
 #include "Panels/HierarchyUndo.h"
 #include "Assets/AssetDragDropWorkflow.h"
 #include "Assets/EditorAssetDragDropBridge.h"
@@ -506,6 +507,7 @@ Editor::Panels::Hierarchy::Hierarchy
 	m_selectionChangedListener = NLS::Editor::Inspector::EditorSelectionService::Get().SelectionChangedEvent +=
 		[this](const NLS::Editor::Inspector::InspectorTargetSet& selection)
 	{
+		NLS_PROFILE_NAMED_SCOPE("Hierarchy::ApplyEditorSelection");
 		UnselectGameObjectsWidgets();
 		const auto* target = selection.Primary();
 		if (target == nullptr || target->kind != NLS::Editor::Inspector::InspectorTargetKind::GameObject)
@@ -548,14 +550,18 @@ void Editor::Panels::Hierarchy::Clear()
 	EDITOR_EXEC(UnselectGameObject());
 
 	m_sceneRoot->RemoveAllWidgets();
+	m_selectedWidget = nullptr;
 	m_widgetGameObjectLink.clear();
 	RefreshSceneRootName();
 }
 
 void Editor::Panels::Hierarchy::UnselectGameObjectsWidgets()
 {
-	for (auto& widget : m_widgetGameObjectLink)
-		widget.second->selected = false;
+	if (m_selectedWidget != nullptr)
+	{
+		m_selectedWidget->selected = false;
+		m_selectedWidget = nullptr;
+	}
 }
 
 void Editor::Panels::Hierarchy::SelectGameObjectByInstance(Engine::GameObject& p_actor)
@@ -570,6 +576,7 @@ void Editor::Panels::Hierarchy::SelectGameObjectByWidget(UI::Widgets::TreeNode &
 	UnselectGameObjectsWidgets();
 
 	p_widget.selected = true;
+	m_selectedWidget = &p_widget;
 
 	if (p_widget.HasParent())
 	{
@@ -620,6 +627,9 @@ void Editor::Panels::Hierarchy::DeleteGameObjectByInstance(Engine::GameObject& p
 		{
 			result->second->Destroy();
 		}
+
+		if (m_selectedWidget == result->second)
+			m_selectedWidget = nullptr;
 
 		if (p_actor.HasParent() && p_actor.GetParent()->GetChildren().size() == 1)
 		{
@@ -682,6 +692,7 @@ void Editor::Panels::Hierarchy::AddGameObjectByInstance(Engine::GameObject & p_a
 void Editor::Panels::Hierarchy::RebuildFromCurrentScene()
 {
 	m_sceneRoot->RemoveAllWidgets();
+	m_selectedWidget = nullptr;
 	m_widgetGameObjectLink.clear();
 	RefreshSceneRootName();
 

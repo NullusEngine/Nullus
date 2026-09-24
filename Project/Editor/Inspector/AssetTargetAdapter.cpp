@@ -41,6 +41,7 @@
 #include "Inspector/InspectorUndo.h"
 #include "Inspector/PropertyTypeTraits.h"
 #include "Inspector/ModelImporterSupport.h"
+#include "Profiling/Profiler.h"
 #include "Serialization/ImporterDraftSerializedBackend.h"
 #include "Panels/AssetView.h"
 #include "Undo/EditorUndoMutationContext.h"
@@ -199,6 +200,7 @@ void EnsureModelImporterDraftDefaults(
 
 ImporterDraft& EnsureImporterDraftLocked(const InspectorTargetHandle& handle)
 {
+    NLS_PROFILE_NAMED_SCOPE("Inspector::AssetTargetAdapter::EnsureImporterDraft");
     auto& draft = g_importerDrafts[DraftKey(handle)];
     if (draft.initialized)
         return draft;
@@ -262,9 +264,22 @@ NLS::Render::Resources::Material* ResolveMaterial(const InspectorTargetHandle& h
     return context.materialManager[NormalizeAssetRelativePath(handle.resourcePath)];
 }
 
+NLS::Render::Resources::Material* FindRegisteredMaterial(const InspectorTargetHandle& handle)
+{
+    // Per-frame Inspector queries must never start a material load. The
+    // serialized backend owns the one-time load; actions only operate on a
+    // material that is already registered.
+    if (!NLS::Core::ServiceLocator::Contains<Core::Context>())
+        return nullptr;
+
+    auto& context = NLS::Core::ServiceLocator::Get<Core::Context>();
+    return context.materialManager.FindRegisteredMaterialByEquivalentArtifactPath(
+        NormalizeAssetRelativePath(handle.resourcePath));
+}
+
 bool IsMaterialTargetAlive(const InspectorTargetHandle& handle)
 {
-    return ResolveMaterial(handle) != nullptr;
+    return FindRegisteredMaterial(handle) != nullptr;
 }
 
 void MarkMaterialUndoScopeSaved(const InspectorTargetHandle& handle)
@@ -1090,6 +1105,7 @@ bool AssetTargetAdapter::CanBuild(const InspectorTargetSet& targets) const
 
 uint64_t AssetTargetAdapter::GetStructureVersion(const InspectorTargetSet& targets) const
 {
+    NLS_PROFILE_NAMED_SCOPE("Inspector::AssetTargetAdapter::GetStructureVersion");
     const auto* target = targets.Primary();
     if (target == nullptr)
         return 0u;
@@ -1097,7 +1113,7 @@ uint64_t AssetTargetAdapter::GetStructureVersion(const InspectorTargetSet& targe
     uint64_t version = HashText(target->resourcePath) ^ (static_cast<uint64_t>(target->kind) << 56u);
     if (target->kind == InspectorTargetKind::Material)
     {
-        if (auto* material = ResolveMaterial(*target))
+        if (auto* material = FindRegisteredMaterial(*target))
         {
             version ^= reinterpret_cast<uintptr_t>(material);
             for (const auto& [name, value] : material->GetUniformsData())
@@ -1129,6 +1145,7 @@ InspectorPresentation AssetTargetAdapter::BuildPresentation(
     const InspectorTargetSet& targets,
     const InspectorBuildContext& context) const
 {
+    NLS_PROFILE_NAMED_SCOPE("Inspector::AssetTargetAdapter::BuildPresentation");
     InspectorPresentation presentation;
     auto& tree = presentation;
     tree.targets = targets;
@@ -1161,6 +1178,7 @@ InspectorPresentation AssetTargetAdapter::BuildPresentation(
 
 std::vector<InspectorTargetAction> AssetTargetAdapter::GetActions(const InspectorTargetSet& targets) const
 {
+    NLS_PROFILE_NAMED_SCOPE("Inspector::AssetTargetAdapter::GetActions");
     const auto* target = targets.Primary();
     if (target == nullptr)
         return {};

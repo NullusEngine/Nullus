@@ -206,16 +206,20 @@ namespace NLS::Render::Backend
 			if (factory == nullptr)
 				return adapter;
 
-			for (UINT adapterIndex = 0; ; ++adapterIndex)
+			// Accept a candidate only when it is a hardware adapter that can create
+			// a Shader Model 6.0 device. Rejection reasons are collected so a total
+			// failure still reports the last useful diagnostic.
+			const auto tryAcceptAdapter =
+				[&rejectionDiagnostics](IDXGIAdapter1* rawCandidate, Microsoft::WRL::ComPtr<IDXGIAdapter1>& accepted)
 			{
-				Microsoft::WRL::ComPtr<IDXGIAdapter1> candidate;
-				if (factory->EnumAdapters1(adapterIndex, &candidate) == DXGI_ERROR_NOT_FOUND)
-					break;
+				if (rawCandidate == nullptr)
+					return false;
 
+				Microsoft::WRL::ComPtr<IDXGIAdapter1> candidate(rawCandidate);
 				DXGI_ADAPTER_DESC1 adapterDesc{};
 				candidate->GetDesc1(&adapterDesc);
 				if ((adapterDesc.Flags & DXGI_ADAPTER_FLAG_SOFTWARE) != 0)
-					continue;
+					return false;
 
 				Microsoft::WRL::ComPtr<ID3D12Device> testDevice;
 				if (SUCCEEDED(D3D12CreateDevice(candidate.Get(), D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&testDevice))))
@@ -226,12 +230,39 @@ namespace NLS::Render::Backend
 						rejectionDiagnostics =
 							NarrowAdapterName(adapterDesc) + ": " +
 							BuildShaderModelFailureDiagnostic(shaderModelSupport);
-						continue;
+						return false;
 					}
 
-					adapter = candidate;
-					break;
+					accepted = std::move(candidate);
+					return true;
 				}
+
+				return false;
+			};
+
+			// Hybrid laptops enumerate the integrated GPU first. Prefer the
+			// high-performance adapter so the editor renders on the discrete GPU
+			// instead of quietly falling back to the integrated one.
+			Microsoft::WRL::ComPtr<IDXGIAdapter1> preferred;
+			if (SUCCEEDED(factory->EnumAdapterByGpuPreference(
+					0u,
+					DXGI_GPU_PREFERENCE_HIGH_PERFORMANCE,
+					IID_PPV_ARGS(&preferred))))
+			{
+				Microsoft::WRL::ComPtr<IDXGIAdapter1> accepted;
+				if (tryAcceptAdapter(preferred.Get(), accepted))
+					return accepted;
+			}
+
+			for (UINT adapterIndex = 0; ; ++adapterIndex)
+			{
+				Microsoft::WRL::ComPtr<IDXGIAdapter1> candidate;
+				if (factory->EnumAdapters1(adapterIndex, &candidate) == DXGI_ERROR_NOT_FOUND)
+					break;
+
+				Microsoft::WRL::ComPtr<IDXGIAdapter1> accepted;
+				if (tryAcceptAdapter(candidate.Get(), accepted))
+					return accepted;
 			}
 
 			return adapter;
@@ -427,6 +458,23 @@ namespace NLS::Render::Backend
 		DXGI_ADAPTER_DESC1 adapterDesc{};
 		resources.adapter->GetDesc1(&adapterDesc);
 		resources.hardware = NarrowAdapterName(adapterDesc);
+		// An adapter with no display outputs cannot scan out the swapchain: DXGI
+		// then has to compose across adapters, which is a common source of visible
+		// flicker on hybrid laptops. Report it so the choice is diagnosable.
+		UINT displayOutputCount = 0u;
+		for (UINT outputIndex = 0u; ; ++outputIndex)
+		{
+			Microsoft::WRL::ComPtr<IDXGIOutput> displayOutput;
+			if (resources.adapter->EnumOutputs(outputIndex, &displayOutput) == DXGI_ERROR_NOT_FOUND)
+				break;
+			++displayOutputCount;
+		}
+		NLS_LOG_INFO(
+			"CreateDX12RhiDevice: selected adapter=\"" + resources.hardware +
+			"\" dedicatedVideoMemoryMiB=" +
+			std::to_string(adapterDesc.DedicatedVideoMemory / (1024ull * 1024ull)) +
+			" displayOutputs=" +
+			std::to_string(displayOutputCount));
 
 		if (FAILED(D3D12CreateDevice(resources.adapter.Get(), D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&resources.device))))
 		{

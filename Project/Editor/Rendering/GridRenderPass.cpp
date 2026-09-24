@@ -109,6 +109,23 @@ Editor::Rendering::GridRenderPass::GridRenderPass(NLS::Render::Core::CompositeRe
 	m_gridMaterial.SetBlendable(true);
 }
 
+void Editor::Rendering::GridRenderPass::ApplyGridColor(const Maths::Vector3& gridColor)
+{
+	// Material parameter writes bump the global material mutation epoch, which is
+	// part of the Scene View static frame cache key. Writing the same color every
+	// frame would make that cache miss forever, so only apply real changes. Reading
+	// the stored value (instead of caching a copy here) also stays correct when the
+	// parameter block is reset by a shader reload.
+	const auto* existing = m_gridMaterial.GetParameterBlock().TryGet("u_Color");
+	if (existing != nullptr && existing->type() == typeid(Maths::Vector3))
+	{
+		if (std::any_cast<const Maths::Vector3&>(*existing) == gridColor)
+			return;
+	}
+
+	m_gridMaterial.Set("u_Color", gridColor);
+}
+
 const std::optional<NLS::Render::Context::RenderPassCommandInput>& Editor::Rendering::GridRenderPass::GetPreparedThreadedPassInput() const
 {
     return m_preparedThreadedPassInput;
@@ -150,7 +167,7 @@ void Editor::Rendering::GridRenderPass::Draw(NLS::Render::Data::PipelineState p_
 
 	Maths::Matrix4 model = BuildGridPlaneModelMatrix(gridDescriptor, gridSize);
 
-	m_gridMaterial.Set("u_Color", gridDescriptor.gridColor);
+	ApplyGridColor(gridDescriptor.gridColor);
 
 	UpdateGridAxes(debugDrawService, gridDescriptor, gridSize);
 
@@ -192,7 +209,7 @@ std::optional<NLS::Render::Context::RenderPassCommandInput> Editor::Rendering::G
     constexpr float gridSize = 5000.0f;
     Maths::Matrix4 model = BuildGridPlaneModelMatrix(gridDescriptor, gridSize);
 
-    m_gridMaterial.Set("u_Color", gridDescriptor.gridColor);
+    ApplyGridColor(gridDescriptor.gridColor);
 
     NLS::Render::Context::RenderPassCommandInput passInput;
     passInput.kind = NLS::Render::Context::RenderPassCommandKind::Helper;

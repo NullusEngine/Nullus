@@ -7,6 +7,7 @@
 #include "Settings/EditorSettingsRegistry.h"
 #include "Project/Editor/Settings/EditorSettings.generated.h"
 
+#include <Math/Color.h>
 #include <string>
 
 namespace NLS::Editor::Settings
@@ -62,16 +63,41 @@ namespace NLS::Editor::Settings
     STRUCT(EditorRuntimeSettingsObject)
     {
         GENERATED_BODY()
-        PROPERTY(RequiresRestart)
-        bool enableThreadedRendering = true;
+        // Launch-only options (threaded rendering, swapchain vsync, RenderDoc
+        // startup capture) intentionally live in the project file, because the
+        // launcher startup panel owns everything that needs a restart.
         PROPERTY()
         bool enablePowerSavingIdlePacing = false;
         PROPERTY()
         bool renderDocEnabled = false;
         PROPERTY()
         bool renderDocAutoOpenReplayUI = false;
-        PROPERTY(RequiresRestart)
-        int renderDocStartupCaptureAfterFrames = 0;
+    };
+}
+
+namespace NLS::Editor::Settings
+{
+    STRUCT(EditorViewSettingsObject)
+    {
+        GENERATED_BODY()
+        PROPERTY(
+            DisplayName("Scene View Camera Speed"),
+            Range(1.0f, 50.0f),
+            Tooltip("Fly speed of the Scene View camera."))
+        float sceneViewCameraSpeed = 15.0f;
+        PROPERTY(
+            DisplayName("Asset View Camera Speed"),
+            Range(1.0f, 50.0f),
+            Tooltip("Fly speed of the Asset View camera."))
+        float assetViewCameraSpeed = 15.0f;
+        PROPERTY(DisplayName("Scene View Background"), ColorUsage)
+        Maths::Color sceneViewBackground = Maths::Color(0.098f, 0.098f, 0.098f, 1.0f);
+        PROPERTY(DisplayName("Scene View Grid"), ColorUsage)
+        Maths::Color sceneViewGrid = Maths::Color(0.176f, 0.176f, 0.176f, 1.0f);
+        PROPERTY(DisplayName("Asset View Background"), ColorUsage)
+        Maths::Color assetViewBackground = Maths::Color(0.098f, 0.098f, 0.098f, 1.0f);
+        PROPERTY(DisplayName("Asset View Grid"), ColorUsage)
+        Maths::Color assetViewGrid = Maths::Color(0.176f, 0.176f, 0.176f, 1.0f);
     };
 }
 
@@ -131,6 +157,7 @@ namespace NLS::Editor::Settings
         static EditorDebugDrawSettingsObject& GetDebugDrawSettingsObject();
         static EditorSceneToolSettingsObject& GetSceneToolSettingsObject();
         static EditorRenderingSettingsObject& GetRenderingSettingsObject();
+        static EditorViewSettingsObject& GetViewSettingsObject();
         static EditorRuntimeSettingsObject& GetRuntimeSettingsObject();
         static EditorLargeSceneSettingsObject& GetLargeSceneSettingsObject();
         static Render::Settings::RenderDocSettings BuildRenderDocSettings();

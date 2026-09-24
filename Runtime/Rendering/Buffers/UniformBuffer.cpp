@@ -103,4 +103,5 @@ std::shared_ptr<NLS::Render::RHI::RHIBuffer> UniformBuffer::CreateExplicitSnapsh
     }
     return nullptr;
 }
+
 }

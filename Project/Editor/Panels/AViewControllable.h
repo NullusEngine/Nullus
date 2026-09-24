@@ -47,17 +47,6 @@ namespace NLS::Editor::Panels
 		virtual NLS::Render::Entities::Camera* GetCamera();
 
 		/**
-		* Returns the grid color of the view
-		*/
-		const Maths::Vector3& GetGridColor() const;
-
-		/**
-		* Defines the grid color of the view
-		* @param p_color
-		*/
-		void SetGridColor(const Maths::Vector3& p_color);
-
-		/**
 		* Reset the grid color to its initial value
 		*/
 		void ResetGridColor();
@@ -68,6 +57,13 @@ namespace NLS::Editor::Panels
 		void ResetClearColor();
 
 	protected:
+		/**
+		* Applies the reflected editor view settings that belong to this panel:
+		* camera speed, grid color and background color. Implemented by each
+		* view so the Scene View and Asset View keep independent settings.
+		*/
+		virtual void ApplyViewSettings() = 0;
+
         Maths::Transform camTrans;
 		Maths::Vector3 m_gridColor;
 		NLS::Render::Entities::Camera m_camera;

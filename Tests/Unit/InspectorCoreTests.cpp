@@ -1736,6 +1736,88 @@ TEST(InspectorCoreTests, PrefabMenuRevertUsesInjectedServicesAndRestoresThroughU
     EXPECT_EQ(instance.instanceRoot->GetComponent<Engine::Components::LightComponent>(), nullptr);
 }
 
+TEST(InspectorCoreTests, PrefabOverrideMarkersReuseCachedIndexUntilContentChanges)
+{
+    constexpr auto assetGuid = "2f1d6a38-8b0a-4c02-9f5c-1b7c2a9d4e11";
+    Engine::GameObject sourceRoot("Cached marker source", "Prop");
+    Assets::PrefabEditorWorkflow workflow;
+    auto artifact = workflow.CreatePrefabFromSelection({
+        &sourceRoot,
+        {},
+        NLS::Core::Assets::AssetId(NLS::Guid::Parse(assetGuid)),
+        "Assets/Prefabs/CachedMarkers.prefab"}).artifact;
+    ASSERT_TRUE(artifact.has_value());
+
+    Engine::SceneSystem::Scene scene;
+    auto instantiated = workflow.InstantiatePrefab({
+        &*artifact,
+        NLS::Core::Assets::AssetId(NLS::Guid::Parse(assetGuid)),
+        "prefab:CachedMarkers"}, scene);
+    ASSERT_TRUE(instantiated.instance.has_value());
+
+    Assets::PrefabInstanceRegistry registry;
+    auto& instance = registry.Register(std::move(*instantiated.instance));
+    ASSERT_NE(instance.instanceRoot, nullptr);
+    instance.instanceRoot->SetName("Cached marker instance");
+
+    const auto rootHandle = InspectorTargetHandle::FromObject(
+        *instance.instanceRoot,
+        InspectorTargetKind::GameObject);
+    PropertyNode nameNode;
+    nameNode.path = PropertyPath("name");
+    nameNode.fieldName = "name";
+    nameNode.target = rootHandle;
+    SetPropertyNodeTargets(nameNode, {rootHandle});
+
+    InspectorPresentation presentation;
+    presentation.roots.push_back(std::move(nameNode));
+
+    TestHooks::ScopedPrefabInspectorServicesForTesting services(registry);
+    TestHooks::ResetPrefabOverrideMarkerDiscoveryCountForTesting();
+    PrefabOverrideQuery query;
+
+    RefreshPrefabOverrideStates(presentation, query);
+    EXPECT_EQ(presentation.roots.front().prefabOverride, PrefabOverrideState::PropertyOverride);
+    EXPECT_EQ(TestHooks::GetPrefabOverrideMarkerDiscoveryCountForTesting(), 1u);
+
+    // A later selection refresh with unchanged instance content must reuse the
+    // cached marker index instead of running override discovery again.
+    presentation.roots.front().prefabOverride = PrefabOverrideState::None;
+    RefreshPrefabOverrideStates(presentation, query);
+    EXPECT_EQ(presentation.roots.front().prefabOverride, PrefabOverrideState::PropertyOverride);
+    EXPECT_EQ(TestHooks::GetPrefabOverrideMarkerDiscoveryCountForTesting(), 1u);
+
+    // An explicit content invalidation rebuilds the index exactly once.
+    presentation.roots.front().prefabOverride = PrefabOverrideState::None;
+    query.InvalidateAll();
+    RefreshPrefabOverrideStates(presentation, query);
+    EXPECT_EQ(presentation.roots.front().prefabOverride, PrefabOverrideState::PropertyOverride);
+    EXPECT_EQ(TestHooks::GetPrefabOverrideMarkerDiscoveryCountForTesting(), 2u);
+
+    // A stored local patch must produce a marker even when the live value has
+    // no difference from the source, and changing it invalidates the cached
+    // fingerprint even when the refresh is allowed to reuse cached data.
+    const auto sourceRootId = instance.sourceByInstanceObject.find(instance.instanceRoot);
+    ASSERT_NE(sourceRootId, instance.sourceByInstanceObject.end());
+    instance.localPatches.push_back(Engine::Serialize::PatchOperation::ReplaceProperty(
+        sourceRootId->second,
+        "tag",
+        Engine::Serialize::PropertyValue::String("Patched")));
+
+    PropertyNode tagNode;
+    tagNode.path = PropertyPath("tag");
+    tagNode.fieldName = "tag";
+    tagNode.target = rootHandle;
+    SetPropertyNodeTargets(tagNode, {rootHandle});
+    presentation.roots.push_back(std::move(tagNode));
+
+    presentation.roots.front().prefabOverride = PrefabOverrideState::None;
+    RefreshPrefabOverrideStates(presentation, query);
+    EXPECT_EQ(presentation.roots.front().prefabOverride, PrefabOverrideState::PropertyOverride);
+    EXPECT_EQ(presentation.roots.back().prefabOverride, PrefabOverrideState::PropertyOverride);
+    EXPECT_EQ(TestHooks::GetPrefabOverrideMarkerDiscoveryCountForTesting(), 3u);
+}
+
 TEST(InspectorCoreTests, PrefabMenuApplyExecutesThroughUndoAndRoundTripsSourceAndInstance)
 {
     ScopedInspectorUndoService undoScope;

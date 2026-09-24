@@ -104,6 +104,13 @@ std::string_view LauncherTextKeyName(LauncherTextKey key)
     case LauncherTextKey::NoMatchTemplate: return "wizard.templates.no_match";
     case LauncherTextKey::SelectTemplate: return "wizard.templates.select";
     case LauncherTextKey::ProjectSettings: return "wizard.project_settings";
+    case LauncherTextKey::LaunchOptions: return "launch_options.title";
+    case LauncherTextKey::LaunchOptionsDescription: return "launch_options.description";
+    case LauncherTextKey::VerticalSynchronization: return "launch_options.vsync";
+    case LauncherTextKey::ThreadedRendering: return "launch_options.threaded_rendering";
+    case LauncherTextKey::RenderDocCaptureFrames: return "launch_options.renderdoc_capture_frames";
+    case LauncherTextKey::Save: return "launch_options.save";
+    case LauncherTextKey::SaveFailed: return "launch_options.save_failed";
     case LauncherTextKey::ProjectName: return "wizard.project_name";
     case LauncherTextKey::Location: return "wizard.location";
     case LauncherTextKey::EditorVersion: return "wizard.editor_version";

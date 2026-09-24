@@ -36,6 +36,7 @@ namespace NLS::Render::Data
         uint32_t objectIndex = kInvalidObjectIndex;
         uint32_t objectCount = 1u;
         std::vector<Maths::Matrix4> instanceModelMatrices;
+        std::vector<uint32_t> instanceObjectIndices;
         uint32_t objectFlags = kDrawableObjectFlagReceiveShadows |
             kDrawableObjectFlagCastShadows;
         // Stable scene identity used to keep static opaque instance ordering independent of camera distance.

@@ -2279,6 +2279,17 @@ TEST(AssetDatabaseFacadeTests, StartupPreimportPlanIncludesShaderSourceAssetsAnd
     EXPECT_EQ(
         std::find(warmPlan.assetPaths.begin(), warmPlan.assetPaths.end(), "Assets/Shaders/Warmup.shader"),
         warmPlan.assetPaths.end());
+    AssetPreimportRequest forcedWarmRequest;
+    forcedWarmRequest.reason = AssetPreimportReason::EditorStartup;
+    forcedWarmRequest.forceRebuildAll = true;
+    const auto forcedWarmPlan = scheduler.BuildPlan(database, forcedWarmRequest);
+    EXPECT_NE(
+        std::find(
+            forcedWarmPlan.assetPaths.begin(),
+            forcedWarmPlan.assetPaths.end(),
+            "Assets/Shaders/Warmup.shader"),
+        forcedWarmPlan.assetPaths.end())
+        << "Explicit prewarm must rebuild current artifacts when forced.";
 
     WriteTextFile(
         root / "Assets" / "Shaders" / "Warmup.shader",
@@ -4568,9 +4579,68 @@ TEST(AssetDatabaseFacadeTests, StandaloneTextureImportEmitsAssetImportStages)
 
     const auto manifest = database.GetArtifactManifestForAssetPath("Assets/Textures/HeroBaseColor.png");
     ASSERT_TRUE(manifest.has_value());
+    EXPECT_TRUE(std::any_of(
+        manifest->dependencies.begin(),
+        manifest->dependencies.end(),
+        [](const AssetDependencyRecord& dependency)
+        {
+            return dependency.kind == AssetDependencyKind::PostprocessorVersion &&
+                dependency.value == kExternalTextureBuildPipelineDependencyName &&
+                dependency.hashOrVersion ==
+                    std::to_string(kExternalTexturePostprocessorVersion);
+        }))
+        << "Standalone texture manifests must carry the same global texture-pipeline version as model textures.";
+    ASSERT_TRUE(database.IsArtifactManifestCurrentForAssetPath("Assets/Textures/HeroBaseColor.png"));
+
+    RemovePersistedArtifactDependency(
+        root,
+        ParseAssetId(database.AssetPathToGUID("Assets/Textures/HeroBaseColor.png")),
+        AssetDependencyKind::PostprocessorVersion,
+        kExternalTextureBuildPipelineDependencyName);
+
+    AssetDatabaseFacade restarted({root});
+    ASSERT_TRUE(restarted.Refresh());
+    EXPECT_FALSE(restarted.IsArtifactManifestCurrentForAssetPath("Assets/Textures/HeroBaseColor.png"));
+    AssetPreimportScheduler scheduler;
+    const auto plan = scheduler.BuildPlan(restarted, AssetPreimportReason::EditorStartup);
+    EXPECT_NE(
+        std::find(plan.assetPaths.begin(), plan.assetPaths.end(), "Assets/Textures/HeroBaseColor.png"),
+        plan.assetPaths.end())
+        << "A missing texture-pipeline dependency must make the standalone texture startup-dirty.";
     const auto* artifact = manifest->FindPrimaryArtifact();
     ASSERT_NE(artifact, nullptr);
     EXPECT_EQ(artifact->artifactType, ArtifactType::Texture);
+
+    std::filesystem::remove_all(root);
+}
+
+TEST(AssetDatabaseFacadeTests, StartupPreimportForcedRebuildIncludesCurrentTextureArtifact)
+{
+    using namespace NLS::Editor::Assets;
+
+    const auto root = MakeAssetDatabaseFacadeRoot();
+    WriteBinaryFile(root / "Assets" / "Textures" / "ForceWarm.png", TinyPng());
+
+    AssetDatabaseFacade database(MakeProjectEditorAssetRoots(root));
+    ASSERT_TRUE(database.Refresh());
+    ASSERT_TRUE(database.ImportAsset("Assets/Textures/ForceWarm.png"));
+
+    AssetPreimportScheduler scheduler;
+    const auto warmPlan = scheduler.BuildPlan(database, AssetPreimportReason::EditorStartup);
+    EXPECT_EQ(
+        std::find(warmPlan.assetPaths.begin(), warmPlan.assetPaths.end(), "Assets/Textures/ForceWarm.png"),
+        warmPlan.assetPaths.end());
+
+    AssetPreimportRequest forcedRequest;
+    forcedRequest.reason = AssetPreimportReason::EditorStartup;
+    forcedRequest.forceRebuildAll = true;
+    const auto forcedPlan = scheduler.BuildPlan(database, forcedRequest);
+    EXPECT_NE(
+        std::find(
+            forcedPlan.assetPaths.begin(),
+            forcedPlan.assetPaths.end(),
+            "Assets/Textures/ForceWarm.png"),
+        forcedPlan.assetPaths.end());
 
     std::filesystem::remove_all(root);
 }

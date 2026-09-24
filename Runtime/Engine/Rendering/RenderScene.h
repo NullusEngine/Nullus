@@ -23,6 +23,8 @@
 #include "Components/MeshRenderer.h"
 #include "EngineDef.h"
 #include "Object/Object.h"
+#include "Rendering/SceneProxy.h"
+#include "Rendering/SceneRenderStore.h"
 
 namespace NLS::Engine
 {
@@ -181,6 +183,13 @@ namespace NLS::Engine::Rendering
 		uint64_t declaredTextureCacheMissCount = 0u;
 		uint64_t declaredTextureResourceScanCount = 0u;
 		bool usedSceneRenderContentRevisionFastPath = false;
+		// True only when this synchronization observed work that can change the
+		// rendered image: structure edits, bound/cached command rebuilds, dirty
+		// bounds, tracked-material mutations or mesh resource mutations. A sync
+		// that merely ran without the revision fast path (for example because the
+		// caller does not opt in) must leave this false so view frame caches can
+		// still hit across otherwise identical frames.
+		bool detectedRenderContentChange = false;
 		uint64_t syncTimeNs = 0u;
 	};
 
@@ -196,14 +205,14 @@ namespace NLS::Engine::Rendering
 		bool allowHLOD = true;
 		bool editorInspectionView = false;
 		std::vector<ScenePrimitiveHandle> selectedPrimitiveHandles;
-		std::vector<const Engine::GameObject*> inspectionRootObjects;
+		std::vector<NLS::InstanceID> inspectionRootInstanceIds;
 		bool enableCullReasonDebugSnapshot = false;
 		uint64_t maxCullReasonDebugSnapshotEntries = 0u;
 		const SceneOcclusionState* occlusion = nullptr;
 		const RepresentationResidencySnapshot* representationResidency = nullptr;
 	};
 
-	struct RenderSceneVisibleQueues
+		struct RenderSceneVisibleQueues
 	{
 		using SceneDrawables = std::vector<std::pair<float, NLS::Render::Entities::Drawable>>;
 
@@ -267,11 +276,13 @@ namespace NLS::Engine::Rendering
 
 	struct ScenePickablePrimitiveDrawSource
 	{
-		NLS::Engine::GameObject* owner = nullptr;
+		NLS::InstanceID ownerInstanceId = NLS::InstanceID_None;
 		NLS::Render::Resources::Mesh* mesh = nullptr;
 		Maths::Matrix4 worldMatrix = Maths::Matrix4::Identity;
 		NLS::Render::Data::StateMask stateMask{};
 	};
+
+		class SceneProxySourceRegistry;
 
 	class NLS_ENGINE_API RenderScene
 	{
@@ -286,6 +297,14 @@ namespace NLS::Engine::Rendering
 		RenderSceneSyncStats Synchronize(
 			SceneSystem::Scene& scene,
 			const RenderSceneSyncOptions& options = {});
+
+		[[nodiscard]] SceneProxyUpdateBatch CollectProxyUpdates(
+			SceneSystem::Scene& scene,
+			const RenderSceneSyncOptions& options = {},
+			uint64_t frameId = 0u);
+		SceneRenderStoreApplyStats ApplyProxyUpdates(const SceneProxyUpdateBatch& batch);
+		[[nodiscard]] const SceneRenderStore& GetProxyStore() const noexcept;
+		[[nodiscard]] SceneRenderStore& GetProxyStore() noexcept;
 
 		[[nodiscard]] RenderSceneVisibleQueues GatherVisibleCommands(
 			const RenderSceneVisibilityOptions& options = {},
@@ -377,6 +396,8 @@ namespace NLS::Engine::Rendering
 
 		struct PrimitiveInputStamp
 		{
+				SceneProxyHandle proxyHandle;
+				NLS::InstanceID ownerInstanceId = NLS::InstanceID_None;
 				Engine::GameObject* owner = nullptr;
 				Components::MeshFilter* meshFilter = nullptr;
 				NLS::Render::Resources::Mesh* mesh = nullptr;
@@ -390,6 +411,7 @@ namespace NLS::Engine::Rendering
 				uint64_t meshLODRevisionDigest = 0u;
 				NLS::Render::Resources::Material* material = nullptr;
 				uint64_t materialInstanceId = 0u;
+				uint64_t requestedMaterialInstanceId = 0u;
 				uint64_t materialParameterRevision = 0u;
 				uint64_t materialRenderStateRevision = 0u;
 				bool explicitMaterialTexturesResolved = true;
@@ -417,18 +439,17 @@ namespace NLS::Engine::Rendering
 			bool valid = false;
 		};
 
-		struct SceneSynchronizationStamp
-		{
-			const SceneSystem::Scene* scene = nullptr;
-			uint64_t renderContentRevision = 0u;
-			NLS::Render::Resources::Material* defaultMaterial = nullptr;
-			uint64_t defaultMaterialParameterRevision = 0u;
-			uint64_t defaultMaterialRenderStateRevision = 0u;
-			NLS::Render::Resources::Material* overrideMaterial = nullptr;
-			uint64_t overrideMaterialParameterRevision = 0u;
-			uint64_t overrideMaterialRenderStateRevision = 0u;
-			bool requireExplicitMaterialTextures = false;
-			bool allowDefaultMaterialForUnresolvedExplicitMaterials = false;
+			struct SceneSynchronizationStamp
+			{
+				const SceneSystem::Scene* scene = nullptr;
+				NLS::Render::Resources::Material* defaultMaterial = nullptr;
+				NLS::Render::Resources::Material* overrideMaterial = nullptr;
+				bool requireExplicitMaterialTextures = false;
+				bool allowDefaultMaterialForUnresolvedExplicitMaterials = false;
+				bool enableSpatialIndex = true;
+				bool enableHLOD = false;
+				double staticRebuildDirtyRatio = 0.20;
+				uint64_t staticRebuildBudgetUs = 0u;
 
 			[[nodiscard]] bool operator==(const SceneSynchronizationStamp& other) const = default;
 		};
@@ -444,7 +465,13 @@ namespace NLS::Engine::Rendering
 		struct RenderPrimitive
 		{
 			ScenePrimitiveHandle handle;
+			SceneProxyHandle proxyHandle;
 			uint32_t stableObjectIndex = NLS::Render::Data::DrawableObjectDescriptor::kInvalidStableObjectIndex;
+			NLS::InstanceID ownerInstanceId = NLS::InstanceID_None;
+			NLS::InstanceID parentInstanceId = NLS::InstanceID_None;
+			uint64_t hlodScopeRootInstanceId = 0u;
+			std::string sourceObjectKey;
+			std::string hlodScopeMetadata;
 			Components::MeshRenderer* meshRenderer = nullptr;
 			NLS::InstanceID meshRendererInstanceId = NLS::InstanceID_None;
 			Engine::GameObject* owner = nullptr;
@@ -453,6 +480,7 @@ namespace NLS::Engine::Rendering
 			PrimitiveInputStamp lastInputStamp;
 			std::vector<CachedCommandSlot> cachedCommands;
 			NLS::Render::Geometry::BoundingSphere modelBoundingSphere;
+			NLS::Render::Geometry::BoundingSphere customBoundingSphere;
 			NLS::Render::Geometry::Bounds modelBounds;
 			Maths::Matrix4 worldMatrix = Maths::Matrix4::Identity;
 			Maths::Matrix4 userMatrix = Maths::Matrix4::Identity;
@@ -501,6 +529,10 @@ namespace NLS::Engine::Rendering
 		void RemoveMissingPrimitives(
 			const std::unordered_map<Components::MeshRenderer*, NLS::InstanceID>& liveMeshRenderers,
 			RenderSceneSyncStats& stats);
+			bool SynchronizeProxyPrimitives(
+				const RenderSceneSyncOptions& options,
+				RenderSceneSyncStats& stats,
+				bool forceFullResync);
 		NLS::Render::Resources::Material* ResolveMaterialForMesh(
 			RenderPrimitive& primitive,
 			NLS::Render::Resources::Mesh& mesh,
@@ -572,7 +604,7 @@ namespace NLS::Engine::Rendering
 		void AssignVisibleObjectIndices(RenderSceneVisibleQueues& output) const;
 		void RefreshSyncTelemetry(const RenderSceneSyncStats& stats);
 		void ClearImportedHierarchyHLODRecords(bool rebuildLookup = true);
-		void RebuildImportedHierarchyHLODRecords(const SceneSystem::Scene& scene);
+		void RebuildImportedHierarchyHLODRecords();
 		[[nodiscard]] bool HasTrackedMaterialMutation();
 		void RefreshTrackedMaterialStates();
 		[[nodiscard]] static SceneSynchronizationStamp BuildSceneSynchronizationStamp(
@@ -584,7 +616,11 @@ namespace NLS::Engine::Rendering
 		std::vector<RenderPrimitive> m_primitives;
 		uint32_t m_nextStableObjectIndex = 0u;
 		std::vector<uint32_t> m_freeStableObjectIndices;
-		std::unordered_map<Components::MeshRenderer*, size_t> m_primitiveIndexByMeshRenderer;
+			std::unordered_map<Components::MeshRenderer*, size_t> m_primitiveIndexByMeshRenderer;
+			std::unordered_map<uint64_t, size_t> m_primitiveIndexByProxy;
+			std::unordered_map<NLS::InstanceID, NLS::InstanceID> m_parentByOwnerInstanceId;
+			std::unordered_set<uint64_t> m_trackedMaterialInstanceIds;
+			std::unordered_set<uint64_t> m_pendingDeclaredTextureProxyKeys;
 		std::optional<size_t> m_firstFreePrimitiveSlot;
 		size_t m_livePrimitiveCount = 0u;
 		uint64_t m_lastSceneFastAccessRevision = 0u;
@@ -614,5 +650,12 @@ namespace NLS::Engine::Rendering
 		mutable std::unique_ptr<SpatialCandidateSnapshotCache> m_spatialCandidateSnapshotCache;
 		mutable uint64_t m_spatialCandidateSnapshotCacheHitCount = 0u;
 		std::vector<SceneHLODClusterHandle> m_importedHierarchyHLODClusterHandles;
-	};
+		std::shared_ptr<SceneProxySourceRegistry> m_proxySourceRegistry;
+		std::shared_ptr<SceneRenderStore> m_proxyStore;
+		const void* m_proxySceneIdentity = nullptr;
+			uint64_t m_proxyFrameSerial = 0u;
+			uint64_t m_lastProxySceneRevision = 0u;
+			uint64_t m_lastProxyMeshMutationEpoch = 0u;
+			uint64_t m_lastProxyStoreChangeSerial = 0u;
+		};
 }

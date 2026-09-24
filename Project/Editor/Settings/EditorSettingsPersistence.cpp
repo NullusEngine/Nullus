@@ -400,6 +400,36 @@ void ApplyPostLoadMigrations(const Json& p_root)
 
 namespace NLS::Editor::Settings
 {
+EditorLegacyLaunchOptionValues EditorSettingsPersistence::ReadLegacyLaunchOptionValues(
+    const std::filesystem::path& p_path)
+{
+    EditorLegacyLaunchOptionValues values;
+    if (!std::filesystem::exists(p_path))
+        return values;
+
+    std::ifstream file(p_path);
+    if (!file.is_open())
+        return values;
+
+    const std::string content((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
+    std::string error;
+    const auto root = Json::parse(content, error);
+    if (!error.empty() || !root.is_object())
+        return values;
+
+    const auto& fields = root["objects"]["editor.runtime"]["fields"];
+    if (!fields.is_object())
+        return values;
+
+    if (fields["verticalSynchronization"].is_bool())
+        values.verticalSynchronization = fields["verticalSynchronization"].bool_value();
+    if (fields["enableThreadedRendering"].is_bool())
+        values.threadedRendering = fields["enableThreadedRendering"].bool_value();
+    if (fields["renderDocStartupCaptureAfterFrames"].is_number())
+        values.renderDocStartupCaptureFrames = static_cast<int>(fields["renderDocStartupCaptureAfterFrames"].number_value());
+    return values;
+}
+
 bool EditorSettingsPersistence::Load(const std::filesystem::path& p_path, const EditorSettingsRegistry& p_registry)
 {
     if (!std::filesystem::exists(p_path))

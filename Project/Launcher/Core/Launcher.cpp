@@ -1,6 +1,7 @@
 #include "Launcher.h"
 #include "ProjectCreationWizard.h"
 #include "LauncherProjectMetadata.h"
+#include <Settings/ProjectLaunchOptions.h>
 #include "LauncherTheme.h"
 #include "LauncherLocalization.h"
 #include "LauncherNavigation.h"
@@ -816,6 +817,9 @@ private:
             if (ImGui::MenuItem(Tr(LauncherTextKey::OpenInExplorer)))
                 Platform::SystemCalls::ShowInExplorer(projectPath);
 
+            if (ImGui::MenuItem(Tr(LauncherTextKey::LaunchOptions)))
+                OpenLaunchOptions(projectPath);
+
             ImGui::BeginDisabled();
             ImGui::MenuItem(Tr(LauncherTextKey::AddCommandLineArgs), nullptr, false, false);
             ImGui::EndDisabled();
@@ -1157,7 +1161,89 @@ private:
             ImGui::PopStyleVar();
         }
 
+        DrawLaunchOptionsDialog();
         ImGui::EndChild();
+    }
+
+    // ─── Launch Options ───
+    // Everything that only takes effect on the next start lives here instead of
+    // the editor settings panel, because the editor cannot apply it while running.
+    void OpenLaunchOptions(const std::string &p_projectPath)
+    {
+        m_launchOptionsProjectPath = p_projectPath;
+        m_launchOptionsError.clear();
+        m_launchOptions = Engine::Settings::ReadProjectLaunchOptions(ResolveProjectSettingsFilePath(p_projectPath));
+        m_launchOptionsOpen = true;
+    }
+
+    void SaveLaunchOptions()
+    {
+        std::string error;
+        if (!Engine::Settings::WriteProjectLaunchOptions(
+                ResolveProjectSettingsFilePath(m_launchOptionsProjectPath), m_launchOptions, &error))
+        {
+            m_launchOptionsError = error.empty() ? std::string(Tr(LauncherTextKey::SaveFailed)) : error;
+            return;
+        }
+
+        m_launchOptionsError.clear();
+        m_launchOptionsOpen = false;
+    }
+
+    void DrawLaunchOptionsDialog()
+    {
+        if (!m_launchOptionsOpen)
+            return;
+
+        const char *title = Tr(LauncherTextKey::LaunchOptions);
+        ImGui::SetNextWindowSize(ImVec2(520.0f, 0.0f), ImGuiCond_Appearing);
+        bool open = true;
+        if (!ImGui::Begin(title, &open, ImGuiWindowFlags_NoDocking | ImGuiWindowFlags_AlwaysAutoResize))
+        {
+            ImGui::End();
+            if (!open)
+                m_launchOptionsOpen = false;
+            return;
+        }
+
+        ImGui::TextWrapped("%s", Tr(LauncherTextKey::LaunchOptionsDescription));
+        ImGui::Spacing();
+        ImGui::Separator();
+        ImGui::Spacing();
+
+        ImGui::Checkbox(
+            (std::string(Tr(LauncherTextKey::VerticalSynchronization)) + "##Vsync").c_str(),
+            &m_launchOptions.verticalSynchronization);
+        ImGui::Checkbox(
+            (std::string(Tr(LauncherTextKey::ThreadedRendering)) + "##ThreadedRendering").c_str(),
+            &m_launchOptions.threadedRendering);
+        ImGui::SetNextItemWidth(180.0f);
+        ImGui::InputInt(
+            (std::string(Tr(LauncherTextKey::RenderDocCaptureFrames)) + "##RenderDocCapture").c_str(),
+            &m_launchOptions.renderDocStartupCaptureFrames);
+        if (m_launchOptions.renderDocStartupCaptureFrames < 0)
+            m_launchOptions.renderDocStartupCaptureFrames = 0;
+
+        if (!m_launchOptionsError.empty())
+        {
+            ImGui::Spacing();
+            PushHubText(HubColors::Danger);
+            ImGui::TextWrapped("%s", m_launchOptionsError.c_str());
+            PopHubText();
+        }
+
+        ImGui::Spacing();
+        ImGui::Separator();
+        ImGui::Spacing();
+        if (DrawHubButton(Tr(LauncherTextKey::Save), {96.0f, 30.0f}, HubColors::Accent, HubColors::AccentHover, HubColors::AccentActive, Maths::Color(1, 1, 1, 0.95f)))
+            SaveLaunchOptions();
+        ImGui::SameLine();
+        if (DrawHubButton(Tr(LauncherTextKey::Cancel), {96.0f, 30.0f}, HubColors::Surface, HubColors::SurfaceHover, HubColors::SurfaceActive, HubColors::TextPrimary))
+            m_launchOptionsOpen = false;
+
+        ImGui::End();
+        if (!open)
+            m_launchOptionsOpen = false;
     }
 
 private:
@@ -1175,6 +1261,10 @@ private:
     std::unique_ptr<ProjectCreationWizard> m_wizard;
     TemplateManager& m_templateManager;
     LauncherSettings m_settings{"launcher.ini"};
+    bool m_launchOptionsOpen = false;
+    std::string m_launchOptionsProjectPath;
+    Engine::Settings::ProjectLaunchOptions m_launchOptions;
+    std::string m_launchOptionsError;
     std::string m_installError;
 
     // Search & sort

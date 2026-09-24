@@ -155,6 +155,18 @@ void SceneStreamingResidency::RegisterDependency(const StreamingResourceDependen
 		return;
 
 	const auto existingDependencyIt = dependencies.find(dependency.dependencyId);
+	// Runtime streaming re-registers every visible primitive each frame. When the
+	// payload is unchanged this must be a no-op: the cached plan stays valid and
+	// the residency byte counters are not churned.
+	if (existingDependencyIt != dependencies.end() &&
+		existingDependencyIt->second == dependency)
+	{
+		return;
+	}
+
+	// A changed dependency (or a new child/fallback edge) invalidates the cached
+	// closure derived from the previous registrations.
+	m_hasCachedPlanInterest = false;
 	const auto ticketIt = tickets.find(dependency.dependencyId);
 	if (existingDependencyIt != dependencies.end() && ticketIt != tickets.end())
 	{
@@ -177,6 +189,13 @@ void SceneStreamingResidency::RegisterDependency(const StreamingResourceDependen
 	dependencies[dependency.dependencyId] = dependency;
 }
 
+const StreamingResourceDependency* SceneStreamingResidency::TryGetDependency(
+	const uint64_t dependencyId) const
+{
+	const auto found = dependencies.find(dependencyId);
+	return found == dependencies.end() ? nullptr : &found->second;
+}
+
 void SceneStreamingResidency::RegisterPrimitiveDependency(
 	const ScenePrimitiveHandle primitive,
 	const uint64_t dependencyId)
@@ -186,71 +205,101 @@ void SceneStreamingResidency::RegisterPrimitiveDependency(
 
 	if (primitiveDependencyBindings.insert({ primitive, dependencyId }).second)
 	{
+		m_hasCachedPlanInterest = false;
 		dependencyIdsByPrimitive[primitive].push_back(dependencyId);
 	}
 }
 
-StreamingResidencyPlan SceneStreamingResidency::Plan(
+const StreamingResidencyPlan& SceneStreamingResidency::Plan(
 	const StreamingResidencyPlanInput& input,
 	const LargeSceneSettings& settings)
 {
 	(void)settings;
 
-	StreamingResidencyPlan plan;
-	std::unordered_map<uint64_t, uint32_t> requestCounts;
-	std::unordered_set<uint64_t> visitedDependencyIds;
-	std::unordered_set<PrimitiveDependencyBinding, PrimitiveDependencyBindingHash> plannedPrimitiveDependencyBindings;
+	// The dependency closure is a pure function of which primitives are being
+	// rendered, so it is cached across frames. Rebuilding it every frame also
+	// re-copied every dependency (artifact id and child list included) and
+	// rebuilt three hash containers for no state change.
+	const bool closureUnchanged =
+		m_hasCachedPlanInterest &&
+		m_cachedVisiblePrimitiveHandles == input.visiblePrimitiveHandles &&
+		m_cachedRepresentationStreamingInterest == input.representationStreamingInterest;
 
-	auto recordPrimitiveInterest = [&](const ScenePrimitiveHandle primitive)
+	if (!closureUnchanged)
 	{
-		if (!primitive.IsValid())
-			return;
-		const auto dependenciesIt = dependencyIdsByPrimitive.find(primitive);
-		if (dependenciesIt == dependencyIdsByPrimitive.end())
-			return;
+		m_lastPlan.dependencyClosure.clear();
+		m_lastPlan.primitiveDependencyBindings.clear();
+		m_cachedRequestCounts.clear();
+		m_planVisitedDependencyIds.clear();
+		m_planPrimitiveDependencyBindings.clear();
 
-		for (const auto dependencyId : dependenciesIt->second)
+		auto recordPrimitiveInterest = [&](const ScenePrimitiveHandle primitive)
 		{
-			++requestCounts[dependencyId];
-			if (plannedPrimitiveDependencyBindings.insert({ primitive, dependencyId }).second)
-				plan.primitiveDependencyBindings.push_back({ primitive, dependencyId });
-			AppendDependencyClosure(dependencyId, plan, visitedDependencyIds);
-		}
-	};
+			if (!primitive.IsValid())
+				return;
+			const auto dependenciesIt = dependencyIdsByPrimitive.find(primitive);
+			if (dependenciesIt == dependencyIdsByPrimitive.end())
+				return;
 
-	for (const auto primitive : input.visiblePrimitiveHandles)
-		recordPrimitiveInterest(primitive);
-	for (const auto primitive : input.representationStreamingInterest)
-		recordPrimitiveInterest(primitive);
+			for (const auto dependencyId : dependenciesIt->second)
+			{
+				++m_cachedRequestCounts[dependencyId];
+				if (m_planPrimitiveDependencyBindings.insert({ primitive, dependencyId }).second)
+					m_lastPlan.primitiveDependencyBindings.push_back({ primitive, dependencyId });
+				AppendDependencyClosure(dependencyId, m_lastPlan, m_planVisitedDependencyIds);
+			}
+		};
 
-	for (const auto& dependency : plan.dependencyClosure)
+		for (const auto primitive : input.visiblePrimitiveHandles)
+			recordPrimitiveInterest(primitive);
+		for (const auto primitive : input.representationStreamingInterest)
+			recordPrimitiveInterest(primitive);
+
+		m_cachedVisiblePrimitiveHandles = input.visiblePrimitiveHandles;
+		m_cachedRepresentationStreamingInterest = input.representationStreamingInterest;
+		m_hasCachedPlanInterest = true;
+	}
+
+	m_lastPlan.tickets.clear();
+	m_lastPlan.telemetry = {};
+	for (const auto& dependency : m_lastPlan.dependencyClosure)
 	{
-		const auto requestCountIt = requestCounts.find(dependency.dependencyId);
+		const auto requestCountIt = m_cachedRequestCounts.find(dependency.dependencyId);
 		const uint32_t requestCount =
-			requestCountIt == requestCounts.end() ? 1u : std::max(1u, requestCountIt->second);
+			requestCountIt == m_cachedRequestCounts.end() ? 1u : std::max(1u, requestCountIt->second);
 		auto& ticket = GetOrCreateTicket(
 			dependency.dependencyId,
 			dependency.priority,
 			input.frameSerial,
 			requestCount);
 		ticket.priority = ComputeAgedPriority(ticket, dependency.priority, input.frameSerial);
-		plan.tickets.push_back(ticket);
-		AccumulateRequestedBytes(dependency, plan.telemetry);
+		m_lastPlan.tickets.push_back(ticket);
+		AccumulateRequestedBytes(dependency, m_lastPlan.telemetry);
 	}
 
-	plan.telemetry.streamingDependencyCount = static_cast<uint64_t>(plan.dependencyClosure.size());
-	plan.telemetry.streamingRequestCount = static_cast<uint64_t>(plan.tickets.size());
-	plan.telemetry.residencyTicketCount = tickets.size();
-	return plan;
+	m_lastPlan.telemetry.streamingDependencyCount = static_cast<uint64_t>(m_lastPlan.dependencyClosure.size());
+	m_lastPlan.telemetry.streamingRequestCount = static_cast<uint64_t>(m_lastPlan.tickets.size());
+	m_lastPlan.telemetry.residencyTicketCount = tickets.size();
+	return m_lastPlan;
 }
 
-StreamingCommitResult SceneStreamingResidency::Commit(
+const StreamingCommitResult& SceneStreamingResidency::Commit(
 	const StreamingResidencyPlan& plan,
 	const LargeSceneSettings& settings,
 	const StreamingResidencyFramePins& framePins)
 {
-	StreamingCommitResult result;
-	std::unordered_set<uint64_t> resultDependencyIds;
+	// Member-backed so the per-frame result is not copied out to the caller;
+	// ticket entries carry cancel-reason strings.
+	StreamingCommitResult& result = m_lastCommitResult;
+	result.tickets.clear();
+	result.telemetry = {};
+	result.cpuBudgetExhausted = false;
+	result.ioBudgetExhausted = false;
+	result.gpuUploadBudgetExhausted = false;
+	result.cpuMemoryBudgetExhausted = false;
+	result.gpuMemoryBudgetExhausted = false;
+	std::unordered_set<uint64_t>& resultDependencyIds = m_commitResultDependencyIds;
+	resultDependencyIds.clear();
 	uint64_t cpuUsedUs = 0u;
 	uint64_t ioUsedBytes = 0u;
 	uint64_t gpuUploadUsedBytes = 0u;
@@ -330,7 +379,7 @@ StreamingCommitResult SceneStreamingResidency::Commit(
 	result.telemetry.residentGpuBytes = residentGpuBytes;
 	result.telemetry.requestedCpuBytes = requestedCpuBytes;
 	result.telemetry.requestedGpuBytes = requestedGpuBytes;
-	return result;
+	return m_lastCommitResult;
 }
 
 const StreamingResourceDependency* SceneStreamingResidency::FindDependency(

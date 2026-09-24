@@ -71,6 +71,9 @@ namespace NLS::Editor::Panels
 		*/
 		const ViewableResource& GetResource() const;
 
+	protected:
+		void ApplyViewSettings() override;
+
 	private:
         Render::Resources::Material m_defaultMaterial;
         Render::Resources::Material m_textureMaterial;

@@ -5,6 +5,7 @@
 #include <memory>
 #include <mutex>
 #include <string>
+#include <utility>
 
 #include "Rendering/UI/UiDrawDataSnapshot.h"
 
@@ -162,9 +163,12 @@ namespace NLS::Render::Context
         }
     }
 
-    RenderScenePackage BuildSnapshotOwnedRenderScenePackage(
+    namespace
+    {
+    RenderScenePackage BuildSnapshotOwnedRenderScenePackageImpl(
         const FrameSnapshot& snapshot,
-        const SnapshotRenderScenePackageBuildMode buildMode)
+        const SnapshotRenderScenePackageBuildMode buildMode,
+        std::vector<RecordedDrawCommandInput> recordedDrawCommands)
     {
         RenderScenePackage package;
         package.frameId = snapshot.frameId;
@@ -176,7 +180,7 @@ namespace NLS::Render::Context
         package.renderWidth = snapshot.renderWidth;
         package.renderHeight = snapshot.renderHeight;
         package.sceneGameObjectCount = snapshot.sceneGameObjectCount;
-        package.recordedDrawCommands = snapshot.recordedDrawCommands;
+        package.recordedDrawCommands = std::move(recordedDrawCommands);
         package.postSubmitTextureReadbacks = snapshot.postSubmitTextureReadbacks;
         for (const auto& request : package.postSubmitTextureReadbacks)
         {
@@ -253,6 +257,27 @@ namespace NLS::Render::Context
         }
 
         return package;
+    }
+    }
+
+    RenderScenePackage BuildSnapshotOwnedRenderScenePackage(
+        const FrameSnapshot& snapshot,
+        const SnapshotRenderScenePackageBuildMode buildMode)
+    {
+        return BuildSnapshotOwnedRenderScenePackageImpl(
+            snapshot,
+            buildMode,
+            snapshot.recordedDrawCommands);
+    }
+
+    RenderScenePackage BuildSnapshotOwnedRenderScenePackage(
+        FrameSnapshot&& snapshot,
+        const SnapshotRenderScenePackageBuildMode buildMode)
+    {
+        return BuildSnapshotOwnedRenderScenePackageImpl(
+            snapshot,
+            buildMode,
+            std::move(snapshot.recordedDrawCommands));
     }
 
     bool AttachUiOverlaySnapshotToRenderScenePackage(

@@ -1305,23 +1305,39 @@ private:
 Editor::Rendering::DebugSceneRenderer::DebugSceneRenderer(NLS::Render::Context::Driver& p_driver) :
 		Engine::Rendering::DeferredSceneRenderer(p_driver, MakeEditorDeferredRendererConstructionOptions())
 {
+    const auto passBegin = std::chrono::steady_clock::now();
+    auto logPassStep = [last = passBegin](const char* stepName) mutable
+    {
+        const auto now = std::chrono::steady_clock::now();
+        NLS_LOG_INFO(
+            std::string("[Startup] SceneView pass ") + stepName + " elapsedMs=" +
+            std::to_string(std::chrono::duration_cast<std::chrono::milliseconds>(now - last).count()));
+        last = now;
+    };
+
     SetDebugDrawService(std::make_unique<NLS::Render::Debug::DebugDrawService>());
 
     auto& gridPass = AddPass<GridRenderPass>("Grid", NLS::Render::Settings::ERenderPassOrder::Transparent + 1);
     gridPass.SetEnabled(!ShouldDisableEditorGridPass());
+    logPassStep("Grid");
 
     auto& debugCamerasPass = AddPass<DebugCamerasRenderPass>("Debug Cameras", NLS::Render::Settings::ERenderPassOrder::Transparent + 1);
     debugCamerasPass.SetEnabled(!ShouldDisableDebugCamerasPass());
+    logPassStep("DebugCameras");
 
     auto& debugLightsPass = AddPass<DebugLightsRenderPass>("Debug Lights", NLS::Render::Settings::ERenderPassOrder::Transparent + 2);
     debugLightsPass.SetEnabled(!ShouldDisableDebugLightsPass());
+    logPassStep("DebugLights");
 
     auto& debugGameObjectPass = AddPass<DebugGameObjectRenderPass>("Debug GameObject", NLS::Render::Settings::ERenderPassOrder::Transparent + 3);
     debugGameObjectPass.SetEnabled(!ShouldDisableDebugGameObjectPass());
+    logPassStep("DebugGameObject");
     auto& debugDrawPass = AddPass<NLS::Render::Debug::DebugDrawPass>("Debug Draw", NLS::Render::Settings::ERenderPassOrder::Transparent + 4);
     debugDrawPass.SetEnabled(!ShouldDisableDebugDrawPass());
+    logPassStep("DebugDraw");
     auto& pickingPass = AddPass<PickingRenderPass>("Picking", NLS::Render::Settings::ERenderPassOrder::PostProcessing + 1);
     pickingPass.SetEnabled(!ShouldDisablePickingPass());
+    logPassStep("Picking");
 }
 
 void Editor::Rendering::DebugSceneRenderer::OnThreadedFramePublished(const uint64_t publishedFrameId)
@@ -1450,19 +1466,19 @@ uint64_t Editor::Rendering::DebugSceneRenderer::GetCullReasonDebugSnapshotMaxEnt
     return m_cullingOverlayOptions.enabled ? m_cullingOverlayOptions.maxItems : 0u;
 }
 
-std::vector<const Engine::GameObject*> Editor::Rendering::DebugSceneRenderer::GetEditorInspectionRoots() const
+std::vector<NLS::InstanceID> Editor::Rendering::DebugSceneRenderer::GetEditorInspectionRoots() const
 {
-    std::vector<const Engine::GameObject*> roots;
+    std::vector<NLS::InstanceID> roots;
     if (!HasDescriptor<DebugSceneDescriptor>())
         return roots;
 
     const auto& descriptor = GetDescriptor<DebugSceneDescriptor>();
     if (descriptor.selectedGameObject != nullptr)
-        roots.push_back(descriptor.selectedGameObject);
+        roots.push_back(descriptor.selectedGameObject->GetInstanceID());
     if (descriptor.highlightedGameObject != nullptr &&
         descriptor.highlightedGameObject != descriptor.selectedGameObject)
     {
-        roots.push_back(descriptor.highlightedGameObject);
+        roots.push_back(descriptor.highlightedGameObject->GetInstanceID());
     }
     return roots;
 }
@@ -1474,7 +1490,7 @@ bool Editor::Rendering::ShouldPublishDebugSceneCullReasonSnapshots(
 }
 
 NLS::Render::Context::PreparedRenderSceneBuilder Editor::Rendering::DebugSceneRenderer::BuildPreparedRenderSceneBuilder(
-    const NLS::Render::Context::FrameSnapshot& snapshot) const
+    const NLS::Render::Context::FrameSnapshot& snapshot)
 {
     const auto& gridPassInput = GetPass<GridRenderPass>("Grid").GetPreparedThreadedPassInput();
     const auto& cameraPassInput = GetPass<DebugCamerasRenderPass>("Debug Cameras").GetPreparedThreadedPassInput();
@@ -1557,11 +1573,11 @@ NLS::Render::Context::PreparedRenderSceneBuilder Editor::Rendering::DebugSceneRe
     return BuildDeferredPreparedRenderSceneBuilder(
         snapshot,
         hasSkyboxTexture,
+        BuildThreadedCaptureInputForPreparedBuilder(),
         std::move(appendedPassInputs),
         std::move(metadata),
         std::move(preferredReadbackTexture),
         preferredReadbackTextureGeneration,
         additionalRenderTargetUseCount,
-        GetThreadedHZBPostSubmitReadbackForPreparedBuilder(),
         includeDeferredSceneExecution);
 }

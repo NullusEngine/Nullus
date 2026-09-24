@@ -249,6 +249,7 @@ Shader "Nullus/StandardPBR"
             SamplerState sampler_OpacityMap : register(s5, space2);
 
             StructuredBuffer<float4x4> ObjectData : register(t0, space3);
+            StructuredBuffer<uint> InstanceObjectIndices : register(t1, space3);
 
             cbuffer MaterialProperties : register(b0, space2)
             {
@@ -267,7 +268,8 @@ Shader "Nullus/StandardPBR"
             Varyings VSMain(Attributes input, uint instanceId : SV_InstanceID)
             {
                 Varyings output;
-                const float4x4 model = ObjectData[u_ObjectIndex + instanceId];
+                const uint objectSlot = InstanceObjectIndices[u_ObjectIndex + instanceId];
+                const float4x4 model = ObjectData[objectSlot];
                 const float4 worldPosition = mul(model, float4(input.positionOS, 1.0f));
                 output.positionCS = mul(u_ViewProjection, worldPosition);
                 output.uv = input.uv;

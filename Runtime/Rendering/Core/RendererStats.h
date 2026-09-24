@@ -32,6 +32,9 @@ public:
     void RecordObjectDataRevisionReuse(bool hit);
     void RecordObjectDataRevisionFallback(
         NLS::Render::Data::ObjectDataRevisionFallbackReason reason);
+    void RecordObjectDataFastPath(bool hit);
+    void RecordDrawCommandCopy(uint64_t count);
+    void RecordDrawCommandMove(uint64_t count);
     void RecordRenderBindingSetCreation(uint64_t count = 1u);
     void RecordRenderSnapshotBufferCreation(uint64_t count = 1u);
     void RecordDrawCallOptimizationStats(const NLS::Render::Data::DrawCallOptimizationStats& stats);

@@ -20,7 +20,7 @@
 #include "Components/TransformComponent.h"
 #include "GameObject.h"
 #include "Engine/Assets/ModelPrefabBuilder.h"
-#include "Jobs/JobSystem.h"
+#include "TaskGraph/TaskGraphSystem.h"
 #include "Rendering/EngineDrawableDescriptor.h"
 #include "Rendering/Geometry/BoundingSphereUtils.h"
 #include "Rendering/LargeSceneSettings.h"
@@ -34,6 +34,8 @@
 #include "Rendering/SceneHLOD.h"
 #include "Rendering/SceneLOD.h"
 #include "Rendering/SceneStreamingResidency.h"
+#include "Rendering/SceneProxySourceRegistry.h"
+#include "Rendering/SceneRenderStoreRegistry.h"
 #include "Rendering/SceneSpatialIndex.h"
 #include "Rendering/SceneVisibilityPipeline.h"
 #include "SceneSystem/Scene.h"
@@ -41,6 +43,15 @@
 
 namespace NLS::Engine::Rendering
 {
+	namespace
+	{
+		uint64_t MakeSceneProxyKey(const SceneProxyHandle handle)
+		{
+			return (static_cast<uint64_t>(handle.index) << 32u) |
+				static_cast<uint64_t>(handle.generation);
+		}
+	}
+
 	struct RenderSceneDeclaredTextureLookupCache
 	{
 		std::unordered_map<std::string, NLS::Render::Resources::Texture2D*> declaredTexturesByNormalizedPath;
@@ -834,7 +845,81 @@ RenderScene::RenderScene()
 {
 }
 
-RenderScene::~RenderScene() = default;
+RenderScene::~RenderScene()
+{
+	if (m_proxyStore != nullptr)
+	{
+		const void* const proxySceneIdentity = m_proxySceneIdentity;
+		const bool releaseRegistryEntry = m_proxyStore.use_count() <= 2;
+		m_proxyStore.reset();
+		m_proxySourceRegistry.reset();
+		if (releaseRegistryEntry && proxySceneIdentity != nullptr)
+			SceneRenderStoreRegistry::Release(proxySceneIdentity);
+	}
+}
+
+SceneProxyUpdateBatch RenderScene::CollectProxyUpdates(
+	SceneSystem::Scene& scene,
+	const RenderSceneSyncOptions& options,
+	const uint64_t frameId)
+{
+	if (m_proxySceneIdentity != &scene)
+	{
+		m_lastProxyStoreChangeSerial = 0u;
+		m_lastProxySceneRevision = 0u;
+		m_lastProxyMeshMutationEpoch = 0u;
+	}
+	m_proxySceneIdentity = &scene;
+	const auto entry = SceneRenderStoreRegistry::Acquire(
+		static_cast<uint64_t>(scene.GetInstanceID()),
+		m_proxySceneIdentity);
+	m_proxySourceRegistry = entry.sourceRegistry;
+	m_proxyStore = entry.store;
+	if (m_proxySourceRegistry == nullptr)
+		return {};
+
+	SceneProxyExtractionOptions extractionOptions;
+	extractionOptions.defaultMaterial = options.defaultMaterial;
+	extractionOptions.overrideMaterial = options.overrideMaterial;
+	extractionOptions.requireExplicitMaterialTextures = options.requireExplicitMaterialTextures;
+	extractionOptions.allowDefaultMaterialForUnresolvedExplicitMaterials =
+		options.allowDefaultMaterialForUnresolvedExplicitMaterials;
+	extractionOptions.largeSceneSettings = options.largeSceneSettings;
+	return m_proxySourceRegistry->Collect(scene, extractionOptions, frameId);
+}
+
+SceneRenderStoreApplyStats RenderScene::ApplyProxyUpdates(const SceneProxyUpdateBatch& batch)
+{
+	if (m_proxyStore == nullptr || m_proxyStore->GetSceneId() != batch.sceneId)
+		if (m_proxySceneIdentity != nullptr)
+		{
+			m_proxyStore = SceneRenderStoreRegistry::Acquire(
+				batch.sceneId,
+				m_proxySceneIdentity).store;
+			m_lastProxyStoreChangeSerial = 0u;
+		}
+	if (m_proxyStore == nullptr)
+		return {};
+	const auto stats = m_proxyStore->Apply(batch);
+	m_proxyStore->RetireResourcesThrough(batch.frameId);
+	return stats;
+}
+
+const SceneRenderStore& RenderScene::GetProxyStore() const noexcept
+{
+	static const SceneRenderStore kEmptyStore;
+	return m_proxyStore != nullptr ? *m_proxyStore : kEmptyStore;
+}
+
+SceneRenderStore& RenderScene::GetProxyStore() noexcept
+{
+	if (m_proxyStore == nullptr)
+	{
+		static SceneRenderStore kEmptyStore;
+		return kEmptyStore;
+	}
+	return *m_proxyStore;
+}
 
 RenderScene::RenderScene(RenderScene&& other) noexcept
 	: m_sceneId(other.m_sceneId),
@@ -842,6 +927,10 @@ RenderScene::RenderScene(RenderScene&& other) noexcept
 	  m_nextStableObjectIndex(other.m_nextStableObjectIndex),
 	  m_freeStableObjectIndices(std::move(other.m_freeStableObjectIndices)),
 	  m_primitiveIndexByMeshRenderer(std::move(other.m_primitiveIndexByMeshRenderer)),
+	  m_primitiveIndexByProxy(std::move(other.m_primitiveIndexByProxy)),
+	  m_parentByOwnerInstanceId(std::move(other.m_parentByOwnerInstanceId)),
+	  m_trackedMaterialInstanceIds(std::move(other.m_trackedMaterialInstanceIds)),
+	  m_pendingDeclaredTextureProxyKeys(std::move(other.m_pendingDeclaredTextureProxyKeys)),
 	  m_firstFreePrimitiveSlot(other.m_firstFreePrimitiveSlot),
 	  m_livePrimitiveCount(other.m_livePrimitiveCount),
 	  m_lastSceneFastAccessRevision(other.m_lastSceneFastAccessRevision),
@@ -859,6 +948,7 @@ RenderScene::RenderScene(RenderScene&& other) noexcept
 	  m_lastSyncStats(other.m_lastSyncStats),
 	  m_lastDrawCallOptimizationStats(other.m_lastDrawCallOptimizationStats),
 	  m_lastLargeSceneTelemetry(other.m_lastLargeSceneTelemetry),
+	  m_lastCullReasonDebugSnapshot(std::move(other.m_lastCullReasonDebugSnapshot)),
 	  m_lastVisiblePrimitiveHandles(std::move(other.m_lastVisiblePrimitiveHandles)),
 	  m_lastRepresentationStreamingInterest(std::move(other.m_lastRepresentationStreamingInterest)),
 	  m_spatialIndex(std::move(other.m_spatialIndex)),
@@ -866,7 +956,14 @@ RenderScene::RenderScene(RenderScene&& other) noexcept
 	  m_spatialCandidateSnapshotCache(std::move(other.m_spatialCandidateSnapshotCache)),
 	  m_spatialCandidateSnapshotCacheHitCount(other.m_spatialCandidateSnapshotCacheHitCount),
 	  m_importedHierarchyHLODClusterHandles(std::move(other.m_importedHierarchyHLODClusterHandles)),
-	  m_trackedMaterialStates(std::move(other.m_trackedMaterialStates))
+	  m_trackedMaterialStates(std::move(other.m_trackedMaterialStates)),
+	  m_proxySourceRegistry(std::move(other.m_proxySourceRegistry)),
+	  m_proxyStore(std::move(other.m_proxyStore)),
+	  m_proxySceneIdentity(other.m_proxySceneIdentity),
+	  m_proxyFrameSerial(other.m_proxyFrameSerial),
+	  m_lastProxySceneRevision(other.m_lastProxySceneRevision),
+	  m_lastProxyMeshMutationEpoch(other.m_lastProxyMeshMutationEpoch),
+	  m_lastProxyStoreChangeSerial(other.m_lastProxyStoreChangeSerial)
 {
 	other.ResetMovedFromState();
 }
@@ -881,6 +978,10 @@ RenderScene& RenderScene::operator=(RenderScene&& other) noexcept
 	m_nextStableObjectIndex = other.m_nextStableObjectIndex;
 	m_freeStableObjectIndices = std::move(other.m_freeStableObjectIndices);
 	m_primitiveIndexByMeshRenderer = std::move(other.m_primitiveIndexByMeshRenderer);
+	m_primitiveIndexByProxy = std::move(other.m_primitiveIndexByProxy);
+	m_parentByOwnerInstanceId = std::move(other.m_parentByOwnerInstanceId);
+	m_trackedMaterialInstanceIds = std::move(other.m_trackedMaterialInstanceIds);
+	m_pendingDeclaredTextureProxyKeys = std::move(other.m_pendingDeclaredTextureProxyKeys);
 	m_firstFreePrimitiveSlot = other.m_firstFreePrimitiveSlot;
 	m_livePrimitiveCount = other.m_livePrimitiveCount;
 	m_lastSceneFastAccessRevision = other.m_lastSceneFastAccessRevision;
@@ -900,6 +1001,7 @@ RenderScene& RenderScene::operator=(RenderScene&& other) noexcept
 	m_lastSyncStats = other.m_lastSyncStats;
 	m_lastDrawCallOptimizationStats = other.m_lastDrawCallOptimizationStats;
 	m_lastLargeSceneTelemetry = other.m_lastLargeSceneTelemetry;
+	m_lastCullReasonDebugSnapshot = std::move(other.m_lastCullReasonDebugSnapshot);
 	m_lastVisiblePrimitiveHandles = std::move(other.m_lastVisiblePrimitiveHandles);
 	m_lastRepresentationStreamingInterest = std::move(other.m_lastRepresentationStreamingInterest);
 	m_spatialIndex = std::move(other.m_spatialIndex);
@@ -907,6 +1009,13 @@ RenderScene& RenderScene::operator=(RenderScene&& other) noexcept
 	m_spatialCandidateSnapshotCache = std::move(other.m_spatialCandidateSnapshotCache);
 	m_spatialCandidateSnapshotCacheHitCount = other.m_spatialCandidateSnapshotCacheHitCount;
 	m_importedHierarchyHLODClusterHandles = std::move(other.m_importedHierarchyHLODClusterHandles);
+	m_proxySourceRegistry = std::move(other.m_proxySourceRegistry);
+	m_proxyStore = std::move(other.m_proxyStore);
+	m_proxySceneIdentity = other.m_proxySceneIdentity;
+	m_proxyFrameSerial = other.m_proxyFrameSerial;
+	m_lastProxySceneRevision = other.m_lastProxySceneRevision;
+	m_lastProxyMeshMutationEpoch = other.m_lastProxyMeshMutationEpoch;
+	m_lastProxyStoreChangeSerial = other.m_lastProxyStoreChangeSerial;
 
 	other.ResetMovedFromState();
 	return *this;
@@ -919,6 +1028,9 @@ void RenderScene::ResetMovedFromState() noexcept
 	m_nextStableObjectIndex = 0u;
 	m_freeStableObjectIndices.clear();
 	m_primitiveIndexByMeshRenderer.clear();
+	m_primitiveIndexByProxy.clear();
+	m_parentByOwnerInstanceId.clear();
+	m_pendingDeclaredTextureProxyKeys.clear();
 	m_firstFreePrimitiveSlot.reset();
 	m_livePrimitiveCount = 0u;
 	m_lastSceneFastAccessRevision = 0u;
@@ -927,6 +1039,7 @@ void RenderScene::ResetMovedFromState() noexcept
 	m_lastObservedMaterialMutationEpoch = 0u;
 	m_syncMeshLODRevisionDigestCache.clear();
 	m_trackedMaterialStates.clear();
+	m_trackedMaterialInstanceIds.clear();
 	m_nextCachedCommandBuildSerial = 1u;
 	m_cachedCommandBuildCount = 0u;
 	m_opaqueSortTokenBuildCount = 0u;
@@ -938,6 +1051,7 @@ void RenderScene::ResetMovedFromState() noexcept
 	m_lastSyncStats = {};
 	m_lastDrawCallOptimizationStats = {};
 	m_lastLargeSceneTelemetry = {};
+	m_lastCullReasonDebugSnapshot.reset();
 	m_lastVisiblePrimitiveHandles.clear();
 	m_lastRepresentationStreamingInterest.clear();
 	m_spatialIndex = std::make_unique<SceneSpatialIndex>();
@@ -945,6 +1059,13 @@ void RenderScene::ResetMovedFromState() noexcept
 	m_spatialCandidateSnapshotCache.reset();
 	m_spatialCandidateSnapshotCacheHitCount = 0u;
 	m_importedHierarchyHLODClusterHandles.clear();
+	m_proxySourceRegistry.reset();
+	m_proxyStore.reset();
+	m_proxySceneIdentity = nullptr;
+	m_proxyFrameSerial = 0u;
+	m_lastProxySceneRevision = 0u;
+	m_lastProxyMeshMutationEpoch = 0u;
+	m_lastProxyStoreChangeSerial = 0u;
 }
 
 bool RenderScene::CachedCommandInputStamp::operator==(const CachedCommandInputStamp& other) const
@@ -965,7 +1086,9 @@ bool RenderScene::CachedCommandInputStamp::operator==(const CachedCommandInputSt
 
 bool RenderScene::PrimitiveInputStamp::operator==(const PrimitiveInputStamp& other) const
 {
-	return owner == other.owner &&
+	return proxyHandle == other.proxyHandle &&
+		ownerInstanceId == other.ownerInstanceId &&
+		owner == other.owner &&
 		meshFilter == other.meshFilter &&
 		mesh == other.mesh &&
 		AreSameMatrix(worldMatrix, other.worldMatrix) &&
@@ -978,6 +1101,7 @@ bool RenderScene::PrimitiveInputStamp::operator==(const PrimitiveInputStamp& oth
 			meshLODRevisionDigest == other.meshLODRevisionDigest &&
 			material == other.material &&
 			materialInstanceId == other.materialInstanceId &&
+			requestedMaterialInstanceId == other.requestedMaterialInstanceId &&
 			materialParameterRevision == other.materialParameterRevision &&
 				materialRenderStateRevision == other.materialRenderStateRevision &&
 				explicitMaterialTexturesResolved == other.explicitMaterialTexturesResolved &&
@@ -1029,165 +1153,525 @@ RenderSceneSyncStats RenderScene::Synchronize(
 	NLS_PROFILE_NAMED_SCOPE("RenderScene::Synchronize");
 	const auto syncStart = std::chrono::steady_clock::now();
 	RenderSceneSyncStats stats;
-	RenderSceneDeclaredTextureLookupCache declaredTextureCache;
-	m_syncMeshLODRevisionDigestCache.clear();
 	m_lastDirtySyncHandles.clear();
 	m_lastRemovedHandles.clear();
+
+	const bool sceneIdentityChanged = m_proxySceneIdentity != &scene;
+	if (sceneIdentityChanged)
+	{
+		m_lastProxyStoreChangeSerial = 0u;
+		m_lastProxySceneRevision = 0u;
+		m_lastProxyMeshMutationEpoch = 0u;
+		m_lastSceneSynchronizationStamp.reset();
+		m_proxySceneIdentity = &scene;
+	}
+	if (sceneIdentityChanged || m_proxyStore == nullptr || m_proxySourceRegistry == nullptr)
+	{
+		const auto entry = SceneRenderStoreRegistry::Acquire(
+			static_cast<uint64_t>(scene.GetInstanceID()),
+			m_proxySceneIdentity);
+		m_proxySourceRegistry = entry.sourceRegistry;
+		m_proxyStore = entry.store;
+	}
+
+	const auto sceneRevision = scene.GetRenderContentRevision();
 	const auto meshMutationEpoch = NLS::Render::Resources::Mesh::GetGlobalMutationEpoch();
 	const bool trackedMaterialMutation = HasTrackedMaterialMutation();
-	const auto& fastAccess = scene.GetFastAccessComponents();
-	const auto fastAccessRevision = scene.GetFastAccessComponentsRevision();
-	const bool fastAccessMembershipChanged =
-		fastAccessRevision != m_lastSceneFastAccessRevision;
+	const bool meshMutationObserved = m_lastProxyMeshMutationEpoch != meshMutationEpoch;
 	const auto synchronizationStamp = BuildSceneSynchronizationStamp(scene, options);
-	const bool canReuseSceneSynchronization =
+	const bool synchronizationOptionsChanged =
+		!m_lastSceneSynchronizationStamp.has_value() ||
+		!(*m_lastSceneSynchronizationStamp == synchronizationStamp);
+	const uint64_t storeChangeSerial =
+		m_proxyStore != nullptr ? m_proxyStore->GetChangeSerial() : 0u;
+	const bool sharedStoreChanged = storeChangeSerial != m_lastProxyStoreChangeSerial;
+	const bool hasPendingDeclaredTextures = !m_pendingDeclaredTextureProxyKeys.empty();
+	const bool canReuseProxySynchronization =
 		options.trustSceneRenderContentRevision &&
-		!fastAccessMembershipChanged &&
-		m_lastSceneSynchronizationStamp.has_value() &&
-		*m_lastSceneSynchronizationStamp == synchronizationStamp &&
-		m_lastMeshMutationEpoch == meshMutationEpoch &&
-		!trackedMaterialMutation;
-	const bool importedHierarchyHLODEnabled =
-		ResolveLargeSceneSettings(options).enableHLOD;
+		m_proxyStore != nullptr &&
+		!sceneIdentityChanged &&
+		!synchronizationOptionsChanged &&
+		m_lastProxySceneRevision == sceneRevision &&
+		m_lastProxyMeshMutationEpoch == meshMutationEpoch &&
+		!trackedMaterialMutation &&
+		!sharedStoreChanged &&
+		!hasPendingDeclaredTextures;
 
-	std::unordered_map<Components::MeshRenderer*, NLS::InstanceID> liveMeshRenderers;
-	if (fastAccessMembershipChanged)
+	if (canReuseProxySynchronization)
 	{
-		NLS_PROFILE_NAMED_SCOPE("RenderScene::Synchronize::BuildLiveMeshRendererSetReserve");
-		liveMeshRenderers.reserve(fastAccess.modelRenderers.size());
-	}
-
-	if (!canReuseSceneSynchronization)
-	{
-		NLS_PROFILE_NAMED_SCOPE("RenderScene::Synchronize::SynchronizePrimitiveLoop");
-		for (auto* meshRenderer : fastAccess.modelRenderers)
-		{
-			if (meshRenderer == nullptr)
-				continue;
-			auto* owner = meshRenderer->gameobject();
-			if (owner == nullptr || !owner->IsAlive())
-			{
-				const auto found = m_primitiveIndexByMeshRenderer.find(meshRenderer);
-				if (found != m_primitiveIndexByMeshRenderer.end())
-					TombstonePrimitive(found->second, stats);
-				continue;
-			}
-
-			if (meshRenderer->IsTransientRenderingSuppressed())
-			{
-				const auto found = m_primitiveIndexByMeshRenderer.find(meshRenderer);
-				if (found != m_primitiveIndexByMeshRenderer.end())
-					TombstonePrimitive(found->second, stats);
-				continue;
-			}
-
-			if (fastAccessMembershipChanged)
-				liveMeshRenderers.emplace(meshRenderer, meshRenderer->GetInstanceID());
-			auto& primitive = FindOrCreatePrimitive(*meshRenderer, stats);
-			const auto inputStamp = BuildPrimitiveInputStamp(*meshRenderer, primitive, options, declaredTextureCache);
-			if (CanReuseSynchronizedPrimitive(primitive, inputStamp, declaredTextureCache))
-				continue;
-			SynchronizePrimitive(primitive, options, stats, declaredTextureCache);
-			// SynchronizePrimitive only reads owner/transform/material state, so the
-			// stamp computed above is still valid afterwards. The one exception is
-			// the no-MeshFilter fallback, which reads primitive.mesh and must be rebuilt
-			// once the primitive has been resynchronized.
-			primitive.lastInputStamp = primitive.meshFilter == nullptr
-				? BuildPrimitiveInputStamp(*meshRenderer, primitive, options, declaredTextureCache)
-				: inputStamp;
-		}
-	}
-	else
-	{
-		NLS_PROFILE_NAMED_SCOPE("RenderScene::Synchronize::ReuseSceneRenderContentRevision");
 		stats.reusedPrimitiveCount = static_cast<uint64_t>(m_livePrimitiveCount);
 		stats.usedSceneRenderContentRevisionFastPath = true;
 	}
-
-	if (fastAccessMembershipChanged)
+	else
 	{
-		NLS_PROFILE_NAMED_SCOPE("RenderScene::Synchronize::RemoveMissingPrimitives");
-		RemoveMissingPrimitives(liveMeshRenderers, stats);
-	}
-	m_lastSceneFastAccessRevision = fastAccessRevision;
-	m_lastSceneSynchronizationStamp = synchronizationStamp;
-	m_lastMeshMutationEpoch = meshMutationEpoch;
-	if (!canReuseSceneSynchronization)
-	{
-		NLS_PROFILE_NAMED_SCOPE("RenderScene::Synchronize::RefreshTrackedMaterialStates");
-		RefreshTrackedMaterialStates();
-	}
-	{
-		NLS_PROFILE_NAMED_SCOPE("RenderScene::Synchronize::RefreshSpatialIndex");
-		RefreshSpatialIndex(options);
-	}
-	if (!canReuseSceneSynchronization)
-	{
-		if (importedHierarchyHLODEnabled)
+		SceneRenderStoreApplyStats applyStats;
+		const bool sourceNeedsCollection =
+			sceneIdentityChanged ||
+			synchronizationOptionsChanged ||
+			!options.trustSceneRenderContentRevision ||
+			m_lastProxySceneRevision != sceneRevision ||
+			meshMutationObserved ||
+			trackedMaterialMutation;
+		if (sourceNeedsCollection)
 		{
-			NLS_PROFILE_NAMED_SCOPE("RenderScene::Synchronize::RebuildImportedHierarchyHLODRecords");
-			RebuildImportedHierarchyHLODRecords(scene);
+			NLS_PROFILE_NAMED_SCOPE("RenderScene::Synchronize::CollectAndApplyProxyUpdates");
+			const auto proxyBatch = CollectProxyUpdates(scene, options, ++m_proxyFrameSerial);
+			applyStats = ApplyProxyUpdates(proxyBatch);
+		}
+
+		const bool forceFullResync = sceneIdentityChanged || synchronizationOptionsChanged;
+		const bool proxySynchronizationNeeded =
+			forceFullResync ||
+			hasPendingDeclaredTextures ||
+			(m_proxyStore != nullptr &&
+			 m_proxyStore->GetChangeSerial() != m_lastProxyStoreChangeSerial);
+		bool observedStoreChange = false;
+		if (proxySynchronizationNeeded)
+		{
+			NLS_PROFILE_NAMED_SCOPE("RenderScene::Synchronize::SynchronizeProxyPrimitives");
+			observedStoreChange = SynchronizeProxyPrimitives(options, stats, forceFullResync);
 		}
 		else
 		{
-			NLS_PROFILE_NAMED_SCOPE("RenderScene::Synchronize::ClearImportedHierarchyHLODRecords");
-			ClearImportedHierarchyHLODRecords();
+			stats.reusedPrimitiveCount = static_cast<uint64_t>(m_livePrimitiveCount);
 		}
+
+		const bool primitiveStateChanged =
+			forceFullResync ||
+			stats.addedPrimitiveCount != 0u ||
+			stats.removedPrimitiveCount != 0u ||
+			!m_lastDirtySyncHandles.empty() ||
+			!m_lastRemovedHandles.empty();
+		if (primitiveStateChanged)
 		{
-			NLS_PROFILE_NAMED_SCOPE("RenderScene::Synchronize::RegisterIntrinsicLODGroups");
-			bool representationLookupDirty = false;
-			for (auto& primitive : m_primitives)
+			RefreshTrackedMaterialStates();
 			{
-				if (!primitive.occupied || primitive.tombstoned)
-					continue;
-				const bool hasIntrinsicGroup = primitive.lodGroup.has_value() &&
-					primitive.lodGroup->index < m_representationRegistry->lodGroups.size() &&
-					m_representationRegistry->lodGroups[primitive.lodGroup->index].selectsMeshLOD;
-				if (primitive.mesh == nullptr || primitive.mesh->GetLODCount() <= 1u)
-				{
-					if (hasIntrinsicGroup)
-					{
-						m_representationRegistry->lodGroups[primitive.lodGroup->index] = {};
-						primitive.lodGroup.reset();
-						representationLookupDirty = true;
-					}
-					continue;
-				}
-				if (primitive.lodGroup.has_value() && !hasIntrinsicGroup)
-					continue;
-				if (hasIntrinsicGroup &&
-					IntrinsicLODGroupRecordMatches(
-						m_representationRegistry->lodGroups[primitive.lodGroup->index],
-						primitive,
-						*primitive.mesh))
-				{
-					continue;
-				}
-				LODGroupRecord group;
-				if (hasIntrinsicGroup)
-					group.groupHandle = *primitive.lodGroup;
-				group.selectsMeshLOD = true;
-				group.worldReferencePoint = primitive.worldPosition;
-				group.worldSize = std::max(primitive.modelBoundingSphere.radius * 2.0f, 1.0f);
-				group.boundsSphereRadius = primitive.modelBoundingSphere.radius;
-				group.minLOD = primitive.mesh->GetMinLOD();
-				for (uint32_t lod = 0u; lod < primitive.mesh->GetLODCount(); ++lod)
-					group.levels.push_back({primitive.mesh->GetLODScreenSize(lod), {primitive.handle}});
-				bool membershipChanged = false;
-				RegisterLODGroup(group, false, &membershipChanged);
-				representationLookupDirty = representationLookupDirty || membershipChanged;
+				NLS_PROFILE_NAMED_SCOPE("RenderScene::Synchronize::RefreshSpatialIndex");
+				RefreshSpatialIndex(options);
 			}
-			if (representationLookupDirty)
-				m_representationRegistry->RebuildLookup();
+			const bool importedHierarchyHLODEnabled =
+				ResolveLargeSceneSettings(options).enableHLOD;
+			if (importedHierarchyHLODEnabled)
+			{
+				NLS_PROFILE_NAMED_SCOPE("RenderScene::Synchronize::RebuildImportedHierarchyHLODRecords");
+				RebuildImportedHierarchyHLODRecords();
+			}
+			else
+			{
+				NLS_PROFILE_NAMED_SCOPE("RenderScene::Synchronize::ClearImportedHierarchyHLODRecords");
+				ClearImportedHierarchyHLODRecords();
+			}
+			{
+				NLS_PROFILE_NAMED_SCOPE("RenderScene::Synchronize::RegisterIntrinsicLODGroups");
+				bool representationLookupDirty = false;
+				for (auto& primitive : m_primitives)
+				{
+					if (!primitive.occupied || primitive.tombstoned)
+						continue;
+					const bool hasIntrinsicGroup = primitive.lodGroup.has_value() &&
+						primitive.lodGroup->index < m_representationRegistry->lodGroups.size() &&
+						m_representationRegistry->lodGroups[primitive.lodGroup->index].selectsMeshLOD;
+					if (primitive.mesh == nullptr || primitive.mesh->GetLODCount() <= 1u)
+					{
+						if (hasIntrinsicGroup)
+						{
+							m_representationRegistry->lodGroups[primitive.lodGroup->index] = {};
+							primitive.lodGroup.reset();
+							representationLookupDirty = true;
+						}
+						continue;
+					}
+					if (primitive.lodGroup.has_value() && !hasIntrinsicGroup)
+						continue;
+					if (hasIntrinsicGroup &&
+						IntrinsicLODGroupRecordMatches(
+							m_representationRegistry->lodGroups[primitive.lodGroup->index],
+							primitive,
+							*primitive.mesh))
+					{
+						continue;
+					}
+					LODGroupRecord group;
+					if (hasIntrinsicGroup)
+						group.groupHandle = *primitive.lodGroup;
+					group.selectsMeshLOD = true;
+					group.worldReferencePoint = primitive.worldPosition;
+					group.worldSize = std::max(primitive.modelBoundingSphere.radius * 2.0f, 1.0f);
+					group.boundsSphereRadius = primitive.modelBoundingSphere.radius;
+					group.minLOD = primitive.mesh->GetMinLOD();
+					for (uint32_t lod = 0u; lod < primitive.mesh->GetLODCount(); ++lod)
+						group.levels.push_back({primitive.mesh->GetLODScreenSize(lod), {primitive.handle}});
+					bool membershipChanged = false;
+					RegisterLODGroup(group, false, &membershipChanged);
+					representationLookupDirty = representationLookupDirty || membershipChanged;
+				}
+				if (representationLookupDirty)
+					m_representationRegistry->RebuildLookup();
+			}
+			m_spatialCandidateSnapshotCache.reset();
 		}
+
+		const bool appliedStoreChange =
+			applyStats.addedProxyCount != 0u ||
+			applyStats.updatedTransformCount != 0u ||
+			applyStats.updatedPayloadCount != 0u ||
+			applyStats.removedProxyCount != 0u;
+		stats.detectedRenderContentChange =
+			trackedMaterialMutation ||
+			meshMutationObserved ||
+			synchronizationOptionsChanged ||
+			appliedStoreChange ||
+			observedStoreChange ||
+			stats.addedPrimitiveCount != 0u ||
+			stats.removedPrimitiveCount != 0u ||
+			stats.rebuiltCachedCommandCount != 0u ||
+			stats.rebuiltOpaqueSortTokenCount != 0u ||
+			stats.boundsDirtyPrimitiveCount != 0u;
 	}
-	if (!m_lastDirtySyncHandles.empty() || !m_lastRemovedHandles.empty())
-		m_spatialCandidateSnapshotCache.reset();
+	m_lastSceneSynchronizationStamp = synchronizationStamp;
+	m_lastProxySceneRevision = sceneRevision;
+	m_lastProxyMeshMutationEpoch = meshMutationEpoch;
 	m_lastSyncStats = stats;
 	stats.syncTimeNs = ElapsedNanoseconds(syncStart);
 	m_lastSyncStats.syncTimeNs = stats.syncTimeNs;
 	RefreshSyncTelemetry(stats);
 	return stats;
+}
+
+bool RenderScene::SynchronizeProxyPrimitives(
+	const RenderSceneSyncOptions& options,
+	RenderSceneSyncStats& stats,
+	const bool forceFullResync)
+{
+	auto* store = m_proxyStore.get();
+	if (store == nullptr)
+		return false;
+
+	m_syncMeshLODRevisionDigestCache.clear();
+	const auto changes = store->GetChangesSince(m_lastProxyStoreChangeSerial);
+	const bool fullResync = forceFullResync || changes.requiresFullResync;
+	const bool observedStoreChange =
+		changes.requiresFullResync ||
+		changes.changeSerial != m_lastProxyStoreChangeSerial;
+	RenderSceneDeclaredTextureLookupCache declaredTextureCache;
+
+	const auto unlinkFreePrimitiveSlot = [this](const size_t primitiveIndex)
+	{
+		if (primitiveIndex >= m_primitives.size())
+			return;
+		if (m_firstFreePrimitiveSlot.has_value() && *m_firstFreePrimitiveSlot == primitiveIndex)
+		{
+			m_firstFreePrimitiveSlot = m_primitives[primitiveIndex].nextFreePrimitiveSlot;
+			m_primitives[primitiveIndex].nextFreePrimitiveSlot.reset();
+			return;
+		}
+
+		auto current = m_firstFreePrimitiveSlot;
+		for (size_t visited = 0u; current.has_value() && visited < m_primitives.size(); ++visited)
+		{
+			auto& slot = m_primitives[*current];
+			if (slot.nextFreePrimitiveSlot.has_value() &&
+				*slot.nextFreePrimitiveSlot == primitiveIndex)
+			{
+				slot.nextFreePrimitiveSlot = m_primitives[primitiveIndex].nextFreePrimitiveSlot;
+				m_primitives[primitiveIndex].nextFreePrimitiveSlot.reset();
+				return;
+			}
+			current = slot.nextFreePrimitiveSlot;
+		}
+	};
+
+	const auto synchronizeProxy = [this,
+		&options,
+		&stats,
+		&declaredTextureCache,
+		&unlinkFreePrimitiveSlot](
+			const SceneProxyHandle proxyHandle,
+			const SceneProxyPayload& payload,
+			const SceneProxyTransformState& transform)
+	{
+		if (payload.kind != SceneProxyKind::Primitive)
+			return;
+
+		const uint64_t proxyKey = MakeSceneProxyKey(proxyHandle);
+		m_pendingDeclaredTextureProxyKeys.erase(proxyKey);
+		++stats.syncTouchedPrimitiveCount;
+
+		const size_t primitiveIndex = proxyHandle.index;
+		if (primitiveIndex >= m_primitives.size())
+			m_primitives.resize(primitiveIndex + 1u);
+
+		auto& primitive = m_primitives[primitiveIndex];
+		if (primitive.occupied && !(primitive.proxyHandle == proxyHandle))
+			TombstonePrimitive(primitiveIndex, stats);
+
+		const bool newlyAdded = !primitive.occupied || primitive.tombstoned;
+		if (newlyAdded)
+		{
+			unlinkFreePrimitiveSlot(primitiveIndex);
+			const auto freeStableIndex = std::find(
+				m_freeStableObjectIndices.begin(),
+				m_freeStableObjectIndices.end(),
+				proxyHandle.index);
+			if (freeStableIndex != m_freeStableObjectIndices.end())
+				m_freeStableObjectIndices.erase(freeStableIndex);
+
+			primitive = {};
+			primitive.proxyHandle = proxyHandle;
+			primitive.handle = {
+				m_sceneId,
+				static_cast<uint32_t>(primitiveIndex),
+				proxyHandle.generation
+			};
+			primitive.occupied = true;
+			primitive.tombstoned = false;
+			primitive.stableObjectIndex = proxyHandle.index <
+				NLS::Render::Data::GetMaxObjectDataCount()
+				? proxyHandle.index
+				: NLS::Render::Data::DrawableObjectDescriptor::kInvalidStableObjectIndex;
+			++m_livePrimitiveCount;
+			++stats.addedPrimitiveCount;
+		}
+		else
+		{
+			++stats.reusedPrimitiveCount;
+		}
+		m_primitiveIndexByProxy[proxyKey] = primitiveIndex;
+
+		const auto previousStamp = primitive.lastInputStamp;
+		const auto previousBounds = primitive.modelBoundingSphere;
+		const auto previousModelBounds = primitive.modelBounds;
+		const auto previousWorldMatrix = primitive.worldMatrix;
+		const auto previousUserMatrix = primitive.userMatrix;
+		const auto previousOwnerInstanceId = primitive.ownerInstanceId;
+
+		primitive.ownerInstanceId = static_cast<NLS::InstanceID>(payload.ownerInstanceId);
+		primitive.parentInstanceId = static_cast<NLS::InstanceID>(payload.parentInstanceId);
+		primitive.hlodScopeRootInstanceId = payload.hlodScopeRootInstanceId;
+		primitive.sourceObjectKey = payload.sourceObjectKey;
+		primitive.hlodScopeMetadata = payload.hlodScopeMetadata;
+		primitive.mesh = payload.resources.mesh;
+		primitive.meshRendererInstanceId = NLS::InstanceID_None;
+		primitive.owner = nullptr;
+		primitive.meshRenderer = nullptr;
+		primitive.meshFilter = nullptr;
+		primitive.worldMatrix = transform.worldMatrix;
+		primitive.worldPosition = transform.worldPosition;
+		primitive.userMatrix = payload.userMatrix;
+		primitive.customBoundingSphere = payload.customBoundingSphere;
+		primitive.frustumBehaviour = static_cast<Components::MeshRenderer::EFrustumBehaviour>(
+			payload.frustumBehaviour);
+		primitive.transientRenderingSuppressed = payload.transientRenderingSuppressed;
+		primitive.visibilitySettings.layer = payload.layer;
+		primitive.ownerAlive = payload.ownerAlive;
+		primitive.ownerActive = payload.ownerActive;
+		primitive.modelBoundingSphere = primitive.frustumBehaviour ==
+			Components::MeshRenderer::EFrustumBehaviour::CULL_CUSTOM
+			? payload.customBoundingSphere
+			: payload.modelBoundingSphere;
+		primitive.modelBounds = payload.modelBounds;
+		primitive.hasMeshBinding = payload.resources.mesh != nullptr;
+
+		if (previousOwnerInstanceId != NLS::InstanceID_None &&
+			previousOwnerInstanceId != primitive.ownerInstanceId)
+		{
+			m_parentByOwnerInstanceId.erase(previousOwnerInstanceId);
+			for (size_t index = 0u; index < m_primitives.size(); ++index)
+			{
+				if (index == primitiveIndex)
+					continue;
+				const auto& candidate = m_primitives[index];
+				if (candidate.occupied && !candidate.tombstoned &&
+					candidate.ownerInstanceId == previousOwnerInstanceId)
+				{
+					m_parentByOwnerInstanceId[previousOwnerInstanceId] =
+						candidate.parentInstanceId;
+					break;
+				}
+			}
+		}
+		if (primitive.ownerInstanceId != NLS::InstanceID_None)
+		{
+			m_parentByOwnerInstanceId[primitive.ownerInstanceId] =
+				primitive.parentInstanceId;
+		}
+
+		PrimitiveInputStamp stamp;
+		stamp.proxyHandle = proxyHandle;
+		stamp.ownerInstanceId = primitive.ownerInstanceId;
+		stamp.mesh = payload.resources.mesh;
+		stamp.worldMatrix = transform.worldMatrix;
+		stamp.layer = payload.layer;
+		stamp.ownerRenderRevision = payload.ownerRenderRevision;
+		stamp.transformRenderRevision = transform.transformRevision;
+		stamp.meshRendererRenderRevision = payload.meshRendererRenderRevision;
+		stamp.meshContentRevision = payload.resources.meshContentRevision;
+		stamp.meshLODRevisionDigest = primitive.mesh != nullptr
+			? GetMeshLODRevisionDigestForSynchronization(*primitive.mesh)
+			: 0u;
+		stamp.material = payload.resources.material;
+		stamp.materialInstanceId = payload.resources.materialInstanceId;
+		stamp.requestedMaterialInstanceId = payload.resources.requestedMaterialInstanceId;
+		stamp.materialParameterRevision = payload.resources.materialParameterRevision;
+		stamp.materialRenderStateRevision = payload.resources.materialRenderStateRevision;
+		stamp.requireExplicitMaterialTextures = options.requireExplicitMaterialTextures;
+		stamp.allowDefaultMaterialForUnresolvedExplicitMaterials =
+			options.allowDefaultMaterialForUnresolvedExplicitMaterials;
+		stamp.ownerAlive = payload.ownerAlive;
+		stamp.ownerActive = payload.ownerActive;
+
+		if (stamp.material != nullptr && !stamp.material->GetTextureResourcePaths().empty())
+		{
+			TryBindDeclaredMaterialTexturesFromCache(
+				*stamp.material,
+				declaredTextureCache,
+				stats);
+			stamp.explicitMaterialTexturesResolved =
+				HasResolvedDeclaredMaterialTexturesCached(
+					*stamp.material,
+					declaredTextureCache);
+			if (!stamp.explicitMaterialTexturesResolved)
+				m_pendingDeclaredTextureProxyKeys.insert(proxyKey);
+		}
+
+		const bool explicitMaterialBlocked =
+			payload.resources.hasExplicitMaterialPath &&
+			!payload.resources.materialResolved &&
+			!options.allowDefaultMaterialForUnresolvedExplicitMaterials;
+		const bool explicitTexturesBlocked =
+			options.requireExplicitMaterialTextures &&
+			payload.resources.hasExplicitMaterialPath &&
+			!stamp.explicitMaterialTexturesResolved;
+		const bool validMaterial = stamp.material != nullptr &&
+			stamp.material->IsValid() &&
+			!explicitMaterialBlocked &&
+			!explicitTexturesBlocked;
+		primitive.hasValidMaterial = validMaterial;
+
+		if (primitive.mesh == nullptr || !validMaterial)
+		{
+			if (!primitive.cachedCommands.empty())
+			{
+				MarkCommandOffsetTableDirty();
+				primitive.cachedCommands.clear();
+			}
+		}
+		else
+		{
+			if (primitive.cachedCommands.size() != 1u)
+				MarkCommandOffsetTableDirty();
+			primitive.cachedCommands.resize(1u);
+			auto& slot = primitive.cachedCommands[0];
+			const auto commandStamp = BuildCommandInputStamp(
+				primitive,
+				*primitive.mesh,
+				*stamp.material);
+			if (!slot.valid || slot.stamp != commandStamp)
+				RebuildCachedCommand(slot, commandStamp, stats);
+		}
+
+		const bool boundsChanged =
+			!AreSameBounds(previousBounds, primitive.modelBoundingSphere) ||
+			!AreSameBounds(previousModelBounds, primitive.modelBounds) ||
+			!AreSameMatrix(previousWorldMatrix, primitive.worldMatrix) ||
+			!AreSameMatrix(previousUserMatrix, primitive.userMatrix);
+		const bool changed = newlyAdded || previousStamp != stamp || boundsChanged;
+		if (changed)
+			MarkPrimitiveDirtyForSnapshot(primitive);
+		if (boundsChanged)
+			++stats.boundsDirtyPrimitiveCount;
+		primitive.lastInputStamp = stamp;
+	};
+
+	if (fullResync)
+	{
+		++stats.syncFullSweepCount;
+		m_parentByOwnerInstanceId.clear();
+		m_pendingDeclaredTextureProxyKeys.clear();
+		std::unordered_set<uint64_t> liveProxyKeys;
+		liveProxyKeys.reserve(store->GetProxyCount());
+		store->ForEachProxy(
+			[&](
+				const SceneProxyHandle proxyHandle,
+				const SceneProxyPayload& payload,
+				const SceneProxyTransformState& transform)
+			{
+				if (payload.kind != SceneProxyKind::Primitive)
+					return;
+				liveProxyKeys.insert(MakeSceneProxyKey(proxyHandle));
+				synchronizeProxy(proxyHandle, payload, transform);
+			});
+
+		stats.syncSweepTouchedSlotCount += m_primitiveIndexByProxy.size();
+		for (auto iterator = m_primitiveIndexByProxy.begin();
+			 iterator != m_primitiveIndexByProxy.end();)
+		{
+			if (liveProxyKeys.find(iterator->first) == liveProxyKeys.end())
+			{
+				const size_t stalePrimitiveIndex = iterator->second;
+				++iterator;
+				TombstonePrimitive(stalePrimitiveIndex, stats);
+			}
+			else
+			{
+				++iterator;
+			}
+		}
+	}
+	else
+	{
+		for (const auto removedHandle : changes.removedHandles)
+		{
+			const uint64_t proxyKey = MakeSceneProxyKey(removedHandle);
+			m_pendingDeclaredTextureProxyKeys.erase(proxyKey);
+			const auto found = m_primitiveIndexByProxy.find(proxyKey);
+			if (found != m_primitiveIndexByProxy.end())
+				TombstonePrimitive(found->second, stats);
+		}
+
+		std::vector<SceneProxyHandle> handlesToSynchronize = changes.changedHandles;
+		handlesToSynchronize.reserve(
+			handlesToSynchronize.size() + m_pendingDeclaredTextureProxyKeys.size());
+		for (const uint64_t proxyKey : m_pendingDeclaredTextureProxyKeys)
+		{
+			const auto found = m_primitiveIndexByProxy.find(proxyKey);
+			if (found == m_primitiveIndexByProxy.end())
+				continue;
+			const auto& primitive = m_primitives[found->second];
+			if (primitive.occupied && !primitive.tombstoned)
+				handlesToSynchronize.push_back(primitive.proxyHandle);
+		}
+
+		std::unordered_set<uint64_t> synchronizedProxyKeys;
+		synchronizedProxyKeys.reserve(handlesToSynchronize.size());
+		for (const auto proxyHandle : handlesToSynchronize)
+		{
+			const uint64_t proxyKey = MakeSceneProxyKey(proxyHandle);
+			if (!synchronizedProxyKeys.insert(proxyKey).second)
+				continue;
+
+			const SceneProxyPayload* payload = nullptr;
+			const SceneProxyTransformState* transform = nullptr;
+			if (!store->TryGetProxy(proxyHandle, payload, transform) ||
+				payload == nullptr || transform == nullptr)
+			{
+				const auto found = m_primitiveIndexByProxy.find(proxyKey);
+				if (found != m_primitiveIndexByProxy.end())
+					TombstonePrimitive(found->second, stats);
+				continue;
+			}
+			synchronizeProxy(proxyHandle, *payload, *transform);
+		}
+	}
+
+	m_lastProxyStoreChangeSerial = changes.changeSerial;
+	if (stats.syncTouchedPrimitiveCount == 0u &&
+		stats.addedPrimitiveCount == 0u &&
+		stats.removedPrimitiveCount == 0u)
+	{
+		stats.reusedPrimitiveCount = static_cast<uint64_t>(m_livePrimitiveCount);
+	}
+	return observedStoreChange;
 }
 
 bool RenderScene::HasTrackedMaterialMutation()
@@ -1213,7 +1697,9 @@ bool RenderScene::HasTrackedMaterialMutation()
 		const auto& mutation = mutations[mutationIndex];
 		const auto found = m_trackedMaterialStates.find(
 			const_cast<NLS::Render::Resources::Material*>(mutation.material));
-		if (found == m_trackedMaterialStates.end())
+		if (found == m_trackedMaterialStates.end() &&
+			m_trackedMaterialInstanceIds.find(mutation.instanceId) ==
+				m_trackedMaterialInstanceIds.end())
 			continue;
 
 		return true;
@@ -1225,6 +1711,7 @@ bool RenderScene::HasTrackedMaterialMutation()
 void RenderScene::RefreshTrackedMaterialStates()
 {
 	m_trackedMaterialStates.clear();
+	m_trackedMaterialInstanceIds.clear();
 	const auto trackMaterial = [this](NLS::Render::Resources::Material* material)
 	{
 		if (material == nullptr || !NLS::Render::Resources::Material::IsLive(material))
@@ -1235,6 +1722,7 @@ void RenderScene::RefreshTrackedMaterialStates()
 			material->GetRenderStateRevision(),
 			material->GetBindingRevision()
 		};
+		m_trackedMaterialInstanceIds.insert(material->GetInstanceId());
 	};
 
 	for (const auto& primitive : m_primitives)
@@ -1242,6 +1730,11 @@ void RenderScene::RefreshTrackedMaterialStates()
 		if (!primitive.occupied || primitive.tombstoned)
 			continue;
 		trackMaterial(primitive.lastInputStamp.material);
+		if (primitive.lastInputStamp.requestedMaterialInstanceId != 0u)
+		{
+			m_trackedMaterialInstanceIds.insert(
+				primitive.lastInputStamp.requestedMaterialInstanceId);
+		}
 		for (const auto& slot : primitive.cachedCommands)
 		{
 			if (slot.valid)
@@ -1256,22 +1749,16 @@ RenderScene::SceneSynchronizationStamp RenderScene::BuildSceneSynchronizationSta
 {
 	SceneSynchronizationStamp stamp;
 	stamp.scene = &scene;
-	stamp.renderContentRevision = scene.GetRenderContentRevision();
 	stamp.defaultMaterial = options.defaultMaterial;
-	if (stamp.defaultMaterial != nullptr)
-	{
-		stamp.defaultMaterialParameterRevision = stamp.defaultMaterial->GetParameterRevision();
-		stamp.defaultMaterialRenderStateRevision = stamp.defaultMaterial->GetRenderStateRevision();
-	}
 	stamp.overrideMaterial = options.overrideMaterial;
-	if (stamp.overrideMaterial != nullptr)
-	{
-		stamp.overrideMaterialParameterRevision = stamp.overrideMaterial->GetParameterRevision();
-		stamp.overrideMaterialRenderStateRevision = stamp.overrideMaterial->GetRenderStateRevision();
-	}
 	stamp.requireExplicitMaterialTextures = options.requireExplicitMaterialTextures;
 	stamp.allowDefaultMaterialForUnresolvedExplicitMaterials =
 		options.allowDefaultMaterialForUnresolvedExplicitMaterials;
+	const auto& largeSceneSettings = ResolveLargeSceneSettings(options);
+	stamp.enableSpatialIndex = largeSceneSettings.enableSpatialIndex;
+	stamp.enableHLOD = largeSceneSettings.enableHLOD;
+	stamp.staticRebuildDirtyRatio = largeSceneSettings.staticRebuildDirtyRatio;
+	stamp.staticRebuildBudgetUs = largeSceneSettings.staticRebuildBudgetUs;
 	return stamp;
 }
 
@@ -1564,9 +2051,10 @@ void RenderScene::AppendPickablePrimitiveDrawSourcesForHandles(
 		if (primitive.handle != handle ||
 			!primitive.occupied ||
 			primitive.tombstoned ||
-			primitive.owner == nullptr ||
-			!primitive.owner->IsAlive() ||
-			!primitive.owner->IsActive() ||
+			!primitive.ownerAlive ||
+			!primitive.ownerActive ||
+			primitive.proxyHandle.sceneId == 0u ||
+			primitive.ownerInstanceId == NLS::InstanceID_None ||
 			primitive.mesh == nullptr)
 		{
 			continue;
@@ -1578,7 +2066,7 @@ void RenderScene::AppendPickablePrimitiveDrawSourcesForHandles(
 				continue;
 
 			outSources.push_back({
-				primitive.owner,
+				primitive.ownerInstanceId,
 				slot.command.mesh,
 				primitive.worldMatrix,
 				slot.command.stateMask
@@ -1654,7 +2142,7 @@ void RenderScene::ClearImportedHierarchyHLODRecords(const bool rebuildLookup)
 		m_representationRegistry->RebuildLookup();
 }
 
-void RenderScene::RebuildImportedHierarchyHLODRecords(const SceneSystem::Scene& scene)
+void RenderScene::RebuildImportedHierarchyHLODRecords()
 {
 	m_spatialCandidateSnapshotCache.reset();
 	ClearImportedHierarchyHLODRecords(false);
@@ -1663,48 +2151,53 @@ void RenderScene::RebuildImportedHierarchyHLODRecords(const SceneSystem::Scene& 
 
 	struct ImportedHierarchyHLODScope
 	{
-		const Engine::GameObject* root = nullptr;
+		uint64_t rootInstanceId = 0u;
 		ImportedHierarchyHLODMetadata metadata;
 		std::unordered_map<std::string, std::vector<ScenePrimitiveHandle>> primitivesBySourceKey;
 	};
 
 	std::vector<ImportedHierarchyHLODScope> scopes;
-	for (const auto* gameObject : scene.GetGameObjects())
+	std::unordered_map<uint64_t, size_t> scopeIndicesByRoot;
+	for (const auto& primitive : m_primitives)
 	{
-		if (gameObject == nullptr || gameObject->GetLargeSceneHLODMetadata().empty())
+		if (!primitive.occupied || primitive.tombstoned ||
+			primitive.hlodScopeRootInstanceId == 0u ||
+			primitive.hlodScopeMetadata.empty())
+		{
+			continue;
+		}
+
+		if (scopeIndicesByRoot.find(primitive.hlodScopeRootInstanceId) != scopeIndicesByRoot.end())
 			continue;
 
-		const auto metadata = ParseImportedHierarchyHLODMetadata(
-			gameObject->GetLargeSceneHLODMetadata());
+		const auto metadata = ParseImportedHierarchyHLODMetadata(primitive.hlodScopeMetadata);
 		if (!metadata.has_value())
 			continue;
 
-		scopes.push_back({ gameObject, *metadata, {} });
+		scopeIndicesByRoot[primitive.hlodScopeRootInstanceId] = scopes.size();
+		scopes.push_back({ primitive.hlodScopeRootInstanceId, *metadata, {} });
 	}
 
-	std::unordered_map<const Engine::GameObject*, size_t> scopeIndicesByRoot;
 	scopeIndicesByRoot.reserve(scopes.size());
 	for (size_t index = 0u; index < scopes.size(); ++index)
 	{
-		scopeIndicesByRoot[scopes[index].root] = index;
+		scopeIndicesByRoot[scopes[index].rootInstanceId] = index;
 		scopes[index].primitivesBySourceKey.reserve(m_livePrimitiveCount);
 	}
 
 	for (const auto& primitive : m_primitives)
 	{
-		if (!primitive.occupied || primitive.tombstoned || primitive.owner == nullptr)
-			continue;
-		const auto& sourceKey = primitive.owner->GetSourceObjectKey();
-		if (sourceKey.empty())
+		if (!primitive.occupied || primitive.tombstoned ||
+			primitive.hlodScopeRootInstanceId == 0u ||
+			primitive.sourceObjectKey.empty())
 			continue;
 
-		for (const Engine::GameObject* ownerOrAncestor = primitive.owner;
-			ownerOrAncestor != nullptr;
-			ownerOrAncestor = ownerOrAncestor->GetParent())
+		const auto foundScope = scopeIndicesByRoot.find(primitive.hlodScopeRootInstanceId);
+		if (foundScope != scopeIndicesByRoot.end())
 		{
-			const auto foundScope = scopeIndicesByRoot.find(ownerOrAncestor);
-			if (foundScope != scopeIndicesByRoot.end())
-				scopes[foundScope->second].primitivesBySourceKey[sourceKey].push_back(primitive.handle);
+			scopes[foundScope->second]
+				.primitivesBySourceKey[primitive.sourceObjectKey]
+				.push_back(primitive.handle);
 		}
 	}
 
@@ -1928,7 +2421,7 @@ ScenePrimitiveSnapshot RenderScene::CreatePrimitiveSnapshot(const uint64_t frame
 		record.hlodCluster = primitive.hlodCluster;
 		record.commandOffsetBegin = commandOffsetBegin;
 		record.commandOffsetEnd = commandOffset;
-		record.hasMeshBinding = primitive.meshRenderer != nullptr;
+		record.hasMeshBinding = primitive.hasMeshBinding;
 		record.hasValidMaterial = std::any_of(
 			primitive.cachedCommands.begin(),
 			primitive.cachedCommands.end(),
@@ -2019,7 +2512,7 @@ ScenePrimitiveSnapshot RenderScene::CreatePrimitiveSnapshotForHandles(
 			? static_cast<uint64_t>((*meshBaseIndices)[handle.index])
 			: 0u;
 		record.commandOffsetEnd = record.commandOffsetBegin + static_cast<uint64_t>(primitive.cachedCommands.size());
-		record.hasMeshBinding = primitive.meshRenderer != nullptr;
+		record.hasMeshBinding = primitive.hasMeshBinding;
 		record.hasValidMaterial = std::any_of(
 			primitive.cachedCommands.begin(),
 			primitive.cachedCommands.end(),
@@ -2181,8 +2674,38 @@ void RenderScene::TombstonePrimitive(const size_t primitiveIndex, RenderSceneSyn
 		if (found != m_primitiveIndexByMeshRenderer.end() && found->second == primitiveIndex)
 			m_primitiveIndexByMeshRenderer.erase(found);
 	}
+	if (primitive.proxyHandle.IsValid())
+	{
+		const uint64_t proxyKey = MakeSceneProxyKey(primitive.proxyHandle);
+		m_primitiveIndexByProxy.erase(proxyKey);
+		m_pendingDeclaredTextureProxyKeys.erase(proxyKey);
+	}
+	if (primitive.ownerInstanceId != NLS::InstanceID_None)
+	{
+		const auto removedOwnerInstanceId = primitive.ownerInstanceId;
+		m_parentByOwnerInstanceId.erase(removedOwnerInstanceId);
+		for (size_t index = 0u; index < m_primitives.size(); ++index)
+		{
+			if (index == primitiveIndex)
+				continue;
+			const auto& candidate = m_primitives[index];
+			if (candidate.occupied && !candidate.tombstoned &&
+				candidate.ownerInstanceId == removedOwnerInstanceId)
+			{
+				m_parentByOwnerInstanceId[removedOwnerInstanceId] =
+					candidate.parentInstanceId;
+				break;
+			}
+		}
+	}
 
 	m_lastRemovedHandles.push_back(primitive.handle);
+	primitive.proxyHandle = {};
+	primitive.ownerInstanceId = NLS::InstanceID_None;
+	primitive.parentInstanceId = NLS::InstanceID_None;
+	primitive.hlodScopeRootInstanceId = 0u;
+	primitive.sourceObjectKey.clear();
+	primitive.hlodScopeMetadata.clear();
 	primitive.meshRenderer = nullptr;
 	primitive.meshRendererInstanceId = NLS::InstanceID_None;
 	primitive.owner = nullptr;
@@ -2595,7 +3118,7 @@ bool RenderScene::IsPrimitiveVisible(
 {
 	if (!primitive.occupied || primitive.tombstoned)
 		return false;
-	if (primitive.owner == nullptr || !primitive.ownerAlive || !primitive.ownerActive)
+	if (!primitive.ownerAlive || !primitive.ownerActive)
 		return false;
 	if (primitive.transientRenderingSuppressed)
 		return false;
@@ -2774,7 +3297,7 @@ RenderSceneVisibilitySnapshot RenderScene::EvaluateVisibility(
 	if (mode == RenderSceneVisibilityMode::Auto &&
 		settings.enableParallelVisibility &&
 		m_livePrimitiveCount >= settings.parallelVisibilityPrimitiveThreshold &&
-		NLS::Base::Jobs::IsJobSystemInitialized())
+		NLS::Base::TaskGraph::IsGlobalTaskGraphStarted())
 	{
 		return EvaluateVisibilityParallel(options, meshBaseIndices);
 	}
@@ -3015,20 +3538,28 @@ std::vector<SceneHLODClusterHandle> RenderScene::ResolveInspectableHLODClusters(
 {
 	std::vector<SceneHLODClusterHandle> handles;
 	if (!options.editorInspectionView ||
-		options.inspectionRootObjects.empty() ||
+		options.inspectionRootInstanceIds.empty() ||
 		m_representationRegistry == nullptr)
 	{
 		return handles;
 	}
 
-	const auto isInsideInspectionRoot = [&options](const Engine::GameObject* owner)
+	const auto isInsideInspectionRoot = [this, &options](const NLS::InstanceID ownerInstanceId)
 	{
-		for (const auto* root : options.inspectionRootObjects)
+		for (const NLS::InstanceID root : options.inspectionRootInstanceIds)
 		{
-			if (root == nullptr || owner == nullptr)
+			if (root == NLS::InstanceID_None || ownerInstanceId == NLS::InstanceID_None)
 				continue;
-			if (owner == root || owner->IsDescendantOf(root))
-				return true;
+			NLS::InstanceID current = ownerInstanceId;
+			for (size_t depth = 0u; current != NLS::InstanceID_None && depth < m_livePrimitiveCount + 1u; ++depth)
+			{
+				if (current == root)
+					return true;
+				const auto parent = m_parentByOwnerInstanceId.find(current);
+				if (parent == m_parentByOwnerInstanceId.end())
+					break;
+				current = parent->second;
+			}
 		}
 		return false;
 	};
@@ -3042,7 +3573,7 @@ std::vector<SceneHLODClusterHandle> RenderScene::ResolveInspectableHLODClusters(
 			if (!IsPrimitiveHandleLive(child))
 				continue;
 			const auto& primitive = m_primitives[child.index];
-			if (!isInsideInspectionRoot(primitive.owner))
+			if (!isInsideInspectionRoot(primitive.ownerInstanceId))
 				continue;
 			if (std::find(handles.begin(), handles.end(), cluster.clusterHandle) == handles.end())
 				handles.push_back(cluster.clusterHandle);
@@ -3290,12 +3821,14 @@ RenderSceneVisibilitySnapshot RenderScene::EvaluateVisibilityParallel(
 	if (primitiveCount == 0u)
 		return snapshot;
 
-	if (!NLS::Base::Jobs::IsJobSystemInitialized())
+	if (!NLS::Base::TaskGraph::IsGlobalTaskGraphStarted())
 		return EvaluateVisibilitySerialRange(options, meshBaseIndices, 0u, primitiveCount);
 
 	const auto& settings = ResolveLargeSceneSettings(options);
 	const auto primitivesPerTask = std::max<size_t>(1u, settings.parallelVisibilityPrimitivesPerTask);
-	const auto hardwareThreads = std::max<uint32_t>(1u, NLS::Base::Jobs::GetJobWorkerCount() + 1u);
+	const auto hardwareThreads = std::max<uint32_t>(
+		1u,
+		NLS::Base::TaskGraph::GetGlobalTaskGraph().GetWorkerCount());
 	const auto desiredTaskCount =
 		(primitiveCount + primitivesPerTask - 1u) /
 		primitivesPerTask;
@@ -3315,51 +3848,51 @@ RenderSceneVisibilitySnapshot RenderScene::EvaluateVisibilityParallel(
 	for (auto& completed : rangeCompleted)
 		completed.store(false, std::memory_order_relaxed);
 
-	struct VisibilityRangeJob final : public NLS::Base::Jobs::IJobParallelFor
+	auto& taskGraph = NLS::Base::TaskGraph::GetGlobalTaskGraph();
+	std::vector<NLS::Base::TaskGraph::TaskHandle> taskHandles;
+	taskHandles.reserve(taskCount);
+	for (size_t taskIndex = 0u; taskIndex < taskCount; ++taskIndex)
 	{
-		const RenderScene* scene = nullptr;
-		const RenderSceneVisibilityOptions* options = nullptr;
-		const std::vector<size_t>* meshBaseIndices = nullptr;
-		std::vector<RenderSceneVisibilityRangeSnapshot>* rangeSnapshots = nullptr;
-		std::vector<std::atomic_bool>* rangeCompleted = nullptr;
-		size_t primitiveCount = 0u;
-		size_t rangeSize = 0u;
-
-		void Execute(uint32_t taskIndex)
+		NLS::Base::TaskGraph::TaskDesc desc;
+		desc.targetThread = NLS::Base::TaskGraph::NamedThread::Any;
+		desc.priority = NLS::Base::TaskGraph::TaskPriority::High;
+		desc.debugName = "RenderScene::EvaluateVisibilityParallel";
+		desc.function = [this,
+						 &options,
+						 &meshBaseIndices,
+						 &rangeSnapshots,
+						 &rangeCompleted,
+						 primitiveCount,
+						 rangeSize,
+						 taskIndex]
 		{
-			const auto begin = static_cast<size_t>(taskIndex) * rangeSize;
+			const auto begin = taskIndex * rangeSize;
 			if (begin >= primitiveCount)
 				return;
 
 			const auto end = std::min(begin + rangeSize, primitiveCount);
-			(*rangeSnapshots)[static_cast<size_t>(taskIndex)] =
-				scene->EvaluateVisibilityCompactRange(*options, *meshBaseIndices, begin, end);
-			(*rangeCompleted)[static_cast<size_t>(taskIndex)].store(true, std::memory_order_release);
+			rangeSnapshots[taskIndex] =
+				EvaluateVisibilityCompactRange(options, meshBaseIndices, begin, end);
+			rangeCompleted[taskIndex].store(true, std::memory_order_release);
+		};
+		taskHandles.push_back(taskGraph.Submit(std::move(desc)));
+		if (!taskHandles.back().IsValid())
+		{
+			for (const auto pendingHandle : taskHandles)
+			{
+				if (pendingHandle.IsValid())
+					(void)taskGraph.Wait(pendingHandle);
+			}
+			return EvaluateVisibilitySerialRange(options, meshBaseIndices, 0u, primitiveCount);
 		}
-	};
+	}
 
-	VisibilityRangeJob job;
-	job.scene = this;
-	job.options = &options;
-	job.meshBaseIndices = &meshBaseIndices;
-	job.rangeSnapshots = &rangeSnapshots;
-	job.rangeCompleted = &rangeCompleted;
-	job.primitiveCount = primitiveCount;
-	job.rangeSize = rangeSize;
-
-	NLS::Base::Jobs::JobParallelForScheduleOptions scheduleOptions;
-	scheduleOptions.batchSize = 1u;
-	scheduleOptions.debugName = "RenderScene::EvaluateVisibilityParallel";
-	auto handle = NLS::Base::Jobs::ScheduleParallelFor(
-		job,
-		static_cast<uint32_t>(taskCount),
-		scheduleOptions);
-	if (handle.id == 0u)
-		return EvaluateVisibilitySerialRange(options, meshBaseIndices, 0u, primitiveCount);
-
-	NLS::Base::Jobs::CompleteNoClear(handle);
-	const auto completionStatus = NLS::Base::Jobs::Internal::GetJobCompletionStatus(handle);
-	NLS::Base::Jobs::ClearWithoutSync(handle);
+	bool allTasksSucceeded = true;
+	for (const auto handle : taskHandles)
+	{
+		allTasksSucceeded = allTasksSucceeded &&
+			taskGraph.Wait(handle) == NLS::Base::TaskGraph::TaskStatus::Succeeded;
+	}
 	const bool allRangesCompleted = std::all_of(
 		rangeCompleted.begin(),
 		rangeCompleted.end(),
@@ -3367,8 +3900,7 @@ RenderSceneVisibilitySnapshot RenderScene::EvaluateVisibilityParallel(
 		{
 			return completed.load(std::memory_order_acquire);
 		});
-	if (completionStatus != NLS::Base::Jobs::JobCompletionStatus::Succeeded ||
-		!allRangesCompleted)
+	if (!allTasksSucceeded || !allRangesCompleted)
 	{
 		return EvaluateVisibilitySerialRange(options, meshBaseIndices, 0u, primitiveCount);
 	}
@@ -3428,7 +3960,7 @@ void RenderScene::AppendVisibleDrawable(
 	const RenderCachedDrawCommand& command,
 	const RenderSceneVisibilityOptions& options) const
 {
-	if (primitive.owner == nullptr)
+	if (primitive.ownerInstanceId == NLS::InstanceID_None)
 		return;
 
 	NLS::Render::Entities::Drawable drawable;
@@ -3546,6 +4078,8 @@ void RenderScene::FinalizeOpaqueQueue(RenderSceneVisibleQueues::SceneDrawables& 
 			{
 				descriptor->instanceModelMatrices.clear();
 				descriptor->instanceModelMatrices.reserve(runEnd - index);
+				descriptor->instanceObjectIndices.clear();
+				descriptor->instanceObjectIndices.reserve(runEnd - index);
 				float nearestDistance = keyedDrawables[index].distance;
 				constexpr uint64_t kFnvOffsetBasis = 14695981039346656037ull;
 				auto groupIdentity = HashOpaqueSortTokenComponent(
@@ -3565,6 +4099,7 @@ void RenderScene::FinalizeOpaqueQueue(RenderSceneVisibleQueues::SceneDrawables& 
 						continue;
 					}
 					descriptor->instanceModelMatrices.push_back(sourceDescriptor->modelMatrix);
+					descriptor->instanceObjectIndices.push_back(sourceDescriptor->stableObjectIndex);
 					nearestDistance = std::min(nearestDistance, keyedDrawables[runIndex].distance);
 					hasTrustedGroupRevision = hasTrustedGroupRevision &&
 						sourceDescriptor->hasTrustedStaticDrawRevision &&
@@ -3747,14 +4282,29 @@ void RenderScene::AssignVisibleObjectIndices(RenderSceneVisibleQueues& output) c
 		};
 
 	uint32_t nextObjectIndex = 0u;
+	// The planning pass decides every stable/dynamic object-data range and the
+	// replay applies it. Running the same lookup and allocation search twice --
+	// once to prove that in-place assignment cannot fail after partially mutating
+	// the queues, once to perform it -- was pure duplicated work.
+	struct PlannedObjectIndexAssignment
+	{
+		RenderSceneVisibleQueues::SceneDrawables::value_type* entry = nullptr;
+		uint32_t objectIndex = 0u;
+		uint32_t objectCount = 0u;
+		uint32_t instanceCount = 0u;
+		bool usesStableObjectIndex = false;
+		bool preservesMaterialInstanceCount = false;
+	};
+	std::vector<PlannedObjectIndexAssignment> plannedObjectIndexAssignments;
 	const auto tryAssignInPlace = [&]()
 	{
+		plannedObjectIndexAssignments.clear();
 		uint32_t simulatedNextObjectIndex = 0u;
 		std::unordered_set<uint32_t> simulatedStableObjectIndices;
 		simulatedStableObjectIndices.reserve(reservedStableObjectIndices.size());
-		for (const auto* queue : queues)
+		for (auto* queue : queues)
 		{
-			for (const auto& entry : *queue)
+			for (auto& entry : *queue)
 			{
 				const auto* descriptor = entry.second.TryGetDescriptor<EngineDrawableDescriptor>();
 				if (descriptor == nullptr ||
@@ -3763,61 +4313,52 @@ void RenderScene::AssignVisibleObjectIndices(RenderSceneVisibleQueues& output) c
 					continue;
 				}
 
-				const auto objectCount = std::max(1u, ResolveVisibleInstanceCount(entry.second));
+				const auto instanceCount = ResolveVisibleInstanceCount(entry.second);
+				const auto objectCount = std::max(1u, instanceCount);
 				if (objectCount > maxObjectsPerSubmittedDraw)
 					return false;
 
 				uint32_t objectIndex = 0u;
-				if (tryResolveStableObjectIndex(
-					entry.second,
-					*descriptor,
-					simulatedStableObjectIndices,
-					objectIndex))
-				{
-					continue;
-				}
-				if (!tryAllocateDynamicRange(simulatedNextObjectIndex, objectCount, objectIndex))
-				{
-					return false;
-				}
-			}
-		}
-
-		nextObjectIndex = 0u;
-		std::unordered_set<uint32_t> claimedStableObjectIndices;
-		claimedStableObjectIndices.reserve(reservedStableObjectIndices.size());
-		for (auto* queue : queues)
-		{
-			for (auto& entry : *queue)
-			{
-				auto* descriptor = entry.second.TryGetDescriptor<EngineDrawableDescriptor>();
-				if (descriptor == nullptr || !DrawableRequiresIndexedObjectDataRange(entry.second))
-					continue;
-
-				const auto instanceCount = ResolveVisibleInstanceCount(entry.second);
-				const auto objectCount = std::max(1u, instanceCount);
-				const bool preservesMaterialInstanceCount =
-					entry.second.instanceCount == 0u && objectCount == instanceCount;
-				uint32_t objectIndex = 0u;
 				const bool usesStableObjectIndex = tryResolveStableObjectIndex(
 					entry.second,
 					*descriptor,
-					claimedStableObjectIndices,
+					simulatedStableObjectIndices,
 					objectIndex);
 				if (!usesStableObjectIndex &&
-					!tryAllocateDynamicRange(nextObjectIndex, objectCount, objectIndex))
+					!tryAllocateDynamicRange(simulatedNextObjectIndex, objectCount, objectIndex))
 				{
 					return false;
 				}
-				descriptor->objectIndex = objectIndex;
-				descriptor->objectCount = objectCount;
-				descriptor->allowsSingleObjectDataReuse = usesStableObjectIndex;
-				if (descriptor->instanceModelMatrices.empty())
-					ExpandDescriptorForObjectDataRange(*descriptor, objectCount);
-				if (!preservesMaterialInstanceCount || objectCount != instanceCount)
-					entry.second.instanceCount = objectCount;
+
+				// The queues are not resized while planning, so this element pointer stays
+				// valid for the replay below.
+				plannedObjectIndexAssignments.push_back({
+					&entry,
+					objectIndex,
+					objectCount,
+					instanceCount,
+					usesStableObjectIndex,
+					entry.second.instanceCount == 0u && objectCount == instanceCount
+				});
 			}
 		}
+
+		for (auto& plan : plannedObjectIndexAssignments)
+		{
+			auto& entry = *plan.entry;
+			auto* descriptor = entry.second.TryGetDescriptor<EngineDrawableDescriptor>();
+			if (descriptor == nullptr)
+				continue;
+
+			descriptor->objectIndex = plan.objectIndex;
+			descriptor->objectCount = plan.objectCount;
+			descriptor->allowsSingleObjectDataReuse = plan.usesStableObjectIndex;
+			if (descriptor->instanceModelMatrices.empty())
+				ExpandDescriptorForObjectDataRange(*descriptor, plan.objectCount);
+			if (!plan.preservesMaterialInstanceCount || plan.objectCount != plan.instanceCount)
+				entry.second.instanceCount = plan.objectCount;
+		}
+
 		return true;
 	};
 	if (tryAssignInPlace())

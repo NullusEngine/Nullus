@@ -23,6 +23,29 @@
 
 namespace
 {
+	struct CaptureFrameSlotScope
+	{
+		NLS::Render::Core::FrameObjectBindingProvider* provider = nullptr;
+
+		CaptureFrameSlotScope(
+			NLS::Render::Core::FrameObjectBindingProvider* p_provider,
+			const size_t slotIndex, const std::function<void(size_t)>& bind)
+			: provider(p_provider)
+		{
+			if (provider != nullptr)
+				bind(slotIndex);
+		}
+
+		~CaptureFrameSlotScope()
+		{
+			if (provider != nullptr)
+				provider->UnbindCaptureFrameSlot();
+		}
+
+		CaptureFrameSlotScope(const CaptureFrameSlotScope&) = delete;
+		CaptureFrameSlotScope& operator=(const CaptureFrameSlotScope&) = delete;
+	};
+
 	bool ShouldLogSceneRendererDiagnostics(const NLS::Render::Context::Driver& driver)
 	{
 		return NLS::Render::Context::DriverRendererAccess::GetDiagnosticsSettings(driver).logRenderDrawPath;
@@ -188,55 +211,15 @@ namespace NLS::Engine::Rendering
 			BaseSceneRenderer::BeginFrame(p_frameDescriptor);
 		if (!IsFrameActive())
 			return;
-		auto drawables = ParseScene();
-		const bool hasSkyboxTexture = !drawables.skyboxes.empty();
+			auto drawablesPtr = std::make_shared<AllDrawables>(ParseScene());
+			auto& drawables = *drawablesPtr;
+			auto preparedBuilderDrawables = drawablesPtr;
+			const bool hasSkyboxTexture = !drawables.skyboxes.empty();
 
 		const bool usesThreadedRendering =
 			NLS::Render::Context::DriverRendererAccess::IsThreadedRenderingEnabled(m_driver);
-		if (usesThreadedRendering)
-		{
-			SetActivePreparedPassBindingSet(BaseSceneRenderer::GetPreparedPassBindingSetPlaceholder());
-			const auto opaquePso = CreateSceneDefaultPipelineState(*this);
-			const auto skyboxPso = CreateSceneSkyboxPipelineState(*this);
-
-			for (const auto& entry : drawables.opaques)
-			{
-				const auto& drawable = entry.second;
-				PreparedRecordedDraw preparedDraw;
-				if (CaptureThreadedPreparedDraw(opaquePso, drawable, preparedDraw))
-					QueueThreadedRecordedDraw(std::move(preparedDraw));
-			}
-
-			auto decalOverrides = NLS::Render::Resources::MaterialPipelineStateOverrides{};
-			decalOverrides.depthWrite = false;
-			for (const auto& entry : drawables.decals)
-			{
-				const auto& drawable = entry.second;
-				PreparedRecordedDraw preparedDraw;
-				if (CaptureThreadedPreparedDraw(drawable, decalOverrides, GetForwardDecalDepthCompare(), "Forward", preparedDraw))
-					QueueThreadedRecordedDraw(std::move(preparedDraw));
-			}
-
-			for (const auto& entry : drawables.skyboxes)
-			{
-				const auto& drawable = entry.second;
-				PreparedRecordedDraw preparedDraw;
-				if (CaptureThreadedPreparedDraw(skyboxPso, drawable, preparedDraw))
-					QueueThreadedRecordedDraw(std::move(preparedDraw));
-			}
-
-			auto transparentOverrides = NLS::Render::Resources::MaterialPipelineStateOverrides{};
-			transparentOverrides.depthWrite = false;
-			for (const auto& entry : drawables.transparents)
-			{
-				const auto& drawable = entry.second;
-				PreparedRecordedDraw preparedDraw;
-				if (CaptureThreadedPreparedDraw(drawable, transparentOverrides, opaquePso.depthFunc, "Forward", preparedDraw))
-					QueueThreadedRecordedDraw(std::move(preparedDraw));
-			}
-
-			SetActivePreparedPassBindingSet(nullptr);
-		}
+		auto threadedCaptureOutput =
+			std::make_shared<std::vector<NLS::Render::Context::RecordedDrawCommandInput>>();
 
 		auto pendingFrameSnapshot = BuildFrameSnapshot(p_frameDescriptor);
 		if (pendingFrameSnapshot.has_value())
@@ -257,7 +240,7 @@ namespace NLS::Engine::Rendering
 				", transparent=" + std::to_string(drawables.transparents.size()) +
 				", skybox=" + std::to_string(drawables.skyboxes.size()));
 		}
-		AddDescriptor<ForwardSceneDescriptor>({ std::move(drawables), scenePackage, hasSkyboxTexture });
+		AddDescriptor<ForwardSceneDescriptor>({ std::move(drawablesPtr), scenePackage, hasSkyboxTexture });
 
 		if (usesThreadedRendering && pendingFrameSnapshot.has_value())
 		{
@@ -266,21 +249,87 @@ namespace NLS::Engine::Rendering
 				NLS::Render::FrameGraph::CaptureExternalSceneOutputSnapshot(p_frameDescriptor);
 			auto lightGridContext = BuildLightGridCompileContext(hasSkyboxTexture);
 			SetPendingPreparedRenderSceneBuilder(
-				[snapshot = std::move(snapshot),
+				[this,
+				 bindCaptureFrame = GetFrameObjectBindingProvider()->FreezeCaptureFrame(),
+				 snapshot = std::move(snapshot),
+				 drawables = std::move(preparedBuilderDrawables),
+				 recordedDrawCommands = threadedCaptureOutput,
 				 externalOutputFrameDescriptor = std::move(externalOutputFrameDescriptor),
-				 lightGridContext = std::move(lightGridContext)]() mutable
-			{
-				auto package = BuildSnapshotOwnedRenderScenePackage(
-					snapshot,
-					SnapshotRenderScenePackageBuildMode::SkipDefaultPassInputs);
-				NLS::Render::FrameGraph::CompileAndApplyPreparedForwardLightGridSceneExecution(
-					package,
-					lightGridContext);
-				NLS::Render::FrameGraph::FinalizePreparedForwardScenePackage(
-					package,
-					externalOutputFrameDescriptor);
-				return package;
-			});
+				 lightGridContext = std::move(lightGridContext)](const size_t lifecycleSlotIndex) mutable
+				{
+					CaptureFrameSlotScope captureFrameSlotScope(GetFrameObjectBindingProvider(), lifecycleSlotIndex, bindCaptureFrame);
+					SetActivePreparedPassBindingSet(BaseSceneRenderer::GetPreparedPassBindingSetPlaceholder());
+					const auto opaquePso = CreateSceneDefaultPipelineState(*this);
+					const auto skyboxPso = CreateSceneSkyboxPipelineState(*this);
+					uint64_t opaqueDrawCount = 0u;
+					uint64_t decalDrawCount = 0u;
+					uint64_t skyboxDrawCount = 0u;
+					uint64_t transparentDrawCount = 0u;
+
+					for (const auto& entry : drawables->opaques)
+					{
+						PreparedRecordedDraw preparedDraw;
+						if (CaptureThreadedPreparedDraw(opaquePso, entry.second, preparedDraw) &&
+							QueueThreadedRecordedDraw(std::move(preparedDraw), *recordedDrawCommands))
+							++opaqueDrawCount;
+					}
+
+					auto decalOverrides = NLS::Render::Resources::MaterialPipelineStateOverrides{};
+					decalOverrides.depthWrite = false;
+					for (const auto& entry : drawables->decals)
+					{
+						PreparedRecordedDraw preparedDraw;
+						if (CaptureThreadedPreparedDraw(
+								entry.second,
+								decalOverrides,
+								GetForwardDecalDepthCompare(),
+								"Forward",
+								preparedDraw) &&
+							QueueThreadedRecordedDraw(std::move(preparedDraw), *recordedDrawCommands))
+							++decalDrawCount;
+					}
+
+					for (const auto& entry : drawables->skyboxes)
+					{
+						PreparedRecordedDraw preparedDraw;
+						if (CaptureThreadedPreparedDraw(skyboxPso, entry.second, preparedDraw) &&
+							QueueThreadedRecordedDraw(std::move(preparedDraw), *recordedDrawCommands))
+							++skyboxDrawCount;
+					}
+
+					auto transparentOverrides = NLS::Render::Resources::MaterialPipelineStateOverrides{};
+					transparentOverrides.depthWrite = false;
+					for (const auto& entry : drawables->transparents)
+					{
+						PreparedRecordedDraw preparedDraw;
+						if (CaptureThreadedPreparedDraw(
+								entry.second,
+								transparentOverrides,
+								opaquePso.depthFunc,
+								"Forward",
+								preparedDraw) &&
+							QueueThreadedRecordedDraw(std::move(preparedDraw), *recordedDrawCommands))
+							++transparentDrawCount;
+					}
+					SetActivePreparedPassBindingSet(nullptr);
+
+					snapshot.visibleOpaqueDrawCount = opaqueDrawCount;
+					snapshot.visibleDecalDrawCount = decalDrawCount;
+					snapshot.visibleSkyboxDrawCount = skyboxDrawCount;
+					snapshot.visibleTransparentDrawCount = transparentDrawCount;
+					snapshot.recordedDrawCommands = *recordedDrawCommands;
+
+					auto package = BuildSnapshotOwnedRenderScenePackage(
+						snapshot,
+						SnapshotRenderScenePackageBuildMode::SkipDefaultPassInputs);
+					NLS::Render::FrameGraph::CompileAndApplyPreparedForwardLightGridSceneExecution(
+						package,
+						lightGridContext);
+					NLS::Render::FrameGraph::FinalizePreparedForwardScenePackage(
+						package,
+						externalOutputFrameDescriptor);
+					return package;
+				});
 		}
 	}
 
@@ -350,7 +399,7 @@ namespace NLS::Engine::Rendering
 			auto pendingFrameSnapshot = BuildFrameSnapshot(m_frameDescriptor);
 			if (pendingFrameSnapshot.has_value())
 			{
-				RefreshFrameSnapshotVisibility(pendingFrameSnapshot.value(), scene.drawables);
+				RefreshFrameSnapshotVisibility(pendingFrameSnapshot.value(), *scene.drawables);
 				SetPendingFrameSnapshot(pendingFrameSnapshot.value());
 			}
 		}
@@ -361,7 +410,7 @@ namespace NLS::Engine::Rendering
 		NLS_PROFILE_SCOPE();
 		const auto& scene = GetDescriptor<ForwardSceneDescriptor>();
 
-		for (const auto& entry : scene.drawables.opaques)
+		for (const auto& entry : scene.drawables->opaques)
 		{
 			const auto& drawable = entry.second;
 			if (drawable.material == nullptr || drawable.mesh == nullptr)
@@ -386,7 +435,7 @@ namespace NLS::Engine::Rendering
 			return;
 		}
 
-		for (const auto& entry : scene.drawables.skyboxes)
+		for (const auto& entry : scene.drawables->skyboxes)
 		{
 			const auto& drawable = entry.second;
 			if (drawable.mesh == nullptr || drawable.material == nullptr)
@@ -403,7 +452,7 @@ namespace NLS::Engine::Rendering
 		NLS::Render::Resources::MaterialPipelineStateOverrides decalOverrides;
 		decalOverrides.depthWrite = false;
 
-		for (const auto& entry : scene.drawables.decals)
+		for (const auto& entry : scene.drawables->decals)
 		{
 			const auto& drawable = entry.second;
 			if (drawable.material == nullptr || drawable.mesh == nullptr)
@@ -420,7 +469,7 @@ namespace NLS::Engine::Rendering
 		NLS::Render::Resources::MaterialPipelineStateOverrides transparentOverrides;
 		transparentOverrides.depthWrite = false;
 
-		for (const auto& entry : scene.drawables.transparents)
+		for (const auto& entry : scene.drawables->transparents)
 		{
 			const auto& drawable = entry.second;
 			if (drawable.material == nullptr || drawable.mesh == nullptr)

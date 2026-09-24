@@ -643,10 +643,11 @@ AssetPreimportPlan AssetPreimportScheduler::BuildPlan(
             continue;
         }
 
-        if (request.startupCacheValidatedManifestFreshness)
+        if (!request.forceRebuildAll && request.startupCacheValidatedManifestFreshness)
             continue;
 
-        if (!AssetMatchesChangedPaths(database, assetPath, request.changedPaths))
+        if (!request.forceRebuildAll &&
+            !AssetMatchesChangedPaths(database, assetPath, request.changedPaths))
         {
             const auto manifest = database.GetArtifactManifestForAssetPath(assetPath);
             if (!manifest.has_value() ||
@@ -656,12 +657,17 @@ AssetPreimportPlan AssetPreimportScheduler::BuildPlan(
             }
         }
 
-        const bool artifactManifestCurrent = database.IsArtifactManifestCurrentForAssetPath(
-            assetPath,
-            request.startupCacheValidatedArtifactPayloads);
-        if (request.startupCacheValidatedArtifactPayloads && artifactManifestCurrent)
+        const bool artifactManifestCurrent = request.forceRebuildAll
+            ? false
+            : database.IsArtifactManifestCurrentForAssetPath(
+                assetPath,
+                request.startupCacheValidatedArtifactPayloads);
+        if (!request.forceRebuildAll &&
+            request.startupCacheValidatedArtifactPayloads &&
+            artifactManifestCurrent)
             continue;
-        if (IsWarmPreimportableAsset(database, assetPath, artifactManifestCurrent))
+        if (!request.forceRebuildAll &&
+            IsWarmPreimportableAsset(database, assetPath, artifactManifestCurrent))
         {
             continue;
         }
@@ -704,7 +710,7 @@ bool AssetPreimportScheduler::RunAlreadyPlanned(
     const AssetPreimportRequest& request,
     const AssetPreimportPlan& plan)
 {
-    const bool forcePreimport = ShouldForcePreimport(request.reason);
+    const bool forcePreimport = ShouldForcePreimport(request.reason) || request.forceRebuildAll;
     if (forcePreimport && !database.Refresh())
         return false;
 
@@ -717,12 +723,12 @@ bool AssetPreimportScheduler::RunAlreadyPlanned(
         {
             continue;
         }
-        if (forcePreimport &&
-            IsWarmPreimportableAsset(
-                database,
-                assetPath,
-                database.IsArtifactManifestCurrentForAssetPath(assetPath)))
-            continue;
+        if (forcePreimport && !request.forceRebuildAll)
+        {
+            const bool manifestCurrent = database.IsArtifactManifestCurrentForAssetPath(assetPath);
+            if (IsWarmPreimportableAsset(database, assetPath, manifestCurrent))
+                continue;
+        }
         pendingAssetPaths.push_back(assetPath);
     }
 

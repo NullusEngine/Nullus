@@ -1,5 +1,7 @@
 #include "Core/EditorLaunchArgs.h"
 
+#include <algorithm>
+#include <cctype>
 #include <cstdio>
 #include <limits>
 #include <stdexcept>
@@ -32,6 +34,9 @@ namespace NLS::Editor::Launch
         std::printf("  --renderdoc                  Enable RenderDoc debugging\n");
         std::printf("  --no-renderdoc               Disable RenderDoc debugging\n");
         std::printf("  --capture-after-frames <N>   Automatically capture frame after N presents\n");
+        std::printf("  --editor-prewarm-assets      Import project assets and exit without opening the editor\n");
+        std::printf("  --editor-dx12-debug-layer    Enable DX12 validation in Debug builds (slower startup)\n");
+        std::printf("  --editor-startup-resource-pipeline <async|legacy|pipelined>  Windows defaults to pipelined; other platforms to async\n");
         std::printf("  --editor-validation-focus-view <scene|game>  Focus a view during startup validation\n");
         std::printf("  --editor-validation-exclusive-view <scene|game>  Close the other view during startup validation\n");
         std::printf("  --editor-validation-open-frame-info  Open Frame Info during startup validation\n");
@@ -127,6 +132,33 @@ namespace NLS::Editor::Launch
                 catch (...)
                 {
                     std::fprintf(stderr, "[main] Invalid value for --capture-after-frames: %s\n", argv[i]);
+                    parsed.hasError = true;
+                    return parsed;
+                }
+            }
+            else if (arg == "--editor-prewarm-assets")
+            {
+                parsed.prewarmAssetsOnly = true;
+            }
+            else if (arg == "--editor-dx12-debug-layer")
+            {
+                parsed.dx12DebugLayer = true;
+            }
+            else if (arg == "--editor-startup-resource-pipeline" && i + 1 < argc)
+            {
+                const std::string value = argv[++i];
+                if (value == "async")
+                    parsed.startupResourcePipeline = StartupResourcePipeline::Async;
+                else if (value == "legacy")
+                    parsed.startupResourcePipeline = StartupResourcePipeline::Legacy;
+                else if (value == "pipelined")
+                    parsed.startupResourcePipeline = StartupResourcePipeline::Pipelined;
+                else
+                {
+                    std::fprintf(
+                        stderr,
+                        "[main] Invalid value for --editor-startup-resource-pipeline: %s\n",
+                        value.c_str());
                     parsed.hasError = true;
                     return parsed;
                 }
@@ -392,9 +424,34 @@ namespace NLS::Editor::Launch
                 return parsed;
             }
 
-            parsed.diagnosticsSettings.editorValidationCameraForwardFrames = warmupFrames + measuredFrames;
-            parsed.diagnosticsSettings.editorValidationFocusView = "scene";
-            parsed.diagnosticsSettings.editorValidationExclusiveView = "scene";
+            if (parsed.diagnosticsSettings.editorValidationFocusView.empty())
+                parsed.diagnosticsSettings.editorValidationFocusView = "scene";
+            if (parsed.diagnosticsSettings.editorValidationExclusiveView.empty())
+            {
+                parsed.diagnosticsSettings.editorValidationExclusiveView =
+                    parsed.diagnosticsSettings.editorValidationFocusView;
+            }
+
+            // Scene View camera motion gives the historical benchmark a moving
+            // view. Game View uses the scene camera and measures a steady frame
+            // window instead; the Application gate still owns warmup and sample
+            // boundaries in both modes.
+            const std::string normalizedFocus = [&parsed]()
+            {
+                std::string value = parsed.diagnosticsSettings.editorValidationFocusView;
+                std::transform(
+                    value.begin(),
+                    value.end(),
+                    value.begin(),
+                    [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
+                return value;
+            }();
+            if (normalizedFocus == "scene" || normalizedFocus == "sceneview" ||
+                normalizedFocus == "scene-view")
+            {
+                parsed.diagnosticsSettings.editorValidationCameraForwardFrames =
+                    warmupFrames + measuredFrames;
+            }
         }
         return parsed;
     }

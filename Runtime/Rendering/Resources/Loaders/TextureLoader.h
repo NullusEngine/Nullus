@@ -6,6 +6,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -18,6 +19,11 @@ namespace NLS::Render::Resources
 {
 	class Texture2D;
 	class TextureCube;
+}
+
+namespace NLS::Render::RHI
+{
+	class RHITexture;
 }
 
 namespace NLS::Render::Resources::Loaders
@@ -68,6 +74,13 @@ namespace NLS::Render::Resources::Loaders
 
 			static Texture2D* CreateFromImage(const Image* iamge, NLS::Render::Settings::ETextureFilteringMode p_firstFilter, NLS::Render::Settings::ETextureFilteringMode p_secondFilter, bool p_generateMipmap);
 		static Texture2D* CreateFromArtifact(const NLS::Render::Assets::TextureArtifactData& artifact, NLS::Render::Settings::ETextureFilteringMode p_firstFilter, NLS::Render::Settings::ETextureFilteringMode p_secondFilter, bool p_generateMipmap);
+		static Texture2D* CreateFromRHIArtifact(
+			std::shared_ptr<RHI::RHITexture> texture,
+			const NLS::Render::Assets::TextureArtifactData& artifact,
+			uint32_t mipCount,
+			NLS::Render::Settings::ETextureFilteringMode p_firstFilter,
+			NLS::Render::Settings::ETextureFilteringMode p_secondFilter,
+			bool p_generateMipmap);
 
 		/**
 		* Reload a texture from file

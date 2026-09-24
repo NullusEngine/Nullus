@@ -1,4 +1,4 @@
-key,en-US,zh-CN
+﻿key,en-US,zh-CN
 launcher.title,Nullus Hub,Nullus Hub
 projects.title,Projects,项目
 projects.search_hint,Search...,搜索...
@@ -37,6 +37,13 @@ wizard.templates.search,Search templates...,搜索模板...
 wizard.templates.no_match,No matching templates found,没有找到匹配的模板
 wizard.templates.select,Select a template to view details,选择一个模板以查看详情
 wizard.project_settings,Project settings,项目设置
+launch_options.title,Launch Options...,启动选项...
+launch_options.description,These options are applied when the editor or game starts. They need a restart, so they live here instead of the editor settings.,这些选项在编辑器或游戏启动时生效，需要重启才能更改，因此放在启动器而不是编辑器设置里。
+launch_options.vsync,Vertical Synchronization,垂直同步
+launch_options.threaded_rendering,Threaded Rendering,多线程渲染
+launch_options.renderdoc_capture_frames,RenderDoc Startup Capture Frames,RenderDoc 启动抓帧帧数
+launch_options.save,Save,保存
+launch_options.save_failed,Could not write the project launch options.,无法写入项目启动选项。
 wizard.project_name,Project name,项目名称
 wizard.location,Location,位置
 wizard.editor_version,Editor version,编辑器版本

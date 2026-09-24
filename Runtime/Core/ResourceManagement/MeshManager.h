@@ -27,6 +27,26 @@ namespace NLS::Core::ResourceManagement
         void DestroyResource(Mesh* resource) override;
         void ReloadResource(Mesh* resource, const std::string& path) override;
         virtual Mesh* PrewarmArtifact(const std::string& path);
+        // Parse a bounded window of artifacts on background workers, then create
+        // and register each runtime mesh on the calling thread before returning.
+        // maxLODCount limits how many LOD levels are uploaded. Startup uses 1 so
+        // the full-detail mesh is ready immediately without paying for every
+        // generated LOD; CompleteDeferredLODs restores the remaining levels
+        // afterwards and reports the paths that still need completion.
+        void PrewarmArtifactsPipelined(
+            const std::vector<std::string>& paths,
+            uint32_t maxLODCount = UINT32_MAX,
+            std::vector<std::string>* lodLimitedPaths = nullptr);
+        // Rebuilds the remaining LOD levels of meshes that a LOD-limited
+        // prewarm registered, processing at most maxMeshesPerCall entries so a
+        // visible editor is never blocked by the whole LOD set. Returns the
+        // index to resume from; paths.size() means everything was processed.
+        // Threaded rendering must be paused for the whole call: it replaces the
+        // live mesh's LOD list, which the render thread reads while publishing.
+        size_t CompleteDeferredLODs(
+            const std::vector<std::string>& paths,
+            size_t startIndex = 0u,
+            size_t maxMeshesPerCall = 32u);
         virtual Mesh* RequestAsyncArtifact(const std::string& path, bool cancelableInterest = false);
         virtual Mesh* RequestAsyncArtifactForPreview(const std::string& path, bool cancelableInterest = false);
         virtual Mesh* RequestAsyncPreparedArtifactForPreview(

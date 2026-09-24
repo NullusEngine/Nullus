@@ -138,6 +138,10 @@ void RendererStats::BeginFrame()
     m_frameInfo.objectDataRevisionTransformMismatchCount = 0u;
     m_frameInfo.objectDataRevisionObjectIndexMismatchCount = 0u;
     m_frameInfo.objectDataRevisionObjectCountMismatchCount = 0u;
+    m_frameInfo.objectDataFastPathHitCount = 0u;
+    m_frameInfo.objectDataFastPathFallbackCount = 0u;
+    m_frameInfo.drawCommandCopyCount = 0u;
+    m_frameInfo.drawCommandMoveCount = 0u;
     m_frameInfo.objectDataOverflowDroppedObjectCount = 0u;
     m_frameInfo.parallelCommandWorkUnitCount = 0u;
     m_frameInfo.parallelRecordingWorkerCount = 0u;
@@ -213,11 +217,13 @@ void RendererStats::RecordPreparedRecordedDrawStaticBaseCache(const bool hit)
 void RendererStats::RecordRenderBindingSetCreation(const uint64_t count)
 {
     m_frameInfo.renderBindingSetCreationCount += count;
+    m_cumulativeFrameInfo.renderBindingSetCreationCount += count;
 }
 
 void RendererStats::RecordRenderSnapshotBufferCreation(const uint64_t count)
 {
     m_frameInfo.renderSnapshotBufferCreationCount += count;
+    m_cumulativeFrameInfo.renderSnapshotBufferCreationCount += count;
 }
 
 void RendererStats::RecordDrawCallOptimizationStats(
@@ -305,6 +311,32 @@ void RendererStats::RecordObjectDataRevisionFallback(
     record(m_frameInfo);
     record(m_cumulativeFrameInfo);
 }
+
+void RendererStats::RecordObjectDataFastPath(const bool hit)
+{
+    if (hit)
+    {
+        ++m_frameInfo.objectDataFastPathHitCount;
+        ++m_cumulativeFrameInfo.objectDataFastPathHitCount;
+        return;
+    }
+
+    ++m_frameInfo.objectDataFastPathFallbackCount;
+    ++m_cumulativeFrameInfo.objectDataFastPathFallbackCount;
+}
+
+void RendererStats::RecordDrawCommandCopy(const uint64_t count)
+{
+    m_frameInfo.drawCommandCopyCount += count;
+    m_cumulativeFrameInfo.drawCommandCopyCount += count;
+}
+
+void RendererStats::RecordDrawCommandMove(const uint64_t count)
+{
+    m_frameInfo.drawCommandMoveCount += count;
+    m_cumulativeFrameInfo.drawCommandMoveCount += count;
+}
+
 
 void RendererStats::RecordLargeSceneTelemetry(
     const NLS::Render::Data::LargeSceneTelemetry& telemetry)

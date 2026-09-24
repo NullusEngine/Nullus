@@ -16,6 +16,7 @@ class ResidentPrefabPreviewRegistry;
 struct StartupAssetPreimportOptions
 {
     std::filesystem::path projectRoot;
+    bool forceReimport = false;
     bool enablePreparedPrefabCachePreflight = false;
     size_t maxPreparedPrefabCachePreflightCount = 64u;
     std::chrono::milliseconds maxPreparedPrefabCachePreflightDuration {100};

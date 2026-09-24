@@ -10,9 +10,25 @@
 
 #include "Core/EditorActions.h"
 #include "Panels/AssetView.h"
+#include "Settings/EditorSettings.h"
 #include "Rendering/EditorDefaultResources.h"
 #include "Rendering/GridRenderPass.h"
 using namespace NLS;
+
+void Editor::Panels::AssetView::ApplyViewSettings()
+{
+	const auto& viewSettings = Settings::EditorSettings::GetViewSettingsObject();
+	m_cameraController.SetSpeed(viewSettings.assetViewCameraSpeed);
+	m_gridColor = Maths::Vector3(
+		viewSettings.assetViewGrid.r,
+		viewSettings.assetViewGrid.g,
+		viewSettings.assetViewGrid.b);
+	m_camera.SetClearColor(Maths::Vector3(
+		viewSettings.assetViewBackground.r,
+		viewSettings.assetViewBackground.g,
+		viewSettings.assetViewBackground.b));
+}
+
 Editor::Panels::AssetView::AssetView
 (
 	const std::string& p_title,

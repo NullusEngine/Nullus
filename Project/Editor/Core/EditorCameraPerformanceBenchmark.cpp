@@ -176,6 +176,11 @@ namespace
             { "objectDataRevisionTransformMismatchCount", telemetry.objectDataRevisionTransformMismatchCount },
             { "objectDataRevisionObjectIndexMismatchCount", telemetry.objectDataRevisionObjectIndexMismatchCount },
             { "objectDataRevisionObjectCountMismatchCount", telemetry.objectDataRevisionObjectCountMismatchCount },
+            { "objectDataFastPathHitCount", telemetry.objectDataFastPathHitCount },
+            { "objectDataFastPathFallbackCount", telemetry.objectDataFastPathFallbackCount },
+            { "drawCommandCopyCount", telemetry.drawCommandCopyCount },
+            { "drawCommandMoveCount", telemetry.drawCommandMoveCount },
+            { "renderSnapshotBufferCreationCount", telemetry.renderSnapshotBufferCreationCount },
             { "opaqueSortTokenHitCount", telemetry.opaqueSortTokenHitCount },
             { "opaqueSortTokenRebuildCount", telemetry.opaqueSortTokenRebuildCount },
             { "descriptorAllocationFailureCount", telemetry.descriptorAllocationFailureCount },
@@ -247,6 +252,21 @@ EditorCameraPerformanceTelemetry CalculateEditorCameraPerformanceTelemetryDelta(
     delta.objectDataRevisionObjectCountMismatchCount = SaturatingDelta(
         before.objectDataRevisionObjectCountMismatchCount,
         after.objectDataRevisionObjectCountMismatchCount);
+    delta.objectDataFastPathHitCount = SaturatingDelta(
+        before.objectDataFastPathHitCount,
+        after.objectDataFastPathHitCount);
+    delta.objectDataFastPathFallbackCount = SaturatingDelta(
+        before.objectDataFastPathFallbackCount,
+        after.objectDataFastPathFallbackCount);
+    delta.drawCommandCopyCount = SaturatingDelta(
+        before.drawCommandCopyCount,
+        after.drawCommandCopyCount);
+    delta.drawCommandMoveCount = SaturatingDelta(
+        before.drawCommandMoveCount,
+        after.drawCommandMoveCount);
+    delta.renderSnapshotBufferCreationCount = SaturatingDelta(
+        before.renderSnapshotBufferCreationCount,
+        after.renderSnapshotBufferCreationCount);
     delta.opaqueSortTokenHitCount = SaturatingDelta(
         before.opaqueSortTokenHitCount,
         after.opaqueSortTokenHitCount);
@@ -337,6 +357,8 @@ bool WriteEditorCameraPerformanceSummaryJson(
         { "requestedSettleFrameCount", summary.metadata.requestedSettleFrameCount },
         { "projectPath", summary.metadata.projectPath },
         { "scenePath", summary.metadata.scenePath },
+        { "focusView", summary.metadata.focusView },
+        { "selectedGameObject", summary.metadata.selectedGameObject },
         { "viewportWidth", summary.metadata.viewportWidth },
         { "viewportHeight", summary.metadata.viewportHeight },
         { "cameraForwardStep", summary.metadata.cameraForwardStep },

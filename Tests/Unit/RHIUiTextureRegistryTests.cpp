@@ -31,6 +31,11 @@ namespace
             return m_state;
         }
 
+        void SetState(const NLS::Render::RHI::ResourceState state)
+        {
+            m_state = state;
+        }
+
     private:
         NLS::Render::RHI::RHITextureDesc m_desc {};
         NLS::Render::RHI::ResourceState m_state = NLS::Render::RHI::ResourceState::ShaderRead;
@@ -156,6 +161,27 @@ TEST(RHIUiTextureRegistryTests, ReRegisteringSameTextureViewReturnsStableIdentit
     const auto entry = registry.Resolve(firstId);
     ASSERT_TRUE(entry.has_value());
     EXPECT_EQ(entry->textureView, textureView);
+}
+
+TEST(RHIUiTextureRegistryTests, ReRegisteringLiveTextureViewIgnoresTransientRenderTargetState)
+{
+    NLS::Render::UI::RHIImGuiTextureRegistry registry;
+    auto texture = std::make_shared<TestTexture>();
+    auto textureView = std::make_shared<TestTextureView>(texture);
+
+    const auto firstId = registry.RegisterTextureView(
+        textureView,
+        kPreviousFrameOrStatic);
+    ASSERT_TRUE(firstId.IsValid());
+
+    texture->SetState(NLS::Render::RHI::ResourceState::RenderTarget);
+    const auto secondId = registry.RegisterTextureView(
+        textureView,
+        kPreviousFrameOrStatic);
+
+    EXPECT_EQ(secondId.value, firstId.value);
+    EXPECT_EQ(secondId.generation, firstId.generation);
+    EXPECT_TRUE(registry.ContainsLiveTextureView(textureView));
 }
 
 TEST(RHIUiTextureRegistryTests, ReleasedTextureViewNoLongerResolvesForNewSnapshots)

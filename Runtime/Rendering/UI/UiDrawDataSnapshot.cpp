@@ -50,6 +50,22 @@ namespace NLS::Render::UI
                 AddUint32(value ? 1u : 0u);
             }
 
+            // Bulk members such as the vertex and index arrays are hashed as raw
+            // packed bytes instead of one value at a time, which removes a memcpy
+            // and an eight-iteration loop per float.
+            void AddBytes(const void* data, const size_t size)
+            {
+                if (data == nullptr || size == 0u)
+                    return;
+
+                const auto* bytes = static_cast<const uint8_t*>(data);
+                for (size_t byteIndex = 0u; byteIndex < size; ++byteIndex)
+                {
+                    m_hash ^= bytes[byteIndex];
+                    m_hash *= kUiContentHashPrime;
+                }
+            }
+
             [[nodiscard]] uint64_t Finish() const
             {
                 return m_hash != 0u ? m_hash : 1u;
@@ -128,23 +144,11 @@ namespace NLS::Render::UI
         for (const auto& drawList : snapshot.drawLists)
         {
             signature.AddUint64(drawList.vertices.size());
-            for (const auto& vertex : drawList.vertices)
-            {
-                signature.AddFloat(vertex.position[0]);
-                signature.AddFloat(vertex.position[1]);
-                signature.AddFloat(vertex.uv[0]);
-                signature.AddFloat(vertex.uv[1]);
-                signature.AddFloat(vertex.color[0]);
-                signature.AddFloat(vertex.color[1]);
-                signature.AddFloat(vertex.color[2]);
-                signature.AddFloat(vertex.color[3]);
-            }
+            static_assert(sizeof(UiDrawVertex) == 8u * sizeof(float));
+            signature.AddBytes(drawList.vertices.data(), drawList.vertices.size() * sizeof(UiDrawVertex));
 
             signature.AddUint64(drawList.indices.size());
-            for (const auto index : drawList.indices)
-                signature.AddUint32(index);
-
-            signature.AddUint64(drawList.commands.size());
+            signature.AddBytes(drawList.indices.data(), drawList.indices.size() * sizeof(uint32_t));
             for (const auto& command : drawList.commands)
             {
                 signature.AddUint32(command.elementCount);

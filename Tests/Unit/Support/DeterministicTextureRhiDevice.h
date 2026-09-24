@@ -3,6 +3,7 @@
 #include "Rendering/RHI/Core/RHIDevice.h"
 
 #include <memory>
+#include <functional>
 #include <string_view>
 #include <utility>
 
@@ -94,6 +95,18 @@ public:
     {
         return nullptr;
     }
+    bool BeginInitialTextureUploadBatch() override
+    {
+        ++textureBatchBegins;
+        return enableTextureBatch;
+    }
+    bool EndInitialTextureUploadBatch() override
+    {
+        ++textureBatchEnds;
+        if (onEndTextureBatch)
+            onEndTextureBatch();
+        return !failTextureBatch;
+    }
     std::shared_ptr<NLS::Render::RHI::RHITexture> CreateTexture(
         const NLS::Render::RHI::RHITextureDesc& desc,
         const NLS::Render::RHI::RHITextureUploadDesc& uploadDesc) override
@@ -169,6 +182,11 @@ public:
 
     size_t textureCreateCalls = 0u;
     bool lastUploadHadData = false;
+    bool enableTextureBatch = false;
+    bool failTextureBatch = false;
+    size_t textureBatchBegins = 0u;
+    size_t textureBatchEnds = 0u;
+    std::function<void()> onEndTextureBatch;
 
 private:
     std::shared_ptr<NLS::Render::RHI::RHIAdapter> m_adapter;

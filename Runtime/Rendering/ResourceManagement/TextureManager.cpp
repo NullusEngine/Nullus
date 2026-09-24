@@ -19,6 +19,8 @@
 #include <chrono>
 #include <cctype>
 #include <condition_variable>
+#include <cstring>
+#include <cstdlib>
 #include <exception>
 #include <filesystem>
 #include <functional>
@@ -56,6 +58,8 @@ struct AsyncTextureArtifactRequest
 				bool retryCancelledCompletion = false;
 				NLS::Base::Jobs::JobHandle jobHandle;
 			std::future<std::optional<NLS::Render::Assets::TextureArtifactData>> future;
+			uint64_t runtimeUploadRequestId = 0u;
+			std::optional<NLS::Render::Assets::TextureArtifactData> runtimeUploadMetadata;
 	};
 
 struct FailedTextureArtifactLoad
@@ -430,7 +434,9 @@ TextureArtifactLoadSubmission StartTextureArtifactLoad(
 	desc.userData = payload.get();
 	desc.cancelFunction = CancelTextureArtifactJob;
 	desc.cancelUserData = payload.get();
-	desc.priority = NLS::Base::Jobs::JobPriority::High;
+	desc.priority = request.previewPriority
+		? NLS::Base::Jobs::JobPriority::High
+		: NLS::Base::Jobs::JobPriority::Normal;
 	desc.debugName = "TextureManager::AsyncArtifactLoad";
 
 	const auto handle = NLS::Base::Jobs::ScheduleBackgroundJob(desc);
@@ -439,6 +445,77 @@ TextureArtifactLoadSubmission StartTextureArtifactLoad(
 
 	(void)payload.release();
 	return {handle, std::move(future)};
+}
+
+std::optional<NLS::Render::Context::TextureRuntimeUploadRequest>
+BuildRuntimeTextureUploadRequest(
+	const AsyncTextureArtifactRequest& request,
+	NLS::Render::Assets::TextureArtifactData& artifact)
+{
+	if (std::getenv("NLS_DISABLE_RUNTIME_TEXTURE_UPLOAD") != nullptr)
+		return std::nullopt;
+
+	if (artifact.width == 0u || artifact.height == 0u || artifact.mips.empty())
+		return std::nullopt;
+
+	NLS::Render::Context::TextureRuntimeUploadRequest upload;
+	upload.desc.extent.width = artifact.width;
+	upload.desc.extent.height = artifact.height;
+	upload.desc.extent.depth = artifact.depth;
+	upload.desc.dimension = artifact.dimension;
+	upload.desc.format = artifact.format;
+	upload.desc.colorSpace = artifact.colorSpace == NLS::Render::Assets::TextureArtifactColorSpace::Srgb
+		? NLS::Render::RHI::TextureColorSpace::SRGB
+		: NLS::Render::RHI::TextureColorSpace::Linear;
+	upload.desc.mipLevels = static_cast<uint32_t>(artifact.mips.size());
+	upload.desc.usage = NLS::Render::RHI::TextureUsageFlags::Sampled;
+	upload.desc.debugName = request.path;
+	upload.debugName = request.path;
+	upload.mips.reserve(artifact.mips.size());
+	for (auto& mip : artifact.mips)
+	{
+		if (!mip.HasPixels())
+			return std::nullopt;
+		NLS::Render::Context::TextureRuntimeUploadMip uploadMip;
+		uploadMip.level = mip.level;
+		uploadMip.width = mip.width;
+		uploadMip.height = mip.height;
+		uploadMip.rowPitch = mip.rowPitch;
+		uploadMip.slicePitch = mip.slicePitch;
+
+		constexpr uint32_t kTextureUploadRowPitchAlignment = 256u;
+		if (mip.rowPitch == 0u ||
+			mip.PixelSize() < static_cast<size_t>(mip.rowPitch) * mip.height)
+			return std::nullopt;
+
+		const uint32_t alignedRowPitch =
+			(mip.rowPitch + kTextureUploadRowPitchAlignment - 1u) &
+			~(kTextureUploadRowPitchAlignment - 1u);
+		if (alignedRowPitch != mip.rowPitch)
+		{
+			uploadMip.pixels.resize(static_cast<size_t>(alignedRowPitch) * mip.height);
+			const auto* source = mip.PixelData();
+			for (uint32_t row = 0u; row < mip.height; ++row)
+			{
+				std::memcpy(
+					uploadMip.pixels.data() + static_cast<size_t>(row) * alignedRowPitch,
+					source + static_cast<size_t>(row) * mip.rowPitch,
+					mip.rowPitch);
+			}
+			uploadMip.rowPitch = alignedRowPitch;
+			uploadMip.slicePitch = alignedRowPitch * mip.height;
+		}
+		else if (!mip.pixels.empty())
+		{
+			uploadMip.pixels = std::move(mip.pixels);
+		}
+		else
+		{
+			uploadMip.pixels.assign(mip.PixelData(), mip.PixelData() + mip.PixelSize());
+		}
+		upload.mips.push_back(std::move(uploadMip));
+	}
+	return upload;
 }
 
 size_t CountActiveTextureRequests()
@@ -560,6 +637,15 @@ void ClearAsyncTextureArtifactStateForOwner(const TextureManager& manager)
 		{
 			if (it->second.owner == &manager)
 			{
+				if (it->second.runtimeUploadRequestId != 0u)
+				{
+					if (auto* driver = NLS::Render::Context::TryGetLocatedDriver(); driver != nullptr)
+					{
+						NLS::Render::Context::DriverResourceAccess::CancelTextureRuntimeUpload(
+							*driver,
+							it->second.runtimeUploadRequestId);
+					}
+				}
 				if (it->second.cancelled)
 					it->second.cancelled->store(true, std::memory_order_release);
 				removedRequests.push_back(std::move(it->second));
@@ -842,6 +928,201 @@ Texture2D* TextureManager::GetArtifactResource(const std::string& path, const bo
 	return resource;
 }
 
+void TextureManager::PrewarmArtifactsBatched(const std::vector<std::string>& paths)
+{
+	if (paths.empty())
+		return;
+	std::shared_ptr<NLS::Render::RHI::RHIDevice> device;
+	if (auto* driver = NLS::Render::Context::TryGetLocatedDriver())
+		device = NLS::Render::Context::DriverRendererAccess::GetExplicitDevice(*driver);
+	if (device == nullptr)
+		return;
+
+	NLS::Base::Profiling::PerformanceStageScope scope(
+		NLS::Base::Profiling::PerformanceStageDomain::Prefab,
+		"PrewarmTextureBatched",
+		NLS::Base::Profiling::PerformanceStageThread::Main);
+	const auto begin = std::chrono::steady_clock::now();
+	struct Ready
+	{
+		std::string path;
+		NLS::Render::Assets::TextureArtifactData artifact;
+		size_t pixelBytes = 0u;
+	};
+	constexpr size_t kMaxTexturesPerBatch = 16u;
+	constexpr size_t kMaxPixelBytesPerBatch = 128u * 1024u * 1024u;
+	std::vector<Ready> ready;
+	ready.reserve(kMaxTexturesPerBatch);
+	std::unordered_set<std::string> seen;
+	size_t batchPixelBytes = 0u;
+	size_t loaded = 0u;
+	size_t failed = 0u;
+	size_t batched = 0u;
+	size_t batchCount = 0u;
+	size_t batchFailures = 0u;
+	// See MeshManager::PrewarmArtifactsPipelined: deferred batches are drained
+	// once at the end so the main thread keeps decoding instead of waiting on a
+	// fence per batch.
+	std::vector<std::string> deferredBatchPaths;
+	const auto textureIsUploaded = [this](const std::string& path)
+	{
+		auto* texture = GetArtifactResource(path, false);
+		return texture != nullptr && texture->GetTextureHandle() != nullptr;
+	};
+
+	const auto flush = [&]()
+	{
+		if (ready.empty())
+			return;
+		const bool batching = device->BeginInitialTextureUploadBatch();
+		if (batching)
+			++batchCount;
+		std::vector<std::unique_ptr<Texture2D>> textures;
+		if (batching)
+		{
+			textures.reserve(ready.size());
+			for (const auto& item : ready)
+			{
+				auto [min, mag, mipmap] = GetTextureMetadata(GetRealPath(item.path));
+				NLS::Base::Profiling::PerformanceStageScope createScope(
+					NLS::Base::Profiling::PerformanceStageDomain::Prefab,
+					"PrewarmTextureGpuCreate",
+					NLS::Base::Profiling::PerformanceStageThread::Main);
+				textures.emplace_back(TextureLoader::CreateFromArtifact(item.artifact, min, mag, mipmap));
+			}
+		}
+		const bool uploaded = !batching || device->EndInitialTextureUploadBatch();
+		if (batching && !uploaded)
+		{
+			++batchFailures;
+			textures.clear();
+		}
+		for (size_t index = 0u; index < ready.size(); ++index)
+		{
+			const auto& item = ready[index];
+			const auto& path = item.path;
+			Texture2D* registered = nullptr;
+			if (batching && uploaded && textures[index] &&
+				textures[index]->GetTextureHandle() != nullptr)
+			{
+				textures[index]->path = path;
+				registered = RegisterResource(path, textures[index].get());
+				if (registered == textures[index].get())
+					textures[index].release();
+			}
+			if (registered == nullptr)
+			{
+				auto [min, mag, mipmap] = GetTextureMetadata(GetRealPath(path));
+				std::unique_ptr<Texture2D> fallback(
+					TextureLoader::CreateFromArtifact(item.artifact, min, mag, mipmap));
+				if (fallback && fallback->GetTextureHandle() != nullptr)
+				{
+					fallback->path = path;
+					registered = RegisterResource(path, fallback.get());
+					if (registered == fallback.get())
+						fallback.release();
+				}
+			}
+			if (registered != nullptr)
+			{
+				++loaded;
+				if (batching && uploaded)
+				{
+					++batched;
+					deferredBatchPaths.push_back(path);
+				}
+			}
+			else
+				++failed;
+		}
+		ready.clear();
+		batchPixelBytes = 0u;
+	};
+
+	for (const auto& path : paths)
+	{
+		if (path.empty() || GetArtifactResource(path, false) != nullptr)
+			continue;
+		const auto portable = NLS::Core::Assets::TryMakePortableContentArtifactPath(
+			std::filesystem::path(path).generic_string());
+		if (!portable.empty() && !NLS::Core::Assets::IsRuntimeArtifactPathAuthorized(portable))
+			continue;
+		const auto realPath = GetRealPath(path);
+		if (!IsTextureArtifactPath(realPath) || !seen.insert(realPath).second)
+			continue;
+		auto artifact = NLS::Render::Assets::LoadTextureArtifact(realPath);
+		if (!artifact.has_value())
+			continue;
+		size_t pixelBytes = 0u;
+		for (const auto& mip : artifact->mips)
+			pixelBytes += mip.PixelSize();
+		if (!ready.empty() &&
+			(ready.size() >= kMaxTexturesPerBatch ||
+				pixelBytes > kMaxPixelBytesPerBatch - batchPixelBytes))
+			flush();
+		ready.push_back({path, std::move(*artifact), pixelBytes});
+		batchPixelBytes += pixelBytes;
+		if (ready.size() == kMaxTexturesPerBatch ||
+			batchPixelBytes >= kMaxPixelBytesPerBatch)
+			flush();
+	}
+	flush();
+
+	if (device != nullptr && !deferredBatchPaths.empty())
+	{
+		const auto drainBegin = std::chrono::steady_clock::now();
+		const size_t deferredBatchFailures = device->WaitForInitialUploads();
+		NLS_LOG_INFO("[Startup] Batched texture prewarm deferredUploads=" +
+			std::to_string(deferredBatchPaths.size()) + " failedBatches=" +
+			std::to_string(deferredBatchFailures) + " drainMs=" +
+			std::to_string(std::chrono::duration_cast<std::chrono::milliseconds>(
+				std::chrono::steady_clock::now() - drainBegin).count()));
+		if (deferredBatchFailures != 0u)
+		{
+			for (const auto& path : deferredBatchPaths)
+			{
+				if (textureIsUploaded(path))
+					continue;
+
+				UnloadResource(path);
+				auto [min, mag, mipmap] = GetTextureMetadata(GetRealPath(path));
+				auto artifact = NLS::Render::Assets::LoadTextureArtifact(GetRealPath(path));
+				if (!artifact.has_value())
+				{
+					++failed;
+					continue;
+				}
+				std::unique_ptr<Texture2D> fallback(
+					TextureLoader::CreateFromArtifact(*artifact, min, mag, mipmap));
+				Texture2D* registered = nullptr;
+				if (fallback && fallback->GetTextureHandle() != nullptr)
+				{
+					fallback->path = path;
+					registered = RegisterResource(path, fallback.get());
+					if (registered == fallback.get())
+						fallback.release();
+				}
+				if (registered != nullptr)
+					++loaded;
+				else
+					++failed;
+			}
+		}
+	}
+
+	scope.AddCounter("loadedCount", loaded);
+	scope.AddCounter("failedCount", failed);
+	scope.AddCounter("batchedCount", batched);
+	scope.AddCounter("uploadBatchCount", batchCount);
+	scope.AddCounter("batchFailureCount", batchFailures);
+	NLS_LOG_INFO("[Startup] Batched texture prewarm loaded=" + std::to_string(loaded) +
+		" failed=" + std::to_string(failed) + " batched=" + std::to_string(batched) +
+		" uploadBatches=" + std::to_string(batchCount) +
+		" batchFailures=" + std::to_string(batchFailures) +
+		" elapsedMs=" + std::to_string(std::chrono::duration_cast<std::chrono::milliseconds>(
+			std::chrono::steady_clock::now() - begin).count()));
+}
+
 Texture2D* TextureManager::RequestAsyncArtifact(
 	const std::string& path,
 	const bool cancelableInterest)
@@ -885,6 +1166,23 @@ TextureManager::TryRequestAsyncArtifactForPreview(
 	const std::string& path,
 	const bool cancelableInterest)
 {
+	return TryRequestAsyncArtifactInternal(path, cancelableInterest, true);
+}
+
+std::optional<TextureManager::AsyncPreviewRequestResult>
+TextureManager::TryRequestAsyncArtifact(
+	const std::string& path,
+	const bool cancelableInterest)
+{
+	return TryRequestAsyncArtifactInternal(path, cancelableInterest, false);
+}
+
+std::optional<TextureManager::AsyncPreviewRequestResult>
+TextureManager::TryRequestAsyncArtifactInternal(
+	const std::string& path,
+	const bool cancelableInterest,
+	const bool previewPriority)
+{
 	AsyncPreviewRequestResult result;
 	if (path.empty())
 		return result;
@@ -900,7 +1198,7 @@ TextureManager::TryRequestAsyncArtifactForPreview(
 
 	const auto realPath = GetRealPath(path);
 	const bool trustedPreviewArtifactPath =
-		NLS::Core::Assets::IsContentStorageArtifactPath(path);
+		previewPriority && NLS::Core::Assets::IsContentStorageArtifactPath(path);
 	if (!trustedPreviewArtifactPath && !IsTextureArtifactPath(realPath))
 		return result;
 
@@ -917,7 +1215,7 @@ TextureManager::TryRequestAsyncArtifactForPreview(
 	request.writeTime = writeTime;
 	request.cancelableInterestCount = cancelableInterest ? 1u : 0u;
 	request.sharedInterestCount = cancelableInterest ? 0u : 1u;
-	request.previewPriority = true;
+	request.previewPriority = previewPriority;
 
 	std::unique_lock lock(g_asyncTextureMutex, std::try_to_lock);
 	if (!lock.owns_lock())
@@ -1219,6 +1517,15 @@ void TextureManager::CancelAsyncArtifact(const std::string& path, const bool can
 			--found->second.sharedInterestCount;
 		if (found->second.cancelableInterestCount == 0u && found->second.sharedInterestCount == 0u)
 		{
+			if (found->second.runtimeUploadRequestId != 0u)
+			{
+				if (auto* driver = NLS::Render::Context::TryGetLocatedDriver(); driver != nullptr)
+				{
+					NLS::Render::Context::DriverResourceAccess::CancelTextureRuntimeUpload(
+						*driver,
+						found->second.runtimeUploadRequestId);
+				}
+			}
 			if (found->second.cancelled)
 				found->second.cancelled->store(true, std::memory_order_release);
 			if (!found->second.future.valid())
@@ -1337,6 +1644,100 @@ void PumpAsyncTextureArtifactLoads(
 {
 	size_t completedCount = 0u;
 
+	// Promotion scans the complete request map and must not run once per
+	// completion; with several hundred startup requests that made every pump
+	// slice spend seconds rescanning the same active set.
+	{
+		std::lock_guard lock(g_asyncTextureMutex);
+		PromoteQueuedTextureArtifactLoads(manager, paths);
+	}
+
+	if (auto* driver = NLS::Render::Context::TryGetLocatedDriver();
+		driver != nullptr && NLS::Render::Context::DriverRendererAccess::HasExplicitRHI(*driver))
+	{
+		std::vector<AsyncTextureArtifactStateKey> runtimeUploadKeys;
+		{
+			std::lock_guard lock(g_asyncTextureMutex);
+			for (const auto& [key, activeRequest] : g_asyncTextureRequests)
+			{
+				if (activeRequest.owner == &manager && activeRequest.runtimeUploadRequestId != 0u)
+					runtimeUploadKeys.push_back(key);
+			}
+		}
+
+		for (const auto& key : runtimeUploadKeys)
+		{
+			AsyncTextureArtifactRequest activeRequest;
+			{
+				std::lock_guard lock(g_asyncTextureMutex);
+				const auto found = g_asyncTextureRequests.find(key);
+				if (found == g_asyncTextureRequests.end() ||
+					found->second.runtimeUploadRequestId == 0u)
+				{
+					continue;
+				}
+				activeRequest.owner = found->second.owner;
+				activeRequest.path = found->second.path;
+				activeRequest.realPath = found->second.realPath;
+				activeRequest.minFilter = found->second.minFilter;
+				activeRequest.magFilter = found->second.magFilter;
+				activeRequest.mipmap = found->second.mipmap;
+				activeRequest.writeTime = found->second.writeTime;
+				activeRequest.runtimeUploadRequestId = found->second.runtimeUploadRequestId;
+				activeRequest.runtimeUploadMetadata = found->second.runtimeUploadMetadata;
+			}
+
+			auto uploadResult = NLS::Render::Context::DriverResourceAccess::ConsumeTextureRuntimeUploadResult(
+				*driver,
+				activeRequest.runtimeUploadRequestId);
+			if (!uploadResult.ready)
+				continue;
+
+			if (!activeRequest.runtimeUploadMetadata.has_value() ||
+				!uploadResult.success ||
+				uploadResult.texture == nullptr)
+			{
+				std::lock_guard lock(g_asyncTextureMutex);
+				g_asyncTextureRequests.erase(key);
+				g_failedAsyncTextureArtifacts[{ activeRequest.owner, activeRequest.path }] =
+					{ activeRequest.owner, activeRequest.realPath, activeRequest.writeTime, CurrentTextureRuntimeSignature() };
+				++completedCount;
+				continue;
+			}
+
+			const auto& metadata = *activeRequest.runtimeUploadMetadata;
+			Texture2D* texture = TextureLoader::CreateFromRHIArtifact(
+				std::move(uploadResult.texture),
+				metadata,
+				activeRequest.runtimeUploadMetadata->mips.empty()
+					? 1u
+					: static_cast<uint32_t>(activeRequest.runtimeUploadMetadata->mips.size()),
+				activeRequest.minFilter,
+				activeRequest.magFilter,
+				activeRequest.mipmap);
+			if (texture == nullptr)
+			{
+				std::lock_guard lock(g_asyncTextureMutex);
+				g_asyncTextureRequests.erase(key);
+				g_failedAsyncTextureArtifacts[{ activeRequest.owner, activeRequest.path }] =
+					{ activeRequest.owner, activeRequest.realPath, activeRequest.writeTime, CurrentTextureRuntimeSignature() };
+				++completedCount;
+				continue;
+			}
+
+			texture->path = activeRequest.path;
+			{
+				std::lock_guard lock(g_asyncTextureMutex);
+				manager.RegisterResource(activeRequest.path, texture);
+				g_asyncTextureRequests.erase(key);
+				g_failedAsyncTextureArtifacts.erase({ activeRequest.owner, activeRequest.path });
+			}
+			++completedCount;
+			if (completedCount >= maxCompletions)
+				return;
+		}
+	}
+
 	while (completedCount < maxCompletions)
 	{
 		if (shouldStop && shouldStop() && !allowReadyCompletionAfterStop)
@@ -1347,9 +1748,8 @@ void PumpAsyncTextureArtifactLoads(
 #if defined(NLS_ENABLE_TEST_HOOKS)
 			std::function<void()> beforeCompletionForTesting;
 #endif
-			{
-				std::lock_guard lock(g_asyncTextureMutex);
-			PromoteQueuedTextureArtifactLoads(manager, paths);
+		{
+			std::lock_guard lock(g_asyncTextureMutex);
 			auto found = std::find_if(
 				g_asyncTextureRequests.begin(),
 				g_asyncTextureRequests.end(),
@@ -1418,6 +1818,38 @@ void PumpAsyncTextureArtifactLoads(
 		}
 		if (artifact.has_value())
 		{
+			if (auto* driver = NLS::Render::Context::TryGetLocatedDriver();
+				driver != nullptr &&
+				NLS::Render::Context::DriverRendererAccess::HasExplicitRHI(*driver) &&
+				NLS::Render::Context::DriverRendererAccess::IsThreadedRenderingEnabled(*driver))
+			{
+				auto uploadRequest = BuildRuntimeTextureUploadRequest(request, *artifact);
+				if (uploadRequest.has_value())
+				{
+					const uint64_t uploadId =
+						NLS::Render::Context::DriverResourceAccess::RequestTextureRuntimeUpload(
+							*driver,
+							std::move(*uploadRequest));
+					if (uploadId != 0u)
+					{
+						request.runtimeUploadMetadata = *artifact;
+						request.runtimeUploadMetadata->backingBytes.reset();
+						request.runtimeUploadMetadata->backingStorage.reset();
+						request.runtimeUploadMetadata->subresources.clear();
+						request.runtimeUploadRequestId = uploadId;
+						request.jobHandle = {};
+						request.future = {};
+						std::lock_guard lock(g_asyncTextureMutex);
+						EraseCompletingTextureRequestLocked(request);
+						g_asyncTextureRequests.emplace(
+							AsyncTextureArtifactStateKey { request.owner, request.path, request.realPath },
+							std::move(request));
+						++completedCount;
+						continue;
+					}
+				}
+			}
+
 					if (auto* existing = manager.GetArtifactResource(request.path, false);
 						existing != nullptr && existing->GetTextureHandle() != nullptr)
 					{

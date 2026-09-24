@@ -818,13 +818,15 @@ namespace NLS::Editor::Rendering
         }
         else
         {
-            // Large selections skip the extra visible-depth refinement. Mark coverage
-            // as visible-unknown so the composite does not fade every edge as occluded.
+            // Large selections skip the extra occluded pass, but still have to
+            // reject hidden/back-facing fragments. Otherwise the mask is the
+            // union of all selected geometry, and the composite outlines hidden
+            // surfaces far away from the visible silhouette.
             CaptureMaskDrawCommandsForGroups(
                 groups,
                 m_maskVisibleMaterial,
                 SelectionOutlinePassModeCaptureVisible,
-                CreateSelectionMaskOccludedPipelineState(pso),
+                CreateSelectionMaskVisiblePipelineState(pso),
                 outDrawCommands);
         }
     }

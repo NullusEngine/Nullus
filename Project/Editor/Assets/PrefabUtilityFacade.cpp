@@ -204,6 +204,83 @@ PrefabOverrideKind ClassifyOverrideKind(
         includeDefaultOverrides));
 }
 
+std::vector<PrefabOverrideDescriptor> DescribeEditorOverrides(
+    const PrefabArtifact& prefab,
+    const PrefabInstanceRecord& instance,
+    const std::vector<PrefabOverrideRecord>& editorOverrides,
+    const bool includeDefaultOverrides)
+{
+    std::vector<PrefabOverrideDescriptor> overrides;
+    overrides.reserve(editorOverrides.size());
+
+    for (const auto& editorOverride : editorOverrides)
+    {
+        PrefabOverrideDescriptor overrideRecord;
+        overrideRecord.kind = ClassifyOverrideKind(editorOverride, includeDefaultOverrides);
+        if (!includeDefaultOverrides && overrideRecord.kind == PrefabOverrideKind::DefaultOverride)
+            continue;
+
+        overrideRecord.sourceObject = editorOverride.sourceObject;
+        overrideRecord.instanceObject = editorOverride.instanceObject;
+        overrideRecord.propertyPath = editorOverride.propertyPath;
+        overrideRecord.patch = editorOverride.patch;
+        overrideRecord.objectRecord = editorOverride.objectRecord;
+        overrideRecord.objectRecords = editorOverride.objectRecords;
+        overrideRecord.owningPrefabLayer = editorOverride.owningPrefabLayer;
+        const auto propertyModification = NLS::Engine::Assets::BuildPrefabPropertyModification(
+            prefab,
+            editorOverride.sourceObject,
+            editorOverride.instanceObject,
+            editorOverride.propertyPath,
+            editorOverride.patch,
+            editorOverride.owningPrefabLayer,
+            includeDefaultOverrides);
+        overrideRecord.defaultOverride = propertyModification.defaultOverride;
+        overrideRecord.canApply = instance.prefabAssetId.IsValid();
+        overrideRecord.canRevert = true;
+        overrideRecord.baseValue = propertyModification.baseValue;
+        overrideRecord.localValue = propertyModification.localValue;
+
+        overrides.push_back(std::move(overrideRecord));
+    }
+    return overrides;
+}
+
+// Inspector markers only need the override identity and kind. Resolving
+// base/local values copies arbitrary property payloads (arrays and nested
+// objects included) and performs a full source-graph lookup per override, so
+// marker refresh deliberately skips it.
+std::vector<PrefabOverrideDescriptor> DescribeEditorOverrideMarkers(
+    const PrefabInstanceRecord& instance,
+    const std::vector<PrefabOverrideRecord>& editorOverrides,
+    const bool includeDefaultOverrides)
+{
+    std::vector<PrefabOverrideDescriptor> overrides;
+    overrides.reserve(editorOverrides.size());
+
+    for (const auto& editorOverride : editorOverrides)
+    {
+        PrefabOverrideDescriptor overrideRecord;
+        overrideRecord.kind = ClassifyOverrideKind(editorOverride, includeDefaultOverrides);
+        if (!includeDefaultOverrides && overrideRecord.kind == PrefabOverrideKind::DefaultOverride)
+            continue;
+
+        overrideRecord.sourceObject = editorOverride.sourceObject;
+        overrideRecord.instanceObject = editorOverride.instanceObject;
+        overrideRecord.propertyPath = editorOverride.propertyPath;
+        overrideRecord.patch = editorOverride.patch;
+        overrideRecord.objectRecord = editorOverride.objectRecord;
+        overrideRecord.objectRecords = editorOverride.objectRecords;
+        overrideRecord.owningPrefabLayer = editorOverride.owningPrefabLayer;
+        overrideRecord.defaultOverride = overrideRecord.kind == PrefabOverrideKind::DefaultOverride;
+        overrideRecord.canApply = instance.prefabAssetId.IsValid();
+        overrideRecord.canRevert = true;
+
+        overrides.push_back(std::move(overrideRecord));
+    }
+    return overrides;
+}
+
 PrefabOverrideRecord ToEditorOverride(const PrefabOverrideDescriptor& overrideRecord)
 {
     PrefabOverrideRecord editorOverride;
@@ -1336,7 +1413,8 @@ PrefabOperationResult InstantiateStrippedPrefabInstance(
     const std::string& prefabSubAssetKey,
     NLS::Core::Assets::AssetId sceneAssetId,
     NLS::Engine::SceneSystem::Scene& scene,
-    const std::unordered_map<NLS::Engine::Serialize::ObjectId, NLS::Engine::GameObject*>& sceneObjectsById)
+    const std::unordered_map<NLS::Engine::Serialize::ObjectId, NLS::Engine::GameObject*>& sceneObjectsById,
+    const bool synchronousAssetReferencePrewarm)
 {
     if (!sourcePrefab)
         return {};
@@ -1359,8 +1437,7 @@ PrefabOperationResult InstantiateStrippedPrefabInstance(
     request.sceneAssetId = sceneAssetId;
     const bool deferGeneratedModelResources = sourcePrefab->generatedModelPrefab;
     request.deferAssetReferenceResolution = deferGeneratedModelResources;
-    // Scene restoration must make generated-model resources available before the loaded scene is published.
-    request.synchronousAssetReferencePrewarm = true;
+    request.synchronousAssetReferencePrewarm = synchronousAssetReferencePrewarm;
     request.skipDeferredAssetReferenceCacheLookup = deferGeneratedModelResources;
 
     auto instantiate = ConvertResult(PrefabEditorWorkflow().InstantiatePrefab({
@@ -1402,7 +1479,8 @@ PrefabOperationResult RestoreEngineStylePrefabInstancesFromSceneDocument(
     const std::function<std::shared_ptr<const NLS::Engine::Assets::PrefabArtifact>(
         NLS::Core::Assets::AssetId,
         const std::string&)>& prefabResolver,
-    const NLS::Engine::Serialize::PropertyValue::ArrayValue& rootValues)
+    const NLS::Engine::Serialize::PropertyValue::ArrayValue& rootValues,
+    const bool synchronousAssetReferencePrewarm)
 {
     PrefabOperationResult result;
     result.status = PrefabOperationStatus::Committed;
@@ -1469,7 +1547,8 @@ PrefabOperationResult RestoreEngineStylePrefabInstancesFromSceneDocument(
                 prefabSubAssetKey,
                 sceneAssetId,
                 scene,
-                sceneObjectsById);
+                sceneObjectsById,
+                synchronousAssetReferencePrewarm);
             result.diagnostics.insert(result.diagnostics.end(), instantiate.diagnostics.begin(), instantiate.diagnostics.end());
 
             if (instantiate.status != PrefabOperationStatus::Committed || !instantiate.instance.has_value())
@@ -1522,7 +1601,7 @@ PrefabOperationResult RestoreEngineStylePrefabInstancesFromSceneDocument(
         request.prefabAssetId = prefabAssetId;
         request.prefabSubAssetKey = prefabSubAssetKey;
         request.sceneAssetId = sceneAssetId;
-        request.synchronousAssetReferencePrewarm = true;
+        request.synchronousAssetReferencePrewarm = synchronousAssetReferencePrewarm;
 
         auto connect = ConvertResult(
             PrefabEditorWorkflow().ConnectExistingPrefabInstance(request, *liveSceneRoot));
@@ -1935,7 +2014,8 @@ PrefabOperationResult PrefabUtilityFacade::RestorePrefabInstancesFromSceneDocume
     PrefabInstanceRegistry& instanceRegistry,
     const std::function<std::optional<NLS::Engine::Assets::PrefabArtifact>(
         NLS::Core::Assets::AssetId,
-        const std::string&)>& prefabResolver) const
+        const std::string&)>& prefabResolver,
+    const bool synchronousAssetReferencePrewarm) const
 {
     std::unordered_map<std::string, std::shared_ptr<const NLS::Engine::Assets::PrefabArtifact>> sharedResolverCache;
     return RestorePrefabInstancesFromSceneDocument(
@@ -1966,7 +2046,8 @@ PrefabOperationResult PrefabUtilityFacade::RestorePrefabInstancesFromSceneDocume
             auto shared = std::make_shared<NLS::Engine::Assets::PrefabArtifact>(std::move(*prefab));
             sharedResolverCache.emplace(cacheKey, shared);
             return shared;
-        });
+        },
+        synchronousAssetReferencePrewarm);
 }
 
 PrefabOperationResult PrefabUtilityFacade::RestorePrefabInstancesFromSceneDocument(
@@ -1976,7 +2057,8 @@ PrefabOperationResult PrefabUtilityFacade::RestorePrefabInstancesFromSceneDocume
     PrefabInstanceRegistry& instanceRegistry,
     const std::function<std::shared_ptr<const NLS::Engine::Assets::PrefabArtifact>(
         NLS::Core::Assets::AssetId,
-        const std::string&)>& prefabResolver) const
+        const std::string&)>& prefabResolver,
+    const bool synchronousAssetReferencePrewarm) const
 {
     PrefabOperationResult result;
     result.status = PrefabOperationStatus::Committed;
@@ -2000,7 +2082,8 @@ PrefabOperationResult PrefabUtilityFacade::RestorePrefabInstancesFromSceneDocume
             sceneAssetId,
             instanceRegistry,
             prefabResolver,
-            rootValues);
+            rootValues,
+            synchronousAssetReferencePrewarm);
         result.status = engineStyleRestore.status;
         result.diagnostics.insert(
             result.diagnostics.end(),
@@ -2099,40 +2182,68 @@ std::vector<PrefabOverrideDescriptor> PrefabUtilityFacade::GetPrefabOverrides(
     const bool includeDefaultOverrides) const
 {
     const auto editorOverrides = PrefabEditorWorkflow().DiscoverOverrides(prefab, instance);
-    std::vector<PrefabOverrideDescriptor> overrides;
-    overrides.reserve(editorOverrides.size());
+    return DescribeEditorOverrides(prefab, instance, editorOverrides, includeDefaultOverrides);
+}
 
-    for (const auto& editorOverride : editorOverrides)
+std::vector<PrefabOverrideDescriptor> PrefabUtilityFacade::GetPrefabOverridesForObject(
+    const PrefabArtifact& prefab,
+    const PrefabInstanceRecord& instance,
+    NLS::Engine::GameObject& liveObject,
+    const bool includeDefaultOverrides) const
+{
+    const auto editorOverrides = PrefabEditorWorkflow().DiscoverOverridesForObject(
+        prefab,
+        instance,
+        liveObject);
+    return DescribeEditorOverrides(prefab, instance, editorOverrides, includeDefaultOverrides);
+}
+
+std::vector<PrefabOverrideDescriptor> PrefabUtilityFacade::GetPrefabOverrideMarkersForObject(
+    const PrefabArtifact& prefab,
+    const PrefabInstanceRecord& instance,
+    NLS::Engine::GameObject& liveObject,
+    const bool includeDefaultOverrides) const
+{
+    auto markers = DescribeEditorOverrideMarkers(
+        instance,
+        PrefabEditorWorkflow().DiscoverOverridesForObject(
+            prefab,
+            instance,
+            liveObject,
+            false),
+        includeDefaultOverrides);
+
+    // Stored patches are already authoritative override identities. The full
+    // discovery path copies every patch payload and de-duplicates them against
+    // the discovered set; markers only need identity and kind, so index them
+    // directly without materializing values.
+    markers.reserve(markers.size() + instance.localPatches.size());
+    for (const auto& patch : instance.localPatches)
     {
-        PrefabOverrideDescriptor overrideRecord;
-        overrideRecord.kind = ClassifyOverrideKind(editorOverride, includeDefaultOverrides);
-        if (!includeDefaultOverrides && overrideRecord.kind == PrefabOverrideKind::DefaultOverride)
+        if (patch.type != NLS::Engine::Serialize::PatchOperationType::ReplaceProperty)
             continue;
 
-        overrideRecord.sourceObject = editorOverride.sourceObject;
-        overrideRecord.instanceObject = editorOverride.instanceObject;
-        overrideRecord.propertyPath = editorOverride.propertyPath;
-        overrideRecord.patch = editorOverride.patch;
-        overrideRecord.objectRecord = editorOverride.objectRecord;
-        overrideRecord.objectRecords = editorOverride.objectRecords;
-        overrideRecord.owningPrefabLayer = editorOverride.owningPrefabLayer;
-        const auto propertyModification = NLS::Engine::Assets::BuildPrefabPropertyModification(
-            prefab,
-            editorOverride.sourceObject,
-            editorOverride.instanceObject,
-            editorOverride.propertyPath,
-            editorOverride.patch,
-            editorOverride.owningPrefabLayer,
-            includeDefaultOverrides);
-        overrideRecord.defaultOverride = propertyModification.defaultOverride;
-        overrideRecord.canApply = instance.prefabAssetId.IsValid();
-        overrideRecord.canRevert = true;
-        overrideRecord.baseValue = propertyModification.baseValue;
-        overrideRecord.localValue = propertyModification.localValue;
+        PrefabOverrideDescriptor marker;
+        marker.kind = ConvertOverrideKind(NLS::Engine::Assets::ClassifyPrefabOverridePatch(
+            patch,
+            includeDefaultOverrides));
+        if (!includeDefaultOverrides && marker.kind == PrefabOverrideKind::DefaultOverride)
+            continue;
 
-        overrides.push_back(std::move(overrideRecord));
+        marker.sourceObject = patch.target;
+        marker.propertyPath = patch.property;
+        marker.patch.type = patch.type;
+        marker.patch.target = patch.target;
+        marker.patch.property = patch.property;
+        marker.patch.object = patch.object;
+        marker.patch.index = patch.index;
+        marker.patch.hasIndex = patch.hasIndex;
+        marker.defaultOverride = marker.kind == PrefabOverrideKind::DefaultOverride;
+        marker.canApply = instance.prefabAssetId.IsValid();
+        marker.canRevert = true;
+        markers.push_back(std::move(marker));
     }
-    return overrides;
+    return markers;
 }
 
 PrefabOperationResult PrefabUtilityFacade::ApplySingleOverride(

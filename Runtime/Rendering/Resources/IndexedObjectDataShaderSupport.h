@@ -112,6 +112,53 @@ inline ObjectDataDeclarationValidation ValidateReflectionObjectData(const Shader
     return {};
 }
 
+inline ObjectDataDeclarationValidation ValidateParameterStructInstanceObjectIndices(
+    const std::vector<ShaderParameterStruct>& parameterStructs)
+{
+    for (const auto& parameterStruct : parameterStructs)
+    {
+        for (const auto& member : parameterStruct.members)
+        {
+            if (member.name != "InstanceObjectIndices")
+                continue;
+
+            const bool compatible =
+                parameterStruct.groupKind == ShaderParameterGroupKind::Object &&
+                parameterStruct.descriptorSet == NLS::Render::RHI::BindingPointMap::kObjectDescriptorSet &&
+                parameterStruct.registerSpace == NLS::Render::RHI::BindingPointMap::kObjectBindingSpace &&
+                member.type == NLS::Render::RHI::BindingType::StructuredBuffer &&
+                member.binding == 1u &&
+                member.count == 1u &&
+                member.elementStride == sizeof(uint32_t) &&
+                NLS::Render::RHI::HasShaderStage(member.stageMask, NLS::Render::RHI::ShaderStageMask::Vertex);
+            return { true, compatible };
+        }
+    }
+
+    return {};
+}
+
+inline ObjectDataDeclarationValidation ValidateReflectionInstanceObjectIndices(
+    const ShaderReflection& reflection)
+{
+    for (const auto& property : reflection.properties)
+    {
+        if (property.name != "InstanceObjectIndices")
+            continue;
+
+        const bool compatible =
+            property.kind == ShaderResourceKind::StructuredBuffer &&
+            property.bindingSpace == NLS::Render::RHI::BindingPointMap::kObjectBindingSpace &&
+            property.bindingIndex == 1u &&
+            property.arraySize == 1 &&
+            property.byteSize == sizeof(uint32_t) &&
+            NLS::Render::RHI::HasShaderStage(property.stageMask, NLS::Render::RHI::ShaderStageMask::Vertex);
+        return { true, compatible };
+    }
+
+    return {};
+}
+
 inline bool HasExpectedObjectDrawConstantMembers(const ShaderConstantBufferDesc& constantBuffer)
 {
     if (constantBuffer.members.empty())
@@ -205,6 +252,9 @@ inline IndexedObjectDataShaderValidation ValidateIndexedObjectDataShader(const S
     const auto objectData = !parameterStructs.empty()
         ? Detail::ValidateParameterStructObjectData(parameterStructs)
         : Detail::ValidateReflectionObjectData(*reflection);
+    const auto instanceObjectIndices = !parameterStructs.empty()
+        ? Detail::ValidateParameterStructInstanceObjectIndices(parameterStructs)
+        : Detail::ValidateReflectionInstanceObjectIndices(*reflection);
 
     if (!objectData.present)
         return {};
@@ -213,6 +263,14 @@ inline IndexedObjectDataShaderValidation ValidateIndexedObjectDataShader(const S
         return {
             IndexedObjectDataShaderStatus::Incompatible,
             "ObjectData does not match the indexed object-data ABI."
+        };
+    }
+
+    if (instanceObjectIndices.present && !instanceObjectIndices.compatible)
+    {
+        return {
+            IndexedObjectDataShaderStatus::Incompatible,
+            "InstanceObjectIndices does not match the indexed object-data ABI."
         };
     }
 
@@ -247,6 +305,15 @@ inline IndexedObjectDataShaderValidation ValidateIndexedObjectDataShader(const S
 inline bool ShaderSupportsIndexedObjectData(const Shader& shader)
 {
     return ValidateIndexedObjectDataShader(shader).IsCompatible();
+}
+
+inline bool ShaderUsesInstanceObjectIndirection(const Shader& shader)
+{
+    const auto parameterStructs = shader.GetParameterStructs();
+    const auto indirection = !parameterStructs.empty()
+        ? Detail::ValidateParameterStructInstanceObjectIndices(parameterStructs)
+        : Detail::ValidateReflectionInstanceObjectIndices(*shader.GetReflectionSnapshot());
+    return indirection.present && indirection.compatible;
 }
 
 inline bool BackendSupportsIndexedObjectDataPushConstants(const NLS::Render::RHI::NativeBackendType backend)

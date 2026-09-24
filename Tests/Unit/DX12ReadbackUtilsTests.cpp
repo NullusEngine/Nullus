@@ -5,6 +5,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iterator>
+#include <vector>
 
 #include <Windows.h>
 
@@ -679,5 +680,115 @@ TEST(DX12ReadbackUtilsTests, PollingCompletedAsyncBufferReadbackCopiesGpuBufferB
 
     ASSERT_EQ(status.code, NLS::Render::RHI::RHICompletionStatusCode::Success) << status.message;
     EXPECT_EQ(readbackData, sourceData);
+}
+
+TEST(DX12ReadbackUtilsTests, InitialBufferUploadBatchPreservesEveryGpuBuffer)
+{
+    const auto resources = NLS::Render::Backend::CreateDX12DeviceResources(false);
+    if (!resources.IsValid())
+        GTEST_SKIP() << "DX12 device unavailable on this test machine";
+
+    auto device = NLS::Render::Backend::CreateNativeDX12ExplicitDevice(
+        resources.device.Get(), resources.graphicsQueue.Get(), resources.computeQueue.Get(),
+        resources.factory.Get(), resources.adapter.Get(), resources.capabilities,
+        resources.vendor, resources.hardware);
+    ASSERT_NE(device, nullptr);
+
+    std::array<std::array<uint32_t, 4u>, 32u> sourceData{};
+    std::array<std::shared_ptr<NLS::Render::RHI::RHIBuffer>, 32u> buffers{};
+    ASSERT_TRUE(device->BeginInitialBufferUploadBatch(
+        std::vector<uint64_t>(buffers.size(), sizeof(sourceData[0]))));
+    for (size_t index = 0u; index < buffers.size(); ++index)
+    {
+        sourceData[index] = {static_cast<uint32_t>(index + 1u), 22u, 33u, 44u};
+        NLS::Render::RHI::RHIBufferDesc desc;
+        desc.size = sizeof(sourceData[index]);
+        desc.usage = NLS::Render::RHI::BufferUsageFlags::CopySrc |
+            NLS::Render::RHI::BufferUsageFlags::ShaderRead;
+        desc.memoryUsage = NLS::Render::RHI::MemoryUsage::GPUOnly;
+        desc.debugName = "DX12BatchedBuffer" + std::to_string(index);
+        NLS::Render::RHI::RHIBufferUploadDesc upload;
+        upload.data = sourceData[index].data();
+        upload.dataSize = sizeof(sourceData[index]);
+        buffers[index] = device->CreateBuffer(desc, upload);
+        ASSERT_NE(buffers[index], nullptr);
+    }
+    ASSERT_TRUE(device->EndInitialBufferUploadBatch());
+
+    const std::array<uint32_t, 4u> nextData{98u, 76u, 54u, 32u};
+    NLS::Render::RHI::RHIBufferDesc nextDesc;
+    nextDesc.size = sizeof(nextData);
+    nextDesc.usage = NLS::Render::RHI::BufferUsageFlags::CopySrc |
+        NLS::Render::RHI::BufferUsageFlags::ShaderRead;
+    nextDesc.memoryUsage = NLS::Render::RHI::MemoryUsage::GPUOnly;
+    NLS::Render::RHI::RHIBufferUploadDesc nextUpload;
+    nextUpload.data = nextData.data();
+    nextUpload.dataSize = sizeof(nextData);
+    ASSERT_TRUE(device->BeginInitialBufferUploadBatch({sizeof(nextData)}));
+    auto nextBuffer = device->CreateBuffer(nextDesc, nextUpload);
+    ASSERT_NE(nextBuffer, nullptr);
+    ASSERT_TRUE(device->EndInitialBufferUploadBatch());
+
+    NLS::Render::RHI::DX12::DX12ReadbackContext readback;
+    for (size_t index = 0u; index < buffers.size(); ++index)
+    {
+        std::array<uint32_t, 4u> received{};
+        NLS::Render::RHI::RHIBufferReadbackDesc desc;
+        desc.source = buffers[index];
+        desc.sourceState = NLS::Render::RHI::ResourceState::CopySrc;
+        desc.size = sizeof(received);
+        desc.data = received.data();
+        auto result = readback.BeginBuffer(resources.device.Get(), resources.graphicsQueue.Get(), desc);
+        ASSERT_TRUE(result.Succeeded()) << result.message;
+        ASSERT_NE(result.completion, nullptr);
+        const auto status = result.completion->Wait(5'000'000'000ull);
+        ASSERT_EQ(status.code, NLS::Render::RHI::RHICompletionStatusCode::Success) << status.message;
+        EXPECT_EQ(received, sourceData[index]);
+    }
+
+    std::array<uint32_t, 4u> nextReceived{};
+    NLS::Render::RHI::RHIBufferReadbackDesc nextReadback;
+    nextReadback.source = nextBuffer;
+    nextReadback.sourceState = NLS::Render::RHI::ResourceState::CopySrc;
+    nextReadback.size = sizeof(nextReceived);
+    nextReadback.data = nextReceived.data();
+    auto nextResult = readback.BeginBuffer(resources.device.Get(), resources.graphicsQueue.Get(), nextReadback);
+    ASSERT_TRUE(nextResult.Succeeded()) << nextResult.message;
+    ASSERT_NE(nextResult.completion, nullptr);
+    const auto nextStatus = nextResult.completion->Wait(5'000'000'000ull);
+    ASSERT_EQ(nextStatus.code, NLS::Render::RHI::RHICompletionStatusCode::Success) << nextStatus.message;
+    EXPECT_EQ(nextReceived, nextData);
+}
+
+TEST(DX12ReadbackUtilsTests, InitialBufferUploadBatchRejectsOverflowWithoutSubmitting)
+{
+    const auto resources = NLS::Render::Backend::CreateDX12DeviceResources(false);
+    if (!resources.IsValid())
+        GTEST_SKIP() << "DX12 device unavailable on this test machine";
+
+    auto device = NLS::Render::Backend::CreateNativeDX12ExplicitDevice(
+        resources.device.Get(), resources.graphicsQueue.Get(), resources.computeQueue.Get(),
+        resources.factory.Get(), resources.adapter.Get(), resources.capabilities,
+        resources.vendor, resources.hardware);
+    ASSERT_NE(device, nullptr);
+
+    const uint32_t value = 123u;
+    NLS::Render::RHI::RHIBufferDesc desc;
+    desc.size = sizeof(value);
+    desc.usage = NLS::Render::RHI::BufferUsageFlags::CopySrc;
+    desc.memoryUsage = NLS::Render::RHI::MemoryUsage::GPUOnly;
+    NLS::Render::RHI::RHIBufferUploadDesc upload;
+    upload.data = &value;
+    upload.dataSize = sizeof(value);
+
+    ASSERT_TRUE(device->BeginInitialBufferUploadBatch(std::vector<uint64_t>(64u, sizeof(value))));
+    for (size_t index = 0u; index < 64u; ++index)
+        ASSERT_NE(device->CreateBuffer(desc, upload), nullptr);
+    EXPECT_EQ(device->CreateBuffer(desc, upload), nullptr);
+    EXPECT_FALSE(device->EndInitialBufferUploadBatch());
+
+    ASSERT_TRUE(device->BeginInitialBufferUploadBatch({sizeof(value)}));
+    ASSERT_NE(device->CreateBuffer(desc, upload), nullptr);
+    EXPECT_TRUE(device->EndInitialBufferUploadBatch());
 }
 #endif

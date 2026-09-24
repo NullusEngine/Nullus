@@ -203,6 +203,28 @@ Texture2D* TextureLoader::CreateFromArtifact(
 	return texture;
 }
 
+Texture2D* TextureLoader::CreateFromRHIArtifact(
+	std::shared_ptr<NLS::Render::RHI::RHITexture> textureResource,
+	const NLS::Render::Assets::TextureArtifactData& artifact,
+	const uint32_t mipCount,
+	const NLS::Render::Settings::ETextureFilteringMode firstFilter,
+	const NLS::Render::Settings::ETextureFilteringMode secondFilter,
+	const bool generateMipmap)
+{
+	if (textureResource == nullptr)
+		return nullptr;
+
+	Texture2D* texture = new Texture2D(Texture2D::SkipInitialTextureTag {});
+	texture->firstFilter = firstFilter;
+	texture->secondFilter = secondFilter;
+	texture->isMimapped = mipCount > 1u || generateMipmap;
+	texture->width = artifact.width;
+	texture->height = artifact.height;
+	texture->bitsPerPixel = NLS::Render::RHI::GetTextureFormatBytesPerPixel(artifact.format);
+	texture->SetRHITexture(std::move(textureResource));
+	return texture;
+}
+
 void TextureLoader::Reload(Texture2D* p_texture, const std::string& p_filePath, Settings::ETextureFilteringMode p_firstFilter, Settings::ETextureFilteringMode p_secondFilter, bool p_generateMipmap)
 {
 	if (!p_texture)

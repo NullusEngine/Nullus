@@ -2,6 +2,7 @@
 
 #include "Components/LightComponent.h"
 #include "SceneSystem/Scene.h"
+#include "Rendering/SceneRenderStore.h"
 
 namespace NLS::Engine::Rendering
 {
@@ -18,6 +19,16 @@ void SceneLightingProvider::Collect(const SceneSystem::Scene& scene)
         if (owner != nullptr && owner->IsActive())
             m_lightingDescriptor.lights.push_back(std::cref(*light->GetData()));
     }
+}
+
+void SceneLightingProvider::CollectFromStore(const SceneRenderStore& store)
+{
+    m_lightingDescriptor.lights.clear();
+    store.ForEachLight(
+        [this](const NLS::Render::Entities::Light& light)
+        {
+            m_lightingDescriptor.lights.push_back(std::cref(light));
+        });
 }
 
 void SceneLightingProvider::PrepareRenderScenePackage(

@@ -53,6 +53,11 @@ namespace
         return ShaderParameterStructBuilder(std::move(debugName))
             .SetGroup(ShaderParameterGroupKind::Object)
             .AddStructuredBuffer("ObjectData", 0u, NLS::Render::RHI::ShaderStageMask::Vertex, 64u)
+            .AddStructuredBuffer(
+                "InstanceObjectIndices",
+                1u,
+                NLS::Render::RHI::ShaderStageMask::Vertex,
+                static_cast<uint32_t>(sizeof(uint32_t)))
             .AddUniformBuffer(
                 "ObjectIndexConstants",
                 1u,

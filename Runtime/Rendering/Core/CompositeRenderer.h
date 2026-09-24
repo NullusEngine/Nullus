@@ -85,6 +85,16 @@ public:
     void RecordPickingDiagnostics(const Data::PickingDiagnostics& diagnostics);
     void RecordObjectDataRevisionReuse(bool hit);
     void RecordObjectDataRevisionFallback(Data::ObjectDataRevisionFallbackReason reason);
+    void RecordObjectDataFastPath(bool hit);
+    void RecordDrawCommandCopy(uint64_t count);
+    void RecordDrawCommandMove(uint64_t count);
+    /**
+     * Telemetry hook for binding sets that are not built through the uniform-buffer
+     * helper. The indexed object-data path creates its per-slot engine object
+     * binding set directly on the driver, so the before/after preparation delta
+     * cannot observe it and Frame Info would report zero for it.
+     */
+    void RecordRenderBindingSetCreation(uint64_t count = 1u);
 
 protected:
     void DrawEntity(

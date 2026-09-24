@@ -16,6 +16,7 @@
 
 #include "GameObject.h"
 #include "Rendering/Geometry/BoundingSphere.h"
+#include "Rendering/Resources/Material.h"
 #include "Serialize/BinaryBuffer.h"
 #include "Serialize/NativeSerializedStream.h"
 #include "Serialize/PPtr.h"
@@ -396,6 +397,38 @@ TEST(NativeSerializedStreamTests, CodecRoundTripsNullPPtrWithZeroReferenceSlot)
         references);
     ASSERT_TRUE(decoded.has_value());
     EXPECT_TRUE(decoded->GetValue<GameObjectPPtr>().IsNull());
+}
+
+TEST(NativeSerializedStreamTests, CodecRoundTripsNullResourcePPtrArrayElement)
+{
+    using MaterialPPtr = PPtr<NLS::Render::Resources::Material>;
+    using MaterialReferences = NLS::Array<MaterialPPtr>;
+    MaterialReferences source;
+    source.push_back(MaterialPPtr {});
+
+    const auto type = NLS_TYPEOF(MaterialReferences);
+    ASSERT_TRUE(type.IsValid());
+    const auto schema = NativeSerializedStreamCodec::BuildTypeTree(type, {"value", false});
+    ASSERT_NE(schema, nullptr);
+
+    SerializedReferenceTable references;
+    std::vector<uint8_t> bytes;
+    ASSERT_TRUE(NativeSerializedStreamCodec::EncodeVariant(
+        meta::Variant(source),
+        *schema,
+        references,
+        bytes));
+
+    const auto decoded = NativeSerializedStreamCodec::DecodeVariant(
+        bytes,
+        *schema,
+        type,
+        references);
+    ASSERT_TRUE(decoded.has_value());
+    ASSERT_TRUE(decoded->IsValid());
+    const auto& decodedReferences = decoded->GetValue<MaterialReferences>();
+    ASSERT_EQ(decodedReferences.size(), 1u);
+    EXPECT_TRUE(decodedReferences.front().IsNull());
 }
 
 TEST(NativeSerializedStreamTests, ReferenceSlotRelocationRewritesCollidingLocalSlots)

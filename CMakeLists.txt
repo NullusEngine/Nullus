@@ -369,6 +369,64 @@ function(nls_copy_editor_resources_to_target TARGET_NAME)
     endif()
 endfunction()
 
+# Tracy tools are installed by
+# .agents/skills/nullus-tracy-performance/scripts/Prepare-NullusTracy.ps1 and
+# must match the vendored client version. Only the tool executables are
+# deployed: the version directory may also contain a large local tool build
+# tree from the source fallback.
+function(nls_copy_tracy_tools_to_target TARGET_NAME)
+    if(NOT WIN32)
+        return()
+    endif()
+
+    set(_nls_tracy_version_header "${NLS_ROOT_DIR}/ThirdParty/Tracy/public/common/TracyVersion.hpp")
+    if(NOT EXISTS "${_nls_tracy_version_header}")
+        return()
+    endif()
+
+    file(READ "${_nls_tracy_version_header}" _nls_tracy_version_contents)
+    set(_nls_tracy_version "")
+    foreach(_nls_tracy_component Major Minor Patch)
+        if(_nls_tracy_version_contents MATCHES "${_nls_tracy_component}[ \t]*=[ \t]*([0-9]+)")
+            if(_nls_tracy_version STREQUAL "")
+                set(_nls_tracy_version "${CMAKE_MATCH_1}")
+            else()
+                set(_nls_tracy_version "${_nls_tracy_version}.${CMAKE_MATCH_1}")
+            endif()
+        endif()
+    endforeach()
+
+    if(_nls_tracy_version STREQUAL "")
+        message(WARNING "Unable to parse the vendored Tracy version from ${_nls_tracy_version_header}; Tracy tools will not be deployed.")
+        return()
+    endif()
+
+    set(_nls_tracy_tools_source "${NLS_ROOT_DIR}/Tools/Tracy/${_nls_tracy_version}")
+    set(_nls_tracy_tool_files "")
+    foreach(_nls_tracy_tool tracy-profiler.exe tracy-capture.exe tracy-csvexport.exe)
+        if(EXISTS "${_nls_tracy_tools_source}/${_nls_tracy_tool}")
+            list(APPEND _nls_tracy_tool_files "${_nls_tracy_tools_source}/${_nls_tracy_tool}")
+        endif()
+    endforeach()
+
+    if(NOT _nls_tracy_tool_files)
+        message(STATUS
+            "Tracy tools ${_nls_tracy_version} were not found in Tools/Tracy. "
+            "Run .agents/skills/nullus-tracy-performance/scripts/Prepare-NullusTracy.ps1 to deploy them next to the editor.")
+        return()
+    endif()
+
+    add_custom_command(TARGET ${TARGET_NAME} POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E make_directory
+            "$<TARGET_FILE_DIR:${TARGET_NAME}>/Tracy/${_nls_tracy_version}"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            ${_nls_tracy_tool_files}
+            "$<TARGET_FILE_DIR:${TARGET_NAME}>/Tracy/${_nls_tracy_version}"
+        VERBATIM
+        COMMENT "Deploying Tracy ${_nls_tracy_version} tools for ${TARGET_NAME}"
+    )
+endfunction()
+
 if(EXISTS "${NLS_ROOT_DIR}/App/Assets")
     install(
         DIRECTORY "${NLS_ROOT_DIR}/App/Assets/"

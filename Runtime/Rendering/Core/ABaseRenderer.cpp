@@ -616,7 +616,7 @@ void ABaseRenderer::OnThreadedFramePublishFailed()
 }
 
 Context::PreparedRenderSceneBuilder ABaseRenderer::BuildPreparedRenderSceneBuilder(
-    const Context::FrameSnapshot& snapshot) const
+    const Context::FrameSnapshot& snapshot)
 {
     if (m_pendingPreparedRenderSceneBuilder)
         return m_pendingPreparedRenderSceneBuilder;
@@ -1100,6 +1100,18 @@ std::shared_ptr<NLS::Render::RHI::RHIBindingSet> ABaseRenderer::CreateExplicitUn
     const NLS::Render::Buffers::UniformBuffer& buffer,
     const ExplicitUniformBufferBindingDesc& desc) const
 {
+    const auto snapshotBuffer = buffer.CreateExplicitSnapshotBuffer(desc.snapshotDebugName);
+    if (snapshotBuffer != nullptr)
+        ++m_explicitUniformSnapshotBufferCreationCount;
+    return CreateExplicitUniformBufferBindingSetForSnapshot(buffer, desc, snapshotBuffer);
+}
+
+
+std::shared_ptr<NLS::Render::RHI::RHIBindingSet> ABaseRenderer::CreateExplicitUniformBufferBindingSetForSnapshot(
+    const NLS::Render::Buffers::UniformBuffer& buffer,
+    const ExplicitUniformBufferBindingDesc& desc,
+    const std::shared_ptr<NLS::Render::RHI::RHIBuffer>& snapshotBuffer) const
+{
     if (!m_frameActive)
         InvalidateExplicitDeviceDependentCachesIfNeeded();
     const auto& device = m_preparedRecordedDrawDevice;
@@ -1134,9 +1146,6 @@ std::shared_ptr<NLS::Render::RHI::RHIBindingSet> ABaseRenderer::CreateExplicitUn
     if (layout == nullptr)
         return nullptr;
 
-    const auto snapshotBuffer = buffer.CreateExplicitSnapshotBuffer(desc.snapshotDebugName);
-    if (snapshotBuffer != nullptr)
-        ++m_explicitUniformSnapshotBufferCreationCount;
     const auto bufferHandle = snapshotBuffer != nullptr
         ? snapshotBuffer
         : buffer.GetExplicitRHIBufferHandle();
@@ -2287,6 +2296,13 @@ void ABaseRenderer::SubmitPreparedDraw(const PreparedRecordedDraw& preparedDraw)
 
 bool ABaseRenderer::QueueThreadedRecordedDraw(PreparedRecordedDraw preparedDraw)
 {
+    return QueueThreadedRecordedDraw(std::move(preparedDraw), m_threadedRecordedDrawCommands);
+}
+
+bool ABaseRenderer::QueueThreadedRecordedDraw(
+    PreparedRecordedDraw preparedDraw,
+    std::vector<Context::RecordedDrawCommandInput>& outCommands)
+{
     if (preparedDraw.pipeline == nullptr ||
         preparedDraw.materialBindingSet == nullptr ||
         preparedDraw.mesh == nullptr ||
@@ -2308,7 +2324,7 @@ bool ABaseRenderer::QueueThreadedRecordedDraw(PreparedRecordedDraw preparedDraw)
     drawCommand.vertexCount = preparedDraw.vertexCount;
     drawCommand.objectConstants = preparedDraw.objectConstants;
     drawCommand.usesObjectIndex = preparedDraw.usesObjectIndex;
-    m_threadedRecordedDrawCommands.push_back(std::move(drawCommand));
+    outCommands.push_back(std::move(drawCommand));
     return true;
 }
 

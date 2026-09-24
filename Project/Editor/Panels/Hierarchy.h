@@ -90,6 +90,9 @@ namespace NLS::Editor::Panels
 
 	private:
 		UI::Widgets::TreeNode* m_sceneRoot;
+		// Only one Hierarchy node is selected at a time. Tracking it avoids
+		// walking every GameObject node whenever the editor selection changes.
+		UI::Widgets::TreeNode* m_selectedWidget = nullptr;
         NLS::Editor::Assets::PrefabInstanceRegistry* m_prefabInstanceRegistry = nullptr;
 
 		std::unordered_map<Engine::GameObject*, UI::Widgets::TreeNode*> m_widgetGameObjectLink;

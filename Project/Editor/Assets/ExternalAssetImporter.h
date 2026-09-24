@@ -17,7 +17,7 @@
 
 namespace NLS::Editor::Assets
 {
-inline constexpr uint32_t kExternalTexturePostprocessorVersion = 2u;
+inline constexpr uint32_t kExternalTexturePostprocessorVersion = 3u;
 inline constexpr const char* kExternalTextureBuildPipelineDependencyName = "external-texture-build-pipeline";
 
 struct ExternalModelImportRequest

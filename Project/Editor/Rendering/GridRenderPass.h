@@ -73,6 +73,10 @@ namespace NLS::Editor::Rendering
 			NLS::Render::Debug::DebugDrawService& debugDrawService,
 			const GridDescriptor& gridDescriptor,
 			float gridSize);
+		// Writes the grid color only when it actually changed. Material parameter
+		// writes bump the global material mutation epoch, which is part of the
+		// Scene View static frame cache key.
+		void ApplyGridColor(const Maths::Vector3& gridColor);
 		std::optional<NLS::Render::Context::RenderPassCommandInput> BuildThreadedPassInput(
 			NLS::Render::Data::PipelineState p_pso);
         DebugModelRenderer m_debugModelRenderer;

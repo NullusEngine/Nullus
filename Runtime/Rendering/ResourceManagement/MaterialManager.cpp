@@ -345,7 +345,9 @@ MaterialArtifactLoadSubmission StartMaterialArtifactLoad(const AsyncMaterialArti
 	desc.userData = payload.get();
 	desc.cancelFunction = CancelMaterialArtifactJob;
 	desc.cancelUserData = payload.get();
-	desc.priority = NLS::Base::Jobs::JobPriority::High;
+	desc.priority = request.previewPriority
+		? NLS::Base::Jobs::JobPriority::High
+		: NLS::Base::Jobs::JobPriority::Normal;
 	desc.debugName = "MaterialManager::AsyncArtifactLoad";
 
 	const auto handle = NLS::Base::Jobs::ScheduleBackgroundJob(desc);
@@ -475,12 +477,18 @@ void PumpAsyncMaterialArtifactLoads(
 {
 	size_t completedCount = 0u;
 
+	// Match the texture pump's request-map behavior: promotion is a full scan
+	// and should happen once per pump slice, not once per completed request.
+	{
+		std::lock_guard lock(g_asyncMaterialMutex);
+		PromoteQueuedMaterialArtifactLoads(manager, paths);
+	}
+
 	while (completedCount < maxCompletions)
 	{
 		AsyncMaterialArtifactRequest request;
 		{
 			std::lock_guard lock(g_asyncMaterialMutex);
-			PromoteQueuedMaterialArtifactLoads(manager, paths);
 			const auto readyScanTelemetryBegin = std::chrono::steady_clock::now();
 			auto found = std::find_if(
 				g_asyncMaterialRequests.begin(),
@@ -947,6 +955,25 @@ MaterialManager::TryRequestAsyncArtifactForPreview(
     const bool cancelableInterest,
     const bool waitForResourceTable)
 {
+    return TryRequestAsyncArtifactInternal(path, cancelableInterest, waitForResourceTable, true);
+}
+
+std::optional<MaterialManager::AsyncPreviewRequestResult>
+MaterialManager::TryRequestAsyncArtifact(
+    const std::string& path,
+    const bool cancelableInterest,
+    const bool waitForResourceTable)
+{
+    return TryRequestAsyncArtifactInternal(path, cancelableInterest, waitForResourceTable, false);
+}
+
+std::optional<MaterialManager::AsyncPreviewRequestResult>
+MaterialManager::TryRequestAsyncArtifactInternal(
+    const std::string& path,
+    const bool cancelableInterest,
+    const bool waitForResourceTable,
+    const bool previewPriority)
+{
     AsyncPreviewRequestResult result;
     if (path.empty())
         return result;
@@ -975,7 +1002,7 @@ MaterialManager::TryRequestAsyncArtifactForPreview(
     }
 
     const bool trustedPreviewArtifactPath =
-        NLS::Core::Assets::IsContentStorageArtifactPath(path);
+        previewPriority && NLS::Core::Assets::IsContentStorageArtifactPath(path);
     if (!trustedPreviewArtifactPath && !IsMaterialArtifactPath(realPath))
         return result;
 
@@ -987,7 +1014,7 @@ MaterialManager::TryRequestAsyncArtifactForPreview(
     request.writeTime = writeTime;
     request.cancelableInterestCount = cancelableInterest ? 1u : 0u;
     request.sharedInterestCount = cancelableInterest ? 0u : 1u;
-    request.previewPriority = true;
+    request.previewPriority = previewPriority;
 
     std::unique_lock lock(g_asyncMaterialMutex, std::try_to_lock);
     if (!lock.owns_lock())

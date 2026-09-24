@@ -18,6 +18,8 @@
 #include <Math/Vector4.h>
 
 #include "Profiling/Profiler.h"
+#include "TaskGraph/TaskGraphSystem.h"
+#include "Threading/ExecutionThreadBudget.h"
 #include "Rendering/Data/PipelineState.h"
 #include "Rendering/Settings/DriverSettings.h"
 #include "Rendering/RHI/Backends/RHIDeviceFactory.h"
@@ -1794,7 +1796,7 @@ namespace
         while (impl.threadedLifecycle->GetInFlightDepth() > 0u)
         {
             const uint64_t observedWakeGeneration =
-                impl.threadedWorkerWakeGeneration.load(std::memory_order_acquire);
+                impl.threadedWorkerWake.Generation();
             bool progressed = false;
 
             {
@@ -1846,8 +1848,11 @@ namespace
     void NotifyThreadedWorkers(DriverImpl& impl)
     {
         NLS_PROFILE_SCOPE();
-        impl.threadedWorkerWakeGeneration.fetch_add(1u, std::memory_order_release);
-        impl.threadedWorkerWake.notify_all();
+        impl.threadedWorkerWake.Trigger();
+        if (impl.taskGraph != nullptr)
+            impl.taskGraph->WakeNamedThread(NLS::Base::TaskGraph::NamedThread::Render);
+        if (impl.taskGraph != nullptr)
+            impl.taskGraph->WakeNamedThread(NLS::Base::TaskGraph::NamedThread::Rhi);
     }
 
     bool WaitForThreadedWorkerWake(
@@ -1856,15 +1861,12 @@ namespace
         const std::chrono::milliseconds timeout)
     {
         NLS_PROFILE_SCOPE();
-        std::unique_lock<std::mutex> lock(impl.threadedWorkerWakeMutex);
-        return impl.threadedWorkerWake.wait_for(
-            lock,
-            timeout,
-            [&impl, observedGeneration]()
-            {
-                return impl.threadedStopRequested.load(std::memory_order_acquire) ||
-                    impl.threadedWorkerWakeGeneration.load(std::memory_order_acquire) != observedGeneration;
-            });
+        if (impl.threadedStopRequested.load(std::memory_order_acquire))
+            return true;
+        if (impl.threadedWorkerWake.Generation() != observedGeneration)
+            return true;
+        return impl.threadedWorkerWake.WaitForGeneration(observedGeneration, timeout) ||
+            impl.threadedStopRequested.load(std::memory_order_acquire);
     }
 
     bool DrainFrameFenceForResize(
@@ -2339,9 +2341,10 @@ bool DriverRendererAccess::TryPublishPreparedFrameBuilder(
     if (driver.m_impl != nullptr)
     {
         auto originalRenderSceneBuilder = std::move(renderSceneBuilder);
-        renderSceneBuilder = [&driver, originalRenderSceneBuilder = std::move(originalRenderSceneBuilder)]() mutable
+        renderSceneBuilder = [&driver, originalRenderSceneBuilder = std::move(originalRenderSceneBuilder)](
+                                 const size_t lifecycleSlotIndex) mutable
         {
-            auto package = originalRenderSceneBuilder();
+            auto package = originalRenderSceneBuilder(lifecycleSlotIndex);
             if (package.targetsSwapchain)
             {
                 uint64_t consumedUiSnapshotGeneration = 0u;
@@ -3624,6 +3627,102 @@ DriverResourceAccess::GetMeshRuntimeUploadDiagnostics(const Driver& driver)
     return diagnostics;
 }
 
+uint64_t DriverResourceAccess::RequestTextureRuntimeUpload(
+    Driver& driver,
+    TextureRuntimeUploadRequest request)
+{
+    if (driver.m_impl == nullptr ||
+        request.desc.extent.width == 0u ||
+        request.desc.extent.height == 0u ||
+        request.mips.empty())
+    {
+        return 0u;
+    }
+
+    std::lock_guard lock(driver.m_impl->pendingTextureRuntimeUploadMutex);
+    const uint64_t requestId = driver.m_impl->nextTextureRuntimeUploadRequestId++;
+    if (driver.m_impl->nextTextureRuntimeUploadRequestId == 0u)
+        driver.m_impl->nextTextureRuntimeUploadRequestId = 1u;
+    driver.m_impl->pendingTextureRuntimeUploads.push_back({ requestId, std::move(request) });
+    driver.m_impl->textureRuntimeUploadRequestedCount.fetch_add(1u, std::memory_order_relaxed);
+    Detail::NotifyThreadedWorkers(*driver.m_impl);
+    return requestId;
+}
+
+TextureRuntimeUploadResult DriverResourceAccess::ConsumeTextureRuntimeUploadResult(
+    Driver& driver,
+    const uint64_t requestId)
+{
+    TextureRuntimeUploadResult result;
+    if (driver.m_impl == nullptr || requestId == 0u)
+        return result;
+
+    std::lock_guard lock(driver.m_impl->pendingTextureRuntimeUploadMutex);
+    const auto found = driver.m_impl->completedTextureRuntimeUploads.find(requestId);
+    if (found == driver.m_impl->completedTextureRuntimeUploads.end())
+        return result;
+
+    result.ready = true;
+    result.success = found->second.success;
+    result.texture = std::move(found->second.texture);
+    result.diagnostic = std::move(found->second.diagnostic);
+    driver.m_impl->completedTextureRuntimeUploads.erase(found);
+    driver.m_impl->textureRuntimeUploadConsumedCount.fetch_add(1u, std::memory_order_relaxed);
+    if (!result.success)
+        driver.m_impl->textureRuntimeUploadFailedCount.fetch_add(1u, std::memory_order_relaxed);
+    return result;
+}
+
+void DriverResourceAccess::CancelTextureRuntimeUpload(
+    Driver& driver,
+    const uint64_t requestId)
+{
+    if (driver.m_impl == nullptr || requestId == 0u)
+        return;
+
+    std::lock_guard lock(driver.m_impl->pendingTextureRuntimeUploadMutex);
+    const auto pendingCountBefore = driver.m_impl->pendingTextureRuntimeUploads.size();
+    driver.m_impl->pendingTextureRuntimeUploads.erase(
+        std::remove_if(
+            driver.m_impl->pendingTextureRuntimeUploads.begin(),
+            driver.m_impl->pendingTextureRuntimeUploads.end(),
+            [requestId](const DriverImpl::PendingTextureRuntimeUpload& upload)
+            {
+                return upload.requestId == requestId;
+            }),
+        driver.m_impl->pendingTextureRuntimeUploads.end());
+    const bool removedPending =
+        driver.m_impl->pendingTextureRuntimeUploads.size() != pendingCountBefore;
+    const bool removedCompleted =
+        driver.m_impl->completedTextureRuntimeUploads.erase(requestId) != 0u;
+    if (!removedPending && !removedCompleted)
+        driver.m_impl->canceledTextureRuntimeUploadRequestIds.insert(requestId);
+    if (removedPending || removedCompleted)
+        driver.m_impl->textureRuntimeUploadCanceledCount.fetch_add(1u, std::memory_order_relaxed);
+}
+
+DriverResourceAccess::TextureRuntimeUploadDiagnostics
+DriverResourceAccess::GetTextureRuntimeUploadDiagnostics(const Driver& driver)
+{
+    TextureRuntimeUploadDiagnostics diagnostics;
+    if (driver.m_impl == nullptr)
+        return diagnostics;
+
+    std::lock_guard lock(driver.m_impl->pendingTextureRuntimeUploadMutex);
+    diagnostics.pendingRequestCount = driver.m_impl->pendingTextureRuntimeUploads.size();
+    diagnostics.completedResultCount = driver.m_impl->completedTextureRuntimeUploads.size();
+    for (const auto& upload : driver.m_impl->pendingTextureRuntimeUploads)
+        diagnostics.pendingStagingBytes += upload.request.ByteSize();
+    for (const auto& upload : driver.m_impl->recordedTextureRuntimeUploads)
+        diagnostics.pendingStagingBytes += upload.byteCount;
+    diagnostics.requestedCount = driver.m_impl->textureRuntimeUploadRequestedCount.load(std::memory_order_relaxed);
+    diagnostics.recordedCount = driver.m_impl->textureRuntimeUploadRecordedCount.load(std::memory_order_relaxed);
+    diagnostics.consumedCount = driver.m_impl->textureRuntimeUploadConsumedCount.load(std::memory_order_relaxed);
+    diagnostics.failedCount = driver.m_impl->textureRuntimeUploadFailedCount.load(std::memory_order_relaxed);
+    diagnostics.canceledCount = driver.m_impl->textureRuntimeUploadCanceledCount.load(std::memory_order_relaxed);
+    return diagnostics;
+}
+
 void DriverUIAccess::ReleaseUiTextureView(
     Driver& driver,
     const std::shared_ptr<RHI::RHITextureView>& textureView)
@@ -4486,17 +4585,56 @@ void Driver::StartThreadedRenderingWorkers()
     if (!Detail::SupportsThreadedFoundationExecution(*m_impl))
         return;
 
+    NLS::Base::TaskGraph::TaskGraphConfig taskGraphConfig;
+    const auto threadBudget = NLS::Base::Threading::ResolveExecutionPoolBudget(
+        std::thread::hardware_concurrency());
+    taskGraphConfig.workerCount = threadBudget.taskGraphWorkerCount;
+    taskGraphConfig.enableDiagnostics = true;
+    if (!NLS::Base::TaskGraph::InitializeGlobalTaskGraph(taskGraphConfig))
+    {
+        NLS_LOG_ERROR("Driver: failed to start the rendering TaskGraph");
+        return;
+    }
+    m_impl->taskGraph = &NLS::Base::TaskGraph::GetGlobalTaskGraph();
+    NLS_LOG_INFO(
+        "Driver: rendering TaskGraph workers=" +
+        std::to_string(m_impl->taskGraph->GetWorkerCount()) +
+        " jobsForegroundWorkers=" +
+        std::to_string(threadBudget.jobsForegroundWorkerCount) +
+        " jobsBackgroundWorkers=" +
+        std::to_string(threadBudget.jobsBackgroundWorkerCount) +
+        " hardwareConcurrency=" +
+        std::to_string(std::thread::hardware_concurrency()));
+
     m_impl->threadedStopRequested.store(false);
     m_impl->threadedWorkersRunning = true;
     m_impl->renderSceneWorker = std::thread([this]()
     {
         NLS_PROFILE_REGISTER_THREAD("Render Thread");
         Render::Settings::SetThreadDiagnosticsSettings(m_impl->diagnostics);
+        const bool registered = m_impl->taskGraph->RegisterCurrentThread(
+            NLS::Base::TaskGraph::NamedThread::Render);
+        if (!registered)
+            NLS_LOG_ERROR("Driver: Render Thread could not register with the rendering TaskGraph");
         while (!m_impl->threadedStopRequested.load())
         {
             NLS_PROFILE_NAMED_SCOPE("Render Thread Tick");
+            (void)m_impl->taskGraph->PumpCurrentThread();
+
+            // RHI production belongs to the render thread: retire the previous stage
+            // graph, then take the next published frame and schedule its graph without
+            // executing any RHI stage on this thread.
+            RhiThreadCoordinator::FinalizeThreadedSubmissionProduction(*this, true);
+            if (RhiThreadCoordinator::TryScheduleNextThreadedSubmission(
+                    *this,
+                    RhiSubmissionAttribution::Worker) ||
+                RhiThreadCoordinator::TryScheduleIdleMeshRuntimeUploads(*this))
+            {
+                continue;
+            }
+
             const uint64_t observedWakeGeneration =
-                m_impl->threadedWorkerWakeGeneration.load(std::memory_order_acquire);
+                m_impl->threadedWorkerWake.Generation();
             size_t slotIndex = 0u;
             if (m_impl->threadedLifecycle->TryBeginNextRenderFrameBuild(
                 &slotIndex,
@@ -4521,37 +4659,36 @@ void Driver::StartThreadedRenderingWorkers()
                 WaitForThreadedWorkerWake(*m_impl, observedWakeGeneration);
             }
         }
+        (void)m_impl->taskGraph->PumpCurrentThread();
+        // Never leave the producer lane locked by an exiting thread.
+        RhiThreadCoordinator::DrainProducerOwnedThreadedSubmission(*this);
+        m_impl->taskGraph->UnregisterCurrentThread(NLS::Base::TaskGraph::NamedThread::Render);
     });
     m_impl->rhiWorker = std::thread([this]()
     {
         NLS_PROFILE_REGISTER_THREAD("RHI Thread");
         Render::Settings::SetThreadDiagnosticsSettings(m_impl->diagnostics);
+        const bool registered = m_impl->taskGraph->RegisterCurrentThread(
+            NLS::Base::TaskGraph::NamedThread::Rhi);
+        if (!registered)
+            NLS_LOG_ERROR("Driver: RHI Thread could not register with the rendering TaskGraph");
         while (!m_impl->threadedStopRequested.load())
         {
             NLS_PROFILE_NAMED_SCOPE("RHI Thread Tick");
-            const uint64_t observedWakeGeneration =
-                m_impl->threadedWorkerWakeGeneration.load(std::memory_order_acquire);
-            {
-                NLS_PROFILE_NAMED_SCOPE("RhiThread::TryExecuteNextThreadedSubmission");
-                if (RhiThreadCoordinator::TryExecuteNextThreadedSubmission(
-                    *this,
-                    RhiSubmissionAttribution::Worker))
-                {
-                    continue;
-                }
-            }
+            (void)m_impl->taskGraph->PumpCurrentThread();
+            if (m_impl->taskGraph->GetNamedThreadQueueDepth(NLS::Base::TaskGraph::NamedThread::Rhi) != 0u)
+                continue;
 
-            {
-                NLS_PROFILE_NAMED_SCOPE("RhiThread::TryProcessPendingMeshRuntimeUploads");
-                if (RhiThreadCoordinator::TryProcessPendingMeshRuntimeUploads(*this))
-                    continue;
-            }
-
-            {
-                NLS_PROFILE_NAMED_SCOPE("RhiThread::WaitForWake");
-                WaitForThreadedWorkerWake(*m_impl, observedWakeGeneration);
-            }
+            // The RHI thread owns no submission state machine: producers schedule the
+            // stage graph, and this thread only pumps the RHI named queue above. Wait
+            // on graph work targeted at this lane, with a bounded timeout so
+            // driver-level wakeups (UI-only lease expiry, resize) still progress.
+            (void)m_impl->taskGraph->WaitForWork(
+                NLS::Base::TaskGraph::NamedThread::Rhi,
+                kThreadedWorkerWakeTimeout);
         }
+        (void)m_impl->taskGraph->PumpCurrentThread();
+        m_impl->taskGraph->UnregisterCurrentThread(NLS::Base::TaskGraph::NamedThread::Rhi);
     });
 }
 

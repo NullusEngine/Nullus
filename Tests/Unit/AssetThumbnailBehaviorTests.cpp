@@ -2513,6 +2513,50 @@ TEST(AssetThumbnailBehaviorTests, CompleteResidentAssemblyYieldsAfterOnePromotio
     std::filesystem::remove_all(root);
 }
 
+TEST(AssetThumbnailBehaviorTests, ReadyResidentQueryPrunesMarkersWithoutLiveOwners)
+{
+    using namespace NLS::Editor::Assets;
+
+    const auto root = MakeThumbnailPerformanceRoot();
+    auto request = MakeGpuPreviewRequest(root);
+    request.kind = AssetThumbnailKind::PrefabPreview;
+    request.subAssetKey = "prefab:ReadyMarkerPrune";
+    request.previewRendererVersion = "ready-marker-prune:v1";
+    request.settingsFingerprint = "ready-marker-prune";
+
+    const auto registry = ResidentPrefabPreviewRegistry::Create();
+    auto completeSnapshot = std::make_shared<PreviewRenderableSnapshot>();
+    completeSnapshot->drawItems.resize(2u);
+    completeSnapshot->expectedDrawItemCount = 2u;
+    registry->RegisterSnapshot(
+        "runtime:ready-marker-prune",
+        "deps:v1",
+        completeSnapshot,
+        2u);
+    request.residentPrefabPreviewSource = ResidentPrefabPreviewSource {
+        "runtime:ready-marker-prune",
+        "deps:v1",
+        completeSnapshot,
+        registry
+    };
+
+    AssetThumbnailService service;
+    ASSERT_EQ(service.GetThumbnail(request).status, AssetThumbnailServiceStatus::Pending);
+    ASSERT_TRUE(service.HasQueuedReadyResidentThumbnail());
+    ASSERT_EQ(service.GetReadyResidentMarkerCountForTesting(), 1u);
+
+    // Queue/pending/resolved ownership can disappear during a folder or
+    // generation transition. The one-shot marker must not survive as an
+    // every-frame scan entry when no schedulable owner remains.
+    service.DropReadyResidentOwnershipForTesting(request);
+    EXPECT_FALSE(service.HasQueuedReadyResidentThumbnail());
+    EXPECT_EQ(service.GetReadyResidentMarkerCountForTesting(), 0u);
+    EXPECT_FALSE(service.HasQueuedReadyResidentThumbnail())
+        << "The stable empty path must stay O(1) after stale markers are pruned.";
+
+    std::filesystem::remove_all(root);
+}
+
 TEST(AssetThumbnailBehaviorTests, PrefabSceneAssemblyContinuationDoesNotInterleaveRequests)
 {
     using namespace NLS::Editor::Assets;
@@ -4225,6 +4269,104 @@ TEST(AssetThumbnailBehaviorTests, LiveScenePrefabResourcesAttachWithoutArtifactL
     lease.reset();
     sceneLease.reset();
     registry.reset();
+}
+
+TEST(AssetThumbnailBehaviorTests, CompleteLivePrefabResourcesAvoidArtifactFallbackScan)
+{
+    using namespace NLS::Editor::Assets;
+
+    const auto root = MakeThumbnailPerformanceRoot();
+    CountingMeshManager meshManager;
+    CountingMaterialManager materialManager;
+    ScopedServiceOverride<NLS::Core::ResourceManagement::MeshManager> meshManagerOverride(meshManager);
+    ScopedServiceOverride<NLS::Core::ResourceManagement::MaterialManager> materialManagerOverride(materialManager);
+    ScopedThumbnailResourceManagerAssetPaths paths(root / "Assets", root / "EngineAssets");
+    (void)EnsureThumbnailPerformanceTestDriver();
+
+    const auto meshPath = std::string(
+        "Library/Artifacts/50505050-5050-4050-8050-505050505050/Hero.nmesh");
+    const auto materialPath = std::string("Assets/Materials/Hero.mat");
+    const auto meshArtifact = TriangleMeshArtifact();
+    auto* mesh = meshManager.RegisterResource(
+        meshPath,
+        new NLS::Render::Resources::Mesh(
+            meshArtifact.vertices,
+            meshArtifact.indices,
+            meshArtifact.materialIndex,
+            NLS::Render::Resources::MeshBufferUploadMode::CpuToGpu,
+            meshArtifact.boundingSphere));
+    ASSERT_NE(mesh, nullptr);
+
+    NLS::Engine::SceneSystem::Scene scene;
+    auto& liveObject = scene.CreateGameObject("ResidentLiveObject");
+    auto* meshFilter = liveObject.AddComponent<NLS::Engine::Components::MeshFilter>();
+    auto* meshRenderer = liveObject.AddComponent<NLS::Engine::Components::MeshRenderer>();
+    ASSERT_NE(meshFilter, nullptr);
+    ASSERT_NE(meshRenderer, nullptr);
+    meshFilter->SetMesh(mesh);
+    meshFilter->SetModelPathHint(meshPath);
+
+    const auto sourceObject = MakeObjectId("70707070-7070-4070-8070-707070707070");
+    const auto assetId = NLS::Core::Assets::AssetId(
+        NLS::Guid::Parse("52525252-5252-4252-8252-525252525252"));
+    auto prefab = MakePrefabArtifactWithPreviewRendererDependencies();
+    prefab.assetId = assetId;
+    const auto runtimeIdentity = BuildResidentPrefabRuntimeCacheIdentity(
+        assetId.ToString(), "prefab:Hero");
+    auto registry = ResidentPrefabPreviewRegistry::Create();
+    const auto snapshot = std::make_shared<const PreviewRenderableSnapshot>(
+        BuildPreviewRenderableSnapshot(prefab));
+    ASSERT_EQ(snapshot->drawItems.size(), 1u);
+    registry->RegisterSnapshot(runtimeIdentity, "prefab:v1", snapshot, 1024u);
+
+    NLS::Core::ResourceManagement::ResourceLifetimeRegistry resourceLifetimeRegistry;
+    const std::unordered_map<
+        const NLS::Engine::GameObject*,
+        NLS::Engine::Serialize::ObjectId> sourceByInstanceObject {
+        {&liveObject, sourceObject}
+    };
+    const auto probe = [&]
+    {
+        PerformanceStageStats stats;
+        PerformanceStageStatsCapture capture(stats);
+        (void)registry->EnsureLivePrefabSnapshotForScene(
+            root, assetId, "Assets/Models/Hero.gltf", "prefab:Hero", {}, {},
+            prefab, sourceByInstanceObject, meshManager, materialManager, nullptr,
+            resourceLifetimeRegistry);
+        const auto stages = stats.Snapshot();
+        const auto found = std::find_if(stages.stages.begin(), stages.stages.end(),
+            [](const auto& stage)
+            {
+                return stage.domain == PerformanceStageDomain::Prefab &&
+                    stage.stageName == "BuildImportedPrefabRendererDependencyTemplates";
+            });
+        return found == stages.stages.end() ? 0u : found->callCount;
+    };
+
+    EXPECT_EQ(probe(), 1u)
+        << "A partial live package must still run the prefab artifact fallback.";
+    auto partial = registry->Acquire(runtimeIdentity, "prefab:v1");
+    ASSERT_TRUE(partial.has_value());
+    ASSERT_NE(partial->Resources(), nullptr);
+    EXPECT_FALSE(partial->Resources()->IsCompleteForSource());
+
+    auto* material = materialManager.RegisterResource(
+        materialPath, new NLS::Render::Resources::Material());
+    ASSERT_NE(material, nullptr);
+    meshRenderer->SetMaterialAtIndex(0u, *material);
+    EXPECT_EQ(probe(), 0u)
+        << "A valid complete live package must not rebuild the prefab dependencies.";
+    auto complete = registry->Acquire(runtimeIdentity, "prefab:v1");
+    ASSERT_TRUE(complete.has_value());
+    ASSERT_NE(complete->Resources(), nullptr);
+    EXPECT_TRUE(complete->Resources()->IsCompleteForSource());
+    EXPECT_TRUE(complete->Resources()->IsValidFor(meshManager, materialManager, nullptr));
+    EXPECT_EQ(complete->Resources()->drawItems.size(), snapshot->drawItems.size());
+
+    complete.reset();
+    partial.reset();
+    registry.reset();
+    std::filesystem::remove_all(root);
 }
 
 TEST(AssetThumbnailBehaviorTests, RegisteredResourceHandleProbeNeverStartsMissingLoad)

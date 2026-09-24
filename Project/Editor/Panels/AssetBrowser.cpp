@@ -3647,7 +3647,7 @@ void Editor::Panels::AssetBrowser::RebuildProjectAssetDisplayItemsIfNeeded()
 }
 
 void Editor::Panels::AssetBrowser::SetVisibleThumbnailItems(
-	std::vector<NLS::Editor::Assets::AssetBrowserItem> visibleItems)
+    std::vector<NLS::Editor::Assets::AssetBrowserItem> visibleItems)
 {
 	const size_t visibleThumbnailCount = static_cast<size_t>(std::count_if(
 		visibleItems.begin(),
@@ -5068,21 +5068,25 @@ void Editor::Panels::AssetBrowser::DrawCurrentFolderGrid()
 			visibleRowsElapsed
 		};
 		NLS_PROFILE_NAMED_SCOPE("AssetBrowser::DrawCurrentFolderGrid.VisibleRows");
-		for (int row = clipper.DisplayStart; row < clipper.DisplayEnd; ++row)
-		{
-			const auto rowPresentationGeneration = m_projectAssetPresentationGeneration;
+			for (int row = clipper.DisplayStart; row < clipper.DisplayEnd; ++row)
+			{
+				const auto rowPresentationGeneration = m_projectAssetPresentationGeneration;
 			const auto rowBegin = static_cast<size_t>(row) * static_cast<size_t>(columns);
 			const ImVec2 rowCursor = ImGui::GetCursorScreenPos();
 			auto* rowDrawList = ImGui::GetWindowDrawList();
-			const auto rowSegments = NLS::Editor::Assets::ResolveAssetBrowserGridRowGroupSegments(
-				displayItems,
-				rowBegin,
-				static_cast<size_t>(columns));
+				std::vector<NLS::Editor::Assets::AssetBrowserGroupSegment> rowSegments;
+				{
+					rowSegments = NLS::Editor::Assets::ResolveAssetBrowserGridRowGroupSegments(
+						displayItems,
+						rowBegin,
+						static_cast<size_t>(columns));
+				}
 			const ImRect parentClipRect = ImGui::GetCurrentWindow()->DC.CurrentColumns->HostInitialClipRect;
-			ImGui::PushColumnsBackground();
-			rowDrawList->PushClipRect(parentClipRect.Min, parentClipRect.Max, true);
-			for (const auto& segment : rowSegments)
-			{
+				{
+					ImGui::PushColumnsBackground();
+					rowDrawList->PushClipRect(parentClipRect.Min, parentClipRect.Max, true);
+					for (const auto& segment : rowSegments)
+					{
 				const int firstColumn = static_cast<int>(segment.range.begin - rowBegin);
 				const int lastColumnExclusive = firstColumn + static_cast<int>(segment.range.count);
 				const float segmentMinX =
@@ -5103,11 +5107,12 @@ void Editor::Panels::AssetBrowser::DrawCurrentFolderGrid()
 						rowCursor.y + 8.0f + (thumbnailSize + generatedThumbnailSize) * 0.5f),
 					false,
 					cornerFlags);
-			}
-			rowDrawList->PopClipRect();
-			ImGui::PopColumnsBackground();
-			for (int column = 0; column < columns; ++column)
-			{
+					}
+					rowDrawList->PopClipRect();
+					ImGui::PopColumnsBackground();
+				}
+				for (int column = 0; column < columns; ++column)
+				{
 				if (rowPresentationGeneration != m_projectAssetPresentationGeneration)
 				{
 					ImGui::Columns(1);
@@ -5208,11 +5213,11 @@ void Editor::Panels::AssetBrowser::DrawCurrentFolderGrid()
 					if (!disclosureHovered)
 						SelectProjectGridItem(item);
 				}
-				{
-					AssetBrowserArtifactTelemetryAccumulatorScope interactionsTelemetry {
-						interactionsElapsed
-					};
-					DrawProjectGridItemDragSource(item);
+					{
+						AssetBrowserArtifactTelemetryAccumulatorScope interactionsTelemetry {
+							interactionsElapsed
+						};
+						DrawProjectGridItemDragSource(item);
 					DrawProjectGridItemContextMenu(item);
 				}
 				if (presentationGeneration != m_projectAssetPresentationGeneration)
@@ -5308,10 +5313,10 @@ void Editor::Panels::AssetBrowser::DrawCurrentFolderGrid()
 					m_projectBrowserInlineRename.pending = false;
 					BeginInlineRenameProjectItem(item);
 				}
-				{
-					AssetBrowserArtifactTelemetryAccumulatorScope labelTelemetry {
-						labelElapsed
-					};
+					{
+						AssetBrowserArtifactTelemetryAccumulatorScope labelTelemetry {
+							labelElapsed
+						};
 					const float labelPadding = 4.0f;
 					const float labelAvailableWidth = (std::max)(1.0f, labelMax.x - labelMin.x - labelPadding * 2.0f);
 					const auto label = EllipsizeAssetBrowserLabel(item.displayName, labelAvailableWidth);
@@ -5358,33 +5363,35 @@ void Editor::Panels::AssetBrowser::DrawCurrentFolderGrid()
 			}
 		}
 	}
-	ImGui::Columns(1);
-	for (const auto& button : deferredDisclosureButtons)
-	{
-		if (button.drawList == nullptr)
-			continue;
-		DrawAssetBrowserDisclosureButton(
-			button.drawList,
-			button.center,
-			button.radius,
-			button.expanded,
-			button.hovered,
-				true);
+		{
+			ImGui::Columns(1);
+			for (const auto& button : deferredDisclosureButtons)
+			{
+				if (button.drawList == nullptr)
+					continue;
+				DrawAssetBrowserDisclosureButton(
+					button.drawList,
+					button.center,
+					button.radius,
+					button.expanded,
+					button.hovered,
+					true);
+			}
 		}
-	}
 	{
 		AssetBrowserArtifactTelemetryAccumulatorScope visibleSetTelemetry {
 			visibleSetElapsed
 		};
 		SetVisibleThumbnailItems(std::move(visibleThumbnailItems));
 	}
-	{
-		AssetBrowserArtifactTelemetryAccumulatorScope generationScopeTelemetry {
-			generationScopeElapsed
-		};
-		UpdateThumbnailGenerationScope();
-	}
-	RecordAssetBrowserArtifactTelemetryStage(
+		{
+			AssetBrowserArtifactTelemetryAccumulatorScope generationScopeTelemetry {
+				generationScopeElapsed
+			};
+			UpdateThumbnailGenerationScope();
+		}
+		{
+		RecordAssetBrowserArtifactTelemetryStage(
 		NLS::Core::Assets::ArtifactLoadTelemetryStage::ThumbnailUiDrawGridVisibleRows,
 		visibleRowsElapsed,
 		drawTelemetryPath,
@@ -5414,13 +5421,15 @@ void Editor::Panels::AssetBrowser::DrawCurrentFolderGrid()
 		drawTelemetryPath,
 		drawTelemetryItemCount,
 		kAssetBrowserThumbnailUiDrawTelemetryMinimum);
-	RecordAssetBrowserArtifactTelemetryStage(
-		NLS::Core::Assets::ArtifactLoadTelemetryStage::ThumbnailUiDrawGenerationScope,
-		generationScopeElapsed,
-		drawTelemetryPath,
-		drawTelemetryItemCount,
-		kAssetBrowserThumbnailUiDrawTelemetryMinimum);
-}
+		RecordAssetBrowserArtifactTelemetryStage(
+			NLS::Core::Assets::ArtifactLoadTelemetryStage::ThumbnailUiDrawGenerationScope,
+			generationScopeElapsed,
+			drawTelemetryPath,
+			drawTelemetryItemCount,
+			kAssetBrowserThumbnailUiDrawTelemetryMinimum);
+		}
+	}
+	}
 
 void Editor::Panels::AssetBrowser::HandleProjectAssetBrowserDroppedFiles(const std::vector<std::string>& paths)
 {
@@ -6274,6 +6283,11 @@ void Editor::Panels::AssetBrowser::PumpThumbnailPreviewRenderWarmup()
 		m_thumbnailPreviewRenderWarmupCompleted = true;
 		NLS_LOG_INFO("Thumbnail material preview render path warmup completed.");
 	}
+}
+
+bool Editor::Panels::AssetBrowser::IsThumbnailPreviewRenderWarmupComplete() const
+{
+	return m_thumbnailPreviewRenderWarmupCompleted;
 }
 
 void Editor::Panels::AssetBrowser::PumpImportedPrefabThumbnailContinuations()

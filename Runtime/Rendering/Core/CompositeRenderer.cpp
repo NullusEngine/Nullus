@@ -687,6 +687,12 @@ void CompositeRenderer::RecordPickingDiagnostics(const Data::PickingDiagnostics&
     m_rendererStats.RecordPickingDiagnostics(diagnostics);
 }
 
+void CompositeRenderer::RecordRenderBindingSetCreation(const uint64_t count)
+{
+    m_rendererStats.RecordRenderBindingSetCreation(count);
+}
+
+
 void CompositeRenderer::RecordObjectDataRevisionReuse(const bool hit)
 {
     m_rendererStats.RecordObjectDataRevisionReuse(hit);
@@ -696,6 +702,21 @@ void CompositeRenderer::RecordObjectDataRevisionFallback(
     const Data::ObjectDataRevisionFallbackReason reason)
 {
     m_rendererStats.RecordObjectDataRevisionFallback(reason);
+}
+
+void CompositeRenderer::RecordObjectDataFastPath(const bool hit)
+{
+    m_rendererStats.RecordObjectDataFastPath(hit);
+}
+
+void CompositeRenderer::RecordDrawCommandCopy(const uint64_t count)
+{
+    m_rendererStats.RecordDrawCommandCopy(count);
+}
+
+void CompositeRenderer::RecordDrawCommandMove(const uint64_t count)
+{
+    m_rendererStats.RecordDrawCommandMove(count);
 }
 
 }

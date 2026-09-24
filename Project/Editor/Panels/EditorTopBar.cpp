@@ -112,16 +112,6 @@ EditorTopBar::EditorTopBar()
 {
 }
 
-void EditorTopBar::InitializeSettingsMenu()
-{
-    m_menuBar.InitializeSettingsMenu();
-}
-
-void EditorTopBar::HandleShortcuts(const float p_deltaTime)
-{
-    m_menuBar.HandleShortcuts(p_deltaTime);
-}
-
 void EditorTopBar::RegisterWindowPanel(const std::string& p_name, UI::PanelWindow& p_panel)
 {
     m_menuBar.RegisterPanel(p_name, p_panel);

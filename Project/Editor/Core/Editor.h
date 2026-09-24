@@ -75,10 +75,15 @@ public:
     void UpdateValidationSceneCameraMotion();
     void UpdateValidationTimelineTraceExport();
     void UpdateThumbnailTelemetrySummaryExport();
+    [[nodiscard]] bool IsCameraPerformanceWarmupReady() const;
+    void BeginCameraPerformanceMeasurement();
     uint32_t GetValidationCameraForwardCompletedFrames() const;
     bool WasLastSceneViewThreadedFramePublished() const;
+    bool WasCameraPerformanceViewThreadedFramePublished() const;
     std::pair<uint16_t, uint16_t> GetSceneViewSafeSize() const;
+    std::pair<uint16_t, uint16_t> GetCameraPerformanceViewSafeSize() const;
     const Render::Data::FrameInfo& GetSceneViewCumulativeFrameInfo() const;
+    const Render::Data::FrameInfo& GetCameraPerformanceViewCumulativeFrameInfo() const;
 
     /**
      * Update the current editor mode
@@ -142,6 +147,7 @@ private:
     bool m_validationTraceExportFinished = false;
     bool m_validationCameraMotionPendingForFrame = false;
     uint32_t m_validationCameraForwardCompletedFrames = 0u;
+    bool m_cameraPerformanceMeasurementStarted = false;
     std::chrono::steady_clock::time_point m_lastThumbnailTelemetrySummaryWriteTime {};
     bool m_thumbnailTelemetrySummaryWriteAttemptLogged = false;
     bool m_logNextUpdateStages = false;

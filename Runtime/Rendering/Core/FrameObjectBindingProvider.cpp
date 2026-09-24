@@ -10,24 +10,28 @@ FrameObjectBindingProvider::FrameObjectBindingProvider(CompositeRenderer& render
 {
 }
 
+FrameObjectBindingProvider::PreparationState& FrameObjectBindingProvider::ActivePreparationState() const
+{
+    return m_preparationState;
+}
+
 void FrameObjectBindingProvider::BeginFrame(const Data::FrameDescriptor& frameDescriptor)
 {
-    m_framePrepared = true;
-    m_objectPrepared = false;
-    m_preparedDrawCount = 0u;
-    m_preparedMaterial = nullptr;
-    m_preparedShader = nullptr;
+    std::lock_guard lock(m_stateMutex);
+    m_preparationState = {};
+    m_preparationState.framePrepared = true;
     OnBeginFrame(frameDescriptor);
 }
 
 void FrameObjectBindingProvider::EndFrame()
 {
+    std::lock_guard lock(m_stateMutex);
     OnEndFrame();
-    m_framePrepared = false;
-    m_objectPrepared = false;
-    m_preparedDrawCount = 0u;
-    m_preparedMaterial = nullptr;
-    m_preparedShader = nullptr;
+    ActivePreparationState().framePrepared = false;
+    ActivePreparationState().objectPrepared = false;
+    ActivePreparationState().preparedDrawCount = 0u;
+    ActivePreparationState().preparedMaterial = nullptr;
+    ActivePreparationState().preparedShader = nullptr;
 }
 
 bool FrameObjectBindingProvider::TryReservePreparedFrameResources()
@@ -37,23 +41,41 @@ bool FrameObjectBindingProvider::TryReservePreparedFrameResources()
 
 void FrameObjectBindingProvider::ReleaseReservedPreparedFrameResources()
 {
+    std::lock_guard lock(m_stateMutex);
     OnReleaseReservedPreparedFrameResources();
 }
 
 bool FrameObjectBindingProvider::HasReservedPreparedFrameResources() const
 {
+    std::lock_guard lock(m_stateMutex);
     return OnHasReservedPreparedFrameResources();
+}
+
+void FrameObjectBindingProvider::BindCaptureFrameSlot(const size_t)
+{
+    std::lock_guard lock(m_stateMutex);
+}
+
+void FrameObjectBindingProvider::UnbindCaptureFrameSlot()
+{
+    std::lock_guard lock(m_stateMutex);
+}
+
+std::function<void(size_t)> FrameObjectBindingProvider::FreezeCaptureFrame()
+{
+    return [this](size_t slotIndex) { BindCaptureFrameSlot(slotIndex); };
 }
 
 bool FrameObjectBindingProvider::PrepareDraw(PipelineState& pso, const Entities::Drawable& drawable)
 {
+    std::lock_guard lock(m_stateMutex);
     if (drawable.material != nullptr)
         return PrepareDraw(pso, drawable, *drawable.material);
 
-    m_preparedMaterial = nullptr;
-    m_preparedShader = nullptr;
-    m_objectPrepared = OnPrepareDraw(pso, drawable);
-    return m_objectPrepared;
+    ActivePreparationState().preparedMaterial = nullptr;
+    ActivePreparationState().preparedShader = nullptr;
+    ActivePreparationState().objectPrepared = OnPrepareDraw(pso, drawable);
+    return ActivePreparationState().objectPrepared;
 }
 
 bool FrameObjectBindingProvider::PrepareDraw(
@@ -61,11 +83,12 @@ bool FrameObjectBindingProvider::PrepareDraw(
     const Entities::Drawable& drawable,
     const Resources::Material& effectiveMaterial)
 {
+    std::lock_guard lock(m_stateMutex);
     const auto* effectiveShader = effectiveMaterial.GetShader();
-    m_preparedMaterial = &effectiveMaterial;
-    m_preparedShader = effectiveShader;
-    m_objectPrepared = OnPrepareDraw(pso, drawable);
-    return m_objectPrepared;
+    ActivePreparationState().preparedMaterial = &effectiveMaterial;
+    ActivePreparationState().preparedShader = effectiveShader;
+    ActivePreparationState().objectPrepared = OnPrepareDraw(pso, drawable);
+    return ActivePreparationState().objectPrepared;
 }
 
 bool FrameObjectBindingProvider::PrepareDraw(
@@ -74,10 +97,11 @@ bool FrameObjectBindingProvider::PrepareDraw(
     const Resources::Material& effectiveMaterial,
     const Resources::Shader& effectiveShader)
 {
-    m_preparedMaterial = &effectiveMaterial;
-    m_preparedShader = &effectiveShader;
-    m_objectPrepared = OnPrepareDraw(pso, drawable);
-    return m_objectPrepared;
+    std::lock_guard lock(m_stateMutex);
+    ActivePreparationState().preparedMaterial = &effectiveMaterial;
+    ActivePreparationState().preparedShader = &effectiveShader;
+    ActivePreparationState().objectPrepared = OnPrepareDraw(pso, drawable);
+    return ActivePreparationState().objectPrepared;
 }
 
 void FrameObjectBindingProvider::PrepareExplicitDraw(
@@ -85,15 +109,17 @@ void FrameObjectBindingProvider::PrepareExplicitDraw(
     PipelineState& pso,
     const Entities::Drawable& drawable)
 {
+    std::lock_guard lock(m_stateMutex);
     OnPrepareExplicitDraw(commandBuffer, pso, drawable);
-    ++m_preparedDrawCount;
+    ++ActivePreparationState().preparedDrawCount;
 }
 
 bool FrameObjectBindingProvider::CaptureFrameBindingSet(
     std::shared_ptr<RHI::RHIBindingSet>& outBindingSet)
 {
+    std::lock_guard lock(m_stateMutex);
     outBindingSet.reset();
-    if (!m_framePrepared)
+    if (!ActivePreparationState().framePrepared)
         return false;
 
     return OnCaptureFrameBindingSet(outBindingSet) && outBindingSet != nullptr;
@@ -104,6 +130,7 @@ bool FrameObjectBindingProvider::CapturePreparedBindingSets(
     const Entities::Drawable& drawable,
     PreparedBindingSets& outBindings)
 {
+    std::lock_guard lock(m_stateMutex);
     return OnCapturePreparedBindingSets(pso, drawable, outBindings);
 }
 
@@ -112,33 +139,39 @@ bool FrameObjectBindingProvider::CapturePreparedObjectBindingSet(
     const Entities::Drawable& drawable,
     PreparedBindingSets& outBindings)
 {
+    std::lock_guard lock(m_stateMutex);
     outBindings.frameBindingSet.reset();
     return OnCapturePreparedObjectBindingSet(pso, drawable, outBindings);
 }
 
 bool FrameObjectBindingProvider::IsFramePrepared() const
 {
-    return m_framePrepared;
+    std::lock_guard lock(m_stateMutex);
+    return ActivePreparationState().framePrepared;
 }
 
 bool FrameObjectBindingProvider::IsObjectPrepared() const
 {
-    return m_objectPrepared;
+    std::lock_guard lock(m_stateMutex);
+    return ActivePreparationState().objectPrepared;
 }
 
 uint64_t FrameObjectBindingProvider::GetPreparedDrawCount() const
 {
-    return m_preparedDrawCount;
+    std::lock_guard lock(m_stateMutex);
+    return ActivePreparationState().preparedDrawCount;
 }
 
 const Resources::Material* FrameObjectBindingProvider::GetPreparedMaterial() const
 {
-    return m_preparedMaterial;
+    std::lock_guard lock(m_stateMutex);
+    return ActivePreparationState().preparedMaterial;
 }
 
 const Resources::Shader* FrameObjectBindingProvider::GetPreparedShader() const
 {
-    return m_preparedShader;
+    std::lock_guard lock(m_stateMutex);
+    return ActivePreparationState().preparedShader;
 }
 
 void FrameObjectBindingProvider::OnBeginFrame(const Data::FrameDescriptor&)

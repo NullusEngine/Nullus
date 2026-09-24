@@ -13,6 +13,8 @@
 
 namespace NLS::Editor::Assets
 {
+struct ImportedPrefabRendererDependencyTemplate;
+
 struct PreviewDrawItem
 {
     NLS::Engine::Serialize::ObjectId sourceObject;
@@ -42,4 +44,7 @@ struct PreparedPrefabPreviewMeshPayload
 
 PreviewRenderableSnapshot BuildPreviewRenderableSnapshot(
     const NLS::Engine::Assets::PrefabArtifact& prefab);
+PreviewRenderableSnapshot BuildPreviewRenderableSnapshot(
+    const NLS::Engine::Assets::PrefabArtifact& prefab,
+    const std::vector<ImportedPrefabRendererDependencyTemplate>& templates);
 }

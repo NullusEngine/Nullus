@@ -1,4 +1,4 @@
-﻿#include "Panels/AView.h"
+#include "Panels/AView.h"
 #include "Panels/ViewFrameLifecycle.h"
 #include "Core/EditorActions.h"
 #include "Core/EditorCameraPerformanceBenchmark.h"
@@ -633,8 +633,21 @@ uint64_t Editor::Panels::AView::BuildStaticFrameCacheKey(
     HashCombine(seed, static_cast<uint64_t>(width));
     HashCombine(seed, static_cast<uint64_t>(height));
     HashCombine(seed, scene.GetRenderContentRevision());
-    HashCombine(seed, Render::Resources::Material::GetGlobalMutationEpoch());
-    HashCombine(seed, Render::Resources::Mesh::GetGlobalMutationEpoch());
+    // The renderer reports a scene-scoped revision that advances only when its
+    // own synchronization observed a render-affecting change. That signal is
+    // strictly narrower than the process-wide material/mesh mutation epochs,
+    // which also advance for unrelated resource lifetime events (thumbnail
+    // generation, asset reloads) and would otherwise make this cache miss on
+    // every frame.
+    //
+    // This key is built before EnsureRenderer() runs, so the first frame of a
+    // view has no renderer yet. That case must contribute the same value the
+    // fresh renderer reports (zero) rather than a process-wide epoch: hashing a
+    // different component here would make the first frame key unmatchable by the
+    // second frame and the cache could never hit.
+    HashCombine(seed, m_renderer != nullptr
+        ? m_renderer->GetSceneRenderContentRevision()
+        : 0u);
     HashCombine(seed, static_cast<uint64_t>(camera.GetProjectionMode()));
     HashCombine(seed, static_cast<uint64_t>(camera.GetVisibleLayerMask()));
     HashCombine(seed, camera.HasFrustumGeometryCulling() ? 1u : 0u);

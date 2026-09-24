@@ -109,19 +109,49 @@ namespace NLS::Editor::Rendering
             ++outItems.visitedGameObjects;
             const bool actorVisibleToSceneView = IsSelectedDebugActorVisibleToSceneView(actor, filter);
 
-            if (auto* meshRenderer = actorVisibleToSceneView
-                    ? actor.GetComponent<Engine::Components::MeshRenderer>()
-                    : nullptr;
-                meshRenderer != nullptr && meshRenderer->IsSelfEnabled())
+            // Resolve every component this node can contribute in one pass.
+            // GetComponent<T>() re-enters the reflection registry for each
+            // requested type, and doing that up to four times per GameObject
+            // dominated large selection collections.
+            Engine::Components::MeshRenderer* meshRenderer = nullptr;
+            Engine::Components::MeshFilter* meshFilter = nullptr;
+            Engine::Components::CameraComponent* cameraComponent = nullptr;
+            Engine::Components::LightComponent* lightComponent = nullptr;
+            if (actorVisibleToSceneView)
             {
-                auto* meshFilter = actor.GetComponent<Engine::Components::MeshFilter>();
+                for (const auto& component : actor.GetComponents())
+                {
+                    if (component == nullptr)
+                        continue;
+
+                    auto* rawComponent = component.get();
+                    if (meshRenderer == nullptr)
+                        meshRenderer = dynamic_cast<Engine::Components::MeshRenderer*>(rawComponent);
+                    if (meshFilter == nullptr)
+                        meshFilter = dynamic_cast<Engine::Components::MeshFilter*>(rawComponent);
+                    if (collectCameras && cameraComponent == nullptr)
+                        cameraComponent = dynamic_cast<Engine::Components::CameraComponent*>(rawComponent);
+                    if (collectLights && lightComponent == nullptr)
+                        lightComponent = dynamic_cast<Engine::Components::LightComponent*>(rawComponent);
+
+                    if (meshRenderer != nullptr && meshFilter != nullptr &&
+                        (!collectCameras || cameraComponent != nullptr) &&
+                        (!collectLights || lightComponent != nullptr))
+                    {
+                        break;
+                    }
+                }
+            }
+
+            if (meshRenderer != nullptr && meshRenderer->IsSelfEnabled())
+            {
                 auto* mesh = meshFilter != nullptr ? meshFilter->ResolveMesh() : nullptr;
                 if (mesh != nullptr)
                 {
                     NLS::Render::Resources::Material* sourceMaterial = nullptr;
-                    const auto& materials = meshRenderer->ResolveMaterials();
-                    if (mesh->GetMaterialIndex() < materials.size())
-                        sourceMaterial = materials[mesh->GetMaterialIndex()];
+                    const auto materialIndex = mesh->GetMaterialIndex();
+                    if (materialIndex < meshRenderer->GetMaterials().size())
+                        sourceMaterial = meshRenderer->ResolveMaterialAtIndex(materialIndex);
 
                     auto* transform = actor.GetTransform();
                     DebugGameObjectDebugDrawItems::SelectionMeshItem item {
@@ -140,26 +170,20 @@ namespace NLS::Editor::Rendering
                 }
             }
 
-            if (collectCameras && actorVisibleToSceneView)
+            if (cameraComponent != nullptr)
             {
-                if (auto* camera = actor.GetComponent<Engine::Components::CameraComponent>(); camera != nullptr)
-                {
-                    auto* transform = actor.GetTransform();
-                    outItems.cameras.push_back({
-                        camera,
-                        transform->GetWorldPosition(),
-                        transform->GetWorldRotation(),
-                        1.0f,
-                        actorDepth == 0u ? kSelectionOutlineParentClassification : kSelectionOutlineChildClassification
-                    });
-                }
+                auto* transform = actor.GetTransform();
+                outItems.cameras.push_back({
+                    cameraComponent,
+                    transform->GetWorldPosition(),
+                    transform->GetWorldRotation(),
+                    1.0f,
+                    actorDepth == 0u ? kSelectionOutlineParentClassification : kSelectionOutlineChildClassification
+                });
             }
 
-            if (collectLights && actorVisibleToSceneView)
-            {
-                if (auto* light = actor.GetComponent<Engine::Components::LightComponent>(); light != nullptr)
-                    outItems.lights.push_back(light);
-            }
+            if (lightComponent != nullptr)
+                outItems.lights.push_back(lightComponent);
 
             for (auto* child : actor.GetChildren())
             {

@@ -275,6 +275,20 @@ public:
         const NLS::Engine::Assets::PrefabArtifact& prefab,
         const PrefabInstanceRecord& instance,
         bool includeDefaultOverrides) const;
+    std::vector<PrefabOverrideDescriptor> GetPrefabOverridesForObject(
+        const NLS::Engine::Assets::PrefabArtifact& prefab,
+        const PrefabInstanceRecord& instance,
+        NLS::Engine::GameObject& liveObject,
+        bool includeDefaultOverrides) const;
+    // Marker-only discovery for Inspector presentation. Override identities and
+    // kinds are identical to GetPrefabOverridesForObject, but base/local values
+    // are intentionally left unpopulated. Marker classification must never pay
+    // for materializing values it does not render.
+    std::vector<PrefabOverrideDescriptor> GetPrefabOverrideMarkersForObject(
+        const NLS::Engine::Assets::PrefabArtifact& prefab,
+        const PrefabInstanceRecord& instance,
+        NLS::Engine::GameObject& liveObject,
+        bool includeDefaultOverrides) const;
     PrefabOperationResult ApplySingleOverride(
         NLS::Engine::Assets::PrefabArtifact& prefab,
         const PrefabOverrideDescriptor& overrideRecord,
@@ -343,7 +357,8 @@ public:
         PrefabInstanceRegistry& instanceRegistry,
         const std::function<std::optional<NLS::Engine::Assets::PrefabArtifact>(
             NLS::Core::Assets::AssetId,
-            const std::string&)>& prefabResolver) const;
+            const std::string&)>& prefabResolver,
+        bool synchronousAssetReferencePrewarm = true) const;
     PrefabOperationResult RestorePrefabInstancesFromSceneDocument(
         const NLS::Engine::Serialize::ObjectGraphDocument& sceneDocument,
         NLS::Engine::SceneSystem::Scene& scene,
@@ -351,6 +366,7 @@ public:
         PrefabInstanceRegistry& instanceRegistry,
         const std::function<std::shared_ptr<const NLS::Engine::Assets::PrefabArtifact>(
             NLS::Core::Assets::AssetId,
-            const std::string&)>& prefabResolver) const;
+            const std::string&)>& prefabResolver,
+        bool synchronousAssetReferencePrewarm = true) const;
 };
 }

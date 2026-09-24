@@ -35,6 +35,7 @@
 #include "Rendering/Settings/GraphicsBackendUtils.h"
 #include "Rendering/Tooling/RenderDocEnvironment.h"
 #include "Settings/EditorSettings.h"
+#include <Settings/ProjectLaunchOptions.h>
 #include "Settings/EditorSettingsPersistence.h"
 #include "Utils/PathParser.h"
 #include <Scripting/ScriptComponent.h>
@@ -924,7 +925,8 @@ namespace
 Editor::Core::Context::Context(const std::string& p_projectPath, const std::string& p_projectName,
     std::optional<Render::Settings::EGraphicsBackend> p_backendOverride,
     std::optional<Render::Settings::RenderDocSettings> p_renderDocOverride,
-    std::optional<Render::Settings::EngineDiagnosticsSettings> p_diagnosticsOverride)
+    std::optional<Render::Settings::EngineDiagnosticsSettings> p_diagnosticsOverride,
+    const bool p_dx12DebugLayer)
     : projectPath(p_projectPath),
     projectName(p_projectName),
     projectFilePath(p_projectPath + Utils::PathParser::Separator() + p_projectName + ".nullus"), 
@@ -1043,16 +1045,53 @@ Editor::Core::Context::Context(const std::string& p_projectPath, const std::stri
 
     Editor::Settings::EditorSettingsRegistry editorSettingsRegistry;
     Editor::Settings::EditorSettings::RegisterSettingObjects(editorSettingsRegistry);
-    Editor::Settings::EditorSettingsPersistence::Load(
-        std::filesystem::path(p_projectPath) / "UserSettings" / "editor-settings.json",
-        editorSettingsRegistry);
+    const auto editorSettingsPath =
+        std::filesystem::path(p_projectPath) / "UserSettings" / "editor-settings.json";
+    Editor::Settings::EditorSettingsPersistence::Load(editorSettingsPath, editorSettingsRegistry);
+    // Launch options are owned by the launcher startup panel and stored in the
+    // project file, because they are consumed before the driver exists.
+    auto launchOptions = Engine::Settings::ReadProjectLaunchOptions(projectFilePath);
+    if (const auto legacy = Editor::Settings::EditorSettingsPersistence::ReadLegacyLaunchOptionValues(editorSettingsPath);
+        legacy.verticalSynchronization.has_value() || legacy.threadedRendering.has_value() ||
+        legacy.renderDocStartupCaptureFrames.has_value())
+    {
+        // One-time migration: keep the values a previous editor build persisted
+        // in the editor settings file when the project file does not own them yet.
+        bool needsWrite = false;
+        if (!launchOptions.hasVerticalSynchronization && legacy.verticalSynchronization.has_value())
+        {
+            launchOptions.verticalSynchronization = *legacy.verticalSynchronization;
+            needsWrite = true;
+        }
+        if (!launchOptions.hasThreadedRendering && legacy.threadedRendering.has_value())
+        {
+            launchOptions.threadedRendering = *legacy.threadedRendering;
+            needsWrite = true;
+        }
+        if (!launchOptions.hasRenderDocStartupCaptureFrames && legacy.renderDocStartupCaptureFrames.has_value())
+        {
+            launchOptions.renderDocStartupCaptureFrames = *legacy.renderDocStartupCaptureFrames;
+            needsWrite = true;
+        }
+        if (needsWrite)
+        {
+            std::string migrationError;
+            if (Engine::Settings::WriteProjectLaunchOptions(projectFilePath, launchOptions, &migrationError))
+                NLS_LOG_INFO("Migrated editor launch options into the project file.");
+            else
+                NLS_LOG_WARNING("Failed to migrate editor launch options into the project file: " + migrationError);
+        }
+    }
     auto renderDocSettings = Editor::Settings::EditorSettings::BuildRenderDocSettings();
+    if (launchOptions.renderDocStartupCaptureFrames > 0)
+    {
+        renderDocSettings.startupCaptureAfterFrames = static_cast<uint32_t>(launchOptions.renderDocStartupCaptureFrames);
+        renderDocSettings.enabled = true;
+    }
     if (m_renderDocOverride.has_value())
         renderDocSettings = m_renderDocOverride.value();
     m_diagnosticsSettings = Editor::Settings::EditorSettings::BuildDiagnosticsSettings();
     ApplyDiagnosticsOverride(m_diagnosticsSettings);
-    const auto& runtimeSettings = Editor::Settings::EditorSettings::GetRuntimeSettingsObject();
-
     const auto logDirectory = std::filesystem::path(p_projectPath) / "Logs";
     std::error_code logDirectoryError;
     std::filesystem::create_directories(logDirectory, logDirectoryError);
@@ -1083,7 +1122,14 @@ Editor::Core::Context::Context(const std::string& p_projectPath, const std::stri
     /* Graphics context creation */
     NLS::Render::Settings::DriverSettings driverSettings;
     driverSettings.graphicsBackend = graphicsBackend;
-    driverSettings.enableThreadedRendering = runtimeSettings.enableThreadedRendering;
+    if (graphicsBackend == Render::Settings::EGraphicsBackend::DX12)
+    {
+        driverSettings.debugMode = p_dx12DebugLayer ||
+            Render::Settings::IsEnvironmentFlagEnabled("NLS_DX12_GPU_VALIDATION");
+        NLS_LOG_INFO(std::string("[Startup] DX12 debug layer=") +
+            (driverSettings.debugMode ? "enabled" : "disabled"));
+    }
+    driverSettings.enableThreadedRendering = launchOptions.threadedRendering;
     driverSettings.enableLightGrid = Editor::Settings::EditorSettings::GetRenderingSettingsObject().enableLightGrid;
     driverSettings.threadedFrameSlotCount = Editor::Core::ResolveEditorThreadedFrameSlotCount(driverSettings.framesInFlight);
     driverSettings.threadedPublishRetirementWaitMs = Editor::Core::ResolveEditorThreadedPublishRetirementWaitMs();
@@ -1160,12 +1206,13 @@ Editor::Core::Context::Context(const std::string& p_projectPath, const std::stri
         window->GetNativeWindowHandle(),
         static_cast<uint32_t>(initialFramebufferSize.x),
         static_cast<uint32_t>(initialFramebufferSize.y),
-        projectSettings.GetOrDefault<bool>("vsync", true)))
+        launchOptions.verticalSynchronization))
     {
         const std::string message = "Editor startup failed: CreatePlatformSwapchain returned false.";
         NLS_LOG_ERROR(message);
         throw std::runtime_error(message);
     }
+    NLS_LOG_INFO(std::string("Editor swapchain vsync: ") + (launchOptions.verticalSynchronization ? "enabled" : "disabled") + " (project launch options)");
     NLS::Core::ServiceLocator::Provide<NLS::Render::Context::Driver>(*driver);
     NLS::Core::ServiceLocator::Provide<NLS::Windowing::Window>(*window);
 

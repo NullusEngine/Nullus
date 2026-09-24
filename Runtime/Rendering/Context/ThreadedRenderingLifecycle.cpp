@@ -4,6 +4,8 @@
 #include <exception>
 #include <utility>
 
+#include <Debug/Logger.h>
+
 #include "Profiling/Profiler.h"
 
 namespace NLS::Render::Context
@@ -74,6 +76,18 @@ namespace
         build.drawCommandCount = renderScenePackage.drawCommandCount;
         build.containsParallelCommandWorkUnits = renderScenePackage.containsParallelCommandWorkUnits;
         return build;
+    }
+
+    void ApplyPreparedRenderSceneCaptureMetadata(
+        FrameSnapshot& snapshot,
+        const RenderScenePackage& renderScenePackage)
+    {
+        snapshot.recordedDrawCommands = renderScenePackage.recordedDrawCommands;
+        snapshot.visibleOpaqueDrawCount = renderScenePackage.opaqueDrawCount;
+        snapshot.visibleDecalDrawCount = renderScenePackage.decalDrawCount;
+        snapshot.visibleTransparentDrawCount = renderScenePackage.transparentDrawCount;
+        snapshot.visibleSkyboxDrawCount = renderScenePackage.skyboxDrawCount;
+        snapshot.visibleHelperDrawCount = renderScenePackage.helperDrawCount;
     }
 
     RenderScenePackage BuildFallbackRenderScenePackage(const FrameSnapshot& snapshot)
@@ -845,7 +859,7 @@ bool ThreadedRenderingLifecycle::PublishPreparedFrameLocked(
     slot->publishOrigin = ThreadedFramePublishOrigin::PreparedPackage;
     slot->renderSceneAttribution = RenderSceneAttribution::Unknown;
     slot->rhiSubmissionAttribution = RhiSubmissionAttribution::Unknown;
-    slot->preparedRenderSceneBuilder = [renderScenePackage]() mutable
+    slot->preparedRenderSceneBuilder = [renderScenePackage](const size_t) mutable
     {
         return renderScenePackage;
     };
@@ -990,6 +1004,12 @@ bool ThreadedRenderingLifecycle::CompleteRenderSceneLocked(
     if (slot == nullptr || slot->stage != expectedStage)
         return false;
 
+    if (slot->publishOrigin == ThreadedFramePublishOrigin::PreparedBuilder &&
+        attribution == RenderSceneAttribution::RendererPrepared &&
+        slot->snapshot.has_value())
+    {
+        ApplyPreparedRenderSceneCaptureMetadata(slot->snapshot.value(), renderScenePackage);
+    }
     slot->renderScenePackage = renderScenePackage;
     slot->renderFrameBuild = BuildRenderFrameBuild(renderScenePackage);
     slot->preparedRenderSceneBuilder.reset();
@@ -1048,11 +1068,18 @@ bool ThreadedRenderingLifecycle::ResolveRenderScenePreparing(
     {
         try
         {
-            renderScenePackage = renderSceneBuilder();
+            renderScenePackage = renderSceneBuilder(slotIndex);
             attribution = RenderSceneAttribution::RendererPrepared;
         }
         catch (const std::exception& exception)
         {
+            NLS_LOG_ERROR(
+                "[ThreadedRenderingLifecycle] prepared render-scene builder failed slot=" +
+                std::to_string(slotIndex) +
+                " frame=" +
+                std::to_string(snapshot.frameId) +
+                " diagnostic=" +
+                exception.what());
             renderScenePackage = BuildPreparedBuilderFailedRenderScenePackage(
                 snapshot,
                 resolutionDesc,
@@ -1061,6 +1088,12 @@ bool ThreadedRenderingLifecycle::ResolveRenderScenePreparing(
         }
         catch (...)
         {
+            NLS_LOG_ERROR(
+                "[ThreadedRenderingLifecycle] prepared render-scene builder failed slot=" +
+                std::to_string(slotIndex) +
+                " frame=" +
+                std::to_string(snapshot.frameId) +
+                " diagnostic=unknown exception");
             renderScenePackage = BuildPreparedBuilderFailedRenderScenePackage(
                 snapshot,
                 resolutionDesc,

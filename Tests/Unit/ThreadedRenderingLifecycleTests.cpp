@@ -242,7 +242,7 @@ namespace
         }
 
         NLS::Render::Context::PreparedRenderSceneBuilder BuildPreparedRenderSceneBuilder(
-            const NLS::Render::Context::FrameSnapshot& snapshot) const override
+            const NLS::Render::Context::FrameSnapshot& snapshot) override
         {
             const uint64_t sceneGameObjectCount = HasDescriptor<DescriptorRequiredForPreparedBuilder>()
                 ? GetDescriptor<DescriptorRequiredForPreparedBuilder>().sceneGameObjectCount
@@ -4337,7 +4337,7 @@ TEST(ThreadedRenderingLifecycleTests, ThreadedWorkerWakeObservedBeforeWaitReturn
     ASSERT_NE(impl, nullptr);
 
     const uint64_t observedGeneration =
-        impl->threadedWorkerWakeGeneration.load(std::memory_order_acquire);
+        impl->threadedWorkerWake.Generation();
     NLS::Render::Context::Detail::NotifyThreadedWorkers(*impl);
 
     EXPECT_TRUE(NLS::Render::Context::Detail::WaitForThreadedWorkerWake(
@@ -4494,10 +4494,10 @@ TEST(ThreadedRenderingLifecycleTests, UiOnlyFrameSuppressesUnchangedContentUntil
 
     auto unchangedSnapshot = MakeVisibleUiSnapshot(921u, 128.0f, 72.0f, changedTextureId);
     const uint64_t wakeGenerationBeforeUnchangedPublish =
-        impl->threadedWorkerWakeGeneration.load(std::memory_order_acquire);
+        impl->threadedWorkerWake.Generation();
     NLS::Render::Context::DriverUIAccess::PublishUiDrawDataSnapshot(driver, unchangedSnapshot);
     EXPECT_EQ(
-        impl->threadedWorkerWakeGeneration.load(std::memory_order_acquire),
+        impl->threadedWorkerWake.Generation(),
         wakeGenerationBeforeUnchangedPublish)
         << "Publishing a new snapshot object with identical UI content must not wake workers.";
     EXPECT_FALSE(NLS::Render::Context::DriverUIAccess::PublishUiOnlyFrame(driver, 128u, 72u));
@@ -6777,6 +6777,109 @@ TEST(ThreadedRenderingLifecycleTests, InRenderPassChildCommandRecordingUsesOnePa
         EXPECT_EQ(child->barrierCalls, 0u);
         EXPECT_GT(child->drawIndexedCalls + child->drawCalls, 0u);
     }
+}
+
+TEST(ThreadedRenderingLifecycleTests, ExternalSceneOutputReportsOrderedParallelFallback)
+{
+    ScopedThreadedRenderingJobSystem jobSystem(2u);
+    ASSERT_TRUE(jobSystem.IsInitialized());
+
+    NLS::Render::Settings::DriverSettings settings;
+    settings.graphicsBackend = NLS::Render::Settings::EGraphicsBackend::NONE;
+    settings.enableExplicitRHI = false;
+    settings.enableThreadedRendering = true;
+    settings.threadedFrameSlotCount = 1u;
+    settings.framesInFlight = 1u;
+
+    NLS::Render::Context::Driver driver(settings);
+    NLS::Core::ServiceLocator::Provide(driver);
+    NLS::Render::Context::DriverTestAccess::PauseThreadedRenderingWorkers(driver);
+    auto explicitDevice = std::make_shared<TestExplicitDevice>();
+    explicitDevice->MutableCapabilities().supportsParallelCommandRecording = true;
+    explicitDevice->MutableCapabilities().supportsParallelCommandTranslation = true;
+    explicitDevice->MutableCapabilities().supportsInRenderPassChildCommandBuffers = true;
+    NLS::Render::Context::DriverTestAccess::SetExplicitDevice(driver, explicitDevice);
+
+    auto& frameContext = NLS::Render::Context::DriverTestAccess::EnsureFrameContext(driver, 0u);
+    auto commandBuffer = std::make_shared<TestCommandBuffer>();
+    auto commandPool = std::make_shared<TestCommandPool>();
+    auto frameFence = std::make_shared<TestFence>();
+    commandPool->commandBuffer = commandBuffer;
+    frameContext.commandBuffer = commandBuffer;
+    frameContext.commandPool = commandPool;
+    frameContext.frameFence = frameFence;
+    frameContext.resourceStateTracker = NLS::Render::RHI::CreateDefaultResourceStateTracker();
+
+    auto* lifecycle = NLS::Render::Context::DriverTestAccess::GetThreadedRenderingLifecycle(driver);
+    ASSERT_NE(lifecycle, nullptr);
+
+    NLS::Render::Context::FrameSnapshot snapshot;
+    snapshot.frameId = 617u;
+    snapshot.targetsSwapchain = false;
+    snapshot.visibleOpaqueDrawCount = 2000u;
+    ASSERT_TRUE(NLS::Render::Context::DriverTestAccess::TryPublishHarnessFrameSnapshot(driver, snapshot));
+
+    size_t slotIndex = 0u;
+    NLS::Render::Context::FrameSnapshot publishedSnapshot;
+    ASSERT_TRUE(lifecycle->TryBeginNextRenderScene(&slotIndex, &publishedSnapshot));
+
+    auto opaquePipeline = std::make_shared<TestGraphicsPipeline>("OpaquePipeline");
+    auto materialBindingSet = std::make_shared<TestBindingSet>("MaterialBindingSet");
+    auto mesh = std::make_shared<TestMesh>();
+
+    NLS::Render::Context::RenderPassCommandInput passInput;
+    passInput.kind = NLS::Render::Context::RenderPassCommandKind::Opaque;
+    passInput.drawCount = 2000u;
+    passInput.requiresFrameData = true;
+    passInput.requiresObjectData = true;
+    passInput.targetsSwapchain = false;
+    passInput.renderWidth = 64u;
+    passInput.renderHeight = 64u;
+    passInput.clearColor = true;
+    passInput.clearDepth = true;
+    passInput.usesColorAttachment = true;
+    passInput.usesDepthStencilAttachment = true;
+    passInput.recordedDrawCommands.reserve(2000u);
+    for (uint32_t drawIndex = 0u; drawIndex < 2000u; ++drawIndex)
+    {
+        passInput.recordedDrawCommands.push_back({ opaquePipeline, nullptr, nullptr, nullptr, materialBindingSet, mesh, 1u });
+    }
+
+    NLS::Render::Context::RenderScenePackage package;
+    package.frameId = publishedSnapshot.frameId;
+    package.targetsSwapchain = false;
+    package.visibleDrawCount = 2000u;
+    package.opaqueDrawCount = 2000u;
+    package.hasVisibleDraws = true;
+    package.frameDataReady = true;
+    package.objectDataReady = true;
+    package.renderWidth = 64u;
+    package.renderHeight = 64u;
+    package.containsParallelCommandWorkUnits = true;
+    package.externalSceneOutputTextureCount = 1u;
+    package.externalSceneOutputIdentity = 7u;
+    package.externalSceneOutputIdentities = { 7u };
+    package.passCommandInputs = { passInput };
+    package.parallelCommandWorkUnits = NLS::Render::Context::BuildRecordedDrawCommandWorkUnitsForPass(
+        passInput,
+        0u,
+        0u);
+    package.parallelCommandWorkUnitCount = static_cast<uint64_t>(package.parallelCommandWorkUnits.size());
+
+    ASSERT_TRUE(lifecycle->CompleteRenderScene(slotIndex, package));
+
+    NLS::Render::Context::DriverTestAccess::DrainThreadedRendering(driver);
+
+    const auto copiedSlot = lifecycle->CopySlot(0u);
+    ASSERT_TRUE(copiedSlot.has_value());
+    ASSERT_TRUE(copiedSlot->submissionFrame.has_value());
+    EXPECT_FALSE(copiedSlot->submissionFrame->usedParallelCommandPath);
+    EXPECT_TRUE(copiedSlot->submissionFrame->usedSerialCommandPath);
+    EXPECT_EQ(copiedSlot->submissionFrame->parallelRecordingWorkerCount, 0u);
+    EXPECT_NE(
+        copiedSlot->submissionFrame->parallelFallbackReason.find("external scene output"),
+        std::string::npos)
+        << copiedSlot->submissionFrame->parallelFallbackReason;
 }
 
 TEST(ThreadedRenderingLifecycleTests, InRenderPassChildCommandRecordingReusesChildCommandPoolsAcrossFenceConfirmedSlotReuse)
@@ -10319,6 +10422,33 @@ TEST(ThreadedRenderingLifecycleTests, SlicedParallelWorkUnitsFallbackToUnslicedP
     EXPECT_EQ(firstSlicedWorkUnit->recordedDrawCount, NLS::Render::Context::kRecordedDrawCommandSliceThreshold);
 }
 
+TEST(ThreadedRenderingLifecycleTests, FallbackComputeWorkUnitsReceiveUniqueResourceIndices)
+{
+    NLS::Render::Context::RenderScenePackage package;
+    package.computeDispatchInputs.resize(2u);
+
+    NLS::Render::Context::RenderPassCommandInput graphicsPassInput;
+    graphicsPassInput.kind = NLS::Render::Context::RenderPassCommandKind::Opaque;
+    graphicsPassInput.queueType = NLS::Render::RHI::QueueType::Graphics;
+    package.passCommandInputs.push_back(graphicsPassInput);
+
+    const auto workUnits = NLS::Render::Context::Detail::BuildParallelCommandWorkUnits(
+        package,
+        false,
+        false,
+        false);
+
+    ASSERT_EQ(workUnits.size(), 3u);
+    for (size_t index = 0u; index < workUnits.size(); ++index)
+    {
+        EXPECT_EQ(workUnits[index].workUnitIndex, index);
+        EXPECT_EQ(workUnits[index].submissionOrder, index);
+    }
+    EXPECT_EQ(workUnits[0].commandInput.queueType, NLS::Render::RHI::QueueType::Compute);
+    EXPECT_EQ(workUnits[1].commandInput.queueType, NLS::Render::RHI::QueueType::Compute);
+    EXPECT_EQ(workUnits[2].commandInput.queueType, NLS::Render::RHI::QueueType::Graphics);
+}
+
 TEST(ThreadedRenderingLifecycleTests, RecordedDrawCommandSlicingAllowsStencilClearInParentOwnedChildRecording)
 {
     NLS::Render::Context::RenderPassCommandInput passInput;
@@ -12759,6 +12889,141 @@ TEST(ThreadedRenderingLifecycleTests, ParallelRecordingUsesMultipleWorkersForEli
     EXPECT_EQ(explicitDevice->GetCreatedCommandPools().size(), 2u);
     for (const auto& submittedBuffer : explicitDevice->GetTestQueue()->lastSubmitDesc.commandBuffers)
         EXPECT_NE(submittedBuffer, frameContext.commandBuffer);
+}
+
+TEST(ThreadedRenderingLifecycleTests, ParallelCommandPoolsRecreateWhenAFrameSlotChangesQueueType)
+{
+    NLS::Render::Settings::DriverSettings settings;
+    settings.graphicsBackend = NLS::Render::Settings::EGraphicsBackend::NONE;
+    settings.enableExplicitRHI = false;
+    settings.enableThreadedRendering = true;
+    settings.threadedFrameSlotCount = 1u;
+    settings.framesInFlight = 1u;
+
+    NLS::Render::Context::Driver driver(settings);
+    NLS::Core::ServiceLocator::Provide(driver);
+    NLS::Render::Context::DriverTestAccess::PauseThreadedRenderingWorkers(driver);
+    auto explicitDevice = std::make_shared<TestExplicitDevice>();
+    NLS::Render::Context::DriverTestAccess::SetExplicitDevice(driver, explicitDevice);
+
+    auto& frameContext = NLS::Render::Context::DriverTestAccess::EnsureFrameContext(driver, 0u);
+    auto commandBuffer = std::make_shared<TestCommandBuffer>();
+    auto commandPool = std::make_shared<TestCommandPool>();
+    auto frameFence = std::make_shared<TestFence>();
+    frameFence->signaled = true;
+    commandPool->commandBuffer = commandBuffer;
+    frameContext.commandBuffer = commandBuffer;
+    frameContext.commandPool = commandPool;
+    frameContext.frameFence = frameFence;
+    frameContext.resourceStateTracker = nullptr;
+
+    auto computePipeline = std::make_shared<TestComputePipeline>("QueueTypeSwitchCompute");
+    auto graphicsPipeline = std::make_shared<TestGraphicsPipeline>("QueueTypeSwitchGraphics");
+    auto materialBindingSet = std::make_shared<TestBindingSet>("QueueTypeSwitchBindings");
+    auto mesh = std::make_shared<TestMesh>();
+
+    const auto buildPackage = [&](const uint64_t frameId, const bool compute)
+    {
+        NLS::Render::Context::FrameSnapshot snapshot;
+        snapshot.frameId = frameId;
+        snapshot.targetsSwapchain = false;
+        snapshot.visibleOpaqueDrawCount = compute ? 0u : 1u;
+
+        NLS::Render::Context::RenderPassCommandInput passInput;
+        passInput.kind = compute
+            ? NLS::Render::Context::RenderPassCommandKind::Compute
+            : NLS::Render::Context::RenderPassCommandKind::Opaque;
+        passInput.debugName = compute ? "QueueTypeSwitchCompute" : "QueueTypeSwitchGraphics";
+        passInput.queueType = compute
+            ? NLS::Render::RHI::QueueType::Compute
+            : NLS::Render::RHI::QueueType::Graphics;
+        passInput.renderWidth = 64u;
+        passInput.renderHeight = 64u;
+        if (compute)
+        {
+            passInput.computeDispatchInputs.push_back({
+                "QueueTypeSwitchCompute",
+                computePipeline,
+                {},
+                1u,
+                1u,
+                1u,
+                {},
+                {},
+                {}
+            });
+        }
+        else
+        {
+            passInput.drawCount = 1u;
+            passInput.requiresFrameData = true;
+            passInput.requiresObjectData = true;
+            passInput.clearColor = true;
+            passInput.clearDepth = true;
+            passInput.usesColorAttachment = true;
+            passInput.usesDepthStencilAttachment = true;
+            passInput.recordedDrawCommands.push_back({
+                graphicsPipeline,
+                nullptr,
+                nullptr,
+                nullptr,
+                materialBindingSet,
+                mesh,
+                1u
+            });
+        }
+
+        NLS::Render::Context::ParallelCommandWorkUnit workUnit;
+        workUnit.commandInput = passInput;
+        workUnit.debugName = passInput.debugName;
+
+        NLS::Render::Context::RenderScenePackage package;
+        package.frameId = frameId;
+        package.targetsSwapchain = false;
+        package.visibleDrawCount = compute ? 0u : 1u;
+        package.opaqueDrawCount = compute ? 0u : 1u;
+        package.hasVisibleDraws = true;
+        package.frameDataReady = true;
+        package.objectDataReady = true;
+        package.renderWidth = 64u;
+        package.renderHeight = 64u;
+        package.passCommandInputs = { passInput };
+        package.containsParallelCommandWorkUnits = true;
+        package.parallelCommandWorkUnits = { workUnit };
+        package.parallelCommandWorkUnitCount = 1u;
+        return std::pair{ snapshot, package };
+    };
+
+    auto [computeSnapshot, computePackage] = buildPackage(618u, true);
+    ASSERT_TRUE(NLS::Render::Context::DriverTestAccess::TryPublishHarnessPreparedFrame(
+        driver,
+        computeSnapshot,
+        computePackage));
+    NLS::Render::Context::DriverTestAccess::DrainThreadedRendering(driver);
+
+    ASSERT_EQ(frameContext.parallelCommandPools.size(), 1u);
+    auto firstPool = std::dynamic_pointer_cast<TestCommandPool>(frameContext.parallelCommandPools[0]);
+    ASSERT_NE(firstPool, nullptr);
+    EXPECT_EQ(firstPool->GetQueueType(), NLS::Render::RHI::QueueType::Compute);
+    auto firstBuffer = frameContext.parallelCommandBuffers[0];
+    ASSERT_NE(firstBuffer, nullptr);
+
+    frameFence->signaled = true;
+    auto [graphicsSnapshot, graphicsPackage] = buildPackage(619u, false);
+    ASSERT_TRUE(NLS::Render::Context::DriverTestAccess::TryPublishHarnessPreparedFrame(
+        driver,
+        graphicsSnapshot,
+        graphicsPackage));
+    NLS::Render::Context::DriverTestAccess::DrainThreadedRendering(driver);
+
+    const auto createdPools = explicitDevice->GetCreatedCommandPools();
+    ASSERT_EQ(createdPools.size(), 2u);
+    EXPECT_EQ(createdPools[0]->GetQueueType(), NLS::Render::RHI::QueueType::Compute);
+    EXPECT_EQ(createdPools[1]->GetQueueType(), NLS::Render::RHI::QueueType::Graphics);
+    auto currentPool = std::dynamic_pointer_cast<TestCommandPool>(frameContext.parallelCommandPools[0]);
+    ASSERT_NE(currentPool, nullptr);
+    EXPECT_EQ(currentPool->GetQueueType(), NLS::Render::RHI::QueueType::Graphics);
+    EXPECT_NE(frameContext.parallelCommandBuffers[0], firstBuffer);
 }
 
 TEST(ThreadedRenderingLifecycleTests, ParallelRecordingFallsBackToSerialWhenResourceStateTrackerIsActive)
@@ -17461,14 +17726,19 @@ TEST(ThreadedRenderingLifecycleTests, PostSubmitTextureReadbackTerminatesOnThrea
     EXPECT_NE(helperBody.find("RHIReadbackStatusCode::BackendFailure"), std::string::npos);
     EXPECT_NE(helperBody.find("request.state->completion.reset()"), std::string::npos);
 
+    // The submission now runs as an explicit TaskGraph node chain, so every
+    // begin-frame, command-recording and telemetry early exit funnels into the
+    // same abort node instead of repeating the readback termination inline.
+    const auto abortHelper = source.find("void AbortThreadedRhiSubmission");
+    ASSERT_NE(abortHelper, std::string::npos);
+    const auto abortBody = source.substr(abortHelper, submitFrame - abortHelper);
+    EXPECT_NE(abortBody.find("FailPostSubmitTextureReadbacks("), std::string::npos);
+
     const auto submitBody = source.substr(submitFrame);
-    size_t callOffset = 0u;
-    size_t callCount = 0u;
-    while ((callOffset = submitBody.find("FailPostSubmitTextureReadbacks(", callOffset)) != std::string::npos)
-    {
-        ++callCount;
-        callOffset += std::strlen("FailPostSubmitTextureReadbacks(");
-    }
-    EXPECT_EQ(callCount, 3u)
-        << "Begin-frame, command-recording, and telemetry early exits must all terminate texture readbacks.";
+    EXPECT_NE(submitBody.find("AbortThreadedRhiSubmission(execution)"), std::string::npos);
+
+    const auto failStageHelper = source.find("void FailThreadedRhiSubmissionStage");
+    ASSERT_NE(failStageHelper, std::string::npos);
+    const auto failStageBody = source.substr(failStageHelper, abortHelper - failStageHelper);
+    EXPECT_NE(failStageBody.find("throw ThreadedRhiSubmissionStageAbort"), std::string::npos);
 }

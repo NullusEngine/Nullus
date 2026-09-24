@@ -53,6 +53,7 @@ namespace NLS::Core::ResourceManagement
 		void UnregisterResource(const std::string& p_path);
 
 		Texture2D* GetArtifactResource(const std::string& p_path, bool p_tryToLoadIfNotFound = true);
+		void PrewarmArtifactsBatched(const std::vector<std::string>& paths);
 		Texture2D* RequestAsyncArtifact(const std::string& p_path, bool p_cancelableInterest = false);
 		Texture2D* RequestAsyncArtifactForPreview(const std::string& p_path, bool p_cancelableInterest = false);
 		std::optional<Texture2D*> TryGetArtifactResource(const std::string& p_path);
@@ -62,6 +63,9 @@ namespace NLS::Core::ResourceManagement
 			bool pending = false;
 			bool failed = false;
 		};
+		virtual std::optional<AsyncPreviewRequestResult> TryRequestAsyncArtifact(
+			const std::string& p_path,
+			bool p_cancelableInterest = false);
 		virtual std::optional<AsyncPreviewRequestResult> TryRequestAsyncArtifactForPreview(
 			const std::string& p_path,
 			bool p_cancelableInterest = false);
@@ -151,6 +155,10 @@ namespace NLS::Core::ResourceManagement
 
 	private:
 		Texture2D* RequestAsyncArtifactInternal(
+			const std::string& p_path,
+			bool p_cancelableInterest,
+			bool p_previewPriority);
+		std::optional<AsyncPreviewRequestResult> TryRequestAsyncArtifactInternal(
 			const std::string& p_path,
 			bool p_cancelableInterest,
 			bool p_previewPriority);

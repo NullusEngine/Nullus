@@ -495,6 +495,35 @@ TEST(ShaderLabPassAndPipelineTests, DuplicateLightModeRegistrationKeepsFirstPass
     Shader::DestroyForTesting(second);
 }
 
+TEST(ShaderLabPassAndPipelineTests, ReregisteringCachedPassRestoresClearedPrimaryShader)
+{
+    using NLS::Render::Resources::Material;
+    using NLS::Render::Resources::Shader;
+
+    auto* forward = Shader::CreateForTesting("Library/Artifacts/12/forwardhash");
+    ASSERT_NE(forward, nullptr);
+    forward->SetImportedShaderLabPassForTesting(
+        "Assets/Shaders/StandardPBR.shader",
+        "shader:StandardPBR/Forward#0",
+        "Forward",
+        {});
+
+    Material material(forward);
+    material.SetShaderLabSourcePath("Assets/Shaders/StandardPBR.shader");
+    material.RegisterShaderLabPassShader(forward);
+    material.SetShader(nullptr);
+    material.SetTextureResourcePath("_BaseMap", "Library/Artifacts/ab/texturehash");
+    ASSERT_FALSE(material.IsValid());
+
+    material.RegisterShaderLabPassShader(forward);
+    EXPECT_TRUE(material.IsValid());
+    EXPECT_EQ(material.GetShader(), forward);
+    EXPECT_EQ(material.ResolveShaderForLightMode("Forward"), forward);
+    EXPECT_EQ(material.GetTextureResourcePath("_BaseMap"), "Library/Artifacts/ab/texturehash");
+
+    Shader::DestroyForTesting(forward);
+}
+
 TEST(ShaderLabPassAndPipelineTests, MaterialRejectsStaleLightModeMapEntriesAfterShaderReload)
 {
     using NLS::Render::Resources::Material;

@@ -178,6 +178,28 @@ TEST(UE5RenderArchitectureContractTests, PreparedBuilderPackagesDoNotCarryRender
     EXPECT_TRUE(package.parallelCommandWorkUnits.empty());
 }
 
+TEST(UE5RenderArchitectureContractTests, MovedFrameSnapshotTransfersRecordedDrawCommands)
+{
+    NLS::Render::Context::FrameSnapshot snapshot;
+    snapshot.frameId = 13u;
+    snapshot.renderWidth = 1280u;
+    snapshot.renderHeight = 720u;
+    snapshot.hasSceneInput = true;
+    snapshot.visibleOpaqueDrawCount = 2u;
+    snapshot.recordedDrawCommands.resize(2u);
+    snapshot.recordedDrawCommands[0].instanceCount = 7u;
+    snapshot.recordedDrawCommands[1].vertexStart = 11u;
+
+    auto package = NLS::Render::Context::BuildSnapshotOwnedRenderScenePackage(
+        std::move(snapshot),
+        NLS::Render::Context::SnapshotRenderScenePackageBuildMode::SkipDefaultPassInputs);
+
+    ASSERT_EQ(package.recordedDrawCommands.size(), 2u);
+    EXPECT_EQ(package.recordedDrawCommands[0].instanceCount, 7u);
+    EXPECT_EQ(package.recordedDrawCommands[1].vertexStart, 11u);
+    EXPECT_TRUE(snapshot.recordedDrawCommands.empty());
+}
+
 TEST(UE5RenderArchitectureContractTests, RuntimeCompilationRebuildsPreparedPassPlanFromForwardSceneMetadata)
 {
     NLS::Render::Context::FrameSnapshot snapshot;

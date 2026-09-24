@@ -30,6 +30,7 @@
 #include <Rendering/Debug/DebugDrawService.h>
 #include <Scripting/ScriptEngineApi.h>
 #include <ServiceLocator.h>
+#include <Threading/ExecutionThreadBudget.h>
 #include <imgui.h>
 
 #include "Core/Editor.h"
@@ -929,28 +930,14 @@ Editor::Core::EditorJobWorkerBudget Editor::Core::ResolveEditorJobWorkerBudget(
     const uint32_t hardwareConcurrency,
     const std::optional<uint32_t> backgroundWorkerOverride)
 {
-    constexpr uint32_t kFallbackHardwareConcurrency = 4u;
-    constexpr uint32_t kMaximumBackgroundWorkerCount = 16u;
-    const uint32_t availableConcurrency = hardwareConcurrency == 0u
-        ? kFallbackHardwareConcurrency
-        : hardwareConcurrency;
-    constexpr uint32_t kReservedEditorExecutionLanes = 3u;
-    const uint32_t totalWorkerBudget = std::min(
-        std::max(
-            2u,
-            availableConcurrency > kReservedEditorExecutionLanes
-                ? availableConcurrency - kReservedEditorExecutionLanes
-                : 2u),
-        31u);
-    const uint32_t automaticBackgroundWorkerCount = totalWorkerBudget >= 15u
-        ? std::min(kMaximumBackgroundWorkerCount, totalWorkerBudget - 1u)
-        : std::max(1u, totalWorkerBudget * 3u / 4u);
-    const uint32_t backgroundWorkerCount = backgroundWorkerOverride.has_value()
-        ? std::clamp(*backgroundWorkerOverride, 1u, std::min(kMaximumBackgroundWorkerCount, totalWorkerBudget - 1u))
-        : automaticBackgroundWorkerCount;
+    // The rendering TaskGraph and the Jobs pools share one hardware budget so a
+    // 32-core machine does not end up with two independent hardware - 3 pools.
+    const auto poolBudget = NLS::Base::Threading::ResolveExecutionPoolBudget(
+        hardwareConcurrency,
+        backgroundWorkerOverride.value_or(0u));
     return {
-        totalWorkerBudget - backgroundWorkerCount,
-        backgroundWorkerCount};
+        poolBudget.jobsForegroundWorkerCount,
+        poolBudget.jobsBackgroundWorkerCount};
 }
 
 Editor::Core::Editor::JobSystemLifetime::JobSystemLifetime()
@@ -1228,9 +1215,6 @@ void Editor::Core::Editor::SetupUI()
     topBar.RegisterWindowPanel("Game View", m_panelsManager.GetPanelAs<Panels::GameView>("Game View"));
     topBar.RegisterWindowPanel("UI Designer", m_panelsManager.GetPanelAs<Panels::UIDocumentDesigner>("UI Designer"));
     logSetupStep("RegisterWindows");
-    // Needs to be called after all panels got created, because some settings in this menu depend on other panels
-    topBar.InitializeSettingsMenu();
-    logSetupStep("InitializeSettingsMenu");
     // Scripted editor windows register their menu entries through the script
     // ABI; publish them once the top bar exists.
     // Scripted editor menu entries are an extension point, never a startup
@@ -1582,6 +1566,11 @@ void Editor::Core::Editor::DeferStartupSceneViewRenderForNextFrame()
 void Editor::Core::Editor::UpdateValidationSceneCameraMotion()
 {
     const auto& diagnostics = m_context.GetDiagnosticsSettings();
+    if (!diagnostics.editorCameraPerformanceOutput.empty() &&
+        !m_cameraPerformanceMeasurementStarted)
+    {
+        return;
+    }
     const uint32_t requestedFrames = diagnostics.editorValidationCameraForwardFrames;
     if (!m_validationCameraMotionPendingForFrame || requestedFrames == 0u)
     {
@@ -1624,6 +1613,27 @@ void Editor::Core::Editor::UpdateValidationSceneCameraMotion()
     }
 }
 
+bool Editor::Core::Editor::IsCameraPerformanceWarmupReady() const
+{
+    if (!m_context.IsEditorWindowShown())
+        return false;
+
+    const auto& assetBrowser = m_panelsManager.GetPanelAs<Panels::AssetBrowser>("Asset Browser");
+    if (!assetBrowser.IsThumbnailPreviewRenderWarmupComplete())
+        return false;
+
+    return WasCameraPerformanceViewThreadedFramePublished();
+}
+
+void Editor::Core::Editor::BeginCameraPerformanceMeasurement()
+{
+    if (m_cameraPerformanceMeasurementStarted)
+        return;
+
+    m_cameraPerformanceMeasurementStarted = true;
+    NLS_LOG_INFO("Editor camera performance measurement warmup complete; starting fixed measurement window.");
+}
+
 uint32_t Editor::Core::Editor::GetValidationCameraForwardCompletedFrames() const
 {
     return m_validationCameraForwardCompletedFrames;
@@ -1634,14 +1644,49 @@ bool Editor::Core::Editor::WasLastSceneViewThreadedFramePublished() const
     return m_panelsManager.GetPanelAs<Panels::SceneView>("Scene View").WasLastRenderFramePublished();
 }
 
+bool Editor::Core::Editor::WasCameraPerformanceViewThreadedFramePublished() const
+{
+    if (ResolveValidationFocusTarget(m_context.GetDiagnosticsSettings().editorValidationFocusView) ==
+        ValidationFocusTarget::GameView)
+    {
+        return m_panelsManager.GetPanelAs<Panels::GameView>("Game View").WasLastRenderFramePublished();
+    }
+
+    return WasLastSceneViewThreadedFramePublished();
+}
+
 std::pair<uint16_t, uint16_t> Editor::Core::Editor::GetSceneViewSafeSize() const
 {
     return m_panelsManager.GetPanelAs<Panels::SceneView>("Scene View").GetSafeSize();
 }
 
+std::pair<uint16_t, uint16_t> Editor::Core::Editor::GetCameraPerformanceViewSafeSize() const
+{
+    if (ResolveValidationFocusTarget(m_context.GetDiagnosticsSettings().editorValidationFocusView) ==
+        ValidationFocusTarget::GameView)
+    {
+        return m_panelsManager.GetPanelAs<Panels::GameView>("Game View").GetSafeSize();
+    }
+
+    return GetSceneViewSafeSize();
+}
+
 const Render::Data::FrameInfo& Editor::Core::Editor::GetSceneViewCumulativeFrameInfo() const
 {
     return m_panelsManager.GetPanelAs<Panels::SceneView>("Scene View").GetRenderer().GetCumulativeFrameInfo();
+}
+
+const Render::Data::FrameInfo& Editor::Core::Editor::GetCameraPerformanceViewCumulativeFrameInfo() const
+{
+    if (ResolveValidationFocusTarget(m_context.GetDiagnosticsSettings().editorValidationFocusView) ==
+        ValidationFocusTarget::GameView)
+    {
+        return m_panelsManager.GetPanelAs<Panels::GameView>("Game View")
+            .GetRenderer()
+            .GetCumulativeFrameInfo();
+    }
+
+    return GetSceneViewCumulativeFrameInfo();
 }
 
 void Editor::Core::Editor::HandleGlobalShortcuts()
@@ -2424,16 +2469,11 @@ void Editor::Core::Editor::UpdateEditMode(float p_deltaTime)
 void Editor::Core::Editor::UpdateEditorPanels(float p_deltaTime)
 {
     NLS_PROFILE_SCOPE();
-    auto& topBar = m_panelsManager.GetPanelAs<NLS::Editor::Panels::EditorTopBar>("Editor Top Bar");
+    (void)p_deltaTime;
     auto& frameInfo = m_panelsManager.GetPanelAs<NLS::Editor::Panels::FrameInfo>("Frame Info");
     auto& sceneView = m_panelsManager.GetPanelAs<NLS::Editor::Panels::SceneView>("Scene View");
     auto& gameView = m_panelsManager.GetPanelAs<NLS::Editor::Panels::GameView>("Game View");
     auto& assetView = m_panelsManager.GetPanelAs<NLS::Editor::Panels::AssetView>("Asset View");
-
-    {
-        NLS_PROFILE_NAMED_SCOPE("EditorTopBar::HandleShortcuts");
-        topBar.HandleShortcuts(p_deltaTime);
-    }
 
     const bool keepDefaultSceneFocus =
         ResolveValidationFocusTarget(m_context.GetDiagnosticsSettings().editorValidationFocusView) ==

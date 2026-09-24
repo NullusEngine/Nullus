@@ -215,7 +215,7 @@ protected:
     virtual std::optional<NLS::Render::Context::FrameSnapshot> BuildFrameSnapshot(
         const Data::FrameDescriptor& frameDescriptor) const;
     virtual NLS::Render::Context::PreparedRenderSceneBuilder BuildPreparedRenderSceneBuilder(
-        const NLS::Render::Context::FrameSnapshot& snapshot) const;
+        const NLS::Render::Context::FrameSnapshot& snapshot);
     void SetPendingFrameSnapshot(
         NLS::Render::Context::FrameSnapshot snapshot);
     void SetPendingPreparedRenderSceneBuilder(
@@ -271,6 +271,15 @@ protected:
     virtual void BindPreparedMaterialBindingSet(const PreparedRecordedDraw& preparedDraw) const;
     virtual void SubmitPreparedDraw(const PreparedRecordedDraw& preparedDraw) const;
     bool QueueThreadedRecordedDraw(PreparedRecordedDraw preparedDraw);
+    /**
+     * Recorded-draw overload that writes into a caller-owned command list instead
+     * of the renderer-wide frame scratch. The threaded deferred path uses this so
+     * a frame's recorded draws can be owned by its prepared-render-scene builder
+     * rather than by shared renderer state.
+     */
+    bool QueueThreadedRecordedDraw(
+        PreparedRecordedDraw preparedDraw,
+        std::vector<Context::RecordedDrawCommandInput>& outCommands);
     void ClearPreparedRecordedDrawStaticBaseCache() const;
 #if defined(NLS_ENABLE_TEST_HOOKS)
     size_t GetPreparedRecordedDrawStaticBaseCacheSizeForTesting() const;
@@ -529,6 +538,10 @@ private:
         std::shared_ptr<RHI::RHICommandBuffer> commandBuffer,
         const Entities::Drawable& drawable,
         const PreparedRecordedDrawStaticBase& staticBase);
+    std::shared_ptr<RHI::RHIBindingSet> CreateExplicitUniformBufferBindingSetForSnapshot(
+        const NLS::Render::Buffers::UniformBuffer& buffer,
+        const ExplicitUniformBufferBindingDesc& desc,
+        const std::shared_ptr<RHI::RHIBuffer>& snapshotBuffer) const;
 
     static std::atomic_bool s_isDrawing;
     mutable std::unordered_map<

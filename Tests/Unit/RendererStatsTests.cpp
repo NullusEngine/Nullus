@@ -440,6 +440,8 @@ TEST(RendererStatsTests, RendererStatsTracksRenderPreparationCounters)
     stats.RecordRenderBindingSetCreation();
     stats.RecordRenderBindingSetCreation();
     stats.RecordRenderSnapshotBufferCreation();
+    stats.RecordDrawCommandCopy(3u);
+    stats.RecordDrawCommandMove(5u);
     stats.EndFrame();
 
     const auto& frameInfo = stats.GetFrameInfo();
@@ -456,6 +458,8 @@ TEST(RendererStatsTests, RendererStatsTracksRenderPreparationCounters)
     EXPECT_EQ(frameInfo.preparedRecordedDrawStaticBaseFastPathMissCount, 1u);
     EXPECT_EQ(frameInfo.renderBindingSetCreationCount, 2u);
     EXPECT_EQ(frameInfo.renderSnapshotBufferCreationCount, 1u);
+    EXPECT_EQ(frameInfo.drawCommandCopyCount, 3u);
+    EXPECT_EQ(frameInfo.drawCommandMoveCount, 5u);
 }
 
 TEST(RendererStatsTests, CompositeRendererExposesFinalizedFrameInfoWithoutFeatureRegistration)

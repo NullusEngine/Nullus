@@ -32,6 +32,15 @@ namespace NLS::Editor::Panels
             lhs.viewId == rhs.viewId;
     }
 
+    inline bool HitProxyPickingDrawCommandSignaturesMatch(
+        const HitProxyPickingSignature& lhs,
+        const HitProxyPickingSignature& rhs)
+    {
+        return lhs.pickableSceneRevision == rhs.pickableSceneRevision &&
+            lhs.pickableDrawSourceHash == rhs.pickableDrawSourceHash &&
+            lhs.viewId == rhs.viewId;
+    }
+
     inline bool ShouldReuseHitProxyPickingFrame(
         bool hasReadablePickingFrame,
         const HitProxyPickingSignature& requestSignature,

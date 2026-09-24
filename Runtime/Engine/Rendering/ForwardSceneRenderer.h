@@ -1,5 +1,7 @@
 #pragma once
 
+#include <memory>
+
 #include <fg/FrameGraph.hpp>
 
 #include "Rendering/BaseSceneRenderer.h"
@@ -33,10 +35,10 @@ namespace NLS::Engine::Rendering
 			NLS::Render::Context::RenderPassCommandKind kind,
 			NLS::Render::Data::PipelineState pipelineState);
 
-		struct ForwardSceneDescriptor
-		{
-			AllDrawables drawables;
-			NLS::Render::Context::RenderScenePackage scenePackage;
+			struct ForwardSceneDescriptor
+			{
+				std::shared_ptr<AllDrawables> drawables;
+				NLS::Render::Context::RenderScenePackage scenePackage;
 			bool hasSkyboxTexture = false;
 		};
 	};

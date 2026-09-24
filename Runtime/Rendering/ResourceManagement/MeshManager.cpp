@@ -9,6 +9,7 @@
 #include <atomic>
 #include <chrono>
 #include <cctype>
+#include <deque>
 #include <exception>
 #include <filesystem>
 #include <fstream>
@@ -26,6 +27,7 @@
 #include <Filesystem/IniFile.h>
 #include "Rendering/Assets/MeshArtifact.h"
 #include "Rendering/Context/DriverAccess.h"
+#include "Rendering/RHI/Core/RHIDevice.h"
 #include "Rendering/Resources/Parsers/AssimpParser.h"
 #include "Rendering/Resources/Parsers/FbxSdkParser.h"
 
@@ -105,18 +107,45 @@ bool IsAuthorizedContentArtifactPath(const std::string& path)
         NLS::Core::Assets::IsRuntimeArtifactPathAuthorized(portableArtifactPath);
 }
 
-NLS::Render::Resources::Mesh* CreateRuntimeMesh(const NLS::Render::Assets::MeshArtifactBundle& bundle)
+bool MeshBuffersAreUploaded(const NLS::Render::Resources::Mesh& mesh)
+{
+    for (uint32_t lod = 0u; lod < mesh.GetLODCount(); ++lod)
+    {
+        const auto* level = mesh.GetLODMesh(lod);
+        if (level == nullptr)
+            return false;
+        const auto indexView = level->GetIndexBufferView();
+        if ((level->GetVertexCount() != 0u &&
+                level->GetVertexBufferView().explicitBuffer == nullptr) ||
+            (level->GetIndexCount() != 0u &&
+                (!indexView || indexView->explicitBuffer == nullptr)))
+        {
+            return false;
+        }
+    }
+    return true;
+}
+
+NLS::Render::Resources::Mesh* CreateRuntimeMesh(
+    const NLS::Render::Assets::MeshArtifactBundle& bundle,
+    const uint32_t maxLODCount = UINT32_MAX)
 {
     if (bundle.lodResources.empty())
         return nullptr;
     const auto& lod0 = bundle.lodResources.front().mesh;
     auto root = std::make_unique<NLS::Render::Resources::Mesh>(lod0.vertices, lod0.indices, lod0.materialIndex,
         NLS::Render::Resources::MeshBufferUploadMode::GpuOnly, lod0.boundingSphere);
+    const uint32_t uploadLODCount = static_cast<uint32_t>((std::min)(
+        bundle.lodResources.size(),
+        static_cast<size_t>(maxLODCount)));
+    if (uploadLODCount <= 1u)
+        return root.release();
+
     std::vector<std::unique_ptr<NLS::Render::Resources::Mesh>> lods;
     std::vector<float> screenSizes;
-    screenSizes.reserve(bundle.lodResources.size());
+    screenSizes.reserve(uploadLODCount);
     screenSizes.push_back(bundle.lodResources.front().screenSize);
-    for (size_t index = 1u; index < bundle.lodResources.size(); ++index)
+    for (uint32_t index = 1u; index < uploadLODCount; ++index)
     {
         const auto& level = bundle.lodResources[index];
         lods.push_back(std::make_unique<NLS::Render::Resources::Mesh>(level.mesh.vertices, level.mesh.indices,
@@ -1285,6 +1314,398 @@ MeshManager::Mesh* MeshManager::PrewarmArtifact(const std::string& path)
         prewarmed != nullptr
     });
     return prewarmed;
+}
+
+void MeshManager::PrewarmArtifactsPipelined(
+    const std::vector<std::string>& paths,
+    const uint32_t maxLODCount,
+    std::vector<std::string>* lodLimitedPaths)
+{
+    if (paths.empty())
+        return;
+
+    if (!NLS::Base::Jobs::IsJobSystemInitialized() ||
+        NLS::Base::Jobs::GetBackgroundJobWorkerCount() == 0u)
+    {
+        for (const auto& path : paths)
+            PrewarmArtifact(path);
+        return;
+    }
+    if (lodLimitedPaths != nullptr)
+        lodLimitedPaths->clear();
+
+    NLS::Base::Profiling::PerformanceStageScope scope(
+        NLS::Base::Profiling::PerformanceStageDomain::Prefab,
+        "PrewarmMeshPipelined",
+        NLS::Base::Profiling::PerformanceStageThread::Main);
+    const auto begin = std::chrono::steady_clock::now();
+    struct Candidate
+    {
+        std::string path;
+        std::string realPath;
+    };
+    std::vector<Candidate> candidates;
+    candidates.reserve(paths.size());
+    std::unordered_set<std::string> seen;
+    for (const auto& path : paths)
+    {
+        if (GetResource(path, false) != nullptr)
+            continue;
+        auto realPath = ResolveArtifactResourcePath(path);
+        if (!IsAuthorizedContentArtifactPath(path) ||
+            !IsAuthorizedContentArtifactPath(realPath) ||
+            !IsMeshArtifactPath(realPath) ||
+            FindCachedMeshByEquivalentArtifactPath(*this, realPath) != nullptr)
+            continue;
+        std::error_code error;
+        if (!std::filesystem::is_regular_file(realPath, error) ||
+            !seen.insert(realPath).second)
+            continue;
+        candidates.push_back({path, std::move(realPath)});
+    }
+
+    struct Pending
+    {
+        Candidate candidate;
+        NLS::Base::Jobs::JobHandle handle;
+        std::future<std::optional<NLS::Render::Assets::MeshArtifactBundle>> future;
+    };
+    // The DX12 initial-upload path accepts one batch of up to 256 buffers.
+    // Sponza meshes expose several buffers each, so keep enough meshes in
+    // flight to fill that batch instead of draining every eight on a fence.
+    constexpr size_t kMaxInFlight = 32u;
+    std::deque<Pending> pending;
+    size_t nextCandidate = 0u;
+    size_t scheduled = 0u;
+    size_t loaded = 0u;
+    size_t failed = 0u;
+    size_t batched = 0u;
+    size_t batchFailures = 0u;
+    size_t uploadBatches = 0u;
+    std::shared_ptr<NLS::Render::RHI::RHIDevice> device;
+    if (auto* driver = NLS::Render::Context::TryGetLocatedDriver())
+        device = NLS::Render::Context::DriverRendererAccess::GetExplicitDevice(*driver);
+    auto fillWindow = [&]()
+    {
+        while (pending.size() < kMaxInFlight && nextCandidate < candidates.size())
+        {
+            auto candidate = std::move(candidates[nextCandidate++]);
+            AsyncMeshArtifactRequest request;
+            request.realPath = candidate.realPath;
+            MeshArtifactLoadSubmission submission;
+            try
+            {
+                submission = StartMeshArtifactLoad(request);
+            }
+            catch (const std::exception& exception)
+            {
+                NLS_LOG_ERROR("Pipelined mesh artifact scheduling failed: " +
+                    candidate.realPath + " error=" + exception.what());
+            }
+            if (!submission.future.valid())
+            {
+                if (PrewarmArtifact(candidate.path) != nullptr)
+                    ++loaded;
+                else
+                    ++failed;
+                continue;
+            }
+            pending.push_back({std::move(candidate), submission.handle, std::move(submission.future)});
+            ++scheduled;
+        }
+    };
+
+    struct Ready
+    {
+        Candidate candidate;
+        NLS::Render::Assets::MeshArtifactBundle artifact;
+    };
+    constexpr size_t kMaxBuffersPerBatch = 256u;
+    constexpr size_t kMaxUploadBytesPerBatch = 32u * 1024u * 1024u;
+    std::vector<Ready> ready;
+    std::vector<uint64_t> bufferSizes;
+    size_t uploadBytes = 0u;
+    // Batched batches are submitted without waiting on their fence. Remember
+    // which meshes are only guaranteed after the final drain so a deferred
+    // GPU failure can be repaired instead of leaving a broken mesh registered.
+    std::vector<std::string> deferredBatchPaths;
+    auto flushReady = [&]()
+    {
+        if (ready.empty())
+            return;
+        NLS::Base::Profiling::PerformanceStageScope createScope(
+            NLS::Base::Profiling::PerformanceStageDomain::Prefab,
+            "PrewarmMeshRuntimeCreate",
+            NLS::Base::Profiling::PerformanceStageThread::Main);
+        const bool batching = device != nullptr && !bufferSizes.empty() &&
+            device->BeginInitialBufferUploadBatch(bufferSizes);
+        if (batching)
+            ++uploadBatches;
+        std::vector<std::unique_ptr<Mesh>> meshes;
+        meshes.reserve(ready.size());
+        for (const auto& item : ready)
+        {
+            std::unique_ptr<Mesh> mesh;
+            try
+            {
+                mesh.reset(CreateRuntimeMesh(item.artifact, maxLODCount));
+            }
+            catch (const std::exception& exception)
+            {
+                NLS_LOG_ERROR("Pipelined mesh runtime creation failed: " +
+                    item.candidate.path + " error=" + exception.what());
+            }
+            meshes.push_back(std::move(mesh));
+        }
+        const bool batchUploaded = !batching || device->EndInitialBufferUploadBatch();
+        if (batching && !batchUploaded)
+            ++batchFailures;
+        for (size_t index = 0u; index < ready.size(); ++index)
+        {
+            const auto& path = ready[index].candidate.path;
+            auto& mesh = meshes[index];
+            if (batching && batchUploaded && mesh)
+            {
+                if (!MeshBuffersAreUploaded(*mesh))
+                {
+                    mesh.reset();
+                    ++batchFailures;
+                }
+            }
+            if (!batchUploaded)
+                mesh.reset();
+            Mesh* registered = nullptr;
+            if (mesh)
+            {
+                registered = RegisterResource(path, mesh.get());
+                if (registered == mesh.get())
+                    mesh.release();
+            }
+            if (!registered && device != nullptr)
+                registered = PrewarmArtifact(path);
+            ResourceLoadProgressScope::Report({
+                GetResourceTypeName(), path,
+                std::string(registered ? "Prewarmed " : "Failed to prewarm ") + "Mesh: " + path,
+                true, registered != nullptr});
+            if (registered != nullptr)
+            {
+                ++loaded;
+                if (batching && batchUploaded)
+                {
+                    ++batched;
+                    deferredBatchPaths.push_back(path);
+                }
+            }
+            else
+                ++failed;
+        }
+        ready.clear();
+        bufferSizes.clear();
+        uploadBytes = 0u;
+    };
+
+    fillWindow();
+    while (!pending.empty())
+    {
+        auto current = std::move(pending.front());
+        pending.pop_front();
+        std::optional<NLS::Render::Assets::MeshArtifactBundle> artifact;
+        try
+        {
+            artifact = current.future.get();
+        }
+        catch (const std::exception& exception)
+        {
+            NLS_LOG_ERROR("Pipelined mesh artifact load failed: " +
+                current.candidate.realPath + " error=" + exception.what());
+        }
+        NLS::Base::Jobs::Complete(current.handle);
+        fillWindow();
+
+        if (!artifact.has_value() || artifact->lodResources.empty())
+        {
+            ++failed;
+            continue;
+        }
+        if (FindCachedMeshByEquivalentArtifactPath(*this, current.candidate.realPath) != nullptr)
+        {
+            ++loaded;
+            continue;
+        }
+
+        const size_t uploadLODCount = (std::min)(
+            artifact->lodResources.size(), static_cast<size_t>(maxLODCount));
+        if (lodLimitedPaths != nullptr && uploadLODCount < artifact->lodResources.size())
+            lodLimitedPaths->push_back(current.candidate.path);
+
+        std::vector<uint64_t> nextBufferSizes;
+        nextBufferSizes.reserve(uploadLODCount * 2u);
+        size_t nextUploadBytes = 0u;
+        for (size_t lodIndex = 0u; lodIndex < uploadLODCount; ++lodIndex)
+        {
+            const auto& lod = artifact->lodResources[lodIndex];
+            if (!lod.mesh.vertices.empty())
+                nextBufferSizes.push_back(lod.mesh.vertices.size() * sizeof(NLS::Render::Geometry::Vertex));
+            if (!lod.mesh.indices.empty())
+                nextBufferSizes.push_back(lod.mesh.indices.size() * sizeof(uint32_t));
+        }
+        for (const auto size : nextBufferSizes)
+            nextUploadBytes += size;
+        if (!ready.empty() &&
+            (ready.size() >= kMaxInFlight ||
+                bufferSizes.size() + nextBufferSizes.size() > kMaxBuffersPerBatch ||
+                nextUploadBytes > kMaxUploadBytesPerBatch - uploadBytes))
+        {
+            flushReady();
+        }
+        ResourceLoadProgressScope::Report({
+            GetResourceTypeName(), current.candidate.path,
+            "Prewarming Mesh: " + current.candidate.path, false, false});
+        if (nextBufferSizes.size() > kMaxBuffersPerBatch ||
+            nextUploadBytes > kMaxUploadBytesPerBatch)
+        {
+            ready.push_back({std::move(current.candidate), std::move(*artifact)});
+            flushReady();
+            continue;
+        }
+        uploadBytes += nextUploadBytes;
+        bufferSizes.insert(bufferSizes.end(), nextBufferSizes.begin(), nextBufferSizes.end());
+        ready.push_back({std::move(current.candidate), std::move(*artifact)});
+        if (ready.size() == kMaxInFlight)
+            flushReady();
+    }
+    flushReady();
+
+    if (device != nullptr && !deferredBatchPaths.empty())
+    {
+        const auto drainBegin = std::chrono::steady_clock::now();
+        const size_t deferredBatchFailures = device->WaitForInitialUploads();
+        NLS_LOG_INFO("[Startup] Pipelined mesh prewarm deferredUploads=" +
+            std::to_string(deferredBatchPaths.size()) + " failedBatches=" +
+            std::to_string(deferredBatchFailures) + " drainMs=" +
+            std::to_string(std::chrono::duration_cast<std::chrono::milliseconds>(
+                std::chrono::steady_clock::now() - drainBegin).count()));
+        if (deferredBatchFailures != 0u)
+        {
+            for (const auto& path : deferredBatchPaths)
+            {
+                auto* mesh = FindCachedMeshByEquivalentArtifactPath(*this, ResolveArtifactResourcePath(path));
+                if (mesh != nullptr && MeshBuffersAreUploaded(*mesh))
+                    continue;
+
+                if (mesh != nullptr)
+                    UnloadResource(path);
+                if (PrewarmArtifact(path) != nullptr)
+                    ++loaded;
+                else
+                    ++failed;
+            }
+        }
+    }
+
+    scope.AddCounter("scheduledCount", scheduled);
+    scope.AddCounter("loadedCount", loaded);
+    scope.AddCounter("failedCount", failed);
+    scope.AddCounter("batchedCount", batched);
+    scope.AddCounter("uploadBatchCount", uploadBatches);
+    scope.AddCounter("batchFailureCount", batchFailures);
+    NLS_LOG_INFO("[Startup] Pipelined mesh prewarm queued=" + std::to_string(scheduled) +
+        " loaded=" + std::to_string(loaded) + " failed=" + std::to_string(failed) +
+        " batched=" + std::to_string(batched) + " uploadBatches=" + std::to_string(uploadBatches) +
+        " batchFailures=" + std::to_string(batchFailures) +
+        " elapsedMs=" + std::to_string(std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now() - begin).count()));
+}
+
+size_t MeshManager::CompleteDeferredLODs(
+    const std::vector<std::string>& paths,
+    const size_t startIndex,
+    const size_t maxMeshesPerCall)
+{
+    if (startIndex >= paths.size() || maxMeshesPerCall == 0u)
+        return paths.size();
+
+    std::shared_ptr<NLS::Render::RHI::RHIDevice> device;
+    if (auto* driver = NLS::Render::Context::TryGetLocatedDriver())
+        device = NLS::Render::Context::DriverRendererAccess::GetExplicitDevice(*driver);
+
+    const size_t endIndex = (std::min)(paths.size(), startIndex + maxMeshesPerCall);
+    size_t completed = 0u;
+    for (size_t pathIndex = startIndex; pathIndex < endIndex; ++pathIndex)
+    {
+        const auto& path = paths[pathIndex];
+        const auto realPath = ResolveArtifactResourcePath(path);
+        auto* root = FindCachedMeshByEquivalentArtifactPath(*this, realPath);
+        if (root == nullptr || root->GetLODCount() > 1u)
+            continue;
+
+        auto bundle = NLS::Render::Assets::LoadMeshArtifactBundle(realPath);
+        if (!bundle.has_value() || bundle->lodResources.size() <= 1u)
+            continue;
+
+        std::vector<uint64_t> bufferSizes;
+        bufferSizes.reserve((bundle->lodResources.size() - 1u) * 2u);
+        for (size_t lodIndex = 1u; lodIndex < bundle->lodResources.size(); ++lodIndex)
+        {
+            const auto& lod = bundle->lodResources[lodIndex].mesh;
+            if (!lod.vertices.empty())
+                bufferSizes.push_back(lod.vertices.size() * sizeof(NLS::Render::Geometry::Vertex));
+            if (!lod.indices.empty())
+                bufferSizes.push_back(lod.indices.size() * sizeof(uint32_t));
+        }
+
+        const bool batching = device != nullptr && !bufferSizes.empty() &&
+            device->BeginInitialBufferUploadBatch(bufferSizes);
+        std::vector<std::unique_ptr<Mesh>> lods;
+        std::vector<float> screenSizes;
+        lods.reserve(bundle->lodResources.size() - 1u);
+        screenSizes.reserve(bundle->lodResources.size());
+        screenSizes.push_back(bundle->lodResources.front().screenSize);
+        for (size_t lodIndex = 1u; lodIndex < bundle->lodResources.size(); ++lodIndex)
+        {
+            const auto& level = bundle->lodResources[lodIndex];
+            lods.push_back(std::make_unique<Mesh>(
+                level.mesh.vertices,
+                level.mesh.indices,
+                level.mesh.materialIndex,
+                NLS::Render::Resources::MeshBufferUploadMode::GpuOnly,
+                level.mesh.boundingSphere));
+            screenSizes.push_back(level.screenSize);
+        }
+
+        const bool uploaded = !batching || device->EndInitialBufferUploadBatch();
+        if (!uploaded)
+        {
+            NLS_LOG_WARNING(
+                "Deferred mesh LOD completion failed to submit for " + path);
+            continue;
+        }
+        if (device != nullptr)
+            (void)device->WaitForInitialUploads();
+
+        const bool valid = std::all_of(
+            lods.begin(),
+            lods.end(),
+            [](const std::unique_ptr<Mesh>& lod)
+            {
+                return lod != nullptr && MeshBuffersAreUploaded(*lod);
+            });
+        if (!valid)
+        {
+            NLS_LOG_WARNING(
+                "Deferred mesh LOD completion produced invalid GPU buffers for " + path);
+            continue;
+        }
+
+        root->SetLODResources(std::move(lods), std::move(screenSizes), bundle->minLOD);
+        ++completed;
+    }
+
+    NLS_LOG_INFO(
+        "[Startup] Deferred mesh LOD completion processed paths=" +
+        std::to_string(endIndex - startIndex) + " completed=" +
+        std::to_string(completed) + " nextIndex=" + std::to_string(endIndex));
+    return endIndex;
 }
 
 MeshManager::Mesh* MeshManager::RequestAsyncArtifact(

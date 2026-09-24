@@ -21,6 +21,8 @@ namespace NLS::Editor::Core
         uint32_t requestedSettleFrameCount = 0u;
         std::string projectPath;
         std::string scenePath;
+        std::string focusView = "scene";
+        std::string selectedGameObject;
         uint32_t viewportWidth = 0u;
         uint32_t viewportHeight = 0u;
         double cameraForwardStep = 0.1;
@@ -51,6 +53,11 @@ namespace NLS::Editor::Core
         uint64_t objectDataRevisionTransformMismatchCount = 0u;
         uint64_t objectDataRevisionObjectIndexMismatchCount = 0u;
         uint64_t objectDataRevisionObjectCountMismatchCount = 0u;
+        uint64_t objectDataFastPathHitCount = 0u;
+        uint64_t objectDataFastPathFallbackCount = 0u;
+        uint64_t drawCommandCopyCount = 0u;
+        uint64_t drawCommandMoveCount = 0u;
+        uint64_t renderSnapshotBufferCreationCount = 0u;
         uint64_t opaqueSortTokenHitCount = 0u;
         uint64_t opaqueSortTokenRebuildCount = 0u;
         uint64_t descriptorAllocationFailureCount = 0u;

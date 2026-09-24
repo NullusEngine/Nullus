@@ -414,6 +414,11 @@ void Editor::Core::EditorResources::PreloadStartupResources()
     GetShader("Grid");
     GetShader("Billboard");
     GetShader("DebugLitColor");
+    // The selection outline is created on the first selection. Compiling these
+    // variants lazily put roughly 0.8s on that first click for large objects,
+    // so pay for them during startup with the rest of the editor resources.
+    GetShader("SelectionOutlineMask");
+    GetShader("SelectionOutlineComposite");
 
     GetMesh("Plane");
     GetMesh("Vertical_Plane");

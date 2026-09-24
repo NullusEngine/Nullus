@@ -221,9 +221,21 @@ public:
     uint64_t GetRenderStateRevision() const { return m_renderStateRevision; }
     bool HasAwaked() const { return m_awaked; }
     bool HasStarted() const { return m_started; }
-    void SetSourceObjectKey(std::string sourceObjectKey) { m_sourceObjectKey = std::move(sourceObjectKey); }
+    void SetSourceObjectKey(std::string sourceObjectKey)
+    {
+        if (m_sourceObjectKey == sourceObjectKey)
+            return;
+        m_sourceObjectKey = std::move(sourceObjectKey);
+        MarkRenderStateChanged();
+    }
     const std::string& GetSourceObjectKey() const { return m_sourceObjectKey; }
-    void SetLargeSceneHLODMetadata(std::string metadataJson) { m_largeSceneHLODMetadataJson = std::move(metadataJson); }
+    void SetLargeSceneHLODMetadata(std::string metadataJson)
+    {
+        if (m_largeSceneHLODMetadataJson == metadataJson)
+            return;
+        m_largeSceneHLODMetadataJson = std::move(metadataJson);
+        MarkRenderStateChanged();
+    }
     const std::string& GetLargeSceneHLODMetadata() const { return m_largeSceneHLODMetadataJson; }
     /**
      * Called when the scene start or when the actor gets enabled for the first time during play mode

@@ -10,6 +10,7 @@ cbuffer FrameConstants : register(b0, space0)
 };
 
 StructuredBuffer<float4x4> ObjectData : register(t0, space3);
+StructuredBuffer<uint> InstanceObjectIndices : register(t1, space3);
 
 cbuffer MaterialConstants : register(b0, space2)
 {
@@ -36,7 +37,8 @@ StructuredBuffer<uint> u_CulledLightDataGrid : register(t2, space1);
 VSOutput VSMain(VSInput input, uint instanceId : SV_InstanceID)
 {
     VSOutput output;
-    const float4x4 model = ObjectData[u_ObjectIndex + instanceId];
+    const uint objectSlot = InstanceObjectIndices[u_ObjectIndex + instanceId];
+    const float4x4 model = ObjectData[objectSlot];
 
     const float4 worldPosition = mul(model, float4(input.Position, 1.0f));
     output.PositionCS = mul(u_ViewProjection, worldPosition);

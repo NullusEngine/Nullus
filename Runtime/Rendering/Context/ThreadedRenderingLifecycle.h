@@ -12,7 +12,9 @@
 #include <mutex>
 #include <optional>
 #include <string>
+#include <type_traits>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 
 #include "Math/Vector4.h"
@@ -464,7 +466,49 @@ namespace NLS::Render::Context
         std::shared_ptr<RHI::RHITextureView> externalSceneOutputDepthView;
     };
 
-    using PreparedRenderSceneBuilder = std::function<RenderScenePackage()>;
+    class NLS_RENDER_API PreparedRenderSceneBuilder
+    {
+    public:
+        PreparedRenderSceneBuilder() = default;
+
+        template <typename Callable,
+            typename = std::enable_if_t<
+                !std::is_same_v<std::decay_t<Callable>, PreparedRenderSceneBuilder>>>
+        PreparedRenderSceneBuilder(Callable&& callable)
+        {
+            using CallableType = std::decay_t<Callable>;
+            if constexpr (std::is_invocable_r_v<RenderScenePackage, CallableType&, size_t>)
+            {
+                m_builder = [callable = std::forward<Callable>(callable)](const size_t slotIndex) mutable
+                {
+                    return callable(slotIndex);
+                };
+            }
+            else
+            {
+                static_assert(
+                    std::is_invocable_r_v<RenderScenePackage, CallableType&>,
+                    "PreparedRenderSceneBuilder must accept a lifecycle slot or no arguments and return RenderScenePackage");
+                m_builder = [callable = std::forward<Callable>(callable)](const size_t) mutable
+                {
+                    return callable();
+                };
+            }
+        }
+
+        RenderScenePackage operator()(const size_t slotIndex) const
+        {
+            return m_builder(slotIndex);
+        }
+
+        explicit operator bool() const noexcept
+        {
+            return static_cast<bool>(m_builder);
+        }
+
+    private:
+        std::function<RenderScenePackage(size_t)> m_builder;
+    };
 
     struct NLS_RENDER_API RhiSubmissionFrame
     {

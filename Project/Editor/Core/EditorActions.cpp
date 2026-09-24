@@ -3,6 +3,7 @@
 #include "ImGui/imgui.h"
 #include <any>
 #include <exception>
+#include <future>
 #include <iostream>
 #include <fstream>
 #include <sstream>
@@ -70,6 +71,7 @@
 #include "Panels/SceneView.h"
 #include "Panels/AssetBrowser.h"
 #include "ResourceManagement/MaterialManager.h"
+#include "ResourceManagement/ShaderManager.h"
 #include "ResourceManagement/MeshManager.h"
 #include "ResourceManagement/ResourceLifetimeRegistry.h"
 #include "Panels/Console.h"
@@ -516,6 +518,11 @@ struct RendererResourceResolutionDiagnosticSnapshot
     std::string lastMeshBindPendingPath;
     std::string lastMeshBindPendingReason;
 };
+
+bool StartMeshArtifactLoad(
+    NLS::Editor::Core::EditorActions& actions,
+    RendererResourceResolutionTask& task,
+    RendererResourceResolutionState& resolutionState);
 
 size_t CountTrackedRendererResourcePaths(
     RendererResourceResolutionState& state,
@@ -1064,14 +1071,14 @@ void PromotePreviewResourceHandoffForCommit(
     {
         auto& materialManager = NLS_SERVICE(NLS::Core::ResourceManagement::MaterialManager);
         for (const auto& path : handoff.prewarm.materialLoadsByPath)
-            materialManager.RequestAsyncArtifactForPreview(path, false);
+            materialManager.RequestAsyncArtifact(path, false);
     }
 
     if (NLS::Core::ServiceLocator::Contains<NLS::Core::ResourceManagement::TextureManager>())
     {
         auto& textureManager = NLS_SERVICE(NLS::Core::ResourceManagement::TextureManager);
         for (const auto& path : handoff.prewarm.textureLoadsByPath)
-            textureManager.RequestAsyncArtifactForPreview(path, false);
+            textureManager.RequestAsyncArtifact(path, false);
     }
 }
 
@@ -2621,7 +2628,7 @@ void PrewarmRendererResourceMaterialArtifacts(RendererResourceResolutionState& s
                     state.ownerToken,
                     ResourceLifetimeResourceType::Material,
                     materialPath);
-                requestResult = materialManager.TryRequestAsyncArtifactForPreview(materialPath, false);
+                requestResult = materialManager.TryRequestAsyncArtifact(materialPath, false);
             });
         if (materialManager.IsAsyncArtifactLoadPending(materialPath))
         {
@@ -2652,6 +2659,44 @@ void PrewarmRendererResourceMaterialArtifacts(RendererResourceResolutionState& s
             state.nextMaterialPrewarmPath = pathIndex;
             break;
         }
+    }
+}
+
+void PrewarmRendererResourceMeshArtifacts(
+    NLS::Editor::Core::EditorActions& actions,
+    RendererResourceResolutionState& state)
+{
+    if (!state.shareSceneLoadFrameBudget ||
+        !state.prioritizeMeshArtifactLoadsUntilSaturated ||
+        state.remainingTasks.empty())
+    {
+        return;
+    }
+
+    std::unordered_set<std::string> requestedPaths;
+    size_t scheduledLoads = 0u;
+    for (auto& task : state.remainingTasks)
+    {
+        if (task.kind != RendererResourceResolutionTaskKind::Mesh)
+            continue;
+
+        const std::string pathKey = NormalizePreviewResourcePathKey(task.modelPath);
+        if (!pathKey.empty() && !requestedPaths.insert(pathKey).second)
+            continue;
+
+        if (StartMeshArtifactLoad(actions, task, state))
+            ++scheduledLoads;
+        if (scheduledLoads >= state.streamingBudget.maxInflightMeshLoads)
+            break;
+    }
+
+    if (scheduledLoads != 0u)
+    {
+        NLS_LOG_INFO(
+            "Prewarmed renderer mesh artifact loads for scene restore: scheduled=" +
+            std::to_string(scheduledLoads) +
+            " uniquePaths=" +
+            std::to_string(requestedPaths.size()));
     }
 }
 
@@ -2707,7 +2752,7 @@ void PrewarmRendererResourceMaterialTextures(RendererResourceResolutionState& st
                         state.ownerToken,
                         ResourceLifetimeResourceType::Texture,
                         texturePath);
-                    (void)textureManager.RequestAsyncArtifactForPreview(texturePath, false);
+                    (void)textureManager.RequestAsyncArtifact(texturePath, false);
                 });
             if (textureManager.IsAsyncArtifactLoadPending(texturePath))
             {
@@ -2764,7 +2809,7 @@ bool BindDeferredMaterialTextures(
                         state.ownerToken,
                         ResourceLifetimeResourceType::Texture,
                         texturePath);
-                    texture = textureManager.RequestAsyncArtifactForPreview(texturePath, false);
+                    texture = textureManager.RequestAsyncArtifact(texturePath, false);
                 });
         }
         if (!texture && blockOnPendingTextures && textureManager.IsAsyncArtifactLoadPending(texturePath))
@@ -2866,7 +2911,7 @@ bool BindTrackedRendererResourceTexturesFromLiveRoot(
                                 state.ownerToken,
                                 ResourceLifetimeResourceType::Texture,
                                 texturePath);
-                            texture = textureManager.RequestAsyncArtifactForPreview(texturePath, false);
+                            texture = textureManager.RequestAsyncArtifact(texturePath, false);
                         });
 
                     if (texture)
@@ -2964,7 +3009,7 @@ bool BindDeferredMaterialPaths(
                         state.ownerToken,
                         ResourceLifetimeResourceType::Material,
                         task.materialPaths[index]);
-                    material = materialManager.RequestAsyncArtifactForPreview(task.materialPaths[index], false);
+                    material = materialManager.RequestAsyncArtifact(task.materialPaths[index], false);
                 });
         }
         if ((!material || !material->IsValid()) &&
@@ -3220,7 +3265,8 @@ bool TryCollectCachedRuntimeMaterialBinding(
     NLS::Core::ResourceManagement::TextureManager* textureManager,
     std::unordered_map<std::string, NLS::Render::Resources::Material*>& cachedRuntimeMaterialsByPath,
     std::unordered_map<std::string, NLS::Render::Resources::Texture2D*>& cachedRuntimeTexturesByPath,
-    CachedRuntimeRendererBinding& binding)
+    CachedRuntimeRendererBinding& binding,
+    std::string* failureReason = nullptr)
 {
     binding.materialPaths = task.materialPaths;
 
@@ -3256,7 +3302,11 @@ bool TryCollectCachedRuntimeMaterialBinding(
             }
         }
         if (!material || !material->IsValid())
+        {
+            if (failureReason)
+                *failureReason = "material not cached: " + materialPath;
             return false;
+        }
 
         CachedRuntimeMaterialBinding materialBinding;
         materialBinding.slot = index;
@@ -3267,7 +3317,11 @@ bool TryCollectCachedRuntimeMaterialBinding(
             if (texturePath.empty())
                 continue;
             if (!textureManager)
+            {
+                if (failureReason)
+                    *failureReason = "texture manager unavailable";
                 return false;
+            }
 
             const auto textureCacheKey = NormalizePreviewResourcePathKey(texturePath);
             auto* texture = static_cast<NLS::Render::Resources::Texture2D*>(nullptr);
@@ -3282,7 +3336,11 @@ bool TryCollectCachedRuntimeMaterialBinding(
                 cachedRuntimeTexturesByPath.emplace(textureCacheKey, texture);
             }
             if (!texture)
+            {
+                if (failureReason)
+                    *failureReason = "texture not cached: " + texturePath;
                 return false;
+            }
             materialBinding.textures.emplace_back(uniformName, texturePath, texture);
         }
         binding.materials.push_back(std::move(materialBinding));
@@ -3291,18 +3349,41 @@ bool TryCollectCachedRuntimeMaterialBinding(
     return true;
 }
 
-bool TryBindPrefabInstanceCachedRendererResources(
-    const std::vector<RendererResourceResolutionTask>& meshTasks,
-    const std::vector<RendererResourceResolutionTask>& materialTasks,
+struct CachedRendererResourceBindingBatch
+{
+    size_t boundMeshTasks = 0u;
+    size_t boundMaterialTasks = 0u;
+    size_t unboundMeshTasks = 0u;
+    size_t unboundMaterialTasks = 0u;
+    std::string firstFailureReason;
+
+    [[nodiscard]] bool BoundAnything() const
+    {
+        return boundMeshTasks != 0u || boundMaterialTasks != 0u;
+    }
+
+    [[nodiscard]] bool FullyBound() const
+    {
+        return unboundMeshTasks == 0u && unboundMaterialTasks == 0u;
+    }
+};
+
+CachedRendererResourceBindingBatch TryBindAvailablePrefabInstanceCachedRendererResources(
+    std::vector<RendererResourceResolutionTask>& meshTasks,
+    std::vector<RendererResourceResolutionTask>& materialTasks,
     const RendererResourceLiveObjectIndex& liveObjects,
     const std::string& sceneOwnerToken)
 {
+    CachedRendererResourceBindingBatch result;
+    result.unboundMeshTasks = meshTasks.size();
+    result.unboundMaterialTasks = materialTasks.size();
     if (meshTasks.empty() && materialTasks.empty())
-        return false;
+        return result;
     if (!NLS::Core::ServiceLocator::Contains<NLS::Core::ResourceManagement::MeshManager>() ||
         !NLS::Core::ServiceLocator::Contains<NLS::Core::ResourceManagement::MaterialManager>())
     {
-        return false;
+        result.firstFailureReason = "mesh or material manager unavailable";
+        return result;
     }
 
     auto& meshManager = NLS_SERVICE(NLS::Core::ResourceManagement::MeshManager);
@@ -3319,20 +3400,35 @@ bool TryBindPrefabInstanceCachedRendererResources(
     cachedRuntimeMeshesByPath.reserve(meshTasks.size());
     cachedRuntimeMaterialsByPath.reserve(materialTasks.size());
 
-    for (const auto& task : meshTasks)
+    std::vector<RendererResourceResolutionTask> unboundMeshTasks;
+    unboundMeshTasks.reserve(meshTasks.size());
+    for (auto& task : meshTasks)
     {
         if (task.kind != RendererResourceResolutionTaskKind::Mesh || task.modelPath.empty())
+        {
+            ++result.boundMeshTasks;
             continue;
+        }
 
         const auto foundObject = liveObjects.objectsBySourceId.find(task.sourceObject);
         auto* object = foundObject != liveObjects.objectsBySourceId.end() ? foundObject->second : nullptr;
         if (!object || !object->IsAlive())
-            return false;
+        {
+            if (result.firstFailureReason.empty())
+                result.firstFailureReason = "mesh source object unavailable";
+            unboundMeshTasks.push_back(std::move(task));
+            continue;
+        }
 
         auto* meshFilter = object->GetComponent<NLS::Engine::Components::MeshFilter>();
         auto* meshRenderer = object->GetComponent<NLS::Engine::Components::MeshRenderer>();
         if (!meshFilter || !meshRenderer)
-            return false;
+        {
+            if (result.firstFailureReason.empty())
+                result.firstFailureReason = "mesh components unavailable";
+            unboundMeshTasks.push_back(std::move(task));
+            continue;
+        }
 
         const auto meshCacheKey = NormalizePreviewResourcePathKey(task.modelPath);
         auto* mesh = static_cast<NLS::Core::ResourceManagement::MeshManager::Mesh*>(nullptr);
@@ -3347,7 +3443,12 @@ bool TryBindPrefabInstanceCachedRendererResources(
             cachedRuntimeMeshesByPath.emplace(meshCacheKey, mesh);
         }
         if (!mesh)
-            return false;
+        {
+            if (result.firstFailureReason.empty())
+                result.firstFailureReason = "mesh not cached: " + task.modelPath;
+            unboundMeshTasks.push_back(std::move(task));
+            continue;
+        }
 
         auto& binding = bindingsBySourceObject[task.sourceObject];
         binding.object = object;
@@ -3355,25 +3456,45 @@ bool TryBindPrefabInstanceCachedRendererResources(
         binding.meshRenderer = meshRenderer;
         binding.meshPath = task.modelPath;
         binding.mesh = mesh;
+        ++result.boundMeshTasks;
     }
+    meshTasks = std::move(unboundMeshTasks);
 
-    for (const auto& task : materialTasks)
+    std::vector<RendererResourceResolutionTask> unboundMaterialTasks;
+    unboundMaterialTasks.reserve(materialTasks.size());
+    for (auto& task : materialTasks)
     {
         if (task.kind != RendererResourceResolutionTaskKind::Material)
+        {
+            ++result.boundMaterialTasks;
             continue;
+        }
 
         const auto foundObject = liveObjects.objectsBySourceId.find(task.sourceObject);
         auto* object = foundObject != liveObjects.objectsBySourceId.end() ? foundObject->second : nullptr;
         if (!object || !object->IsAlive())
-            return false;
+        {
+            if (result.firstFailureReason.empty())
+                result.firstFailureReason = "material source object unavailable";
+            unboundMaterialTasks.push_back(std::move(task));
+            continue;
+        }
 
         auto* meshRenderer = object->GetComponent<NLS::Engine::Components::MeshRenderer>();
         if (!meshRenderer)
-            return false;
+        {
+            if (result.firstFailureReason.empty())
+                result.firstFailureReason = "material renderer unavailable";
+            unboundMaterialTasks.push_back(std::move(task));
+            continue;
+        }
 
         auto& binding = bindingsBySourceObject[task.sourceObject];
         binding.object = object;
         binding.meshRenderer = meshRenderer;
+        const size_t priorMaterialBindingCount = binding.materials.size();
+        const auto priorMaterialPaths = binding.materialPaths;
+        std::string materialFailureReason;
         if (!TryCollectCachedRuntimeMaterialBinding(
                 *meshRenderer,
                 task,
@@ -3381,11 +3502,19 @@ bool TryBindPrefabInstanceCachedRendererResources(
                 textureManager,
                 cachedRuntimeMaterialsByPath,
                 cachedRuntimeTexturesByPath,
-                binding))
+                binding,
+                &materialFailureReason))
         {
-            return false;
+            binding.materials.resize(priorMaterialBindingCount);
+            binding.materialPaths = priorMaterialPaths;
+            if (result.firstFailureReason.empty())
+                result.firstFailureReason = std::move(materialFailureReason);
+            unboundMaterialTasks.push_back(std::move(task));
+            continue;
         }
+        ++result.boundMaterialTasks;
     }
+    materialTasks = std::move(unboundMaterialTasks);
 
     for (auto& [_, binding] : bindingsBySourceObject)
     {
@@ -3449,6 +3578,34 @@ bool TryBindPrefabInstanceCachedRendererResources(
         }
     }
 
+    result.unboundMeshTasks = meshTasks.size();
+    result.unboundMaterialTasks = materialTasks.size();
+    return result;
+}
+
+bool TryBindPrefabInstanceCachedRendererResources(
+    const std::vector<RendererResourceResolutionTask>& meshTasks,
+    const std::vector<RendererResourceResolutionTask>& materialTasks,
+    const RendererResourceLiveObjectIndex& liveObjects,
+    const std::string& sceneOwnerToken,
+    std::string* failureReason = nullptr)
+{
+    if (meshTasks.empty() && materialTasks.empty())
+        return false;
+
+    auto remainingMeshTasks = meshTasks;
+    auto remainingMaterialTasks = materialTasks;
+    const auto result = TryBindAvailablePrefabInstanceCachedRendererResources(
+        remainingMeshTasks,
+        remainingMaterialTasks,
+        liveObjects,
+        sceneOwnerToken);
+    if (!result.FullyBound())
+    {
+        if (failureReason != nullptr)
+            *failureReason = result.firstFailureReason;
+        return false;
+    }
     return true;
 }
 
@@ -3668,13 +3825,19 @@ bool StartMeshArtifactLoad(
         // prevents a full opportunistic queue from stranding the task in
         // in-flight retry forever, which also keeps resident thumbnails from
         // remaining permanently partial.
-        accepted = actions.TrackOpportunisticBackgroundTask(loadMeshArtifact);
+        accepted = actions.TrackOpportunisticBackgroundTask(
+            loadMeshArtifact,
+            NLS::Base::Jobs::JobPriority::High);
         if (!accepted)
-            accepted = actions.TrackBackgroundTask(std::move(loadMeshArtifact));
+            accepted = actions.TrackBackgroundTask(
+                std::move(loadMeshArtifact),
+                NLS::Base::Jobs::JobPriority::High);
     }
     else
     {
-        accepted = actions.TrackBackgroundTask(std::move(loadMeshArtifact));
+        accepted = actions.TrackBackgroundTask(
+            std::move(loadMeshArtifact),
+            NLS::Base::Jobs::JobPriority::High);
     }
     if (!accepted)
     {
@@ -3831,6 +3994,8 @@ void RunRendererResourceResolutionStep(
         CancelRendererResourceMaterialAndTextureInterests(*state);
         if (restoreRootVisibility)
             RestoreRendererResourceResolutionRootVisibility(*state);
+        if (state->scene)
+            state->scene->MarkRenderContentChanged();
         actions.ReleaseGameObjectDestroyedListener(state->destroyedListener);
         state->destroyedListener = InvalidListenerID;
         ReleasePrefabInstanceResourceOwnersFromLocatedRegistry(state->ownerToken);
@@ -3849,6 +4014,8 @@ void RunRendererResourceResolutionStep(
         CancelRendererResourceMeshLoads(*state);
         CancelRendererResourceMaterialAndTextureInterests(*state);
         RollbackFailedRendererResourceResolutionRoot(actions, *state);
+        if (state->scene)
+            state->scene->MarkRenderContentChanged();
         actions.ReleaseGameObjectDestroyedListener(state->destroyedListener);
         state->destroyedListener = InvalidListenerID;
         ReleasePrefabInstanceResourceOwnersFromLocatedRegistry(state->ownerToken);
@@ -3911,6 +4078,15 @@ void RunRendererResourceResolutionStep(
 
     auto markRenderContentChanged = [&state]
     {
+        if (state->shareSceneLoadFrameBudget)
+        {
+            // Startup binding runs before the editor window is shown. Rebuilding
+            // the render scene after every small batch makes the hidden startup
+            // path render-bound instead of I/O-bound; publish one invalidation
+            // only after the complete resource state reaches a terminal state.
+            state->renderContentChangedThisStep = true;
+            return;
+        }
         if (!state->renderContentChangedThisStep && state->scene)
         {
             state->scene->MarkRenderContentChanged();
@@ -3940,14 +4116,23 @@ void RunRendererResourceResolutionStep(
     // creating a manager request; pumping such a set only scans strings and
     // can consume the shared frame budget forever.
     // Meshes are the critical path for a resident preview: material and
-    // texture pumping can consume the whole shared scene-load slice before a
-    // single deferred mesh gets scheduled. Defer those pumps until the mesh
-    // queue is drained so already-loaded geometry becomes drawable first.
+    // texture completion pumping can consume the whole shared scene-load slice
+    // before a second deferred mesh gets scheduled. Mesh artifact jobs are
+    // high priority, while material/texture jobs are normal priority, so their
+    // requests still overlap the mesh phase without starving it.
     const bool hasPendingMeshTasks = HasPendingMeshRendererResourceTasks(*state);
-    if (!hasPendingMeshTasks)
+    const bool meshArtifactPhaseActive =
+        hasPendingMeshTasks && state->prioritizeMeshArtifactLoadsUntilSaturated;
+
+    // Starting material requests is cheap and lets their normal-priority
+    // workers overlap the high-priority mesh phase. Completion pumping stays
+    // gated until the mesh queue drains because it shares the scene-load frame
+    // budget and previously consumed the entire slice before a second mesh
+    // task could be scheduled.
+    PrewarmRendererResourceMaterialArtifacts(*state);
+    if (!meshArtifactPhaseActive)
     {
         RefreshTrackedRendererResourceMaterialPaths(*state);
-        PrewarmRendererResourceMaterialArtifacts(*state);
         PrewarmRendererResourceMaterialTextures(*state);
 
         // Scene material objects can already be valid while their declared
@@ -4247,7 +4432,8 @@ void RunRendererResourceResolutionStep(
         return;
     }
 
-    markRenderContentChanged();
+    if (state->scene)
+        state->scene->MarkRenderContentChanged();
     LogSceneLoadRendererResourceResolutionDiagnostics(*state, "ready");
     const auto elapsed = std::chrono::duration_cast<std::chrono::microseconds>(
         std::chrono::steady_clock::now() - stepStart);
@@ -4407,7 +4593,8 @@ NLS::Editor::Core::BuildSceneLoadPrefabResourceResolutionOptions(
     PrefabInstanceAssetResolutionOptions options;
     options.hideRootUntilRendererResourcesReady = true;
     options.keepRootRenderingSuppressedOnFailure = false;
-    options.allowProgressiveRevealBeforeAllResourcesReady = true;
+    options.allowProgressiveRevealBeforeAllResourcesReady =
+        !prioritizeMeshArtifactLoadsUntilSaturated;
     options.progressTargetPlatform = kSceneLoadRendererResourceResolutionTargetPlatform;
     options.shareSceneLoadFrameBudget = true;
     options.shareMeshArtifactLoads = true;
@@ -4791,6 +4978,8 @@ bool Editor::Core::EditorActions::RestorePrefabInstancesForCurrentSceneFromDisk(
         " cache=" + (sourcePathIndex.loadedFromCache ? "hit" : "miss"));
     const auto sceneOwnerScope = m_context.sceneManager.GetCurrentSceneSourcePath();
     std::unordered_map<std::string, std::shared_ptr<const NLS::Engine::Assets::PrefabArtifact>> prefabArtifactCache;
+    using RendererDependencyTemplates = std::vector<NLS::Editor::Assets::ImportedPrefabRendererDependencyTemplate>;
+    std::unordered_map<std::string, std::shared_ptr<const RendererDependencyTemplates>> rendererTemplatesByPrefab;
     std::unordered_set<std::string> sourceMissingPrefabSources;
     std::unordered_set<std::string> sourceUnresolvedPrefabSources;
     std::unique_ptr<NLS::Editor::Assets::AssetDatabaseFacade> sourcePathFallbackDatabase;
@@ -4844,6 +5033,7 @@ bool Editor::Core::EditorActions::RestorePrefabInstancesForCurrentSceneFromDisk(
             [&prefabArtifactLoader,
                 &resolvePrefabSourcePath,
                 &prefabArtifactCache,
+                &rendererTemplatesByPrefab,
                 &sourceMissingPrefabSources,
                  &sourceUnresolvedPrefabSources,
                  &deferredGeneratedModelPrefabLoads,
@@ -4918,6 +5108,63 @@ bool Editor::Core::EditorActions::RestorePrefabInstancesForCurrentSceneFromDisk(
                     " diagnosticMessage=" +
                     artifactLoadDiagnosticMessage);
 
+                std::shared_ptr<const RendererDependencyTemplates> rendererTemplates;
+                if (artifact && m_context.GetStartupResourcePrewarmMode() == StartupResourcePrewarmMode::Pipelined)
+                {
+                    std::vector<std::string> meshPaths;
+                    meshPaths.reserve(artifact->resolvedAssets.size());
+                    for (const auto& resolved : artifact->resolvedAssets)
+                    {
+                        if (resolved.expectedType == "Mesh" && !resolved.artifactPath.empty())
+                            meshPaths.push_back(resolved.artifactPath);
+                    }
+                    if (!meshPaths.empty())
+                    {
+                        // The immutable prefab graph can be indexed while mesh artifacts are loaded and uploaded.
+                        auto templatesFuture = std::async(std::launch::async, [artifact]
+                        {
+                            return std::make_shared<const RendererDependencyTemplates>(
+                                NLS::Editor::Assets::BuildImportedPrefabRendererDependencyTemplates(*artifact));
+                        });
+                        // Uploading every generated LOD at startup measured
+                        // ~1.9s faster when limited to LOD0, but attaching the
+                        // remaining LODs to live meshes after the window is
+                        // shown reproduced a threaded-RHI submission abort.
+                        // Keep the full LOD set on the startup path until the
+                        // LOD attach can happen while threaded rendering is
+                        // provably paused.
+                        m_context.meshManager.PrewarmArtifactsPipelined(meshPaths);
+                        try
+                        {
+                            rendererTemplates = templatesFuture.get();
+                        }
+                        catch (const std::exception& exception)
+                        {
+                            NLS_LOG_WARNING(std::string("Startup renderer dependency prewarm failed: ") +
+                                exception.what());
+                        }
+                    }
+                    if (rendererTemplates)
+                        rendererTemplatesByPrefab.emplace(cacheKey, rendererTemplates);
+
+                    std::vector<std::string> texturePaths;
+                    for (const auto& resolved : artifact->resolvedAssets)
+                    {
+                        if (resolved.expectedType != "Material" || resolved.artifactPath.empty())
+                            continue;
+                        auto* material = m_context.materialManager.LoadArtifactWithoutTextures(resolved.artifactPath);
+                        if (material == nullptr)
+                            continue;
+                        for (const auto& [uniform, texturePath] : material->GetTextureResourcePaths())
+                        {
+                            (void)uniform;
+                            if (!texturePath.empty())
+                                texturePaths.push_back(texturePath);
+                        }
+                    }
+                    m_context.textureManager.PrewarmArtifactsBatched(texturePaths);
+                }
+
                 if (artifact &&
                     !loadedPrefabKey.runtimeCacheIdentity.empty() &&
                     !loadedPrefabKey.prefabArtifactPath.empty() &&
@@ -4930,7 +5177,8 @@ bool Editor::Core::EditorActions::RestorePrefabInstancesForCurrentSceneFromDisk(
                             subAssetKey,
                             loadedPrefabKey.prefabArtifactPath,
                             loadedPrefabKey.runtimeCacheIdentity,
-                            *artifact);
+                            *artifact,
+                            rendererTemplates.get());
                         sceneLease.has_value())
                     {
                         m_context.sceneResidentPrefabPreviewLeases.push_back(std::move(*sceneLease));
@@ -4939,7 +5187,8 @@ bool Editor::Core::EditorActions::RestorePrefabInstancesForCurrentSceneFromDisk(
 
                 prefabArtifactCache.emplace(cacheKey, artifact);
                 return artifact;
-            });
+            },
+            m_context.GetStartupResourcePrewarmMode() != StartupResourcePrewarmMode::Async);
     }
     for (const auto& stage : prefabRestoreStageStats.TopBottlenecks(
         NLS::Base::Profiling::PerformanceStageDomain::Prefab,
@@ -5034,8 +5283,15 @@ bool Editor::Core::EditorActions::RestorePrefabInstancesForCurrentSceneFromDisk(
                 ++skippedMissingGeneratedInstances;
                 return;
             }
-            const auto sceneLoadResolutionOptions = BuildSceneLoadPrefabResourceResolutionOptions(
+            auto sceneLoadResolutionOptions = BuildSceneLoadPrefabResourceResolutionOptions(
                 prioritizeMeshArtifactLoadsUntilSaturated);
+            const auto cacheKey = registeredInstance->prefabAssetId.ToString() +
+                "\n" + registeredInstance->prefabSubAssetKey;
+            if (const auto cached = rendererTemplatesByPrefab.find(cacheKey);
+                cached != rendererTemplatesByPrefab.end())
+            {
+                sceneLoadResolutionOptions.rendererDependencyTemplates = cached->second;
+            }
             QueuePrefabInstanceAssetResolution(
                 registeredInstance,
                 FindCachedRestoredPrefabArtifact(*registeredInstance),
@@ -5615,14 +5871,18 @@ void Editor::Core::EditorActions::ReleaseTrackedGameObjectDestroyedListeners()
     }
 }
 
-bool Editor::Core::EditorActions::TrackBackgroundTask(std::function<void()> task)
+bool Editor::Core::EditorActions::TrackBackgroundTask(
+    std::function<void()> task,
+    const NLS::Base::Jobs::JobPriority priority)
 {
-    return m_backgroundTasks.Track(std::move(task));
+    return m_backgroundTasks.Track(std::move(task), priority);
 }
 
-bool Editor::Core::EditorActions::TrackOpportunisticBackgroundTask(std::function<void()> task)
+bool Editor::Core::EditorActions::TrackOpportunisticBackgroundTask(
+    std::function<void()> task,
+    const NLS::Base::Jobs::JobPriority priority)
 {
-    return m_backgroundTasks.TrackOpportunistic(std::move(task));
+    return m_backgroundTasks.TrackOpportunistic(std::move(task), priority);
 }
 
 void Editor::Core::EditorActions::ExecuteDelayedActions()
@@ -5668,19 +5928,6 @@ Editor::Core::PanelsManager& Editor::Core::EditorActions::GetPanelsManager()
     return m_panelsManager;
 }
 
-void Editor::Core::EditorActions::SetGameObjectSpawnAtOrigin(bool p_value)
-{
-    if (p_value)
-        m_gameObjectSpawnMode = EGameObjectSpawnMode::ORIGIN;
-    else
-        m_gameObjectSpawnMode = EGameObjectSpawnMode::FRONT;
-}
-
-void Editor::Core::EditorActions::SetGameObjectSpawnMode(EGameObjectSpawnMode p_value)
-{
-    m_gameObjectSpawnMode = p_value;
-}
-
 void Editor::Core::EditorActions::ResetLayout()
 {
     DelayAction([this]()
@@ -5711,38 +5958,6 @@ void Editor::Core::EditorActions::ApplyLayoutPreset(const std::string& p_presetI
         m_context.uiManager->ResetLayout(layoutPath.string());
         NLS_LOG_INFO("Applied editor layout preset: " + p_presetId);
     });
-}
-
-void Editor::Core::EditorActions::SetSceneViewCameraSpeed(int p_speed)
-{
-    // EDITOR_PANEL(Panels::SceneView, "Scene View").GetCameraController().SetSpeed((float)p_speed);
-}
-
-int Editor::Core::EditorActions::GetSceneViewCameraSpeed()
-{
-    // return (int)EDITOR_PANEL(Panels::SceneView, "Scene View").GetCameraController().GetSpeed();
-    return 0;
-}
-
-void Editor::Core::EditorActions::SetAssetViewCameraSpeed(int p_speed)
-{
-    // EDITOR_PANEL(Panels::AssetView, "Asset View").GetCameraController().SetSpeed((float)p_speed);
-}
-
-int Editor::Core::EditorActions::GetAssetViewCameraSpeed()
-{
-    // return (int)EDITOR_PANEL(Panels::AssetView, "Asset View").GetCameraController().GetSpeed();
-    return 0;
-}
-
-void Editor::Core::EditorActions::ResetSceneViewCameraPosition()
-{
-    // EDITOR_PANEL(Panels::SceneView, "Scene View").ResetCameraTransform();
-}
-
-void Editor::Core::EditorActions::ResetAssetViewCameraPosition()
-{
-    // EDITOR_PANEL(Panels::AssetView, "Asset View").ResetCameraTransform();
 }
 
 Editor::Core::EditorActions::EEditorMode Editor::Core::EditorActions::GetCurrentEditorMode() const
@@ -5975,18 +6190,6 @@ void Editor::Core::EditorActions::NextFrame()
         SetEditorMode(EEditorMode::FRAME_BY_FRAME);
 }
 
-Maths::Vector3 Editor::Core::EditorActions::CalculateGameObjectSpawnPoint(float p_distanceToCamera)
-{
-    auto& sceneView = m_panelsManager.GetPanelAs<Editor::Panels::SceneView>("Scene View");
-
-    if (auto camera = sceneView.GetCamera(); camera != nullptr && camera->transform != nullptr)
-    {
-        return camera->GetPosition() + camera->transform->GetWorldForward() * p_distanceToCamera;
-    }
-
-    return Maths::Vector3::Zero;
-}
-
 Engine::GameObject* Editor::Core::EditorActions::CreateEmptyGameObject(bool p_focusOnCreation, Engine::GameObject* p_parent, const std::string& p_name)
 {
     auto* creationScene = ResolveGameObjectCreationScene(m_context, p_parent);
@@ -6000,9 +6203,6 @@ Engine::GameObject* Editor::Core::EditorActions::CreateEmptyGameObject(bool p_fo
 
     if (p_parent)
         instance.SetParent(*p_parent);
-
-    if (m_gameObjectSpawnMode == EGameObjectSpawnMode::FRONT)
-        instance.GetTransform()->SetLocalPosition(CalculateGameObjectSpawnPoint(10.0f));
 
     if (p_focusOnCreation)
         SelectGameObject(instance);
@@ -6132,8 +6332,6 @@ Engine::GameObject* NLS::Editor::Core::EditorActions::CreateGameObjectFromAsset(
 
     if (placementOverride.has_value())
         instance.GetTransform()->SetWorldPosition(*placementOverride);
-    else if (m_gameObjectSpawnMode == EGameObjectSpawnMode::FRONT)
-        instance.GetTransform()->SetLocalPosition(CalculateGameObjectSpawnPoint(10.0f));
 
     if (result.dragDrop.deferredAssetReferenceResolutionRequested)
     {
@@ -6219,8 +6417,6 @@ Engine::GameObject* NLS::Editor::Core::EditorActions::CreateGameObjectFromAsset(
 
     if (placementOverride.has_value())
         instance.GetTransform()->SetWorldPosition(*placementOverride);
-    else if (m_gameObjectSpawnMode == EGameObjectSpawnMode::FRONT)
-        instance.GetTransform()->SetLocalPosition(CalculateGameObjectSpawnPoint(10.0f));
 
     if (result.dragDrop.deferredAssetReferenceResolutionRequested)
     {
@@ -6292,8 +6488,6 @@ Engine::GameObject* NLS::Editor::Core::EditorActions::CreateGameObjectFromAssetB
     auto& instance = *result.dragDrop.instance->instanceRoot;
     if (placementOverride.has_value())
         instance.GetTransform()->SetWorldPosition(*placementOverride);
-    else if (m_gameObjectSpawnMode == EGameObjectSpawnMode::FRONT)
-        instance.GetTransform()->SetLocalPosition(CalculateGameObjectSpawnPoint(10.0f));
 
     if (result.dragDrop.deferredAssetReferenceResolutionRequested)
     {
@@ -6350,8 +6544,6 @@ Engine::GameObject* NLS::Editor::Core::EditorActions::CreateGameObjectFromAssetB
 
     if (placementOverride.has_value())
         instance.GetTransform()->SetWorldPosition(*placementOverride);
-    else if (m_gameObjectSpawnMode == EGameObjectSpawnMode::FRONT)
-        instance.GetTransform()->SetLocalPosition(CalculateGameObjectSpawnPoint(10.0f));
 
     if (result.dragDrop.deferredAssetReferenceResolutionRequested)
     {
@@ -6430,8 +6622,6 @@ Engine::GameObject* NLS::Editor::Core::EditorActions::CreateGameObjectFromImport
 
     if (placementOverride.has_value())
         instance.GetTransform()->SetWorldPosition(*placementOverride);
-    else if (m_gameObjectSpawnMode == EGameObjectSpawnMode::FRONT)
-        instance.GetTransform()->SetLocalPosition(CalculateGameObjectSpawnPoint(10.0f));
 
     if (result.dragDrop.deferredAssetReferenceResolutionRequested)
     {
@@ -6505,8 +6695,6 @@ Engine::GameObject* NLS::Editor::Core::EditorActions::CreateGameObjectFromImport
 
     if (placementOverride.has_value())
         instance.GetTransform()->SetWorldPosition(*placementOverride);
-    else if (m_gameObjectSpawnMode == EGameObjectSpawnMode::FRONT)
-        instance.GetTransform()->SetLocalPosition(CalculateGameObjectSpawnPoint(10.0f));
 
     if (result.dragDrop.deferredAssetReferenceResolutionRequested)
     {
@@ -6588,9 +6776,6 @@ void NLS::Editor::Core::EditorActions::CompletePendingAssetDrop(
 
     auto& instance = *result.dragDrop.instance->instanceRoot;
     NLS_LOG_INFO("Created GameObject from imported asset: " + path + " root=" + instance.GetName());
-    if (m_gameObjectSpawnMode == EGameObjectSpawnMode::FRONT)
-        instance.GetTransform()->SetLocalPosition(CalculateGameObjectSpawnPoint(10.0f));
-
     if (result.dragDrop.deferredAssetReferenceResolutionRequested)
     {
         QueuePrefabInstanceAssetResolution(
@@ -6691,6 +6876,16 @@ void NLS::Editor::Core::EditorActions::QueuePrefabInstanceAssetResolution(
     ReleasePrefabInstanceResourceOwnersFromLocatedRegistry(previewResourceHandoff.prewarm.ownerToken);
 
     const auto resolvedStats = CountResolvedRendererResources(*instance->instanceRoot);
+    if (options.shareSceneLoadFrameBudget &&
+        (resolvedStats.boundMeshes != resolvedStats.meshRenderers ||
+            resolvedStats.boundMaterialSlotRenderers != resolvedStats.materialSlotRenderers))
+    {
+        NLS_LOG_INFO("[Startup] Cached live renderer bindings incomplete mesh=" +
+            std::to_string(resolvedStats.boundMeshes) + "/" +
+            std::to_string(resolvedStats.meshRenderers) + " materials=" +
+            std::to_string(resolvedStats.boundMaterialSlotRenderers) + "/" +
+            std::to_string(resolvedStats.materialSlotRenderers));
+    }
     if (resolvedStats.meshRenderers > 0u &&
         resolvedStats.boundMeshes == resolvedStats.meshRenderers &&
         resolvedStats.boundMaterialSlotRenderers == resolvedStats.materialSlotRenderers)
@@ -6790,17 +6985,139 @@ void NLS::Editor::Core::EditorActions::QueuePrefabInstanceAssetResolution(
         previewResourceHandoff,
         adoptedPreviewMeshLoads);
 
-    const bool boundCachedRendererResources =
-        TryBindPrefabInstanceCachedRendererResources(meshTasks, materialTasks, liveObjects, sceneOwnerToken);
-    if (boundCachedRendererResources)
+    if (options.shareSceneLoadFrameBudget &&
+        m_context.GetStartupResourcePrewarmMode() == StartupResourcePrewarmMode::Pipelined)
+    {
+        std::unordered_set<std::string> resolvedMaterialPaths;
+        std::string firstResolvedMaterialPath;
+        for (const auto& resolved : prefab->resolvedAssets)
+        {
+            if (resolved.expectedType != "Material" || resolved.artifactPath.empty())
+                continue;
+            if (firstResolvedMaterialPath.empty())
+                firstResolvedMaterialPath = resolved.artifactPath;
+            resolvedMaterialPaths.insert(NormalizePreviewResourcePathKey(resolved.artifactPath));
+        }
+        std::unordered_set<std::string> seenMaterialPaths;
+        std::vector<std::string> texturePaths;
+        std::unordered_map<std::string, std::vector<NLS::Render::Resources::Shader*>> shaderPassesBySource;
+        size_t loadedMaterials = 0u;
+        size_t missingMaterials = 0u;
+        size_t invalidCachedMaterials = 0u;
+        size_t restoredMaterialShaders = 0u;
+        size_t matchedResolvedMaterialPaths = 0u;
+        std::string firstInvalidMaterialPath;
+        bool firstInvalidForwardResolved = false;
+        std::string firstInvalidForwardPath;
+        for (const auto& task : materialTasks)
+        {
+            for (const auto& path : task.materialPaths)
+            {
+                if (path.empty() || !seenMaterialPaths.insert(NormalizePreviewResourcePathKey(path)).second)
+                    continue;
+                if (resolvedMaterialPaths.contains(NormalizePreviewResourcePathKey(path)))
+                    ++matchedResolvedMaterialPaths;
+
+                auto* material = FindCachedMaterialByEquivalentPath(m_context.materialManager, path);
+                if (material && !material->IsValid() &&
+                    !material->GetShaderLabSourcePath().empty() &&
+                    NLS::Core::ServiceLocator::Contains<NLS::Core::ResourceManagement::ShaderManager>())
+                {
+                    const auto& shaderSource = material->GetShaderLabSourcePath();
+                    auto [found, inserted] = shaderPassesBySource.try_emplace(shaderSource);
+                    if (inserted)
+                    {
+                        NLS::Render::Resources::Loaders::MaterialLoader::LoadOptions options;
+                        options.loadMissingTextures = false;
+                        for (const auto& passPath :
+                            NLS::Render::Resources::Loaders::MaterialLoader::ResolveShaderLabPassArtifactPaths(
+                                path, shaderSource, options))
+                        {
+                            if (auto* shader = NLS_SERVICE(NLS::Core::ResourceManagement::ShaderManager).GetResource(
+                                    passPath, true))
+                            {
+                                found->second.push_back(shader);
+                            }
+                        }
+                    }
+                    for (auto* shader : found->second)
+                        material->RegisterShaderLabPassShader(shader);
+                    if (material->IsValid())
+                        ++restoredMaterialShaders;
+                }
+                if (material && !material->IsValid())
+                {
+                    ++invalidCachedMaterials;
+                    if (firstInvalidMaterialPath.empty())
+                    {
+                        firstInvalidMaterialPath = path;
+                        if (auto* forward = material->ResolveShaderForLightMode("Forward");
+                            forward != nullptr)
+                        {
+                            firstInvalidForwardResolved = true;
+                            firstInvalidForwardPath = forward->path;
+                        }
+                    }
+                }
+                if (!material)
+                {
+                    material = m_context.materialManager.LoadArtifactWithoutTextures(path);
+                    if (material)
+                        ++loadedMaterials;
+                    else
+                        ++missingMaterials;
+                }
+                if (!material || !material->IsValid())
+                    continue;
+                for (const auto& [uniform, texturePath] : material->GetTextureResourcePaths())
+                {
+                    (void)uniform;
+                    if (!texturePath.empty())
+                        texturePaths.push_back(texturePath);
+                }
+            }
+        }
+        m_context.textureManager.PrewarmArtifactsBatched(texturePaths);
+        NLS_LOG_INFO("[Startup] Task material prewarm paths=" +
+            std::to_string(seenMaterialPaths.size()) + " loaded=" +
+            std::to_string(loadedMaterials) + " missing=" +
+            std::to_string(missingMaterials) + " restoredShaders=" +
+            std::to_string(restoredMaterialShaders) + " invalidCached=" +
+            std::to_string(invalidCachedMaterials) + " resolvedPaths=" +
+            std::to_string(resolvedMaterialPaths.size()) + " matchedResolved=" +
+            std::to_string(matchedResolvedMaterialPaths) + " firstResolvedPath=" +
+            firstResolvedMaterialPath + " firstInvalidPath=" +
+            firstInvalidMaterialPath + " shaderSources=" +
+            std::to_string(shaderPassesBySource.size()) + " firstInvalidForwardResolved=" +
+            std::to_string(firstInvalidForwardResolved ? 1u : 0u) + " firstInvalidForwardPath=" +
+            firstInvalidForwardPath + " texturePaths=" + std::to_string(texturePaths.size()));
+    }
+
+    std::string cachedBindFailureReason;
+    const auto cachedBindResult = TryBindAvailablePrefabInstanceCachedRendererResources(
+        meshTasks,
+        materialTasks,
+        liveObjects,
+        sceneOwnerToken);
+    if (options.shareSceneLoadFrameBudget &&
+        (cachedBindResult.BoundAnything() || !cachedBindResult.FullyBound()))
+    {
+        NLS_LOG_INFO("[Startup] Cached renderer batch binding boundMesh=" +
+            std::to_string(cachedBindResult.boundMeshTasks) + " boundMaterial=" +
+            std::to_string(cachedBindResult.boundMaterialTasks) + " unboundMesh=" +
+            std::to_string(cachedBindResult.unboundMeshTasks) + " unboundMaterial=" +
+            std::to_string(cachedBindResult.unboundMaterialTasks) + " reason=" +
+            cachedBindResult.firstFailureReason);
+    }
+    if (cachedBindResult.FullyBound())
     {
         NLS_LOG_INFO(
             "Fast-bound cached renderer resources for prefab instance: " +
             label +
             " meshTasks=" +
-            std::to_string(meshTasks.size()) +
+            std::to_string(cachedBindResult.boundMeshTasks) +
             " materialTasks=" +
-            std::to_string(materialTasks.size()));
+            std::to_string(cachedBindResult.boundMaterialTasks));
         restoreSuppressedRootOnSuccessIfNeeded();
         if (liveScene)
             liveScene->MarkRenderContentChanged();
@@ -6881,6 +7198,7 @@ void NLS::Editor::Core::EditorActions::QueuePrefabInstanceAssetResolution(
         m_context.prefabInstanceRegistry.MarkInstanceResourceFailure(*root, false);
     RegisterRendererResourceResolutionState(state);
     RefreshPrefabPendingResourcePresentation(*this, state->prefabAssetId);
+    PrewarmRendererResourceMeshArtifacts(*this, *state);
     PrewarmRendererResourceMaterialArtifacts(*state);
     previewHandoffGuard.Disarm();
     DelayAction(

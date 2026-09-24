@@ -642,7 +642,9 @@ bool HasCurrentExternalTextureBuildPipelineDependency(
     const NLS::Core::Assets::ArtifactManifest& manifest,
     const NLS::Core::Assets::AssetType assetType)
 {
-    if (assetType != NLS::Core::Assets::AssetType::ModelScene)
+    const bool requiresCurrentTexturePipeline =
+        assetType == NLS::Core::Assets::AssetType::Texture;
+    if (!requiresCurrentTexturePipeline && assetType != NLS::Core::Assets::AssetType::ModelScene)
         return true;
 
     const bool hasTextureArtifact = std::any_of(
@@ -664,7 +666,9 @@ bool HasCurrentExternalTextureBuildPipelineDependency(
             std::string mode;
             return ParseModelTextureMappingDependencyValue(dependency.value, query, mode);
         });
-    if (!hasTextureArtifact && !hasProjectTextureMappingDependency)
+    if (!requiresCurrentTexturePipeline &&
+        !hasTextureArtifact &&
+        !hasProjectTextureMappingDependency)
         return true;
 
     return HasDependency(
@@ -999,6 +1003,55 @@ std::string BuildStandaloneTextureSettingsIdentity(
         << "|compression=" << settings.compressionIntent
         << "|explicit=" << settings.explicitFormat;
     return stream.str();
+}
+
+// Standalone texture assets carry no material-channel metadata, so the
+// intended usage has to come from the conventional file-name suffix that model
+// exporters emit. Without this every standalone texture is treated as default
+// color, which silently encodes normal maps as sRGB BC1 instead of BC5.
+std::string InferStandaloneTextureType(const std::string& editorAssetPath)
+{
+    std::string lowered = editorAssetPath;
+    std::transform(
+        lowered.begin(),
+        lowered.end(),
+        lowered.begin(),
+        [](const unsigned char character) { return static_cast<char>(std::tolower(character)); });
+    const auto stem = std::filesystem::path(lowered).stem().generic_string();
+
+    // Only the trailing name component is inspected: "metal_door_01_BaseColor"
+    // must stay a color texture even though it contains "metal".
+    std::string trailing;
+    for (auto it = stem.rbegin(); it != stem.rend(); ++it)
+    {
+        const bool isTokenCharacter =
+            (*it >= 'a' && *it <= 'z') || (*it >= '0' && *it <= '9');
+        if (!isTokenCharacter)
+        {
+            if (!trailing.empty())
+                break;
+            continue;
+        }
+        trailing.push_back(*it);
+    }
+    std::reverse(trailing.begin(), trailing.end());
+
+    const auto contains = [&trailing](const std::string& token)
+    {
+        return trailing.find(token) != std::string::npos;
+    };
+
+    if (contains("normal") || contains("norm") || contains("bump") || trailing == "n" ||
+        trailing == "nrm")
+    {
+        return "normal";
+    }
+    if (contains("rough") || contains("metal") || contains("occlusion") ||
+        contains("specular") || contains("mask") || trailing == "ao")
+    {
+        return "mask";
+    }
+    return "default";
 }
 
 std::string BuildStandaloneDirectXTexEncoderOptionsHash(
@@ -2012,7 +2065,8 @@ std::optional<NLS::Core::Assets::ArtifactManifest> ImportSingleNativeArtifact(
     std::optional<NLS::Core::Assets::ArtifactManifest> previousManifest,
     NLS::Core::Assets::AssetDiagnostics& diagnostics,
     const std::string& targetPlatform = "editor",
-    std::string sourceContentHash = {})
+    std::string sourceContentHash = {},
+    std::vector<NLS::Core::Assets::AssetDependencyRecord> additionalDependencies = {})
 {
     NLS::Core::Assets::ArtifactWriteRequest writeRequest;
     writeRequest.sourceAssetId = record.id;
@@ -2037,6 +2091,10 @@ std::optional<NLS::Core::Assets::ArtifactManifest> ImportSingleNativeArtifact(
         meta,
         targetPlatform,
         std::move(sourceContentHash));
+    writeRequest.dependencies.insert(
+        writeRequest.dependencies.end(),
+        std::make_move_iterator(additionalDependencies.begin()),
+        std::make_move_iterator(additionalDependencies.end()));
 
     NLS::Core::Assets::ArtifactWriter writer(stagingRoot, artifactRoot);
     const auto writeResult = writer.WriteAndCommit(
@@ -2102,8 +2160,8 @@ std::optional<NLS::Core::Assets::ArtifactManifest> ImportStandaloneTextureArtifa
     auto encoder = canEncodeBc ? CreateDirectXTexTextureEncoder() : nullptr;
 
     NLS::Render::Assets::TextureImportSettingsSnapshot importSettings;
-    importSettings.textureType = "default";
-    importSettings.srgbTexture = true;
+    importSettings.textureType = InferStandaloneTextureType(editorAssetPath);
+    importSettings.srgbTexture = importSettings.textureType == "default";
     importSettings.alphaIsTransparency = false;
     importSettings.mipmapEnabled = true;
     importSettings.maxTextureSize = 0u;
@@ -2168,7 +2226,7 @@ std::optional<NLS::Core::Assets::ArtifactManifest> ImportStandaloneTextureArtifa
         resolvedSettings->normalizedSettingsHash = BuildStandaloneTextureSettingsIdentity(importSettings);
         resolvedSettings->platformOverrideHash = "none";
         resolvedSettings->importerVersion = meta.importerVersion;
-        resolvedSettings->postprocessorVersion = 1u;
+        resolvedSettings->postprocessorVersion = kExternalTexturePostprocessorVersion;
         resolvedSettings->dependencyHash = "none";
     }
 
@@ -2236,7 +2294,12 @@ std::optional<NLS::Core::Assets::ArtifactManifest> ImportStandaloneTextureArtifa
             std::move(previousManifest),
             diagnostics,
             textureBuildTargetPlatform,
-            resolvedSettings->sourceContentHash);
+            resolvedSettings->sourceContentHash,
+            {{
+                NLS::Core::Assets::AssetDependencyKind::PostprocessorVersion,
+                kExternalTextureBuildPipelineDependencyName,
+                std::to_string(kExternalTexturePostprocessorVersion)
+            }});
     }
 }
 

@@ -291,11 +291,14 @@ public:
         ThumbnailState state);
     void DropGpuPreviewResourceQueueOwnershipForTesting(
         const AssetThumbnailRequest& request);
+    void DropReadyResidentOwnershipForTesting(
+        const AssetThumbnailRequest& request);
     void DropGpuPreviewQueueLaneMembershipForTesting(
         const AssetThumbnailRequest& request);
     void QueueTerminalAndLateFreshResultForTesting(
         const AssetThumbnailRequest& request);
     [[nodiscard]] size_t GetResidentPreviewOwnerCountForTesting() const;
+    [[nodiscard]] size_t GetReadyResidentMarkerCountForTesting() const;
 #endif
 
 private:
@@ -411,6 +414,7 @@ private:
     void ExpireStalledVisibleThumbnailRequests();
     void RestoreGpuPreviewResourceContinuationRequests();
     void PromoteCompletedResidentPreviewOwners();
+    bool ReconcileReadyResidentPreviewMarkers();
     bool TryPublishResidentCompletionPromotion(
         const std::string& cacheKey,
         const AssetThumbnailRequest& request);

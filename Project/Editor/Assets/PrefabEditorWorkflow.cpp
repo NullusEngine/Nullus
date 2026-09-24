@@ -19,6 +19,8 @@
 #include <algorithm>
 #include <filesystem>
 #include <optional>
+#include <string_view>
+#include <unordered_map>
 #include <unordered_set>
 #include <utility>
 
@@ -529,10 +531,18 @@ void DiscoverMatchedComponentPropertyOverrides(
         liveComponent,
         sourceComponent.id);
 
+    // Property counts on script/component payloads can be large enough that a
+    // linear source lookup per live property dominates override discovery.
+    std::unordered_map<std::string_view, const PropertyRecord*> sourceProperties;
+    sourceProperties.reserve(sourceComponent.properties.size());
+    for (const auto& sourceProperty : sourceComponent.properties)
+        sourceProperties.emplace(sourceProperty.name, &sourceProperty);
+
     for (const auto& liveProperty : liveRecord.properties)
     {
-        const auto* sourceProperty = FindProperty(sourceComponent, liveProperty.name);
-        if (sourceProperty && PropertyValuesEqual(sourceProperty->value, liveProperty.value))
+        const auto sourceProperty = sourceProperties.find(liveProperty.name);
+        if (sourceProperty != sourceProperties.end() &&
+            PropertyValuesEqual(sourceProperty->second->value, liveProperty.value))
             continue;
 
         overrides.push_back(MakeOverrideRecord(
@@ -1783,6 +1793,32 @@ bool IsSamePatchIdentity(const PatchOperation& lhs, const PatchOperation& rhs)
            (!lhs.hasIndex || lhs.index == rhs.index);
 }
 
+struct PatchIdentityHash
+{
+    size_t operator()(const PatchOperation& patch) const noexcept
+    {
+        size_t hash = static_cast<size_t>(patch.type);
+        const auto combine = [&hash](const size_t value)
+        {
+            hash ^= value + 0x9e3779b97f4a7c15ull + (hash << 6u) + (hash >> 2u);
+        };
+        combine(std::hash<NLS::Guid> {}(patch.target.GetGuid()));
+        combine(std::hash<NLS::Guid> {}(patch.object.GetGuid()));
+        combine(std::hash<std::string> {}(patch.property));
+        combine(patch.hasIndex ? 1u : 0u);
+        combine(patch.hasIndex ? patch.index : 0u);
+        return hash;
+    }
+};
+
+struct PatchIdentityEqual
+{
+    bool operator()(const PatchOperation& lhs, const PatchOperation& rhs) const
+    {
+        return IsSamePatchIdentity(lhs, rhs);
+    }
+};
+
 bool CanSurfaceStoredLocalPatch(const PatchOperation& patch)
 {
     return patch.type == PatchOperationType::ReplaceProperty;
@@ -1792,19 +1828,19 @@ void AddLocalPatchOverrides(
     const PrefabInstanceRecord& instance,
     std::vector<PrefabOverrideRecord>& overrides)
 {
+    // Identity-indexed de-duplication. Large model prefabs carry thousands of
+    // stored patches, and the previous linear scan made this quadratic.
+    std::unordered_set<PatchOperation, PatchIdentityHash, PatchIdentityEqual> identities;
+    identities.reserve(overrides.size() + instance.localPatches.size());
+    for (const auto& overrideRecord : overrides)
+        identities.insert(overrideRecord.patch);
+
     for (const auto& patch : instance.localPatches)
     {
         if (!CanSurfaceStoredLocalPatch(patch))
             continue;
 
-        const auto alreadyDiscovered = std::any_of(
-            overrides.begin(),
-            overrides.end(),
-            [&patch](const PrefabOverrideRecord& overrideRecord)
-            {
-                return IsSamePatchIdentity(overrideRecord.patch, patch);
-            });
-        if (alreadyDiscovered)
+        if (!identities.insert(patch).second)
             continue;
 
         overrides.push_back(MakeOverrideRecord(
@@ -1974,13 +2010,22 @@ PrefabInstanceRecord& PrefabInstanceRegistry::Register(PrefabInstanceRecord inst
                 m_failedResourceInstanceRoots.erase(existing.instanceRoot);
                 m_pendingResourceInstanceRoots.erase(existing.instanceRoot);
                 existing = std::move(instance);
+                BumpRevision();
                 return existing;
             }
         }
     }
 
     m_instances.push_back(std::move(instance));
+    BumpRevision();
     return m_instances.back();
+}
+
+void PrefabInstanceRegistry::BumpRevision()
+{
+    ++m_revision;
+    if (m_revision == 0u)
+        m_revision = 1u;
 }
 
 void PrefabInstanceRegistry::Clear()
@@ -1990,6 +2035,7 @@ void PrefabInstanceRegistry::Clear()
     m_pendingResourcePrefabSources.clear();
     m_failedResourceInstanceRoots.clear();
     m_pendingResourceInstanceRoots.clear();
+    BumpRevision();
 }
 
 PrefabInstanceRecord* PrefabInstanceRegistry::FindRootInstance(const GameObject& object)
@@ -2018,6 +2064,7 @@ bool PrefabInstanceRegistry::RemoveRootInstance(const GameObject& object)
             m_failedResourceInstanceRoots.erase(it->instanceRoot);
             m_pendingResourceInstanceRoots.erase(it->instanceRoot);
             m_instances.erase(it);
+            BumpRevision();
             return true;
         }
     }
@@ -2034,6 +2081,8 @@ bool PrefabInstanceRegistry::RemoveObjectMapping(const GameObject& object)
         removed = removed || erased > 0u;
     }
 
+    if (removed)
+        BumpRevision();
     return removed;
 }
 
@@ -2478,6 +2527,51 @@ std::vector<PrefabOverrideRecord> PrefabEditorWorkflow::DiscoverOverrides(
 
     AddLocalPatchOverrides(instance, overrides);
 
+    return overrides;
+}
+
+std::vector<PrefabOverrideRecord> PrefabEditorWorkflow::DiscoverOverridesForObject(
+    const NLS::Engine::Assets::PrefabArtifact& prefab,
+    const PrefabInstanceRecord& instance,
+    NLS::Engine::GameObject& liveObject,
+    const bool includeStoredLocalPatches) const
+{
+    std::vector<PrefabOverrideRecord> overrides;
+    if (!instance.instanceRoot)
+        return overrides;
+
+    const auto sourceId = FindSourceObjectForInstance(instance, &liveObject);
+    const auto* sourceOwner = sourceId.IsValid()
+        ? FindObjectRecord(prefab.graph, sourceId)
+        : nullptr;
+    if (sourceOwner == nullptr)
+    {
+        // Nested-prefab objects may belong to a different source artifact.
+        // Preserve the existing recursive behavior for that uncommon case.
+        return DiscoverOverrides(prefab, instance);
+    }
+
+    const auto baseName = ReadStringProperty(sourceOwner, "name");
+    if (baseName.has_value() && *baseName != liveObject.GetName())
+    {
+        overrides.push_back(MakeOverrideRecord(
+            instance,
+            sourceOwner->id,
+            "name",
+            PatchOperation::ReplaceProperty(
+                sourceOwner->id,
+                "name",
+                PropertyValue::String(liveObject.GetName()))));
+    }
+
+    // Inspector override markers only cover the selected object and its own
+    // components. Descendant overrides remain available through the explicit
+    // target-level action path, which still uses full discovery.
+    DiscoverComponentOverrides(prefab, instance, *sourceOwner, liveObject, overrides);
+    // Marker callers index stored patch identities directly; copying every
+    // stored patch into the discovered override list is unnecessary for them.
+    if (includeStoredLocalPatches)
+        AddLocalPatchOverrides(instance, overrides);
     return overrides;
 }
 

@@ -44,6 +44,12 @@ EditorRenderingSettingsObject& EditorSettings::GetRenderingSettingsObject()
     return object;
 }
 
+EditorViewSettingsObject& EditorSettings::GetViewSettingsObject()
+{
+    static EditorViewSettingsObject object;
+    return object;
+}
+
 EditorRuntimeSettingsObject& EditorSettings::GetRuntimeSettingsObject()
 {
     static EditorRuntimeSettingsObject object;
@@ -63,11 +69,8 @@ Render::Settings::RenderDocSettings EditorSettings::BuildRenderDocSettings()
     Render::Settings::RenderDocSettings settings;
     settings.enabled = runtime.renderDocEnabled;
     settings.autoOpenReplayUI = runtime.renderDocAutoOpenReplayUI;
-    settings.startupCaptureAfterFrames = runtime.renderDocStartupCaptureAfterFrames > 0
-        ? static_cast<uint32_t>(runtime.renderDocStartupCaptureAfterFrames)
-        : 0u;
-    if (settings.startupCaptureAfterFrames > 0u)
-        settings.enabled = true;
+    // The startup capture frame count is a launch option: it is read from the
+    // project file by the editor startup path, not from the live settings.
     return settings;
 }
 
@@ -135,6 +138,14 @@ void EditorSettings::RegisterSettingObjects(EditorSettingsRegistry& p_registry)
         EditorSettingPersistenceScope::User,
         [] { return meta::Variant(GetRenderingSettingsObject(), meta::variant_policy::NoCopy {}); },
         NLS_TYPEOF(EditorRenderingSettingsObject)
+    });
+    p_registry.Register({
+        "editor.view",
+        "Views",
+        "Editor/Views",
+        EditorSettingPersistenceScope::User,
+        [] { return meta::Variant(GetViewSettingsObject(), meta::variant_policy::NoCopy {}); },
+        NLS_TYPEOF(EditorViewSettingsObject)
     });
     p_registry.Register({
         "editor.large-scene",

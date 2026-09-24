@@ -1,7 +1,10 @@
 #pragma once
 
 #include <cstdint>
+#include <cstddef>
 #include <memory>
+#include <mutex>
+#include <functional>
 
 #include "Rendering/Data/FrameDescriptor.h"
 #include "Rendering/Data/DrawableObjectDescriptor.h"
@@ -45,6 +48,11 @@ public:
     bool TryReservePreparedFrameResources();
     void ReleaseReservedPreparedFrameResources();
     bool HasReservedPreparedFrameResources() const;
+    virtual void BindCaptureFrameSlot(size_t slotIndex);
+    virtual void UnbindCaptureFrameSlot();
+    // Called by the producing thread; invoke on the capture thread, then unbind.
+    // The provider must outlive the returned callback and its capture scope.
+    virtual std::function<void(size_t)> FreezeCaptureFrame();
     bool PrepareDraw(PipelineState& pso, const Entities::Drawable& drawable);
     bool PrepareDraw(
         PipelineState& pso,
@@ -71,6 +79,19 @@ public:
     uint64_t GetPreparedDrawCount() const;
 
 protected:
+    struct PreparationState
+    {
+        bool framePrepared = false;
+        bool objectPrepared = false;
+        uint64_t preparedDrawCount = 0u;
+        const Resources::Material* preparedMaterial = nullptr;
+        const Resources::Shader* preparedShader = nullptr;
+    };
+    virtual PreparationState& ActivePreparationState() const;
+    // Public operations protect shared device/cache state. Slot retirement waits
+    // must release this lock so pending captures can finish.
+    mutable std::recursive_mutex m_stateMutex;
+    mutable PreparationState m_preparationState;
     virtual void OnBeginFrame(const Data::FrameDescriptor& frameDescriptor);
     virtual void OnEndFrame();
     virtual bool OnTryReservePreparedFrameResources();
@@ -90,11 +111,5 @@ protected:
 
     CompositeRenderer& m_renderer;
 
-private:
-    bool m_framePrepared = false;
-    bool m_objectPrepared = false;
-    uint64_t m_preparedDrawCount = 0u;
-    const Resources::Material* m_preparedMaterial = nullptr;
-    const Resources::Shader* m_preparedShader = nullptr;
 };
 }

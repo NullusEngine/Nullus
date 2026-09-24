@@ -1042,7 +1042,9 @@ std::optional<meta::Variant> ReadScalar(
                         return meta::Variant(static_cast<Components::Component*>(nullptr), meta::variant_policy::WrapObject {});
 #define NLS_SERIALIZED_NULL_RESOURCE_POINTER(targetType, label, artifactType, subAssetPrefix) \
                     if (type == NLS_TYPEOF(targetType*)) \
-                        return meta::Variant(static_cast<targetType*>(nullptr), meta::variant_policy::WrapObject {});
+                        return meta::Variant(static_cast<targetType*>(nullptr), meta::variant_policy::WrapObject {}); \
+                    if (type == NLS_TYPEOF(PPtr<targetType>)) \
+                        return meta::Variant(PPtr<targetType> {});
                     NLS_ENGINE_SERIALIZE_PPTR_RESOURCE_TARGETS(NLS_SERIALIZED_NULL_RESOURCE_POINTER)
 #undef NLS_SERIALIZED_NULL_RESOURCE_POINTER
                     if (type == NLS_TYPEOF(PPtr<GameObject>))
@@ -1072,7 +1074,9 @@ std::optional<meta::Variant> ReadScalar(
                 auto* object = instanceId == InstanceID_None ? nullptr : Object::IDToPointer(instanceId);
 #define NLS_SERIALIZED_TYPED_RESOURCE_POINTER(targetType, label, artifactType, subAssetPrefix) \
                 if (type == NLS_TYPEOF(targetType*)) \
-                    return meta::Variant(dynamic_cast<targetType*>(object), meta::variant_policy::WrapObject {});
+                    return meta::Variant(dynamic_cast<targetType*>(object), meta::variant_policy::WrapObject {}); \
+                if (type == NLS_TYPEOF(PPtr<targetType>)) \
+                    return meta::Variant(PPtr<targetType>(instanceId));
                 NLS_ENGINE_SERIALIZE_PPTR_RESOURCE_TARGETS(NLS_SERIALIZED_TYPED_RESOURCE_POINTER)
 #undef NLS_SERIALIZED_TYPED_RESOURCE_POINTER
                 if (type == NLS_TYPEOF(GameObject*))
@@ -1122,8 +1126,12 @@ std::optional<meta::Variant> ReadVariantNode(
         for (uint32_t index = 0u; index < count; ++index)
         {
             auto value = ReadVariantNode(reader, tree, *element, type.GetArrayType(), references, error);
-            if (!value.has_value())
+            if (!value.has_value() || !value->IsValid())
+            {
+                if (error != nullptr && value.has_value())
+                    *error = "Serialized array element decoded to an invalid Variant for type '" + type.GetArrayType().GetName() + "'.";
                 return std::nullopt;
+            }
             array.Insert(index, meta::Argument(*value));
         }
         if (!reader.Align4())

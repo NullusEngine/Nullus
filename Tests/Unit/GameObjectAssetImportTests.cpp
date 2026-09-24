@@ -2744,6 +2744,48 @@ TEST(GameObjectAssetImportTests, MeshArtifactPrewarmReusesEquivalentResourceMana
     std::filesystem::remove_all(root);
 }
 
+TEST(GameObjectAssetImportTests, PipelinedMeshPrewarmRegistersEachArtifactOnceBeforeReturning)
+{
+    using NLS::Core::Assets::ArtifactLoadTelemetryStage;
+
+    EnsureGameObjectAssetImportTestDriver();
+    ScopedGameObjectAssetImportJobSystem jobs(2u);
+    ASSERT_TRUE(jobs.IsAvailable());
+
+    const auto root = MakeGameObjectAssetImportRoot();
+    NLS::Core::ResourceManagement::MeshManager::ProvideAssetPaths(
+        (root / "Assets").string() + "/", "App/Assets/Engine/");
+
+    NLS::Render::Assets::MeshArtifactData meshArtifact;
+    meshArtifact.vertices = {
+        ImportTestVertexAt(-1.0f, 0.0f, 0.0f),
+        ImportTestVertexAt(1.0f, 0.0f, 0.0f),
+        ImportTestVertexAt(0.0f, 1.0f, 0.0f)
+    };
+    meshArtifact.indices = {0u, 1u, 2u};
+    const std::string first =
+        "Library/Artifacts/11/1111111111111111111111111111111111111111111111111111111111111111";
+    const std::string second =
+        "Library/Artifacts/22/2222222222222222222222222222222222222222222222222222222222222222";
+    WriteBinaryFile(root / first, NLS::Render::Assets::SerializeMeshArtifact(meshArtifact));
+    WriteBinaryFile(root / second, NLS::Render::Assets::SerializeMeshArtifact(meshArtifact));
+
+    NLS::Core::ResourceManagement::MeshManager meshManager;
+    NLS::Core::Assets::ClearArtifactLoadTelemetry();
+    meshManager.PrewarmArtifactsPipelined({first, (root / first).string(), first, second});
+    EXPECT_NE(meshManager.GetResource(first, false), nullptr);
+    EXPECT_NE(meshManager.GetResource(second, false), nullptr);
+    EXPECT_EQ(meshManager.PrewarmArtifact((root / first).string()), meshManager.GetResource(first, false));
+    EXPECT_EQ(meshManager.GetResources().size(), 2u);
+    EXPECT_EQ(meshManager.GetAsyncArtifactRequestDiagnosticsForOwner().totalRequests, 0u);
+    const auto records = NLS::Core::Assets::SnapshotArtifactLoadTelemetry();
+    EXPECT_EQ(CountArtifactTelemetryStage(records, ArtifactLoadTelemetryStage::NativeArtifactFileRead), 2u);
+
+    meshManager.UnloadResources();
+    NLS::Core::ResourceManagement::MeshManager::ProvideAssetPaths({}, {});
+    std::filesystem::remove_all(root);
+}
+
 TEST(GameObjectAssetImportTests, RepeatedGeneratedModelPreviewReusesManySubmeshRuntimeCacheEntries)
 {
     using NLS::Core::Assets::ArtifactLoadTelemetryStage;
@@ -4918,6 +4960,67 @@ TEST(GameObjectAssetImportTests, CancelledRendererResourcePrewarmCanResumeWithou
         textureManager.IsResourceRegistered(absoluteTexturePath))
         << "A later hover/drop must be able to resume texture prewarm after the previous owner cancelled.";
 
+    textureManager.UnloadResources();
+    NLS::Render::Context::DriverTestAccess::SetExplicitDevice(driver, nullptr);
+    NLS::Core::ResourceManagement::TextureManager::ProvideAssetPaths({}, {});
+    std::filesystem::remove_all(root);
+}
+
+TEST(GameObjectAssetImportTests, BatchedTexturePrewarmRegistersOnlyAfterFenceAndRetriesFailedBatch)
+{
+    auto& driver = EnsureGameObjectAssetImportTestDriver();
+    auto explicitDevice = std::make_shared<NLS::Tests::DeterministicTextureRhiDevice>();
+    explicitDevice->enableTextureBatch = true;
+    NLS::Render::Context::DriverTestAccess::SetExplicitDevice(driver, explicitDevice);
+
+    const auto root = MakeGameObjectAssetImportRoot();
+    NLS::Core::ResourceManagement::TextureManager::ProvideAssetPaths(
+        (root / "Assets").string() + "/", "App/Assets/Engine/");
+    NLS::Core::ResourceManagement::TextureManager textureManager;
+    const std::string first =
+        "Library/Artifacts/11/1111111111111111111111111111111111111111111111111111111111111111";
+    const std::string second =
+        "Library/Artifacts/22/2222222222222222222222222222222222222222222222222222222222";
+    NLS::Render::Assets::TextureArtifactData artifact;
+    artifact.width = 1u;
+    artifact.height = 1u;
+    artifact.format = NLS::Render::RHI::TextureFormat::RGBA8;
+    artifact.colorSpace = NLS::Render::Assets::TextureArtifactColorSpace::Srgb;
+    NLS::Render::Assets::TextureArtifactMip mip;
+    mip.level = 0u;
+    mip.width = 1u;
+    mip.height = 1u;
+    mip.rowPitch = 4u;
+    mip.slicePitch = 4u;
+    mip.pixels = {255u, 128u, 64u, 255u};
+    artifact.mips.push_back(std::move(mip));
+    WriteBinaryFile(root / first, NLS::Render::Assets::SerializeTextureArtifact(artifact));
+    WriteBinaryFile(root / second, NLS::Render::Assets::SerializeTextureArtifact(artifact));
+
+    explicitDevice->onEndTextureBatch = [&]()
+    {
+        EXPECT_FALSE(textureManager.IsResourceRegistered(first));
+        EXPECT_FALSE(textureManager.IsResourceRegistered(second));
+    };
+    textureManager.PrewarmArtifactsBatched({first, (root / first).string(), first, second});
+    EXPECT_NE(textureManager.GetArtifactResource(first, false), nullptr);
+    EXPECT_NE(textureManager.GetArtifactResource(second, false), nullptr);
+    EXPECT_EQ(textureManager.GetResources().size(), 2u);
+    EXPECT_EQ(explicitDevice->textureCreateCalls, 2u);
+    EXPECT_EQ(explicitDevice->textureBatchBegins, 1u);
+    EXPECT_EQ(explicitDevice->textureBatchEnds, 1u);
+
+    textureManager.UnloadResources();
+    explicitDevice->textureCreateCalls = 0u;
+    explicitDevice->failTextureBatch = true;
+    textureManager.PrewarmArtifactsBatched({first, second});
+    EXPECT_NE(textureManager.GetArtifactResource(first, false), nullptr);
+    EXPECT_NE(textureManager.GetArtifactResource(second, false), nullptr);
+    EXPECT_EQ(textureManager.GetResources().size(), 2u);
+    EXPECT_EQ(explicitDevice->textureCreateCalls, 4u);
+    EXPECT_EQ(explicitDevice->textureBatchEnds, 2u);
+
+    explicitDevice->onEndTextureBatch = {};
     textureManager.UnloadResources();
     NLS::Render::Context::DriverTestAccess::SetExplicitDevice(driver, nullptr);
     NLS::Core::ResourceManagement::TextureManager::ProvideAssetPaths({}, {});

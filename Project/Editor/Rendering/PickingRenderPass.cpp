@@ -7,6 +7,7 @@
 #include "Rendering/EditorPipelineStatePresets.h"
 #include "Rendering/Context/DriverAccess.h"
 #include "Rendering/RHI/Core/RHIResource.h"
+#include "Rendering/RHI/Core/RHIDevice.h"
 #include "Profiling/Profiler.h"
 #include <ServiceLocator.h>
 #include <Debug/Logger.h>
@@ -48,8 +49,7 @@ namespace
         uint64_t& seed,
         const Engine::Rendering::ScenePickablePrimitiveDrawSource& source)
     {
-        HashPointer(seed, source.owner);
-        HashCombine(seed, source.owner != nullptr ? source.owner->GetInstanceID() : 0u);
+        HashCombine(seed, source.ownerInstanceId);
         HashPointer(seed, source.mesh);
         HashCombine(seed, source.mesh != nullptr ? source.mesh->GetContentRevision() : 0u);
         HashCombine(seed, source.stateMask.mask);
@@ -66,6 +66,16 @@ namespace
         HashCombine(seed, actor.IsActive() ? 1u : 0u);
         if (actor.GetTransform() != nullptr)
             HashMatrix(seed, actor.GetTransform()->GetWorldMatrix());
+    }
+
+    uint64_t PackPickingCoordinate(const uint32_t x, const uint32_t y)
+    {
+        return (static_cast<uint64_t>(y) << 32u) | static_cast<uint64_t>(x);
+    }
+
+    uint32_t DecodePixelPickId(const uint8_t (&pixel)[3])
+    {
+        return (pixel[2] << 16u) | (pixel[1] << 8u) | pixel[0];
     }
 
     template<typename Lifecycle>
@@ -131,11 +141,20 @@ Editor::Rendering::PickingRenderPass::PickingResult Editor::Rendering::PickingRe
     const PickingReadbackLifecycle<Engine::SceneSystem::Scene>::Frame& frame,
 	const uint8_t (&pixel)[3]) const
 {
-	const uint32_t pickID = (0u << 24u) | (pixel[2] << 16u) | (pixel[1] << 8u) | (pixel[0] << 0u);
+    return DecodePickingPickId(frame, DecodePixelPickId(pixel));
+}
+
+Editor::Rendering::PickingRenderPass::PickingResult Editor::Rendering::PickingRenderPass::DecodePickingPickId(
+    const PickingReadbackLifecycle<Engine::SceneSystem::Scene>::Frame& frame,
+    const uint32_t pickID) const
+{
     if (pickID == 0u || pickID > frame.pickRegistry.size())
         return std::nullopt;
 
-	auto* gameObjectUnderMouse = frame.pickRegistry[pickID - 1u];
+	const auto instanceId = frame.pickRegistry[pickID - 1u];
+	auto* gameObjectUnderMouse = instanceId != NLS::InstanceID_None
+		? NLS::Object::IDToPointer<Engine::GameObject>(instanceId)
+		: nullptr;
 	if (gameObjectUnderMouse && gameObjectUnderMouse->IsAlive())
 	{
         return gameObjectUnderMouse;
@@ -166,6 +185,14 @@ Editor::Rendering::PickingRenderPass::PickingResult Editor::Rendering::PickingRe
 		return std::nullopt;
 	}
 
+    const uint64_t coordinateKey = PackPickingCoordinate(p_x, p_y);
+    PickingResult cachedResult;
+    if (TryReuseCachedPickingPixel(*readableFrame, coordinateKey, cachedResult))
+    {
+        NLS_PROFILE_NAMED_SCOPE("PickingRenderPass::PickAtRenderCoordinate::CachedPixel");
+        return cachedResult;
+    }
+
     if (!m_readbackLifecycle.TryBeginPixelReadback())
         return std::nullopt;
     ScopedPickingPixelReadback pixelReadback(m_readbackLifecycle);
@@ -194,6 +221,7 @@ Editor::Rendering::PickingRenderPass::PickingResult Editor::Rendering::PickingRe
 		return std::nullopt;
 	}
 
+    StoreCachedPickingPixel(*readableFrame, coordinateKey, DecodePixelPickId(pixel));
 	return DecodePickingResult(*readableFrame, pixel);
 }
 
@@ -283,6 +311,16 @@ void Editor::Rendering::PickingRenderPass::OnBeginFrame(const NLS::Render::Data:
 {
     PromotePendingFrameIfReadbackAvailable();
     m_preparedThreadedPassInput.reset();
+
+    const auto device =
+        NLS::Render::Context::DriverRendererAccess::GetExplicitDevice(m_renderer.GetDriver());
+    const uint64_t deviceIdentity = device != nullptr ? device->GetCacheIdentity() : 0u;
+    if (!m_capturedPickingDrawCommands.drawCommands.empty() &&
+        m_capturedPickingDrawCommands.guards.deviceIdentity != deviceIdentity)
+    {
+        m_capturedPickingDrawCommands = {};
+        m_cachedPickingPixels = {};
+    }
 }
 
 void Editor::Rendering::PickingRenderPass::PromotePendingFrameIfReadbackAvailable() const
@@ -494,7 +532,7 @@ void Editor::Rendering::PickingRenderPass::Draw(NLS::Render::Data::PipelineState
         readbackTexture);
     if (NLS::Render::Context::DriverRendererAccess::IsThreadedRenderingEnabled(m_renderer.GetDriver()))
     {
-        m_preparedThreadedPassInput = BuildThreadedPassInput(p_pso, 0u);
+        m_preparedThreadedPassInput = BuildThreadedPassInput(p_pso, 0u, pickingSignature);
         if (!m_preparedThreadedPassInput.has_value())
         {
             ResetPickingFrameState();
@@ -593,7 +631,8 @@ bool Editor::Rendering::PickingRenderPass::RenderPickingScene(NLS::Render::Data:
 
 std::optional<NLS::Render::Context::RenderPassCommandInput> Editor::Rendering::PickingRenderPass::BuildThreadedPassInput(
     NLS::Render::Data::PipelineState p_pso,
-    const uint64_t readbackGeneration)
+    const uint64_t readbackGeneration,
+    const NLS::Editor::Panels::HitProxyPickingSignature& pickingSignature)
 {
     NLS_PROFILE_NAMED_SCOPE("PickingRenderPass::BuildThreadedPassInput");
     using namespace Engine::Rendering;
@@ -628,15 +667,27 @@ std::optional<NLS::Render::Context::RenderPassCommandInput> Editor::Rendering::P
     passInput.depthStencilAttachmentView =
         m_gameObjectPickingFramebuffer.GetOrCreateExplicitDepthStencilView("EditorPickingDepthView");
 
-    if (const auto* sceneRenderer = dynamic_cast<Engine::Rendering::BaseSceneRenderer*>(&m_renderer);
-        sceneRenderer != nullptr && sceneRenderer->HasLastVisiblePickablePrimitiveDrawSources())
+    const auto* sceneRenderer = dynamic_cast<Engine::Rendering::BaseSceneRenderer*>(&m_renderer);
+    const bool usesVisibleDrawSources =
+        sceneRenderer != nullptr && sceneRenderer->HasLastVisiblePickablePrimitiveDrawSources();
+    bool capturedDrawCommandsStale = true;
+
+    if (usesVisibleDrawSources)
     {
         const auto& sources = sceneRenderer->GetLastVisiblePickablePrimitiveDrawSources();
         passInput.recordedDrawCommands.reserve(
             sources.size() +
             scene.GetFastAccessComponents().cameras.size() +
             scene.GetFastAccessComponents().lights.size());
-        CapturePickableModelSources(sources, passInput.recordedDrawCommands);
+        capturedDrawCommandsStale = !TryReuseCapturedPickingDrawCommands(
+                pickingSignature,
+                p_pso,
+                usesVisibleDrawSources,
+                passInput.recordedDrawCommands);
+        if (capturedDrawCommandsStale)
+        {
+            CapturePickableModelSources(sources, passInput.recordedDrawCommands);
+        }
     }
     else
     {
@@ -644,13 +695,174 @@ std::optional<NLS::Render::Context::RenderPassCommandInput> Editor::Rendering::P
             scene.GetFastAccessComponents().modelRenderers.size() +
             scene.GetFastAccessComponents().cameras.size() +
             scene.GetFastAccessComponents().lights.size());
-        CapturePickableModels(p_pso, scene, passInput.recordedDrawCommands);
+        capturedDrawCommandsStale = !TryReuseCapturedPickingDrawCommands(
+                pickingSignature,
+                p_pso,
+                usesVisibleDrawSources,
+                passInput.recordedDrawCommands);
+        if (capturedDrawCommandsStale)
+        {
+            CapturePickableModels(p_pso, scene, passInput.recordedDrawCommands);
+        }
     }
-    CapturePickableCameras(p_pso, scene, passInput.recordedDrawCommands);
-    CapturePickableLights(p_pso, scene, passInput.recordedDrawCommands);
+
+    if (capturedDrawCommandsStale)
+    {
+        CapturePickableCameras(p_pso, scene, passInput.recordedDrawCommands);
+        CapturePickableLights(p_pso, scene, passInput.recordedDrawCommands);
+        StoreCapturedPickingDrawCommands(
+            pickingSignature,
+            p_pso,
+            usesVisibleDrawSources,
+            passInput.recordedDrawCommands);
+    }
 
     passInput.drawCount = static_cast<uint64_t>(passInput.recordedDrawCommands.size());
     return passInput;
+}
+
+Editor::Rendering::PickingRenderPass::PickingCaptureGuards
+Editor::Rendering::PickingRenderPass::BuildPickingCaptureGuards(
+    const NLS::Render::Data::PipelineState p_pso) const
+{
+    PickingCaptureGuards guards;
+    const auto device =
+        NLS::Render::Context::DriverRendererAccess::GetExplicitDevice(m_renderer.GetDriver());
+    guards.deviceIdentity = device != nullptr ? device->GetCacheIdentity() : 0u;
+    guards.pipelineStateBits = p_pso.bits.to_ullong();
+
+    const auto* pickingShader = m_gameObjectPickingMaterial.GetShader();
+    guards.pickingShader = pickingShader;
+    guards.pickingShaderGeneration = pickingShader != nullptr ? pickingShader->GetGeneration() : 0u;
+
+    const auto* helperShader = m_lightMaterial.GetShader();
+    guards.helperShader = helperShader;
+    guards.helperShaderGeneration = helperShader != nullptr ? helperShader->GetGeneration() : 0u;
+
+    guards.colorAttachmentIdentity = m_gameObjectPickingFramebuffer.GetExplicitTextureHandle().get();
+    guards.cameraHelperMesh = EDITOR_CONTEXT(editorResources)->GetMesh("Camera");
+    guards.lightHelperMesh = EDITOR_CONTEXT(editorResources)->GetMesh("Vertical_Plane");
+    guards.lightBillboardScale =
+        Settings::EditorSettings::GetDebugDrawSettingsObject().lightBillboardScale;
+    return guards;
+}
+
+bool Editor::Rendering::PickingRenderPass::TryReuseCapturedPickingDrawCommands(
+    const NLS::Editor::Panels::HitProxyPickingSignature& pickingSignature,
+    const NLS::Render::Data::PipelineState p_pso,
+    const bool usesVisibleDrawSources,
+    std::vector<NLS::Render::Context::RecordedDrawCommandInput>& outDrawCommands)
+{
+    auto& cache = m_capturedPickingDrawCommands;
+    if (cache.drawCommands.empty() ||
+        cache.usesVisibleDrawSources != usesVisibleDrawSources ||
+        !NLS::Editor::Panels::HitProxyPickingDrawCommandSignaturesMatch(
+            cache.signature,
+            pickingSignature) ||
+        !(cache.guards == BuildPickingCaptureGuards(p_pso)))
+    {
+        return false;
+    }
+
+    // The picked geometry is baked into immutable binding-set snapshots. Only
+    // frame constants are per-slot, so refresh that single binding once per hit.
+    std::shared_ptr<NLS::Render::RHI::RHIBindingSet> currentFrameBindingSet;
+    if (auto* provider = m_renderer.GetFrameObjectBindingProvider(); provider != nullptr)
+        (void)provider->CaptureFrameBindingSet(currentFrameBindingSet);
+
+    outDrawCommands.reserve(outDrawCommands.size() + cache.drawCommands.size());
+    for (const auto& cachedDrawCommand : cache.drawCommands)
+    {
+        outDrawCommands.push_back(cachedDrawCommand);
+        if (currentFrameBindingSet != nullptr)
+            outDrawCommands.back().frameBindingSet = currentFrameBindingSet;
+    }
+
+    m_submittedPickRegistry = cache.pickRegistry;
+    m_submittedPickIds = cache.pickIds;
+    return true;
+}
+
+void Editor::Rendering::PickingRenderPass::StoreCapturedPickingDrawCommands(
+    const NLS::Editor::Panels::HitProxyPickingSignature& pickingSignature,
+    const NLS::Render::Data::PipelineState p_pso,
+    const bool usesVisibleDrawSources,
+    const std::vector<NLS::Render::Context::RecordedDrawCommandInput>& drawCommands)
+{
+    auto& cache = m_capturedPickingDrawCommands;
+    cache = {};
+    if (drawCommands.empty())
+        return;
+
+    if (m_gameObjectPickingMaterial.GetShader() == nullptr)
+        return;
+
+    for (const auto& drawCommand : drawCommands)
+    {
+        // Indexed object bindings reference per-slot GPU buffers; only the
+        // uniform snapshot path is safe to retain across frame slots.
+        if (drawCommand.usesObjectIndex ||
+            drawCommand.pipeline == nullptr ||
+            drawCommand.materialBindingSet == nullptr ||
+            drawCommand.mesh == nullptr)
+        {
+            return;
+        }
+    }
+
+    cache.signature = pickingSignature;
+    cache.guards = BuildPickingCaptureGuards(p_pso);
+    cache.usesVisibleDrawSources = usesVisibleDrawSources;
+    cache.drawCommands = drawCommands;
+    cache.pickRegistry = m_submittedPickRegistry;
+    cache.pickIds = m_submittedPickIds;
+}
+
+bool Editor::Rendering::PickingRenderPass::TryReuseCachedPickingPixel(
+    const PickingReadbackLifecycle<Engine::SceneSystem::Scene>::Frame& frame,
+    const uint64_t coordinateKey,
+    PickingResult& outResult)
+{
+    auto& cache = m_cachedPickingPixels;
+    if (!cache.valid ||
+        !NLS::Editor::Panels::HitProxyPickingSignaturesMatch(cache.signature, frame.signature) ||
+        !(cache.guards == m_capturedPickingDrawCommands.guards) ||
+        m_capturedPickingDrawCommands.drawCommands.empty())
+    {
+        return false;
+    }
+
+    const auto found = cache.pickIdsByCoordinate.find(coordinateKey);
+    if (found == cache.pickIdsByCoordinate.end())
+        return false;
+
+    // Resolve through the readable frame registry so a destroyed object is not
+    // resurrected from a stale pointer the way a cached GameObject* would be.
+    outResult = DecodePickingPickId(frame, found->second);
+    return true;
+}
+
+void Editor::Rendering::PickingRenderPass::StoreCachedPickingPixel(
+    const PickingReadbackLifecycle<Engine::SceneSystem::Scene>::Frame& frame,
+    const uint64_t coordinateKey,
+    const uint32_t pickId)
+{
+    auto& cache = m_cachedPickingPixels;
+    if (!cache.valid ||
+        !NLS::Editor::Panels::HitProxyPickingSignaturesMatch(cache.signature, frame.signature) ||
+        !(cache.guards == m_capturedPickingDrawCommands.guards))
+    {
+        cache = {};
+        cache.valid = true;
+        cache.signature = frame.signature;
+        cache.guards = m_capturedPickingDrawCommands.guards;
+    }
+
+    constexpr size_t kMaxCachedPickingPixels = 256u;
+    if (cache.pickIdsByCoordinate.size() >= kMaxCachedPickingPixels)
+        cache.pickIdsByCoordinate.clear();
+
+    cache.pickIdsByCoordinate.insert_or_assign(coordinateKey, pickId);
 }
 
 void PreparePickingMaterial(uint32_t pickID, NLS::Render::Resources::Material& p_material)
@@ -663,13 +875,19 @@ void PreparePickingMaterial(uint32_t pickID, NLS::Render::Resources::Material& p
 
 uint32_t Editor::Rendering::PickingRenderPass::RegisterPickableGameObject(Engine::GameObject& actor)
 {
-    const auto found = m_submittedPickIds.find(&actor);
+    return RegisterPickableInstance(actor.GetInstanceID());
+}
+
+uint32_t Editor::Rendering::PickingRenderPass::RegisterPickableInstance(
+    const NLS::InstanceID instanceId)
+{
+    const auto found = m_submittedPickIds.find(instanceId);
     if (found != m_submittedPickIds.end())
         return found->second;
 
-    m_submittedPickRegistry.push_back(&actor);
+    m_submittedPickRegistry.push_back(instanceId);
     const auto pickId = static_cast<uint32_t>(m_submittedPickRegistry.size());
-    m_submittedPickIds.emplace(&actor, pickId);
+    m_submittedPickIds.emplace(instanceId, pickId);
     return pickId;
 }
 
@@ -734,10 +952,10 @@ void Editor::Rendering::PickingRenderPass::CapturePickableModelSources(
 
     for (const auto& source : sources)
     {
-        if (source.owner == nullptr || source.mesh == nullptr || !source.owner->IsActive())
+        if (source.ownerInstanceId == NLS::InstanceID_None || source.mesh == nullptr)
             continue;
 
-        PreparePickingMaterial(RegisterPickableGameObject(*source.owner), m_gameObjectPickingMaterial);
+        PreparePickingMaterial(RegisterPickableInstance(source.ownerInstanceId), m_gameObjectPickingMaterial);
 
         NLS::Render::Entities::Drawable drawable;
         drawable.mesh = source.mesh;
@@ -814,10 +1032,10 @@ void Editor::Rendering::PickingRenderPass::DrawPickableModelSources(
 {
     for (const auto& source : sources)
     {
-        if (source.owner == nullptr || source.mesh == nullptr || !source.owner->IsActive())
+        if (source.ownerInstanceId == NLS::InstanceID_None || source.mesh == nullptr)
             continue;
 
-        PreparePickingMaterial(RegisterPickableGameObject(*source.owner), m_gameObjectPickingMaterial);
+        PreparePickingMaterial(RegisterPickableInstance(source.ownerInstanceId), m_gameObjectPickingMaterial);
 
         NLS::Render::Entities::Drawable drawable;
         drawable.mesh = source.mesh;

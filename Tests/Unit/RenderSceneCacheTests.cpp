@@ -22,6 +22,7 @@
 #include "Core/ResourceManagement/ShaderManager.h"
 #include "Core/ResourceManagement/TextureManager.h"
 #include "Jobs/JobSystem.h"
+#include "TaskGraph/TaskGraphSystem.h"
 #include "Math/Matrix4.h"
 #include "Rendering/Assets/MeshArtifact.h"
 #include "Rendering/Assets/ShaderArtifact.h"
@@ -219,6 +220,33 @@ namespace
 
     private:
         bool m_ownsRuntime = false;
+    };
+
+    class ScopedRenderSceneCacheTaskGraph
+    {
+    public:
+        explicit ScopedRenderSceneCacheTaskGraph(const uint32_t workerCount)
+        {
+#if defined(NLS_ENABLE_TEST_HOOKS)
+            NLS::Base::TaskGraph::ResetGlobalTaskGraphForTesting();
+#endif
+            NLS::Base::TaskGraph::TaskGraphConfig config;
+            config.workerCount = workerCount;
+            config.enableDiagnostics = true;
+            m_initialized = NLS::Base::TaskGraph::InitializeGlobalTaskGraph(config);
+        }
+
+        ~ScopedRenderSceneCacheTaskGraph()
+        {
+#if defined(NLS_ENABLE_TEST_HOOKS)
+            NLS::Base::TaskGraph::ResetGlobalTaskGraphForTesting();
+#endif
+        }
+
+        bool IsInitialized() const { return m_initialized; }
+
+    private:
+        bool m_initialized = false;
     };
 
     NLS::Render::Context::Driver& EnsureRenderSceneTestDriver()
@@ -993,7 +1021,36 @@ TEST(RenderSceneCacheTests, TrustedEditorSceneRevisionSkipsStablePrimitiveScan)
     fixture.scene.MarkRenderContentChanged();
     const auto invalidated = renderScene.Synchronize(fixture.scene, options);
     EXPECT_FALSE(invalidated.usedSceneRenderContentRevisionFastPath);
+    EXPECT_EQ(invalidated.syncTouchedPrimitiveCount, 0u);
+    EXPECT_EQ(invalidated.syncFullSweepCount, 0u);
     EXPECT_EQ(invalidated.reusedPrimitiveCount, 128u);
+    EXPECT_FALSE(invalidated.detectedRenderContentChange);
+}
+
+TEST(RenderSceneCacheTests, TrustedEditorSceneRevisionTouchesOnlyMovedPrimitive)
+{
+    ManyPrimitiveFixture fixture(128u);
+    NLS::Engine::Rendering::RenderScene renderScene;
+
+    NLS::Engine::Rendering::RenderSceneSyncOptions options;
+    options.defaultMaterial = &fixture.material;
+    options.trustSceneRenderContentRevision = true;
+
+    ASSERT_EQ(renderScene.Synchronize(fixture.scene, options).syncTouchedPrimitiveCount, 128u);
+    ASSERT_TRUE(renderScene.Synchronize(fixture.scene, options).usedSceneRenderContentRevisionFastPath);
+
+    auto& objects = fixture.scene.GetGameObjects();
+    ASSERT_EQ(objects.size(), 128u);
+    ASSERT_NE(objects[73u], nullptr);
+    objects[73u]->GetTransform()->TranslateLocal({1.0f, 0.0f, 0.0f});
+
+    const auto moved = renderScene.Synchronize(fixture.scene, options);
+    EXPECT_FALSE(moved.usedSceneRenderContentRevisionFastPath);
+    EXPECT_EQ(moved.syncTouchedPrimitiveCount, 1u);
+    EXPECT_EQ(moved.syncFullSweepCount, 0u);
+    EXPECT_EQ(moved.boundsDirtyPrimitiveCount, 1u);
+    EXPECT_EQ(moved.rebuiltCachedCommandCount, 0u);
+    EXPECT_TRUE(moved.detectedRenderContentChange);
 }
 
 TEST(RenderSceneCacheTests, TrustedEditorSceneRevisionInvalidatesAfterMeshReload)
@@ -1341,6 +1398,46 @@ TEST(RenderSceneCacheTests, MutableTransformAccessUpdatesPrimitiveWorldMatrixWit
         owner->GetTransform()->GetWorldMatrix(),
         afterMove.primitiveRecords.front().worldMatrix));
     EXPECT_EQ(renderScene.GatherVisibleCommands({}).opaques.size(), 1u);
+}
+
+TEST(RenderSceneCacheTests, ParentMotionAdvancesChildTrustedTransformRevisionWithoutCommandRebuild)
+{
+    RenderableFixture fixture;
+    auto& parent = fixture.scene.CreateGameObject("RetainedSceneParent");
+    auto* child = fixture.meshRenderer->gameobject();
+    ASSERT_NE(child, nullptr);
+    child->SetParent(parent);
+
+    NLS::Engine::Rendering::RenderScene renderScene;
+    NLS::Engine::Rendering::RenderSceneSyncOptions options;
+    options.defaultMaterial = &fixture.material;
+
+    ASSERT_EQ(renderScene.Synchronize(fixture.scene, options).rebuiltCachedCommandCount, 1u);
+    const auto initialVisible = renderScene.GatherVisibleCommands({});
+    ASSERT_EQ(initialVisible.opaques.size(), 1u);
+    NLS::Engine::Rendering::EngineDrawableDescriptor initialDescriptor;
+    ASSERT_TRUE(initialVisible.opaques.front().second.TryGetDescriptor(initialDescriptor));
+    ASSERT_TRUE(initialDescriptor.hasTrustedStaticDrawRevision);
+    ASSERT_NE(initialDescriptor.transformRevision, 0u);
+    const auto initialCommandBuildCount = renderScene.GetCachedCommandBuildCountForTesting();
+
+    parent.GetTransform()->TranslateLocal({3.0f, 0.0f, 0.0f});
+    const auto moved = renderScene.Synchronize(fixture.scene, options);
+    const auto movedVisible = renderScene.GatherVisibleCommands({});
+    ASSERT_EQ(movedVisible.opaques.size(), 1u);
+    NLS::Engine::Rendering::EngineDrawableDescriptor movedDescriptor;
+    ASSERT_TRUE(movedVisible.opaques.front().second.TryGetDescriptor(movedDescriptor));
+
+    EXPECT_EQ(moved.rebuiltCachedCommandCount, 0u);
+    EXPECT_EQ(renderScene.GetCachedCommandBuildCountForTesting(), initialCommandBuildCount);
+    EXPECT_EQ(movedDescriptor.stableSceneIdentity, initialDescriptor.stableSceneIdentity);
+    EXPECT_GT(movedDescriptor.transformRevision, initialDescriptor.transformRevision);
+    EXPECT_FALSE(NLS::Maths::Matrix4::AreEquals(
+        initialDescriptor.modelMatrix,
+        movedDescriptor.modelMatrix));
+    EXPECT_TRUE(NLS::Maths::Matrix4::AreEquals(
+        child->GetTransform()->GetWorldMatrix(),
+        movedDescriptor.modelMatrix));
 }
 
 TEST(RenderSceneCacheTests, MaterialSlotResolutionDropsDestroyedCachedMaterial)
@@ -3798,8 +3895,8 @@ TEST(RenderSceneCacheTests, TransientRenderSuppressionRemovesPrimitiveFromRetain
 
 TEST(RenderSceneCacheTests, SerialAndParallelVisibilityProduceEquivalentQueues)
 {
-    ScopedRenderSceneCacheJobSystem jobSystem(2u);
-    ASSERT_TRUE(jobSystem.IsInitialized());
+    ScopedRenderSceneCacheTaskGraph taskGraph(2u);
+    ASSERT_TRUE(taskGraph.IsInitialized());
 
     ManyPrimitiveFixture fixture(192u, true);
     NLS::Engine::Rendering::RenderScene renderScene;
@@ -3846,8 +3943,11 @@ TEST(RenderSceneCacheTests, SerialAndParallelVisibilityProduceEquivalentQueues)
     EXPECT_EQ(ExtractMeshes(serialQueues), ExtractMeshes(parallelQueues));
 }
 
-TEST(RenderSceneCacheTests, AutoVisibilityStaysSerialUntilPersistentJobSystemExists)
+TEST(RenderSceneCacheTests, AutoVisibilityStaysSerialUntilTaskGraphStarts)
 {
+#if defined(NLS_ENABLE_TEST_HOOKS)
+    NLS::Base::TaskGraph::ResetGlobalTaskGraphForTesting();
+#endif
     ManyPrimitiveFixture fixture(1152u);
     NLS::Engine::Rendering::RenderScene renderScene;
 
@@ -3964,7 +4064,7 @@ TEST(RenderSceneCacheTests, PickablePrimitiveDrawSourcesUseLastVisibleHandles)
         renderScene.GetLastVisiblePrimitiveHandles());
 
     ASSERT_EQ(sources.size(), 1u);
-    EXPECT_EQ(sources.front().owner, fixture.meshRenderer->gameobject());
+    EXPECT_EQ(sources.front().ownerInstanceId, fixture.meshRenderer->gameobject()->GetInstanceID());
     EXPECT_EQ(sources.front().mesh, fixture.mesh);
     EXPECT_EQ(sources.front().stateMask.mask, fixture.material.GenerateStateMask().mask);
 
@@ -4168,7 +4268,7 @@ TEST(RenderSceneCacheTests, EditorInspectionRootKeepsImportedHierarchyHLODChildr
     visibilityOptions.cameraPosition = {0.0f, 0.0f, 500.0f};
     visibilityOptions.largeSceneSettings = &largeSceneSettings;
     visibilityOptions.editorInspectionView = true;
-    visibilityOptions.inspectionRootObjects = { &cluster };
+    visibilityOptions.inspectionRootInstanceIds = { cluster.GetInstanceID() };
 
     const auto visible = renderScene.GatherVisibleCommands(
         visibilityOptions,
@@ -5267,6 +5367,43 @@ TEST(RenderSceneCacheTests, DynamicInstancingKeepsSiblingVisibleAfterDeletingOne
     EXPECT_EQ(ResolveVisibleInstanceCount(visible.opaques.front().second), 1u);
 }
 
+TEST(RenderSceneCacheTests, DynamicInstancingKeepsPersistentNonContiguousObjectIndices)
+{
+    NLS_RENDER_SCENE_CACHE_SKIP_IF_NATIVE_DXC_UNAVAILABLE();
+
+    QueueSortFixture fixture;
+    fixture.AddObject("IndirectA", *fixture.sharedMesh, fixture.opaqueMaterialA, 4.0f);
+    fixture.AddObject("IndirectB", *fixture.sharedMesh, fixture.opaqueMaterialA, 8.0f);
+    auto& removed = fixture.AddObject("IndirectRemoved", *fixture.sharedMesh, fixture.opaqueMaterialA, 12.0f);
+    fixture.AddObject("IndirectC", *fixture.sharedMesh, fixture.opaqueMaterialA, 16.0f);
+
+    NLS::Engine::Rendering::RenderScene renderScene;
+    NLS::Engine::Rendering::RenderSceneSyncOptions syncOptions;
+    syncOptions.defaultMaterial = &fixture.opaqueMaterialA;
+    ASSERT_EQ(renderScene.Synchronize(fixture.scene, syncOptions).rebuiltCachedCommandCount, 4u);
+
+    // Freeing the third proxy slot leaves persistent object slots {0, 1, 3}.
+    ASSERT_TRUE(fixture.scene.DestroyGameObject(removed));
+    ASSERT_EQ(renderScene.Synchronize(fixture.scene, syncOptions).removedPrimitiveCount, 1u);
+
+    const auto visible = renderScene.GatherVisibleCommands({ nullptr, {} });
+    ASSERT_EQ(visible.opaques.size(), 1u);
+
+    NLS::Engine::Rendering::EngineDrawableDescriptor descriptor;
+    ASSERT_TRUE(visible.opaques.front().second.TryGetDescriptor(descriptor));
+    EXPECT_EQ(descriptor.objectCount, 3u);
+    ASSERT_EQ(descriptor.instanceObjectIndices.size(), 3u);
+
+    auto indices = descriptor.instanceObjectIndices;
+    std::sort(indices.begin(), indices.end());
+    EXPECT_EQ(indices[0], 0u);
+    EXPECT_EQ(indices[1], 1u);
+    EXPECT_EQ(indices[2], 3u);
+
+    const auto optimizationStats = renderScene.GetLastDrawCallOptimizationStatsForTesting();
+    EXPECT_EQ(optimizationStats.dynamicInstanceGroupCount, 1u);
+    EXPECT_EQ(optimizationStats.largestInstanceGroupSize, 3u);
+}
 TEST(RenderSceneCacheTests, DynamicInstancingBuildsMergedDescriptorInLinearPass)
 {
     NLS_RENDER_SCENE_CACHE_SKIP_IF_NATIVE_DXC_UNAVAILABLE();

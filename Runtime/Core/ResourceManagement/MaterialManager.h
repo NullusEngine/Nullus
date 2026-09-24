@@ -61,6 +61,11 @@ class NLS_RESOURCE_MANAGEMENT_API MaterialManager : public AResourceManager<Rend
             bool failed = false;
         };
 
+        virtual std::optional<AsyncPreviewRequestResult> TryRequestAsyncArtifact(
+            const std::string& p_path,
+            bool p_cancelableInterest = false,
+            bool p_waitForResourceTable = false);
+
         // Thumbnail pumps must not wait for scene/import transactions or the
         // shared async request table. nullopt means the request should be
         // retried on a later pump.
@@ -161,6 +166,11 @@ class NLS_RESOURCE_MANAGEMENT_API MaterialManager : public AResourceManager<Rend
         Material* RequestAsyncArtifactInternal(
             const std::string& p_path,
             bool p_cancelableInterest,
+            bool p_previewPriority);
+        std::optional<AsyncPreviewRequestResult> TryRequestAsyncArtifactInternal(
+            const std::string& p_path,
+            bool p_cancelableInterest,
+            bool p_waitForResourceTable,
             bool p_previewPriority);
         void IndexMaterialPath(const std::string& p_path, Material* p_resource);
         void RemoveMaterialPathIndexEntries(const std::string& p_path, Material* p_resource);

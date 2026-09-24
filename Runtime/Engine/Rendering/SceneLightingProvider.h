@@ -12,6 +12,8 @@ namespace NLS::Engine::SceneSystem
 
 namespace NLS::Engine::Rendering
 {
+class SceneRenderStore;
+
 class NLS_ENGINE_API SceneLightingProvider
 {
 public:
@@ -19,6 +21,7 @@ public:
     using LightSet = NLS::Render::Data::LightSet;
 
     void Collect(const SceneSystem::Scene& scene);
+    void CollectFromStore(const SceneRenderStore& store);
     void PrepareRenderScenePackage(
         const NLS::Render::Context::FrameSnapshot& snapshot,
         NLS::Render::Context::RenderScenePackage& package) const;

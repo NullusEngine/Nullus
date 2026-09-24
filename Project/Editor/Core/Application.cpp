@@ -19,6 +19,7 @@
 #include "Rendering/Context/DriverAccess.h"
 #include "Rendering/Settings/GraphicsBackendUtils.h"
 #include "Settings/EditorSettings.h"
+#include <Settings/ProjectLaunchOptions.h>
 #include "Windowing/Inputs/EMouseButton.h"
 #include "Windowing/Inputs/EMouseButtonState.h"
 #include "Assembly.h"
@@ -95,9 +96,21 @@ std::string Editor::Core::FormatStartupSceneRendererResourceDegradedOpenDiagnost
 Editor::Core::Application::Application(const std::string& p_projectPath, const std::string& p_projectName,
     std::optional<Render::Settings::EGraphicsBackend> p_backendOverride,
     std::optional<Render::Settings::RenderDocSettings> p_renderDocOverride,
-    std::optional<Render::Settings::EngineDiagnosticsSettings> p_diagnosticsOverride)
-    : m_context(p_projectPath, p_projectName, p_backendOverride, p_renderDocOverride, p_diagnosticsOverride)
+    std::optional<Render::Settings::EngineDiagnosticsSettings> p_diagnosticsOverride,
+    const Launch::StartupResourcePipeline p_startupResourcePipeline,
+    const bool p_dx12DebugLayer)
+    : m_context(p_projectPath, p_projectName, p_backendOverride, p_renderDocOverride,
+        p_diagnosticsOverride, p_dx12DebugLayer)
 {
+    const auto mode = p_startupResourcePipeline == Launch::StartupResourcePipeline::Legacy
+        ? StartupResourcePrewarmMode::Legacy
+        : p_startupResourcePipeline == Launch::StartupResourcePipeline::Pipelined
+            ? StartupResourcePrewarmMode::Pipelined
+            : StartupResourcePrewarmMode::Async;
+    m_context.SetStartupResourcePrewarmMode(mode);
+    NLS_LOG_INFO(std::string("[Startup] StartupResourcePipeline mode=") +
+        (mode == StartupResourcePrewarmMode::Legacy ? "legacy" :
+            mode == StartupResourcePrewarmMode::Pipelined ? "pipelined" : "async"));
     m_context.PresentStartupProgressFrame("Importing project assets", 0.90f);
     NLS::Editor::Assets::StartupAssetPreimportOptions startupPreimportOptions;
     startupPreimportOptions.projectRoot = std::filesystem::path(m_context.projectPath);
@@ -475,13 +488,19 @@ void Editor::Core::Application::Run()
         const uint32_t warmupFrames = diagnostics.editorCameraPerformanceWarmupFrames;
         const uint32_t measuredFrames = diagnostics.editorCameraPerformanceFrames;
         const uint32_t settleFrames = diagnostics.editorCameraPerformanceSettleFrames;
-        const uint32_t requestedFrames = warmupFrames + measuredFrames;
+        uint32_t completedWarmupFrames = 0u;
 
         while (IsRunning())
         {
-            const auto completedBefore = m_editor->GetValidationCameraForwardCompletedFrames();
-            if (completedBefore >= warmupFrames && !m_cameraPerformanceTelemetryBeforeCaptured)
+            if (!m_cameraPerformanceTelemetryBeforeCaptured)
             {
+                if (!m_editor->IsCameraPerformanceWarmupReady())
+                {
+                    TickFrame(kEditorCameraPerformanceFixedDeltaSeconds, true);
+                    continue;
+                }
+
+                m_editor->BeginCameraPerformanceMeasurement();
                 Render::Context::DriverRendererAccess::ResetThreadedReservedSlotWaitMeasurementWindowMaxNs(
                     *m_context.driver);
                 m_cameraPerformanceTelemetryBefore = CaptureCameraPerformanceTelemetry();
@@ -494,21 +513,21 @@ void Editor::Core::Application::Run()
             const auto frameStart = std::chrono::steady_clock::now();
             TickFrame(kEditorCameraPerformanceFixedDeltaSeconds, true);
             const auto frameEnd = std::chrono::steady_clock::now();
-            const auto completedAfter = m_editor->GetValidationCameraForwardCompletedFrames();
 
             const double frameMs = std::chrono::duration<double, std::milli>(frameEnd - frameStart).count();
-            if (completedAfter > completedBefore && completedAfter > warmupFrames)
+            if (completedWarmupFrames < warmupFrames)
             {
-                m_cameraPerformanceFrameMs.push_back(frameMs);
-                if (m_editor->WasLastSceneViewThreadedFramePublished())
-                    ++m_cameraPerformancePublishedCameraStepCount;
+                ++completedWarmupFrames;
+                continue;
             }
 
-            if (completedAfter < requestedFrames)
+            if (m_cameraPerformanceFrameMs.size() < measuredFrames)
+            {
+                m_cameraPerformanceFrameMs.push_back(frameMs);
+                if (m_editor->WasCameraPerformanceViewThreadedFramePublished())
+                    ++m_cameraPerformancePublishedCameraStepCount;
                 continue;
-
-            if (completedBefore < requestedFrames && settleFrames != 0u)
-                continue;
+            }
 
             if (m_cameraPerformanceSettleFrameMs.size() < settleFrames)
                 m_cameraPerformanceSettleFrameMs.push_back(frameMs);
@@ -527,9 +546,9 @@ void Editor::Core::Application::Run()
         {
             m_runSucceeded = false;
             NLS_LOG_ERROR(
-                "Editor camera performance benchmark ended before all samples were collected: movementCollected=" +
+                "Editor camera performance benchmark ended before all samples were collected: measuredCollected=" +
                 std::to_string(m_cameraPerformanceFrameMs.size()) +
-                " movementRequested=" +
+                " measuredRequested=" +
                 std::to_string(measuredFrames) +
                 " settleCollected=" +
                 std::to_string(m_cameraPerformanceSettleFrameMs.size()) +
@@ -578,7 +597,7 @@ Editor::Core::Application::CaptureCameraPerformanceTelemetry() const
 
     if (m_editor != nullptr)
     {
-        const auto& frameInfo = m_editor->GetSceneViewCumulativeFrameInfo();
+        const auto& frameInfo = m_editor->GetCameraPerformanceViewCumulativeFrameInfo();
         result.preparedStaticBaseCacheHitCount = frameInfo.preparedRecordedDrawStaticBaseCacheHitCount;
         result.preparedStaticBaseCacheMissCount = frameInfo.preparedRecordedDrawStaticBaseCacheMissCount;
         result.staticDrawFastPathHitCount = frameInfo.preparedRecordedDrawStaticBaseFastPathHitCount;
@@ -603,6 +622,11 @@ Editor::Core::Application::CaptureCameraPerformanceTelemetry() const
             frameInfo.objectDataRevisionObjectIndexMismatchCount;
         result.objectDataRevisionObjectCountMismatchCount =
             frameInfo.objectDataRevisionObjectCountMismatchCount;
+        result.objectDataFastPathHitCount = frameInfo.objectDataFastPathHitCount;
+        result.objectDataFastPathFallbackCount = frameInfo.objectDataFastPathFallbackCount;
+        result.drawCommandCopyCount = frameInfo.drawCommandCopyCount;
+        result.drawCommandMoveCount = frameInfo.drawCommandMoveCount;
+        result.renderSnapshotBufferCreationCount = frameInfo.renderSnapshotBufferCreationCount;
         result.opaqueSortTokenHitCount = frameInfo.opaqueSortTokenHitCount;
         result.opaqueSortTokenRebuildCount = frameInfo.opaqueSortTokenRebuildCount;
         result.objectDataOverflowCount = frameInfo.objectDataOverflowDroppedObjectCount;
@@ -652,7 +676,7 @@ bool Editor::Core::Application::FinalizeCameraPerformanceBenchmark()
         logUiStage("PublishSnapshot", uiTotals.publishSnapshotNs, uiTotals.maxPublishSnapshotNs);
     }
     const auto telemetryAfter = CaptureCameraPerformanceTelemetry();
-    const auto [viewportWidth, viewportHeight] = m_editor->GetSceneViewSafeSize();
+    const auto [viewportWidth, viewportHeight] = m_editor->GetCameraPerformanceViewSafeSize();
 
     EditorCameraPerformanceMetadata metadata;
 #if defined(_DEBUG)
@@ -663,15 +687,23 @@ bool Editor::Core::Application::FinalizeCameraPerformanceBenchmark()
     metadata.backend = m_context.driver != nullptr
         ? std::string(Render::Settings::ToString(m_context.driver->GetActiveGraphicsBackend()))
         : "none";
-    metadata.vsync = m_context.projectSettings.GetOrDefault<bool>("vsync", true);
+    // The editor presents through the swapchain created from the project launch
+    // options, so benchmark metadata must report that value.
+    metadata.vsync = Engine::Settings::ReadProjectLaunchOptions(m_context.projectFilePath).verticalSynchronization;
     metadata.warmupFrameCount = diagnostics.editorCameraPerformanceWarmupFrames;
     metadata.requestedFrameCount = diagnostics.editorCameraPerformanceFrames;
     metadata.requestedSettleFrameCount = diagnostics.editorCameraPerformanceSettleFrames;
     metadata.projectPath = m_context.projectFilePath;
     metadata.scenePath = m_context.sceneManager.GetCurrentSceneSourcePath();
+    metadata.focusView = diagnostics.editorValidationFocusView.empty()
+        ? "scene"
+        : diagnostics.editorValidationFocusView;
+    metadata.selectedGameObject = diagnostics.editorValidationSelectGameObject;
     metadata.viewportWidth = viewportWidth;
     metadata.viewportHeight = viewportHeight;
-    metadata.cameraForwardStep = kEditorCameraPerformanceForwardStep;
+    metadata.cameraForwardStep = metadata.focusView == "game"
+        ? 0.0
+        : kEditorCameraPerformanceForwardStep;
 
     const auto summary = BuildEditorCameraPerformanceSummary(
         std::move(metadata),

@@ -520,31 +520,20 @@ namespace
 			pins.push_back(dependencyId);
 	}
 
-	std::vector<uint64_t> BuildRuntimeStreamingDependencyPins(
+	// Appends the pin ids straight from the primitive handles into the frame pin
+	// list. The previous shape built an intermediate vector plus an intermediate
+	// dedupe set on every frame only to merge them into these same containers.
+	void AppendRuntimeStreamingDependencyPins(
+		std::vector<uint64_t>& target,
+		std::unordered_set<uint64_t>& seenDependencyIds,
 		const std::vector<ScenePrimitiveHandle>& visiblePrimitiveHandles,
 		const std::vector<ScenePrimitiveHandle>& representationStreamingInterest)
 	{
-		std::vector<uint64_t> pins;
-		std::unordered_set<uint64_t> seenDependencyIds;
-		pins.reserve(visiblePrimitiveHandles.size() + representationStreamingInterest.size());
-		seenDependencyIds.reserve(pins.capacity());
+		target.reserve(target.size() + visiblePrimitiveHandles.size() + representationStreamingInterest.size());
 		for (const auto handle : representationStreamingInterest)
-			AddUniqueRuntimeStreamingDependencyPin(pins, seenDependencyIds, handle);
+			AddUniqueRuntimeStreamingDependencyPin(target, seenDependencyIds, handle);
 		for (const auto handle : visiblePrimitiveHandles)
-			AddUniqueRuntimeStreamingDependencyPin(pins, seenDependencyIds, handle);
-		return pins;
-	}
-
-	void AppendUniqueRuntimeStreamingDependencyPins(
-		std::vector<uint64_t>& target,
-		std::unordered_set<uint64_t>& seenDependencyIds,
-		const std::vector<uint64_t>& source)
-	{
-		for (const auto dependencyId : source)
-		{
-			if (dependencyId != 0u && seenDependencyIds.insert(dependencyId).second)
-				target.push_back(dependencyId);
-		}
+			AddUniqueRuntimeStreamingDependencyPin(target, seenDependencyIds, handle);
 	}
 
 	void RegisterRuntimeStreamingDependencies(
@@ -557,8 +546,34 @@ namespace
 			if (!handle.IsValid())
 				return;
 
+			const auto dependencyId = BuildRuntimeStreamingDependencyId(handle);
+			const bool requiredForVisibleRepresentation =
+				source == StreamingDependencySource::Visibility;
+			if (const auto* existing = residency.TryGetDependency(dependencyId);
+				existing != nullptr)
+			{
+				// Re-registering the same payload is a no-op, which keeps the cached
+				// dependency closure and the residency byte counters untouched.
+				if (existing->source == source &&
+					existing->requiredForVisibleRepresentation == requiredForVisibleRepresentation)
+				{
+					return;
+				}
+
+				// Visibility wins for a primitive that is in both interest lists:
+				// downgrading it back to HLOD would let the primitive be tracked as
+				// an HLOD proxy instead of a visible representation and culled as
+				// not-ready. The visibility pass runs first, so this only guards the
+				// HLOD pass from undoing it.
+				if (!requiredForVisibleRepresentation &&
+					existing->requiredForVisibleRepresentation)
+				{
+					return;
+				}
+			}
+
 			StreamingResourceDependency dependency;
-			dependency.dependencyId = BuildRuntimeStreamingDependencyId(handle);
+			dependency.dependencyId = dependencyId;
 			dependency.source = source;
 			dependency.resourceType = StreamingResourceType::Placeholder;
 			dependency.artifactId =
@@ -572,15 +587,17 @@ namespace
 			dependency.gpuUploadBytes = 128u;
 			dependency.cpuCommitUs = 1u;
 			dependency.priority = source == StreamingDependencySource::Visibility ? 100u : 50u;
-			dependency.requiredForVisibleRepresentation = source == StreamingDependencySource::Visibility;
+			dependency.requiredForVisibleRepresentation = requiredForVisibleRepresentation;
 			residency.RegisterDependency(dependency);
 			residency.RegisterPrimitiveDependency(handle, dependency.dependencyId);
 		};
 
-		for (const auto handle : representationStreamingInterest)
-			registerPrimitive(handle, StreamingDependencySource::HLOD);
+		// Visibility first so a primitive in both lists is stored once, as its
+		// visible representation, without a per-frame HLOD/visibility rewrite.
 		for (const auto handle : visiblePrimitiveHandles)
 			registerPrimitive(handle, StreamingDependencySource::Visibility);
+		for (const auto handle : representationStreamingInterest)
+			registerPrimitive(handle, StreamingDependencySource::HLOD);
 	}
 
 	void MergeStreamingTelemetry(
@@ -698,11 +715,7 @@ void BaseSceneRenderer::BeginFrame(const Render::Data::FrameDescriptor& p_frameD
 {
 	NLS_PROFILE_SCOPE();
 	NLS_ASSERT(HasDescriptor<SceneDescriptor>(), "Cannot find SceneDescriptor attached to this renderer");
-	m_threadedFrameBindingSet.reset();
-	m_threadedFrameBindingSetCaptureAttempted = false;
 	InvalidateLightGridCompileContextCache();
-	m_hasLastVisiblePickablePrimitiveDrawSources = false;
-	m_lastVisiblePickablePrimitiveDrawSources.clear();
 
 	auto& sceneDescriptor = GetDescriptor<SceneDescriptor>();
 	RefreshSceneLightingDescriptor(sceneDescriptor.scene);
@@ -720,11 +733,7 @@ void BaseSceneRenderer::BeginFrameForBackgroundPreview(const Render::Data::Frame
 {
 	NLS_PROFILE_SCOPE();
 	NLS_ASSERT(HasDescriptor<SceneDescriptor>(), "Cannot find SceneDescriptor attached to this renderer");
-	m_threadedFrameBindingSet.reset();
-	m_threadedFrameBindingSetCaptureAttempted = false;
 	InvalidateLightGridCompileContextCache();
-	m_hasLastVisiblePickablePrimitiveDrawSources = false;
-	m_lastVisiblePickablePrimitiveDrawSources.clear();
 
 	auto& sceneDescriptor = GetDescriptor<SceneDescriptor>();
 	RefreshSceneLightingDescriptor(sceneDescriptor.scene);
@@ -810,7 +819,7 @@ uint64_t BaseSceneRenderer::GetCullReasonDebugSnapshotMaxEntries() const
 	return 0u;
 }
 
-std::vector<const Engine::GameObject*> BaseSceneRenderer::GetEditorInspectionRoots() const
+std::vector<NLS::InstanceID> BaseSceneRenderer::GetEditorInspectionRoots() const
 {
 	return {};
 }
@@ -914,6 +923,16 @@ std::optional<LightGridPrepass::PreparedFrameInputs> BaseSceneRenderer::BuildLig
 const std::shared_ptr<LightGridPrepass>& BaseSceneRenderer::GetLightGridPrepass() const
 {
 	return m_lightGridPrepass;
+}
+
+uint64_t BaseSceneRenderer::GetSceneRenderContentRevision() const
+{
+	return m_sceneRenderContentRevision;
+}
+
+size_t BaseSceneRenderer::GetRenderScenePrimitiveCount() const
+{
+	return m_renderScene.GetPrimitiveCount();
 }
 
 BaseSceneRenderer::Material* BaseSceneRenderer::ResolveDefaultSceneMaterial()
@@ -1092,21 +1111,20 @@ bool BaseSceneRenderer::CaptureThreadedPreparedDraw(
 
 	if (outDraw.commandBuffer == nullptr && bindingProvider != nullptr)
 	{
-		if (!m_threadedFrameBindingSetCaptureAttempted)
-		{
-			m_threadedFrameBindingSetCaptureAttempted = true;
-			(void)bindingProvider->CaptureFrameBindingSet(m_threadedFrameBindingSet);
-		}
-		outDraw.frameBindingSet = m_threadedFrameBindingSet;
 		Render::Core::FrameObjectBindingProvider::PreparedBindingSets bindingSets;
-		if (!bindingProvider->CapturePreparedObjectBindingSet(pso, drawable, bindingSets))
-			return false;
-
-		if (m_threadedFrameBindingSet == nullptr && bindingSets.frameBindingSet != nullptr)
+		if (!bindingProvider->CapturePreparedBindingSets(pso, drawable, bindingSets))
 		{
-			m_threadedFrameBindingSet = std::move(bindingSets.frameBindingSet);
-			outDraw.frameBindingSet = m_threadedFrameBindingSet;
+			if (!bindingProvider->IsFramePrepared() ||
+				!bindingProvider->CapturePreparedObjectBindingSet(pso, drawable, bindingSets))
+			{
+				return false;
+			}
 		}
+
+		// The provider owns the capture slot; a renderer cache would race BeginFrame.
+		if (bindingSets.frameBindingSet == nullptr && bindingProvider->IsFramePrepared())
+			(void)bindingProvider->CaptureFrameBindingSet(bindingSets.frameBindingSet);
+		outDraw.frameBindingSet = std::move(bindingSets.frameBindingSet);
 		outDraw.objectBindingSet = std::move(bindingSets.objectBindingSet);
 		outDraw.objectConstants = bindingSets.objectConstants;
 		outDraw.usesObjectIndex = bindingSets.usesObjectIndex;
@@ -1162,6 +1180,8 @@ bool BaseSceneRenderer::CaptureThreadedPreparedDraw(
 		}
 	}
 
+	const auto snapshotBufferCreationCountBefore =
+		GetExplicitUniformSnapshotBufferCreationCount();
 	if (!PrepareRecordedDraw(
 		drawable,
 		effectiveMaterial,
@@ -1170,24 +1190,32 @@ bool BaseSceneRenderer::CaptureThreadedPreparedDraw(
 		lightMode,
 		outDraw))
 		return false;
+	const auto snapshotBufferCreationCountAfter =
+		GetExplicitUniformSnapshotBufferCreationCount();
+	if (snapshotBufferCreationCountAfter > snapshotBufferCreationCountBefore)
+	{
+		if (auto* stats = GetMutableRendererStats(); stats != nullptr)
+		{
+			stats->RecordRenderSnapshotBufferCreation(
+				snapshotBufferCreationCountAfter - snapshotBufferCreationCountBefore);
+		}
+	}
 
 	if (outDraw.commandBuffer == nullptr && bindingProvider != nullptr)
 	{
-		if (!m_threadedFrameBindingSetCaptureAttempted)
-		{
-			m_threadedFrameBindingSetCaptureAttempted = true;
-			(void)bindingProvider->CaptureFrameBindingSet(m_threadedFrameBindingSet);
-		}
-		outDraw.frameBindingSet = m_threadedFrameBindingSet;
 		Render::Core::FrameObjectBindingProvider::PreparedBindingSets bindingSets;
-		if (!bindingProvider->CapturePreparedObjectBindingSet(effectivePso, drawable, bindingSets))
-			return false;
-
-		if (m_threadedFrameBindingSet == nullptr && bindingSets.frameBindingSet != nullptr)
+		if (!bindingProvider->CapturePreparedBindingSets(effectivePso, drawable, bindingSets))
 		{
-			m_threadedFrameBindingSet = std::move(bindingSets.frameBindingSet);
-			outDraw.frameBindingSet = m_threadedFrameBindingSet;
+			if (!bindingProvider->IsFramePrepared() ||
+				!bindingProvider->CapturePreparedObjectBindingSet(effectivePso, drawable, bindingSets))
+			{
+				return false;
+			}
 		}
+
+		if (bindingSets.frameBindingSet == nullptr && bindingProvider->IsFramePrepared())
+			(void)bindingProvider->CaptureFrameBindingSet(bindingSets.frameBindingSet);
+		outDraw.frameBindingSet = std::move(bindingSets.frameBindingSet);
 		outDraw.objectBindingSet = std::move(bindingSets.objectBindingSet);
 		outDraw.objectConstants = bindingSets.objectConstants;
 		outDraw.usesObjectIndex = bindingSets.usesObjectIndex;
@@ -1359,7 +1387,15 @@ void BaseSceneRenderer::RefreshSceneLightingDescriptor(SceneSystem::Scene& scene
 {
 	NLS_PROFILE_SCOPE();
 	m_sceneLightingProvider->Collect(scene);
-	AddDescriptor<LightingDescriptor>(LightingDescriptor{ GetSceneLightingProvider().GetLightingDescriptor().lights });
+	SetSceneLightingDescriptor();
+}
+
+void BaseSceneRenderer::SetSceneLightingDescriptor()
+{
+	if (HasDescriptor<LightingDescriptor>())
+		RemoveDescriptor<LightingDescriptor>();
+	AddDescriptor<LightingDescriptor>(
+		LightingDescriptor{ GetSceneLightingProvider().GetLightingDescriptor().lights });
 }
 
 void BaseSceneRenderer::DrawModelWithSingleMaterial(
@@ -1426,8 +1462,6 @@ void BaseSceneRenderer::DrawModelWithSingleMaterial(
 	DecalDrawables decals;
 	TransparentDrawables transparents;
 	SkyboxDrawables skyboxes;
-	m_lastVisiblePickablePrimitiveDrawSources.clear();
-	m_hasLastVisiblePickablePrimitiveDrawSources = true;
 
 	auto& camera = *m_frameDescriptor.camera;
 	auto& sceneDescriptor = GetDescriptor<SceneDescriptor>();
@@ -1542,7 +1576,19 @@ void BaseSceneRenderer::DrawModelWithSingleMaterial(
 					trustSceneRenderContentRevision
 				});
 			}
+			if (&renderScene == &m_renderScene)
+			{
+				m_sceneLightingProvider->CollectFromStore(renderScene.GetProxyStore());
+				SetSceneLightingDescriptor();
+			}
 			logStartupParseSceneStage("SynchronizeRenderScene");
+			// Advance the scene-scoped content revision only when the synchronization
+			// actually observed a render-affecting change. Treating "did not use the
+			// fast path" as a change would advance the revision every frame for any
+			// caller that does not opt into the revision fast path, permanently
+			// invalidating view frame caches. The fast path already reports no change.
+			if (syncStats.detectedRenderContentChange)
+				++m_sceneRenderContentRevision;
 			rebuiltCachedCommandCount += syncStats.rebuiltCachedCommandCount;
 		if (occlusionSettings.enableHZBOcclusion && !renderScene.GetLastRemovedPrimitiveHandles().empty())
 		{
@@ -1574,8 +1620,8 @@ void BaseSceneRenderer::DrawModelWithSingleMaterial(
 			visibilityOptions.verticalFovRadians = Maths::DegreesToRadians(camera.GetFov());
 			visibilityOptions.lodHistoryViewKey = 0u;
 			visibilityOptions.allowHLOD = true;
-			visibilityOptions.inspectionRootObjects = GetEditorInspectionRoots();
-			visibilityOptions.editorInspectionView = !visibilityOptions.inspectionRootObjects.empty();
+			visibilityOptions.inspectionRootInstanceIds = GetEditorInspectionRoots();
+			visibilityOptions.editorInspectionView = !visibilityOptions.inspectionRootInstanceIds.empty();
 			visibilityOptions.enableCullReasonDebugSnapshot = ShouldPublishCullReasonDebugSnapshots();
 			visibilityOptions.maxCullReasonDebugSnapshotEntries = GetCullReasonDebugSnapshotMaxEntries();
 			visibilityOptions.occlusion = occlusionState.primitiveInputs != nullptr ? &occlusionState : nullptr;
@@ -1584,9 +1630,15 @@ void BaseSceneRenderer::DrawModelWithSingleMaterial(
 			}
 			logStartupParseSceneStage("GatherVisibleCommands");
 			const auto sceneStats = renderScene.GetLastDrawCallOptimizationStats();
+			// Publish the pickable snapshot only once it is complete. Sticky
+			// across frames so a picking request that lands on a frame without a
+			// scene parse still uses the visible-source path instead of rescanning
+			// every renderer.
+			m_lastVisiblePickablePrimitiveDrawSources.clear();
 			renderScene.AppendPickablePrimitiveDrawSourcesForHandles(
 				renderScene.GetLastVisiblePrimitiveHandles(),
 				m_lastVisiblePickablePrimitiveDrawSources);
+			m_hasLastVisiblePickablePrimitiveDrawSources = true;
 			logStartupParseSceneStage("AppendPickablePrimitiveDrawSources");
 		dynamicInstanceGroupCount += sceneStats.dynamicInstanceGroupCount;
 		largestInstanceGroupSize = std::max(largestInstanceGroupSize, sceneStats.largestInstanceGroupSize);
@@ -1642,12 +1694,11 @@ void BaseSceneRenderer::DrawModelWithSingleMaterial(
 				m_streamingResidency,
 				renderScene.GetLastVisiblePrimitiveHandles(),
 				renderScene.GetLastRepresentationStreamingInterest());
-			AppendUniqueRuntimeStreamingDependencyPins(
+			AppendRuntimeStreamingDependencyPins(
 				currentFrameStreamingDependencyPins,
 				currentFrameStreamingDependencyPinSet,
-				BuildRuntimeStreamingDependencyPins(
-					renderScene.GetLastVisiblePrimitiveHandles(),
-					renderScene.GetLastRepresentationStreamingInterest()));
+				renderScene.GetLastVisiblePrimitiveHandles(),
+				renderScene.GetLastRepresentationStreamingInterest());
 			allSceneStreamingInput.visiblePrimitiveHandles.insert(
 				allSceneStreamingInput.visiblePrimitiveHandles.end(),
 				renderScene.GetLastVisiblePrimitiveHandles().begin(),
@@ -1702,31 +1753,25 @@ void BaseSceneRenderer::DrawModelWithSingleMaterial(
 		if (!includeSkyboxes)
 			return;
 
-		const auto& fastAccess = scene.GetFastAccessComponents();
-		skyboxes.reserve(skyboxes.size() + fastAccess.skyboxs.size());
-
-		for (auto* skybox : fastAccess.skyboxs)
-		{
-			if (!skybox)
-				continue;
-			auto* owner = skybox->gameobject();
-			if (!owner || !owner->IsActive())
-				continue;
-
-			if (auto mesh = skybox->GetMesh())
+		renderScene.GetProxyStore().ForEachSkyBox(
+			[&skyboxes](
+				const SceneProxyHandle&,
+				const SceneProxyPayload& payload,
+				const SceneProxyTransformState& transform)
 			{
-				if (auto material = skybox->GetMaterial())
+				if (!payload.ownerAlive || !payload.ownerActive ||
+					payload.resources.mesh == nullptr || payload.resources.material == nullptr)
 				{
-					auto& transform = owner->GetTransform()->GetTransform();
-					Render::Entities::Drawable drawable;
-					drawable.mesh = mesh;
-					drawable.material = material;
-					drawable.stateMask = material->GenerateStateMask();
-					drawable.AddDescriptor<EngineDrawableDescriptor>({ transform.GetWorldMatrix() });
-					skyboxes.emplace_back(0.0f, std::move(drawable));
+					return;
 				}
-			}
-			}
+
+				Render::Entities::Drawable drawable;
+				drawable.mesh = payload.resources.mesh;
+				drawable.material = payload.resources.material;
+				drawable.stateMask = payload.resources.material->GenerateStateMask();
+				drawable.AddDescriptor<EngineDrawableDescriptor>({ transform.worldMatrix });
+				skyboxes.emplace_back(0.0f, std::move(drawable));
+			});
 		};
 
 		if (sceneDescriptor.skipSceneDrawables)
@@ -1789,25 +1834,30 @@ void BaseSceneRenderer::DrawModelWithSingleMaterial(
 		m_rendererStats.RecordLargeSceneTelemetry(occlusionPruneTelemetry);
 	}
 		const auto streamingCommitStart = std::chrono::steady_clock::now();
-		StreamingResidencyPlan allSceneStreamingPlan;
+		// Plan and Commit keep their results in the residency object; holding
+		// references avoids re-copying the dependency closure and ticket lists
+		// (which carry artifact id / cancel-reason strings) every frame.
+		const StreamingResidencyPlan* allSceneStreamingPlanPtr = nullptr;
 		{
 			NLS_PROFILE_NAMED_SCOPE("BaseSceneRenderer::ParseScene::StreamingResidencyPlan");
-			allSceneStreamingPlan = m_streamingResidency.Plan(allSceneStreamingInput, occlusionSettings);
+			allSceneStreamingPlanPtr = &m_streamingResidency.Plan(allSceneStreamingInput, occlusionSettings);
 		}
+		const StreamingResidencyPlan& allSceneStreamingPlan = *allSceneStreamingPlanPtr;
 		StreamingResidencyFramePins framePins;
 		{
 			NLS_PROFILE_NAMED_SCOPE("BaseSceneRenderer::ParseScene::CollectStreamingDependencyPins");
 			framePins.pinnedDependencyIds =
 				NLS::Render::Context::DriverRendererAccess::CollectStreamingDependencyPins(m_driver);
 		}
-		StreamingCommitResult allSceneStreamingCommit;
+		const StreamingCommitResult* allSceneStreamingCommitPtr = nullptr;
 		{
 			NLS_PROFILE_NAMED_SCOPE("BaseSceneRenderer::ParseScene::StreamingResidencyCommit");
-			allSceneStreamingCommit = m_streamingResidency.Commit(
+			allSceneStreamingCommitPtr = &m_streamingResidency.Commit(
 				allSceneStreamingPlan,
 				occlusionSettings,
 				framePins);
 		}
+		const StreamingCommitResult& allSceneStreamingCommit = *allSceneStreamingCommitPtr;
 		{
 			NLS_PROFILE_NAMED_SCOPE("BaseSceneRenderer::ParseScene::BuildRepresentationResidencySnapshot");
 			MergeRepresentationResidencySnapshot(

@@ -1,16 +1,13 @@
 #include <Utils/SystemCalls.h>
 
 #include <UI/Widgets/Visual/Separator.h>
-#include <UI/Widgets/Sliders/SliderInt.h>
-#include <UI/Widgets/Sliders/SliderFloat.h>
-#include <UI/Widgets/Drags/DragFloat.h>
-#include <UI/Widgets/Selection/ColorEdit.h>
 
 #include "Panels/MenuBar.h"
-#include "Panels/SceneView.h"
-#include "Panels/AssetView.h"
 #include "Panels/ProjectSettings.h"
 #include "Core/EditorActions.h"
+#include "Debug/TracyProfilerLauncher.h"
+#include <Debug/Logger.h>
+#include <Profiling/TracyProfiler.h>
 #include "Settings/EditorSettings.h"
 #include "Utils/GameObjectCreationMenu.h"
 #include "Rendering/Context/DriverAccess.h"
@@ -30,12 +27,9 @@ Editor::Panels::MenuBar::MenuBar()
 	createGameObjectsMenu();
 	CreateResourcesMenu();
 	CreateLayoutMenu();
+	CreateToolsMenu();
+	CreateDebuggingMenu();
 	CreateHelpMenu();
-}
-
-void Editor::Panels::MenuBar::HandleShortcuts(float p_deltaTime)
-{
-    (void)p_deltaTime;
 }
 
 void Editor::Panels::MenuBar::DrawMenuEntries()
@@ -49,149 +43,6 @@ void Editor::Panels::MenuBar::DrawDialogs()
     if (m_projectSettingsPanel)
         m_projectSettingsPanel->DrawModal();
     m_shortcutSettingsPanel.Draw();
-}
-
-void Editor::Panels::MenuBar::InitializeSettingsMenu()
-{
-    if (!m_settingsMenu)
-        return;
-
-	m_settingsMenu->CreateWidget<Widgets::MenuItem>("Spawn GameObjects at origin", "", true, true).ValueChangedEvent += EDITOR_BIND(SetGameObjectSpawnAtOrigin, std::placeholders::_1);
-	m_settingsMenu->CreateWidget<Widgets::MenuItem>("Vertical Synchronization", "", true, true).ValueChangedEvent += [this](bool p_value) { EDITOR_CONTEXT(device)->SetVsync(p_value); };
-	auto& cameraSpeedMenu = m_settingsMenu->CreateWidget<Widgets::MenuList>("Camera Speed");
-	cameraSpeedMenu.CreateWidget<Widgets::SliderInt>(1, 50, 15, Widgets::ESliderOrientation::HORIZONTAL, "Scene View").ValueChangedEvent += EDITOR_BIND(SetSceneViewCameraSpeed, std::placeholders::_1);
-	cameraSpeedMenu.CreateWidget<Widgets::SliderInt>(1, 50, 15, Widgets::ESliderOrientation::HORIZONTAL, "Asset View").ValueChangedEvent += EDITOR_BIND(SetAssetViewCameraSpeed, std::placeholders::_1);
-	auto& cameraPositionMenu = m_settingsMenu->CreateWidget<Widgets::MenuList>("Reset Camera");
-	cameraPositionMenu.CreateWidget<Widgets::MenuItem>("Scene View").ClickedEvent += EDITOR_BIND(ResetSceneViewCameraPosition);
-	cameraPositionMenu.CreateWidget<Widgets::MenuItem>("Asset View").ClickedEvent += EDITOR_BIND(ResetAssetViewCameraPosition);
-
-	auto& sceneView = EDITOR_PANEL(Panels::SceneView, "Scene View");
-	auto& assetView = EDITOR_PANEL(Panels::AssetView, "Asset View");
-
-	auto& viewColors = m_settingsMenu->CreateWidget<Widgets::MenuList>("View Colors");
-	auto& sceneViewBackground = viewColors.CreateWidget<Widgets::MenuList>("Scene View Background");
-	auto& sceneViewBackgroundPicker = sceneViewBackground.CreateWidget<Widgets::ColorEdit>(false, sceneView.GetCamera()->GetClearColor());
-	sceneViewBackgroundPicker.ColorChangedEvent += [&](const auto& color)
-	{
-		sceneView.GetCamera()->SetClearColor({ color.r, color.g, color.b });
-	};
-	sceneViewBackground.CreateWidget<Widgets::MenuItem>("Reset").ClickedEvent += [&]
-	{
-		sceneView.ResetClearColor();
-		sceneViewBackgroundPicker.color = sceneView.GetCamera()->GetClearColor();
-	};
-	auto& sceneViewGrid = viewColors.CreateWidget<Widgets::MenuList>("Scene View Grid");
-
-	auto& sceneViewGridPicker = sceneViewGrid.CreateWidget<Widgets::ColorEdit>(false, sceneView.GetGridColor());
-	sceneViewGridPicker.ColorChangedEvent += [this](const auto& color)
-	{
-		EDITOR_PANEL(Panels::SceneView, "Scene View").SetGridColor({ color.r, color.g, color.b });
-	};
-	sceneViewGrid.CreateWidget<Widgets::MenuItem>("Reset").ClickedEvent += [&]
-	{
-		sceneView.ResetGridColor();
-		sceneViewGridPicker.color = sceneView.GetGridColor();
-	};
-
-	auto& assetViewBackground = viewColors.CreateWidget<Widgets::MenuList>("Asset View Background");
-	auto& assetViewBackgroundPicker = assetViewBackground.CreateWidget<Widgets::ColorEdit>(false, assetView.GetCamera()->GetClearColor());
-	assetViewBackgroundPicker.ColorChangedEvent += [&](const auto& color)
-	{
-		assetView.GetCamera()->SetClearColor({ color.r, color.g, color.b });
-	};
-	assetViewBackground.CreateWidget<Widgets::MenuItem>("Reset").ClickedEvent += [&]
-	{
-		assetView.ResetClearColor();
-		assetViewBackgroundPicker.color = assetView.GetCamera()->GetClearColor();
-	};
-
-	auto& assetViewGrid = viewColors.CreateWidget<Widgets::MenuList>("Asset View Grid");
-	auto& assetViewGridPicker = assetViewGrid.CreateWidget<Widgets::ColorEdit>(false, assetView.GetGridColor());
-	assetViewGridPicker.ColorChangedEvent += [&](const auto& color)
-	{
-		assetView.SetGridColor({ color.r, color.g, color.b });
-	};
-	assetViewGrid.CreateWidget<Widgets::MenuItem>("Reset").ClickedEvent += [&]
-	{
-		assetView.ResetGridColor();
-		assetViewGridPicker.color = assetView.GetGridColor();
-	};
-
-	auto* debugSettings = &Settings::EditorSettings::GetDebugDrawSettingsObject();
-	auto* sceneToolSettings = &Settings::EditorSettings::GetSceneToolSettingsObject();
-	auto* runtimeSettings = &Settings::EditorSettings::GetRuntimeSettingsObject();
-
-	auto& sceneViewBillboardScaleMenu = m_settingsMenu->CreateWidget<Widgets::MenuList>("3D Icons Scales");
-	auto& lightBillboardScaleSlider = sceneViewBillboardScaleMenu.CreateWidget<Widgets::SliderInt>(0, 100, static_cast<int>(debugSettings->lightBillboardScale * 100.0f), Widgets::ESliderOrientation::HORIZONTAL, "Lights");
-	lightBillboardScaleSlider.ValueChangedEvent += [debugSettings](int p_value) { debugSettings->lightBillboardScale = p_value / 100.0f; };
-	lightBillboardScaleSlider.format = "%d %%";
-
-	auto& snappingMenu = m_settingsMenu->CreateWidget<Widgets::MenuList>("Snapping");
-	snappingMenu.CreateWidget<Widgets::DragFloat>(0.001f, 999999.0f, sceneToolSettings->translationSnapUnit, 0.05f, "Translation Unit").ValueChangedEvent += [sceneToolSettings](float p_value) { sceneToolSettings->translationSnapUnit = p_value; };
-	snappingMenu.CreateWidget<Widgets::DragFloat>(0.001f, 999999.0f, sceneToolSettings->rotationSnapUnit, 1.0f, "Rotation Unit").ValueChangedEvent += [sceneToolSettings](float p_value) { sceneToolSettings->rotationSnapUnit = p_value; };
-	snappingMenu.CreateWidget<Widgets::DragFloat>(0.001f, 999999.0f, sceneToolSettings->scalingSnapUnit, 0.05f, "Scaling Unit").ValueChangedEvent += [sceneToolSettings](float p_value) { sceneToolSettings->scalingSnapUnit = p_value; };
-
-	auto& performanceMenu = m_settingsMenu->CreateWidget<Widgets::MenuList>("Performance");
-	performanceMenu.CreateWidget<Widgets::MenuItem>(
-		"Power Saving Idle Pacing",
-		"",
-		true,
-		runtimeSettings->enablePowerSavingIdlePacing).ValueChangedEvent += [runtimeSettings](bool p_value)
-	{
-		runtimeSettings->enablePowerSavingIdlePacing = p_value;
-	};
-
-	auto& debuggingMenu = m_settingsMenu->CreateWidget<Widgets::MenuList>("Debugging");
-	auto& debugDrawMenu = debuggingMenu.CreateWidget<Widgets::MenuList>("Debug Draw");
-	debugDrawMenu.CreateWidget<Widgets::MenuItem>("Enabled", "", true, debugSettings->debugDrawEnabled).ValueChangedEvent += [debugSettings](bool p_value) { debugSettings->debugDrawEnabled = p_value; };
-	debugDrawMenu.CreateWidget<Widgets::MenuItem>("Grid", "", true, debugSettings->debugDrawGrid).ValueChangedEvent += [debugSettings](bool p_value) { debugSettings->debugDrawGrid = p_value; };
-	debugDrawMenu.CreateWidget<Widgets::MenuItem>("Bounds", "", true, debugSettings->debugDrawBounds).ValueChangedEvent += [debugSettings](bool p_value) { debugSettings->debugDrawBounds = p_value; };
-	debugDrawMenu.CreateWidget<Widgets::MenuItem>("Cameras", "", true, debugSettings->debugDrawCamera).ValueChangedEvent += [debugSettings](bool p_value) { debugSettings->debugDrawCamera = p_value; };
-	debugDrawMenu.CreateWidget<Widgets::MenuItem>("Lights", "", true, debugSettings->debugDrawLighting).ValueChangedEvent += [debugSettings](bool p_value) { debugSettings->debugDrawLighting = p_value; };
-    debuggingMenu.CreateWidget<Widgets::MenuItem>("Wireframe Mode", "", true, false).ValueChangedEvent += [this](bool p_value)
-    {
-        Render::Context::DriverUIAccess::SetPolygonMode(
-            *EDITOR_CONTEXT(driver),
-            p_value ? NLS::Render::Settings::ERasterizationMode::LINE : NLS::Render::Settings::ERasterizationMode::FILL);
-    };
-	auto& renderDocMenu = debuggingMenu.CreateWidget<Widgets::MenuList>("RenderDoc");
-	auto& renderDocStatus = renderDocMenu.CreateWidget<Widgets::Text>("Status: Unknown");
-	renderDocStatus.content = Render::Context::DriverUIAccess::IsRenderDocAvailable(*EDITOR_CONTEXT(driver))
-		? (Render::Context::DriverUIAccess::IsRenderDocEnabled(*EDITOR_CONTEXT(driver)) ? "Status: Enabled" : "Status: Available (disabled)")
-		: "Status: Not installed or not loaded";
-	renderDocMenu.CreateWidget<Widgets::MenuItem>(
-		"Enabled",
-		"",
-		true,
-		Render::Context::DriverUIAccess::IsRenderDocEnabled(*EDITOR_CONTEXT(driver))).ValueChangedEvent += [&renderDocStatus](bool enabled)
-	{
-		Render::Context::DriverUIAccess::SetRenderDocEnabled(*EDITOR_CONTEXT(driver), enabled);
-		renderDocStatus.content = enabled ? "Status: Enabled" : "Status: Available (disabled)";
-	};
-	m_renderDocCaptureItem = &renderDocMenu.CreateWidget<Widgets::MenuItem>("Capture Next Frame", "F11");
-	m_renderDocCaptureItem->ClickedEvent += []
-	{
-		Render::Context::DriverUIAccess::QueueRenderDocCapture(*EDITOR_CONTEXT(driver), "Editor");
-	};
-	m_renderDocOpenLatestItem = &renderDocMenu.CreateWidget<Widgets::MenuItem>("Open Latest Capture", "CTRL + F11");
-	m_renderDocOpenLatestItem->ClickedEvent += []
-	{
-		Render::Context::DriverUIAccess::OpenLatestRenderDocCapture(*EDITOR_CONTEXT(driver));
-	};
-	renderDocMenu.CreateWidget<Widgets::MenuItem>("Open Capture Folder").ClickedEvent += []
-	{
-		const auto captureDirectory = Render::Context::DriverUIAccess::GetRenderDocCaptureDirectory(*EDITOR_CONTEXT(driver));
-		if (!captureDirectory.empty())
-			Platform::SystemCalls::ShowInExplorer(captureDirectory);
-	};
-	renderDocMenu.CreateWidget<Widgets::MenuItem>(
-		"Auto Open Replay UI",
-		"",
-		true,
-		Render::Context::DriverUIAccess::GetRenderDocAutoOpenEnabled(*EDITOR_CONTEXT(driver))).ValueChangedEvent += [](bool enabled)
-	{
-		Render::Context::DriverUIAccess::SetRenderDocAutoOpenEnabled(*EDITOR_CONTEXT(driver), enabled);
-	};
 }
 
 void Editor::Panels::MenuBar::CreateFileMenu()
@@ -273,6 +124,198 @@ void Editor::Panels::MenuBar::CreateLayoutMenu()
 	layoutMenu.CreateWidget<Widgets::MenuItem>("4 Split").ClickedEvent += EDITOR_BIND(ApplyLayoutPreset, "4_split");
 }
 
+void Editor::Panels::MenuBar::CreateToolsMenu()
+{
+	m_toolsMenu = &CreateWidget<Widgets::MenuList>("Tools");
+	// Scripted editors add entries through RegisterCommand("Tools/..."); seeding
+	// the lookup keeps those commands inside this built-in menu.
+	m_commandMenus.emplace("Tools", m_toolsMenu);
+	m_toolsMenu->ClickedEvent += std::bind(&MenuBar::RefreshTracyProfilerStatus, this);
+
+	auto& tracyMenu = m_toolsMenu->CreateWidget<Widgets::MenuList>("Tracy Profiler");
+	m_tracyClientStatusText = &tracyMenu.CreateWidget<Widgets::Text>("Client: Unknown");
+	m_tracyToolStatusText = &tracyMenu.CreateWidget<Widgets::Text>("Tool: Unknown");
+	tracyMenu.CreateWidget<Widgets::Separator>();
+	m_tracyOpenProfilerItem = &tracyMenu.CreateWidget<Widgets::MenuItem>("Open Tracy Profiler");
+	m_tracyOpenProfilerItem->ClickedEvent += [this] { OpenTracyProfiler(); };
+	m_tracyOpenCaptureFolderItem = &tracyMenu.CreateWidget<Widgets::MenuItem>("Open Capture Folder");
+	m_tracyOpenCaptureFolderItem->ClickedEvent += [this] { OpenTracyCaptureFolder(); };
+
+	RefreshTracyProfilerStatus();
+}
+
+void Editor::Panels::MenuBar::RefreshTracyProfilerStatus()
+{
+	const auto resolution = Debug::ResolveTracyProfilerFromEditorProcess();
+
+	if (m_tracyToolStatusText)
+	{
+		m_tracyToolStatusText->content = resolution.IsValid()
+			? "Tool: " + resolution.executablePath.string()
+			: std::string("Tool: not found - set NLS_TRACY_PROFILER or run ")
+				+ ".agents/skills/nullus-tracy-performance/scripts/Prepare-NullusTracy.ps1";
+	}
+
+	if (m_tracyOpenProfilerItem)
+	{
+		m_tracyOpenProfilerItem->enabled = resolution.IsValid();
+		m_tracyOpenProfilerItem->tooltip = resolution.IsValid()
+			? resolution.executablePath.string()
+			: "Tracy tools were not found. Run Prepare-NullusTracy.ps1 or set NLS_TRACY_PROFILER.";
+	}
+
+	if (m_tracyOpenCaptureFolderItem)
+	{
+		const auto captureDirectory = Debug::ResolveTracyCaptureDirectory(resolution);
+		m_tracyOpenCaptureFolderItem->enabled = !captureDirectory.empty();
+		m_tracyOpenCaptureFolderItem->tooltip = captureDirectory.empty()
+			? "Run the editor from a repository checkout to locate Build/Tracy."
+			: captureDirectory.string();
+	}
+
+	if (m_tracyClientStatusText)
+	{
+#if NLS_ENABLE_TRACY
+		m_tracyClientStatusText->content = NLS::Base::Profiling::TracyProfiler::IsConnected()
+			? "Client: connected"
+			: "Client: ready (waiting for a profiler connection)";
+#else
+		m_tracyClientStatusText->content = "Client: not built (rebuild with NLS_ENABLE_TRACY=ON)";
+#endif
+	}
+}
+
+void Editor::Panels::MenuBar::OpenTracyProfiler()
+{
+	const auto resolution = Debug::ResolveTracyProfilerFromEditorProcess();
+	std::string error;
+	if (!Debug::LaunchTracyProfiler(resolution.executablePath, error))
+	{
+		NLS_LOG_WARNING("Tracy profiler could not be opened: " + error);
+		RefreshTracyProfilerStatus();
+		return;
+	}
+
+	NLS_LOG_INFO("Tracy profiler launched: " + resolution.executablePath.string());
+}
+
+void Editor::Panels::MenuBar::OpenTracyCaptureFolder()
+{
+	const auto resolution = Debug::ResolveTracyProfilerFromEditorProcess();
+	const auto captureDirectory = Debug::ResolveTracyCaptureDirectory(resolution);
+	if (captureDirectory.empty())
+	{
+		NLS_LOG_WARNING("Tracy capture directory is unavailable outside a repository checkout.");
+		return;
+	}
+
+	std::error_code error;
+	std::filesystem::create_directories(captureDirectory, error);
+	Platform::SystemCalls::ShowInExplorer(captureDirectory.string());
+}
+
+void Editor::Panels::MenuBar::CreateDebuggingMenu()
+{
+	m_debuggingMenu = &CreateWidget<Widgets::MenuList>("Debugging");
+	// RenderDoc availability and the toggles can change while the editor runs,
+	// so the presentation is refreshed every time the menu is opened.
+	m_debuggingMenu->ClickedEvent += std::bind(&MenuBar::RefreshDebuggingMenuStatus, this);
+
+	auto* debugSettings = &Settings::EditorSettings::GetDebugDrawSettingsObject();
+	auto& debugDrawMenu = m_debuggingMenu->CreateWidget<Widgets::MenuList>("Debug Draw");
+	debugDrawMenu.CreateWidget<Widgets::MenuItem>("Enabled", "", true, debugSettings->debugDrawEnabled).ValueChangedEvent += [debugSettings](bool p_value) { debugSettings->debugDrawEnabled = p_value; };
+	debugDrawMenu.CreateWidget<Widgets::MenuItem>("Grid", "", true, debugSettings->debugDrawGrid).ValueChangedEvent += [debugSettings](bool p_value) { debugSettings->debugDrawGrid = p_value; };
+	debugDrawMenu.CreateWidget<Widgets::MenuItem>("Bounds", "", true, debugSettings->debugDrawBounds).ValueChangedEvent += [debugSettings](bool p_value) { debugSettings->debugDrawBounds = p_value; };
+	debugDrawMenu.CreateWidget<Widgets::MenuItem>("Cameras", "", true, debugSettings->debugDrawCamera).ValueChangedEvent += [debugSettings](bool p_value) { debugSettings->debugDrawCamera = p_value; };
+	debugDrawMenu.CreateWidget<Widgets::MenuItem>("Lights", "", true, debugSettings->debugDrawLighting).ValueChangedEvent += [debugSettings](bool p_value) { debugSettings->debugDrawLighting = p_value; };
+
+	m_wireframeModeItem = &m_debuggingMenu->CreateWidget<Widgets::MenuItem>("Wireframe Mode", "", true, false);
+	m_wireframeModeItem->tooltip = "Draw scene geometry as wireframe.";
+	m_wireframeModeItem->ValueChangedEvent += [this](bool p_value)
+	{
+		if (auto* driver = EDITOR_CONTEXT(driver).get())
+		{
+			Render::Context::DriverUIAccess::SetPolygonMode(
+				*driver,
+				p_value ? Render::Settings::ERasterizationMode::LINE : Render::Settings::ERasterizationMode::FILL);
+		}
+	};
+
+	auto& renderDocMenu = m_debuggingMenu->CreateWidget<Widgets::MenuList>("RenderDoc");
+	m_renderDocStatusText = &renderDocMenu.CreateWidget<Widgets::Text>("Status: Unknown");
+	m_renderDocEnabledItem = &renderDocMenu.CreateWidget<Widgets::MenuItem>("Enabled", "", true, false);
+	m_renderDocEnabledItem->ValueChangedEvent += [this](bool p_enabled)
+	{
+		if (auto* driver = EDITOR_CONTEXT(driver).get())
+			Render::Context::DriverUIAccess::SetRenderDocEnabled(*driver, p_enabled);
+		RefreshDebuggingMenuStatus();
+	};
+	m_renderDocCaptureItem = &renderDocMenu.CreateWidget<Widgets::MenuItem>("Capture Next Frame", "F11");
+	m_renderDocCaptureItem->ClickedEvent += []
+	{
+		if (auto* driver = EDITOR_CONTEXT(driver).get())
+			Render::Context::DriverUIAccess::QueueRenderDocCapture(*driver, "Editor");
+	};
+	m_renderDocOpenLatestItem = &renderDocMenu.CreateWidget<Widgets::MenuItem>("Open Latest Capture", "CTRL + F11");
+	m_renderDocOpenLatestItem->ClickedEvent += []
+	{
+		if (auto* driver = EDITOR_CONTEXT(driver).get())
+			Render::Context::DriverUIAccess::OpenLatestRenderDocCapture(*driver);
+	};
+	renderDocMenu.CreateWidget<Widgets::MenuItem>("Open Capture Folder").ClickedEvent += []
+	{
+		if (auto* driver = EDITOR_CONTEXT(driver).get())
+		{
+			const auto captureDirectory = Render::Context::DriverUIAccess::GetRenderDocCaptureDirectory(*driver);
+			if (!captureDirectory.empty())
+				Platform::SystemCalls::ShowInExplorer(captureDirectory);
+		}
+	};
+	m_renderDocAutoOpenItem = &renderDocMenu.CreateWidget<Widgets::MenuItem>("Auto Open Replay UI", "", true, false);
+	m_renderDocAutoOpenItem->ValueChangedEvent += [this](bool p_enabled)
+	{
+		if (auto* driver = EDITOR_CONTEXT(driver).get())
+			Render::Context::DriverUIAccess::SetRenderDocAutoOpenEnabled(*driver, p_enabled);
+	};
+
+	RefreshDebuggingMenuStatus();
+}
+
+void Editor::Panels::MenuBar::RefreshDebuggingMenuStatus()
+{
+	auto* driver = EDITOR_CONTEXT(driver).get();
+	if (driver == nullptr)
+		return;
+
+	const bool renderDocAvailable = Render::Context::DriverUIAccess::IsRenderDocAvailable(*driver);
+	const bool renderDocEnabled = renderDocAvailable && Render::Context::DriverUIAccess::IsRenderDocEnabled(*driver);
+
+	if (m_renderDocStatusText)
+	{
+		m_renderDocStatusText->content = renderDocAvailable
+			? (renderDocEnabled ? "Status: Enabled" : "Status: Available (disabled)")
+			: "Status: Not installed or not loaded";
+	}
+
+	if (m_renderDocEnabledItem)
+	{
+		m_renderDocEnabledItem->checked = renderDocEnabled;
+		m_renderDocEnabledItem->enabled = renderDocAvailable;
+		m_renderDocEnabledItem->tooltip = renderDocAvailable
+			? std::string {}
+			: "RenderDoc was not detected. Install it or set RENDERDOC_PATH, then restart the editor.";
+	}
+
+	if (m_renderDocAutoOpenItem)
+		m_renderDocAutoOpenItem->checked = Render::Context::DriverUIAccess::GetRenderDocAutoOpenEnabled(*driver);
+
+	if (m_renderDocCaptureItem)
+		m_renderDocCaptureItem->enabled = renderDocAvailable;
+
+	if (m_renderDocOpenLatestItem)
+		m_renderDocOpenLatestItem->enabled = renderDocAvailable;
+}
+
 void Editor::Panels::MenuBar::CreateHelpMenu()
 {
     auto& helpMenu = CreateWidget<Widgets::MenuList>("Help");
@@ -287,7 +330,12 @@ void Editor::Panels::MenuBar::CreateHelpMenu()
 void Editor::Panels::MenuBar::RegisterPanel(const std::string& p_name, UI::PanelWindow& p_panel)
 {
 	auto& menuItem = m_windowMenu->CreateWidget<Widgets::MenuItem>(p_name, "", true, true);
-	menuItem.ValueChangedEvent += std::bind(&UI::PanelWindow::SetOpened, &p_panel, std::placeholders::_1);
+	menuItem.ValueChangedEvent += [&p_panel](const bool opened)
+	{
+		p_panel.SetOpened(opened);
+		if (opened)
+			p_panel.Focus();
+	};
 
 	m_panels.emplace(p_name, std::make_pair(std::ref(p_panel), std::ref(menuItem)));
 }

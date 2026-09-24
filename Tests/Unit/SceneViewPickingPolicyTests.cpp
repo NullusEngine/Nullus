@@ -67,6 +67,46 @@ TEST(SceneViewPickingPolicyTests, RejectsPickingFrameReuseWhenAnySignatureFieldD
         differentView));
 }
 
+TEST(SceneViewPickingPolicyTests, DrawCommandReuseIgnoresFrameOnlySignatureFields)
+{
+    const auto signature = MakeSignature();
+
+    auto differentFrame = signature;
+    differentFrame.renderWidth += 1u;
+    differentFrame.renderHeight += 1u;
+    differentFrame.cameraViewHash += 1u;
+
+    EXPECT_TRUE(NLS::Editor::Panels::HitProxyPickingDrawCommandSignaturesMatch(
+        signature,
+        differentFrame));
+    EXPECT_FALSE(NLS::Editor::Panels::HitProxyPickingSignaturesMatch(
+        signature,
+        differentFrame));
+}
+
+TEST(SceneViewPickingPolicyTests, DrawCommandReuseRejectsSceneDrawSourceOrViewChanges)
+{
+    const auto signature = MakeSignature();
+
+    auto differentRevision = signature;
+    differentRevision.pickableSceneRevision += 1u;
+    EXPECT_FALSE(NLS::Editor::Panels::HitProxyPickingDrawCommandSignaturesMatch(
+        signature,
+        differentRevision));
+
+    auto differentDrawSources = signature;
+    differentDrawSources.pickableDrawSourceHash += 1u;
+    EXPECT_FALSE(NLS::Editor::Panels::HitProxyPickingDrawCommandSignaturesMatch(
+        signature,
+        differentDrawSources));
+
+    auto differentView = signature;
+    differentView.viewId += 1u;
+    EXPECT_FALSE(NLS::Editor::Panels::HitProxyPickingDrawCommandSignaturesMatch(
+        signature,
+        differentView));
+}
+
 TEST(SceneViewPickingPolicyTests, DoesNotReuseWhenNoReadablePickingFrameExists)
 {
     const auto signature = MakeSignature();

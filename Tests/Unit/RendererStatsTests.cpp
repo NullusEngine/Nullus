@@ -48,8 +48,18 @@ namespace
         std::atomic<uint64_t> snapshotCount { 0u };
         std::atomic_bool sawImpossibleValue { false };
 
-        std::thread writer([&stats, &writerDone]
+        std::thread writer([&stats, &writerDone, &snapshotCount]
         {
+            // Wait until the reader has actually started observing: on a small or
+            // loaded host the writer can otherwise finish every iteration before the
+            // reader thread is first scheduled, and the coherence check below would
+            // never run against live data.
+            const auto readerStartDeadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+            while (snapshotCount.load(std::memory_order_acquire) == 0u &&
+                std::chrono::steady_clock::now() < readerStartDeadline)
+            {
+                std::this_thread::yield();
+            }
             for (uint32_t index = 0u; index < kWriterIterations; ++index)
             {
                 // Cumulative counters only ever grow, so a reader must never see

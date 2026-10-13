@@ -110,10 +110,24 @@ bool RunMetaParser(
 
     NLS::Render::ShaderCompiler::ShaderProcessOptions options;
     options.timeoutMilliseconds = 180000u;
-    const auto result = NLS::Render::ShaderCompiler::ExecuteShaderCompilerProcess(
-        metaParserExe.string(),
-        {paramsPath.string()},
-        options);
+
+    // A loaded CI runner can starve the parser process long enough to hit the
+    // wall-clock timeout even though the fixture is tiny and every neighbouring
+    // case finishes in well under a second. Retry those launch-level failures
+    // once; a real grammar or fixture error still reports Failed with diagnostics
+    // and fails on the first attempt.
+    NLS::Render::ShaderCompiler::ShaderProcessResult result;
+    for (uint32_t attempt = 0u; attempt < 2u; ++attempt)
+    {
+        result = NLS::Render::ShaderCompiler::ExecuteShaderCompilerProcess(
+            metaParserExe.string(),
+            {paramsPath.string()},
+            options);
+        if (result.status == NLS::Render::ShaderCompiler::ShaderProcessStatus::Succeeded ||
+            (result.status != NLS::Render::ShaderCompiler::ShaderProcessStatus::TimedOut &&
+                result.status != NLS::Render::ShaderCompiler::ShaderProcessStatus::FailedToStart))
+            break;
+    }
 
     std::filesystem::create_directories(outputPath.parent_path());
     std::ofstream output(outputPath, std::ios::binary | std::ios::trunc);

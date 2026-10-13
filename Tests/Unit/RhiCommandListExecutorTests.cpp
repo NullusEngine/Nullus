@@ -2268,6 +2268,9 @@ TEST(RhiCommandListExecutorTests, CompletedBatchDropsCpuFrameCapturesBeforeRetir
     cpuFrame.reset();
     Context::RhiSubmitEvent completed;
     EXPECT_TRUE(executor.DispatchBatch(std::move(batch), &completed));
+    // Moving a std::function leaves the source in an unspecified state, and libc++
+    // may keep a trivially copyable target alive; drop the caller copies explicitly.
+    batch = {};
     EXPECT_TRUE(completed.Succeeded());
     EXPECT_TRUE(cpuProbe.expired());
     resource.reset();
@@ -2555,6 +2558,8 @@ TEST(RhiCommandListExecutorTests, ShutdownReleasesDeviceTargetsAfterGpuRetiremen
         return RHI::RHIQueueOperationResult { RHI::RHIQueueOperationStatusCode::Success, {}, true, true };
     };
     executor.Initialize(RhiThreadMode::None, std::move(targets));
+    // See above: the moved-from targets must not keep the device owner alive.
+    targets = {};
     deviceOwner.reset();
     ASSERT_TRUE(executor.RunOnSubmitLane("Native", [] { return RHI::RHIQueueOperationResult {}; }).Succeeded());
     EXPECT_FALSE(probe.expired());
@@ -2577,6 +2582,8 @@ TEST(RhiCommandListExecutorTests, UnconfirmedGpuShutdownQuarantinesDeviceTargets
         return RHI::RHIQueueOperationResult { RHI::RHIQueueOperationStatusCode::Success, {}, true, true };
     };
     executor.Initialize(RhiThreadMode::None, std::move(targets));
+    // See above: the moved-from targets must not keep the device owner alive.
+    targets = {};
     deviceOwner.reset();
     ASSERT_TRUE(executor.RunOnSubmitLane("Native", [] { return RHI::RHIQueueOperationResult {}; }).Succeeded());
     const auto retirement = executor.InsertGpuFence();

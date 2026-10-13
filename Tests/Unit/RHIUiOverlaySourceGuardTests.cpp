@@ -13,6 +13,7 @@
 #include <cstdint>
 #include <memory>
 
+#include "Rendering/Context/RhiCommandListExecutor.h"
 #include "Rendering/RHI/Backends/Metal/MetalExplicitDeviceFactory.h"
 #include "Rendering/RHI/Core/RHICommand.h"
 #include "Rendering/RHI/Core/RHIDevice.h"
@@ -88,6 +89,32 @@ namespace
             return nullptr;
         return device;
     }
+
+    /**
+     * Native Metal resources and queue submissions funnel through the global
+     * command-list executor, so a device test must own its lane instead of
+     * depending on whatever state an earlier test left behind.
+     */
+    class ScopedMetalSubmitLane final
+    {
+    public:
+        ScopedMetalSubmitLane()
+        {
+            auto& executor = NLS::Render::Context::RhiCommandListExecutor::Get();
+            executor.ResetForTesting();
+            executor.Initialize(NLS::Render::Context::RhiThreadMode::None, {});
+        }
+
+        ~ScopedMetalSubmitLane()
+        {
+            auto& executor = NLS::Render::Context::RhiCommandListExecutor::Get();
+            executor.Shutdown();
+            executor.ResetForTesting();
+        }
+
+        ScopedMetalSubmitLane(const ScopedMetalSubmitLane&) = delete;
+        ScopedMetalSubmitLane& operator=(const ScopedMetalSubmitLane&) = delete;
+    };
 #endif
 }
 
@@ -437,6 +464,8 @@ TEST(RHIUiOverlaySourceGuardTests, MetalRejectsSamplerStateThatItCannotRepresent
     if (device == nullptr)
         GTEST_SKIP() << "No Metal device is available.";
 
+    ScopedMetalSubmitLane submitLane;
+
     NLS::Render::RHI::SamplerDesc mipBiasDesc;
     mipBiasDesc.mipLodBias = 0.25f;
     EXPECT_EQ(device->CreateSampler(mipBiasDesc, "UnsupportedMipBias"), nullptr);
@@ -456,6 +485,8 @@ TEST(RHIUiOverlaySourceGuardTests, MetalCreatesEveryNativeBorderColor)
     auto device = CreateTestMetalDevice();
     if (device == nullptr)
         GTEST_SKIP() << "No Metal device is available.";
+
+    ScopedMetalSubmitLane submitLane;
 
     const std::array<std::array<float, 4>, 3> supportedColors = {
         std::array<float, 4> { 0.0f, 0.0f, 0.0f, 0.0f },
@@ -477,6 +508,8 @@ TEST(RHIUiOverlaySourceGuardTests, MetalSubmitsParallelRecordedCommandBuffersInA
     auto device = CreateTestMetalDevice();
     if (device == nullptr)
         GTEST_SKIP() << "No Metal device is available.";
+
+    ScopedMetalSubmitLane submitLane;
 
     auto queue = device->GetQueue(NLS::Render::RHI::QueueType::Graphics);
     auto firstPool = device->CreateCommandPool(
@@ -521,6 +554,8 @@ TEST(RHIUiOverlaySourceGuardTests, MetalExecutesNonZeroOffsetPushConstantWrites)
     auto device = CreateTestMetalDevice();
     if (device == nullptr)
         GTEST_SKIP() << "No Metal device is available.";
+
+    ScopedMetalSubmitLane submitLane;
 
     constexpr std::string_view shaderSource = R"(
 #include <metal_stdlib>
@@ -650,6 +685,8 @@ TEST(RHIUiOverlaySourceGuardTests, MetalEnforcesDx12EquivalentResourceMemoryUsag
     if (device == nullptr)
         GTEST_SKIP() << "No Metal device is available.";
 
+    ScopedMetalSubmitLane submitLane;
+
     const std::array<uint32_t, 4u> initialData = { 1u, 2u, 3u, 4u };
     RHIBufferUploadDesc initialUpload;
     initialUpload.data = initialData.data();
@@ -732,6 +769,8 @@ TEST(RHIUiOverlaySourceGuardTests, MetalTracksDx12EquivalentResourceStatesAndBin
     auto device = CreateTestMetalDevice();
     if (device == nullptr)
         GTEST_SKIP() << "No Metal device is available.";
+
+    ScopedMetalSubmitLane submitLane;
 
     RHIBufferDesc gpuBufferDesc;
     gpuBufferDesc.size = 64u;
@@ -873,6 +912,8 @@ TEST(RHIUiOverlaySourceGuardTests, MetalOrdersGpuWorkAcrossNativeQueuesWithShare
     if (device == nullptr)
         GTEST_SKIP() << "No Metal device is available.";
 
+    ScopedMetalSubmitLane submitLane;
+
     EXPECT_TRUE(device->GetCapabilities().GetFeature(RHIDeviceFeature::DedicatedComputeQueue).supported);
     EXPECT_TRUE(device->GetCapabilities().GetFeature(RHIDeviceFeature::CopyQueue).supported);
 
@@ -965,6 +1006,8 @@ TEST(RHIUiOverlaySourceGuardTests, MetalCreatesAndUpdatesAdvertisedCompressedTex
     auto device = CreateTestMetalDevice();
     if (device == nullptr)
         GTEST_SKIP() << "No Metal device is available.";
+
+    ScopedMetalSubmitLane submitLane;
 
     const auto& capabilities = device->GetCapabilities();
     EXPECT_EQ(capabilities.limits.maxTextureDimension2D, capabilities.maxTextureDimension2D);
@@ -1094,6 +1137,8 @@ TEST(RHIUiOverlaySourceGuardTests, MetalRejectsInvalidResourceCopiesAndExecutesV
     auto device = CreateTestMetalDevice();
     if (device == nullptr)
         GTEST_SKIP() << "No Metal device is available.";
+
+    ScopedMetalSubmitLane submitLane;
 
     auto queue = device->GetQueue(QueueType::Graphics);
     auto commandPool = device->CreateCommandPool(QueueType::Graphics, "ValidatedCopyPool");
@@ -1258,6 +1303,8 @@ TEST(RHIUiOverlaySourceGuardTests, MetalPixelReadbackIsAsyncAndSupportsDx12WideS
     auto device = CreateTestMetalDevice();
     if (device == nullptr)
         GTEST_SKIP() << "No Metal device is available.";
+
+    ScopedMetalSubmitLane submitLane;
 
     EXPECT_TRUE(device->GetCapabilities().GetFeature(RHIDeviceFeature::AsyncReadback).supported);
 

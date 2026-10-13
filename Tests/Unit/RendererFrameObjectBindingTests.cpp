@@ -9502,6 +9502,10 @@ TEST(RendererFrameObjectBindingTests, ThreadedDeferredDecalDrawUsesDeferredDecal
 
 TEST(RendererFrameObjectBindingTests, RenderCommandDeferredDecalDrawUsesDeferredDecalPassAndPipelineState)
 {
+    // Compiles the deferred decal pass through the real shader toolchain, so it
+    // shares the native DXC requirement with the other deferred decal cases.
+    NLS_FRAME_OBJECT_BINDING_SKIP_IF_NATIVE_DXC_UNAVAILABLE();
+
     NLS::Render::Settings::DriverSettings settings;
     settings.graphicsBackend = NLS::Render::Settings::EGraphicsBackend::NONE;
     settings.enableExplicitRHI = false;

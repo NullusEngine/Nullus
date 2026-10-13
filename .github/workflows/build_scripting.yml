@@ -92,11 +92,20 @@ jobs:
         if: runner.os == 'Windows'
         shell: powershell
         run: |
-          $testBinary = Get-ChildItem "build/scripting-${{ matrix.profile.name }}" -Recurse -File |
-            Where-Object { $_.Name -eq "NullusUnitTests.exe" -or $_.Name -eq "NullusUnitTests" } |
-            Select-Object -First 1
+          # The linked executable is also archived under app-binaries/ without its
+          # runtime DLLs, so prefer the copy in bin/ that ships beside them.
+          $candidates = Get-ChildItem "build/scripting-${{ matrix.profile.name }}" -Recurse -File |
+            Where-Object { $_.Name -eq "NullusUnitTests.exe" -or $_.Name -eq "NullusUnitTests" }
+          $testBinary = $candidates | Where-Object { $_.DirectoryName -match '[\\/]bin$' } | Select-Object -First 1
+          if ($null -eq $testBinary) {
+            $testBinary = $candidates | Select-Object -First 1
+          }
           if ($null -eq $testBinary) {
             throw "NullusUnitTests binary was not found."
+          }
+          $mingwRuntime = 'C:\mingw64\bin'
+          if (Test-Path $mingwRuntime) {
+            $env:PATH = "$mingwRuntime;$env:PATH"
           }
           $testCommand = '"' + $testBinary.FullName + '" --gtest_filter=ScriptRuntimeTests.*'
           cmd /d /c $testCommand
@@ -109,6 +118,11 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          test_binary="$(find "build/scripting-${{ matrix.profile.name }}" -type f \( -name 'NullusUnitTests.exe' -o -name 'NullusUnitTests' \) -print -quit)"
+          # Prefer the copy in bin/ that ships beside its runtime dependencies; the
+          # archived copy under app-binaries/ has no libraries next to it.
+          test_binary="$(find "build/scripting-${{ matrix.profile.name }}" -type f \( -name 'NullusUnitTests.exe' -o -name 'NullusUnitTests' \) -path '*/bin/*' -print -quit)"
+          if [ -z "${test_binary}" ]; then
+            test_binary="$(find "build/scripting-${{ matrix.profile.name }}" -type f \( -name 'NullusUnitTests.exe' -o -name 'NullusUnitTests' \) -print -quit)"
+          fi
           test -n "${test_binary}"
           "${test_binary}" --gtest_filter='ScriptRuntimeTests.*'

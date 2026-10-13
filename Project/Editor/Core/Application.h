@@ -2,7 +2,9 @@
 
 #include "Context.h"
 #include "Editor.h"
+#include <chrono>
 #include <memory>
+#include <exception>
 #include <string>
 #include <optional>
 #include <vector>
@@ -61,6 +63,7 @@ namespace NLS
 
 		private:
 			void RunEditorFrame(float deltaTime);
+			void RethrowResizeCallbackException();
 			bool WaitForStartupSceneRendererResources();
 			void SyncPlatformSwapchainToFramebufferSize();
 			void PaceIdleFrameIfNeeded();
@@ -70,11 +73,14 @@ namespace NLS
 			bool m_isResizeTicking = false;
 			bool m_isTicking = false;
 			bool m_pendingResizeTick = false;
+			std::exception_ptr m_resizeCallbackException;
 			bool m_lastFrameHadTransientInput = false;
 			bool m_hasLastIdlePacingMousePosition = false;
 			Maths::Vector2 m_lastIdlePacingMousePosition;
 			bool m_hasLastNativeResizeTickSize = false;
 			Maths::Vector2 m_lastNativeResizeTickSize;
+			std::chrono::steady_clock::time_point m_lastEditorFrameCompletedTime;
+			std::optional<Maths::Vector2> m_lastRequestedSwapchainSize;
 			bool m_logNextEditorFrameStages = false;
 			bool m_editorWindowShown = false;
 			bool m_runSucceeded = true;

@@ -1,11 +1,13 @@
 #include "Rendering/PickingRenderPass.h"
 #include "Rendering/EditorDefaultResources.h"
+#include "Rendering/EditorHelperLifecycle.h"
 #include "Core/EditorActions.h"
 #include "Panels/SceneViewPickingPolicy.h"
 #include "Settings/EditorSettings.h"
 #include "Rendering/DebugSceneRenderer.h"
 #include "Rendering/EditorPipelineStatePresets.h"
 #include "Rendering/Context/DriverAccess.h"
+#include "Rendering/Buffers/UniformBuffer.h"
 #include "Rendering/RHI/Core/RHIResource.h"
 #include "Rendering/RHI/Core/RHIDevice.h"
 #include "Profiling/Profiler.h"
@@ -250,7 +252,11 @@ uint64_t Editor::Rendering::PickingRenderPass::GetReadablePickingFrameSerial() c
 
 uint64_t Editor::Rendering::PickingRenderPass::GetSubmittedPickingFrameSerial() const
 {
-    return m_submittedPickingFrameSerial;
+    if (const auto* pending = m_readbackLifecycle.GetPendingFrame(); pending != nullptr)
+        return pending->serial;
+    if (const auto* readable = m_readbackLifecycle.GetReadableFrame(); readable != nullptr)
+        return readable->serial;
+    return 0u;
 }
 
 std::optional<NLS::Editor::Panels::HitProxyPickingSignature>
@@ -311,6 +317,7 @@ void Editor::Rendering::PickingRenderPass::OnBeginFrame(const NLS::Render::Data:
 {
     PromotePendingFrameIfReadbackAvailable();
     m_preparedThreadedPassInput.reset();
+    m_queuedPickingFrameSerial = 0u;
 
     const auto device =
         NLS::Render::Context::DriverRendererAccess::GetExplicitDevice(m_renderer.GetDriver());
@@ -334,6 +341,14 @@ void Editor::Rendering::PickingRenderPass::PromotePendingFrameIfReadbackAvailabl
 void Editor::Rendering::PickingRenderPass::ResetPickingFrameState()
 {
     m_readbackLifecycle.ResetSubmittedFrame();
+}
+
+void Editor::Rendering::PickingRenderPass::DiscardUnpublishedPickingFrame()
+{
+    if (m_queuedPickingFrameSerial != 0u)
+        (void)m_readbackLifecycle.CancelPendingFrame(m_queuedPickingFrameSerial);
+    m_queuedPickingFrameSerial = 0u;
+    m_preparedThreadedPassInput.reset();
 }
 
 Editor::Rendering::PickingReadbackLifecycle<Engine::SceneSystem::Scene>::Frame
@@ -389,9 +404,9 @@ Editor::Rendering::PickingRenderPass::BuildCurrentPickingSignature(
     if (const auto* sceneRenderer = dynamic_cast<Engine::Rendering::BaseSceneRenderer*>(&m_renderer);
         sceneRenderer != nullptr && sceneRenderer->HasLastVisiblePickablePrimitiveDrawSources())
     {
-        const auto& sources = sceneRenderer->GetLastVisiblePickablePrimitiveDrawSources();
-        HashCombine(drawSourceHash, static_cast<uint64_t>(sources.size()));
-        for (const auto& source : sources)
+        const auto sources = sceneRenderer->GetLastVisiblePickablePrimitiveDrawSources();
+        HashCombine(drawSourceHash, static_cast<uint64_t>(sources->size()));
+        for (const auto& source : *sources)
             HashPickableSource(drawSourceHash, source);
     }
     else
@@ -480,8 +495,9 @@ void Editor::Rendering::PickingRenderPass::Draw(NLS::Render::Data::PipelineState
     const auto* sceneRenderer = dynamic_cast<Engine::Rendering::BaseSceneRenderer*>(&m_renderer);
     if (sceneRenderer != nullptr && sceneRenderer->HasLastVisiblePickablePrimitiveDrawSources())
     {
+        const auto sources = sceneRenderer->GetLastVisiblePickablePrimitiveDrawSources();
         visiblePickableDrawCount =
-            static_cast<uint64_t>(sceneRenderer->GetLastVisiblePickablePrimitiveDrawSources().size());
+            static_cast<uint64_t>(sources != nullptr ? sources->size() : 0u);
     }
 
     const auto recordPickingDiagnostics =
@@ -513,6 +529,15 @@ void Editor::Rendering::PickingRenderPass::Draw(NLS::Render::Data::PipelineState
 
     const auto pickingSignature = BuildCurrentPickingSignature(sceneDescriptor.scene);
 
+    // Keep an in-flight hover readback until it can be consumed, even under CPU/GPU latency.
+    if (const auto* pending = m_readbackLifecycle.GetPendingFrame();
+        !debugSceneDescriptor.requestPickingFrameForClick && pending != nullptr &&
+        Editor::Panels::HitProxyPickingSignaturesMatch(pending->signature, pickingSignature))
+    {
+        NLS_PROFILE_NAMED_SCOPE("EditorPicking::ReusePending");
+        return;
+    }
+
     if (!debugSceneDescriptor.requestPickingFrameForClick &&
         CanReuseReadablePickingFrameForSignature(pickingSignature))
     {
@@ -543,6 +568,7 @@ void Editor::Rendering::PickingRenderPass::Draw(NLS::Render::Data::PipelineState
                 m_renderer.GetDriver(),
                 readbackTexture);
         m_preparedThreadedPassInput->readbackTextureGeneration = readbackGeneration;
+        m_queuedPickingFrameSerial = submittedSerial;
         m_readbackLifecycle.QueueSubmittedFrame(BuildSubmittedReadbackFrame(
             sceneDescriptor.scene,
             submittedSerial,
@@ -616,7 +642,7 @@ bool Editor::Rendering::PickingRenderPass::RenderPickingScene(NLS::Render::Data:
     if (const auto* sceneRenderer = dynamic_cast<Engine::Rendering::BaseSceneRenderer*>(&m_renderer);
         sceneRenderer != nullptr && sceneRenderer->HasLastVisiblePickablePrimitiveDrawSources())
     {
-        DrawPickableModelSources(sceneRenderer->GetLastVisiblePickablePrimitiveDrawSources());
+        DrawPickableModelSources(*sceneRenderer->GetLastVisiblePickablePrimitiveDrawSources());
     }
     else
     {
@@ -671,12 +697,13 @@ std::optional<NLS::Render::Context::RenderPassCommandInput> Editor::Rendering::P
     const bool usesVisibleDrawSources =
         sceneRenderer != nullptr && sceneRenderer->HasLastVisiblePickablePrimitiveDrawSources();
     bool capturedDrawCommandsStale = true;
+    NLS::Render::Buffers::ScopedUniformBufferSnapshotBatch snapshotBatch;
 
     if (usesVisibleDrawSources)
     {
-        const auto& sources = sceneRenderer->GetLastVisiblePickablePrimitiveDrawSources();
+        const auto sources = sceneRenderer->GetLastVisiblePickablePrimitiveDrawSources();
         passInput.recordedDrawCommands.reserve(
-            sources.size() +
+            sources->size() +
             scene.GetFastAccessComponents().cameras.size() +
             scene.GetFastAccessComponents().lights.size());
         capturedDrawCommandsStale = !TryReuseCapturedPickingDrawCommands(
@@ -686,7 +713,7 @@ std::optional<NLS::Render::Context::RenderPassCommandInput> Editor::Rendering::P
                 passInput.recordedDrawCommands);
         if (capturedDrawCommandsStale)
         {
-            CapturePickableModelSources(sources, passInput.recordedDrawCommands);
+            CapturePickableModelSources(*sources, passInput.recordedDrawCommands);
         }
     }
     else
@@ -764,11 +791,15 @@ bool Editor::Rendering::PickingRenderPass::TryReuseCapturedPickingDrawCommands(
         return false;
     }
 
+    NLS_PROFILE_NAMED_SCOPE("EditorPicking::ReuseDrawCommands");
     // The picked geometry is baked into immutable binding-set snapshots. Only
     // frame constants are per-slot, so refresh that single binding once per hit.
     std::shared_ptr<NLS::Render::RHI::RHIBindingSet> currentFrameBindingSet;
     if (auto* provider = m_renderer.GetFrameObjectBindingProvider(); provider != nullptr)
-        (void)provider->CaptureFrameBindingSet(currentFrameBindingSet);
+    {
+        if (!provider->CaptureFrameBindingSet(currentFrameBindingSet))
+            return false;
+    }
 
     outDrawCommands.reserve(outDrawCommands.size() + cache.drawCommands.size());
     for (const auto& cachedDrawCommand : cache.drawCommands)
@@ -791,7 +822,8 @@ void Editor::Rendering::PickingRenderPass::StoreCapturedPickingDrawCommands(
 {
     auto& cache = m_capturedPickingDrawCommands;
     cache = {};
-    if (drawCommands.empty())
+    // Frame-slot rings and indexed data cannot outlive their producing frame.
+    if (!CanCacheEditorDrawCommands(drawCommands))
         return;
 
     if (m_gameObjectPickingMaterial.GetShader() == nullptr)
@@ -799,10 +831,7 @@ void Editor::Rendering::PickingRenderPass::StoreCapturedPickingDrawCommands(
 
     for (const auto& drawCommand : drawCommands)
     {
-        // Indexed object bindings reference per-slot GPU buffers; only the
-        // uniform snapshot path is safe to retain across frame slots.
-        if (drawCommand.usesObjectIndex ||
-            drawCommand.pipeline == nullptr ||
+        if (drawCommand.pipeline == nullptr ||
             drawCommand.materialBindingSet == nullptr ||
             drawCommand.mesh == nullptr)
         {
@@ -925,9 +954,10 @@ void Editor::Rendering::PickingRenderPass::CapturePickableModels(
         drawable.mesh = mesh;
         drawable.material = &m_gameObjectPickingMaterial;
         drawable.stateMask = stateMask;
-        drawable.AddDescriptor<Engine::Rendering::EngineDrawableDescriptor>({
-            modelMatrix
-        });
+        Engine::Rendering::EngineDrawableDescriptor descriptor;
+        descriptor.modelMatrix = modelMatrix;
+        descriptor.requiresImmutableObjectBinding = true;
+        drawable.AddDescriptor(std::move(descriptor));
 
         NLS::Render::Resources::MaterialPipelineStateOverrides unculledOverrides;
         unculledOverrides.culling = false;
@@ -961,9 +991,10 @@ void Editor::Rendering::PickingRenderPass::CapturePickableModelSources(
         drawable.mesh = source.mesh;
         drawable.material = &m_gameObjectPickingMaterial;
         drawable.stateMask = source.stateMask;
-        drawable.AddDescriptor<Engine::Rendering::EngineDrawableDescriptor>({
-            source.worldMatrix
-        });
+        Engine::Rendering::EngineDrawableDescriptor descriptor;
+        descriptor.modelMatrix = source.worldMatrix;
+        descriptor.requiresImmutableObjectBinding = true;
+        drawable.AddDescriptor(std::move(descriptor));
 
         NLS::Render::Resources::MaterialPipelineStateOverrides unculledOverrides;
         unculledOverrides.culling = false;
@@ -1101,7 +1132,8 @@ void Editor::Rendering::PickingRenderPass::CapturePickableCameras(
             *cameraMesh,
             m_gameObjectPickingMaterial,
             modelMatrix,
-            outDrawCommands);
+            outDrawCommands,
+            true);
     }
 }
 
@@ -1162,6 +1194,7 @@ void Editor::Rendering::PickingRenderPass::CapturePickableLights(
             *lightMesh,
             m_lightMaterial,
             modelMatrix,
-            outDrawCommands);
+            outDrawCommands,
+            true);
     }
 }

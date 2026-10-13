@@ -1,5 +1,5 @@
 #include "Rendering/Core/RendererStats.h"
-#include "Rendering/Context/ThreadedRenderingLifecycle.h"
+#include "Rendering/Context/FrameSubmissionTelemetry.h"
 #include "Rendering/Data/DrawCallOptimizationStats.h"
 
 #include <algorithm>
@@ -36,7 +36,6 @@ namespace
         frameInfo.reservedSlotWaitTotalNs = telemetry.reservedSlotWaitTotalNs;
         frameInfo.reservedSlotWaitMaxNs = telemetry.reservedSlotWaitMaxNs;
         frameInfo.publishState = telemetry.publishState;
-        frameInfo.stageSummary = telemetry.stageSummary;
         frameInfo.retirementState = telemetry.retirementState;
         frameInfo.descriptorMainlineActive = telemetry.descriptorMainlineActive;
         frameInfo.pipelineMainlineActive = telemetry.pipelineMainlineActive;
@@ -72,6 +71,7 @@ namespace
 
 void RendererStats::BeginFrame()
 {
+    std::lock_guard lock(m_statsMutex);
     m_frameInfo.batchCount = 0u;
     m_frameInfo.instanceCount = 0u;
     m_frameInfo.polyCount = 0u;
@@ -83,7 +83,6 @@ void RendererStats::BeginFrame()
     m_frameInfo.reservedSlotWaitTotalNs = 0u;
     m_frameInfo.reservedSlotWaitMaxNs = 0u;
     m_frameInfo.publishState = Data::FramePublishState::Direct;
-    m_frameInfo.stageSummary = Data::ThreadedFrameStageSummary::Direct;
     m_frameInfo.retirementState = Data::FrameRetirementState::Direct;
     m_frameInfo.descriptorMainlineActive = false;
     m_frameInfo.pipelineMainlineActive = false;
@@ -157,11 +156,13 @@ void RendererStats::BeginFrame()
 
 void RendererStats::EndFrame()
 {
+    std::lock_guard lock(m_statsMutex);
     m_isFrameInfoValid = true;
 }
 
 void RendererStats::RecordSubmittedDraw(const Entities::Drawable& drawable, const uint32_t instanceCount)
 {
+    std::lock_guard lock(m_statsMutex);
     if (drawable.mesh == nullptr || drawable.material == nullptr || instanceCount == 0u)
         return;
 
@@ -181,6 +182,7 @@ void RendererStats::RecordSceneParse(
     const uint64_t transparentCount,
     const uint64_t skyboxCount)
 {
+    std::lock_guard lock(m_statsMutex);
     ++m_frameInfo.parseSceneCallCount;
     m_frameInfo.parsedOpaqueDrawableCount = opaqueCount;
     m_frameInfo.parsedTransparentDrawableCount = transparentCount;
@@ -189,11 +191,13 @@ void RendererStats::RecordSceneParse(
 
 void RendererStats::RecordGBufferMaterialSync()
 {
+    std::lock_guard lock(m_statsMutex);
     ++m_frameInfo.gBufferMaterialSyncCount;
 }
 
 void RendererStats::RecordGBufferMaterialResolve(const bool hit)
 {
+    std::lock_guard lock(m_statsMutex);
     if (hit)
         ++m_frameInfo.gBufferMaterialResolveHitCount;
     else
@@ -202,6 +206,7 @@ void RendererStats::RecordGBufferMaterialResolve(const bool hit)
 
 void RendererStats::RecordPreparedRecordedDrawStaticBaseCache(const bool hit)
 {
+    std::lock_guard lock(m_statsMutex);
     if (hit)
     {
         ++m_frameInfo.preparedRecordedDrawStaticBaseCacheHitCount;
@@ -216,12 +221,14 @@ void RendererStats::RecordPreparedRecordedDrawStaticBaseCache(const bool hit)
 
 void RendererStats::RecordRenderBindingSetCreation(const uint64_t count)
 {
+    std::lock_guard lock(m_statsMutex);
     m_frameInfo.renderBindingSetCreationCount += count;
     m_cumulativeFrameInfo.renderBindingSetCreationCount += count;
 }
 
 void RendererStats::RecordRenderSnapshotBufferCreation(const uint64_t count)
 {
+    std::lock_guard lock(m_statsMutex);
     m_frameInfo.renderSnapshotBufferCreationCount += count;
     m_cumulativeFrameInfo.renderSnapshotBufferCreationCount += count;
 }
@@ -229,6 +236,7 @@ void RendererStats::RecordRenderSnapshotBufferCreation(const uint64_t count)
 void RendererStats::RecordDrawCallOptimizationStats(
     const NLS::Render::Data::DrawCallOptimizationStats& stats)
 {
+    std::lock_guard lock(m_statsMutex);
     m_frameInfo.rawVisibleObjectCount = stats.rawVisibleObjectCount;
     m_frameInfo.submittedSceneDrawCount = stats.submittedSceneDrawCount;
     m_frameInfo.dynamicInstanceGroupCount = stats.dynamicInstanceGroupCount;
@@ -244,6 +252,7 @@ void RendererStats::RecordDrawCallOptimizationStats(
 
 void RendererStats::RecordPreparedRecordedDrawStaticBaseFastPath(const bool hit)
 {
+    std::lock_guard lock(m_statsMutex);
     if (hit)
     {
         ++m_frameInfo.preparedRecordedDrawStaticBaseFastPathHitCount;
@@ -258,6 +267,7 @@ void RendererStats::RecordPreparedRecordedDrawStaticBaseFastPath(const bool hit)
 
 void RendererStats::RecordObjectDataRevisionReuse(const bool hit)
 {
+    std::lock_guard lock(m_statsMutex);
     if (hit)
     {
         ++m_frameInfo.objectDataRevisionReuseHitCount;
@@ -273,6 +283,7 @@ void RendererStats::RecordObjectDataRevisionReuse(const bool hit)
 void RendererStats::RecordObjectDataRevisionFallback(
     const NLS::Render::Data::ObjectDataRevisionFallbackReason reason)
 {
+    std::lock_guard lock(m_statsMutex);
     auto record = [reason](NLS::Render::Data::FrameInfo& frameInfo)
     {
         switch (reason)
@@ -314,6 +325,7 @@ void RendererStats::RecordObjectDataRevisionFallback(
 
 void RendererStats::RecordObjectDataFastPath(const bool hit)
 {
+    std::lock_guard lock(m_statsMutex);
     if (hit)
     {
         ++m_frameInfo.objectDataFastPathHitCount;
@@ -327,12 +339,14 @@ void RendererStats::RecordObjectDataFastPath(const bool hit)
 
 void RendererStats::RecordDrawCommandCopy(const uint64_t count)
 {
+    std::lock_guard lock(m_statsMutex);
     m_frameInfo.drawCommandCopyCount += count;
     m_cumulativeFrameInfo.drawCommandCopyCount += count;
 }
 
 void RendererStats::RecordDrawCommandMove(const uint64_t count)
 {
+    std::lock_guard lock(m_statsMutex);
     m_frameInfo.drawCommandMoveCount += count;
     m_cumulativeFrameInfo.drawCommandMoveCount += count;
 }
@@ -341,6 +355,7 @@ void RendererStats::RecordDrawCommandMove(const uint64_t count)
 void RendererStats::RecordLargeSceneTelemetry(
     const NLS::Render::Data::LargeSceneTelemetry& telemetry)
 {
+    std::lock_guard lock(m_statsMutex);
     const auto accumulate = [&telemetry](NLS::Render::Data::LargeSceneTelemetry& target)
     {
         target.registeredPrimitiveCount += telemetry.registeredPrimitiveCount;
@@ -412,6 +427,7 @@ void RendererStats::RecordLargeSceneTelemetry(
 void RendererStats::RecordPickingDiagnostics(
     const NLS::Render::Data::PickingDiagnostics& diagnostics)
 {
+    std::lock_guard lock(m_statsMutex);
     auto& target = m_frameInfo.picking;
     target.rebuiltFrames += diagnostics.rebuiltFrames;
     target.reusedFrames += diagnostics.reusedFrames;
@@ -425,12 +441,14 @@ void RendererStats::RecordPickingDiagnostics(
 
 void RendererStats::SetThreadedFrameTelemetry(const NLS::Render::Context::ThreadedFrameTelemetry& telemetry)
 {
+    std::lock_guard lock(m_statsMutex);
     ApplyThreadedFrameTelemetry(telemetry, m_frameInfo);
     m_lastThreadedFrameInfoTelemetry = m_frameInfo;
 }
 
 bool RendererStats::ReuseLastThreadedFrameTelemetry()
 {
+    std::lock_guard lock(m_statsMutex);
     if (!m_lastThreadedFrameInfoTelemetry.has_value())
         return false;
 
@@ -445,19 +463,22 @@ void RendererStats::ApplyThreadedFrameTelemetry(
     ApplyThreadedFrameTelemetryFields(telemetry, frameInfo);
 }
 
-const Data::FrameInfo& RendererStats::GetFrameInfo() const
+Data::FrameInfo RendererStats::GetFrameInfo() const
 {
+    std::lock_guard lock(m_statsMutex);
     NLS_ASSERT(m_isFrameInfoValid, "Invalid FrameInfo data! Make sure to retrieve frame info after the frame got fully rendered");
     return m_frameInfo;
 }
 
-const Data::FrameInfo& RendererStats::GetCumulativeFrameInfo() const
+Data::FrameInfo RendererStats::GetCumulativeFrameInfo() const
 {
+    std::lock_guard lock(m_statsMutex);
     return m_cumulativeFrameInfo;
 }
 
 bool RendererStats::IsFrameInfoValid() const
 {
+    std::lock_guard lock(m_statsMutex);
     return m_isFrameInfoValid;
 }
 }

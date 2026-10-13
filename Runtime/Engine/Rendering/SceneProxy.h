@@ -7,6 +7,7 @@
 #include <vector>
 
 #include <Math/Matrix4.h>
+#include <Math/Quaternion.h>
 #include <Math/Vector3.h>
 #include <Rendering/Geometry/Bounds.h>
 #include <Rendering/Geometry/BoundingSphere.h>
@@ -55,6 +56,8 @@ namespace NLS::Engine::Rendering
     {
         Maths::Matrix4 worldMatrix = Maths::Matrix4::Identity;
         Maths::Vector3 worldPosition {};
+        Maths::Quaternion worldRotation = Maths::Quaternion::Identity;
+        Maths::Vector3 worldScale {1.0f, 1.0f, 1.0f};
         uint64_t transformRevision = 0u;
     };
 
@@ -98,6 +101,7 @@ namespace NLS::Engine::Rendering
         float range = 10.0f;
         float cutoff = 12.0f;
         float outerCutoff = 15.0f;
+        Maths::Vector3 size {1.0f, 1.0f, 1.0f};
     };
 
     struct SceneProxyPayload

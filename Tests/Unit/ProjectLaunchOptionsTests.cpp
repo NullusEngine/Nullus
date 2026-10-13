@@ -31,10 +31,10 @@ TEST(ProjectLaunchOptionsTests, MissingKeysKeepDefaultsAndReportAbsence)
     const auto options = NLS::Engine::Settings::ReadProjectLaunchOptions(projectFile);
 
     EXPECT_TRUE(options.verticalSynchronization);
-    EXPECT_TRUE(options.threadedRendering);
+    EXPECT_EQ(options.rhiThreadMode, NLS::Render::Settings::RhiThreadModePreference::BackendDefault);
     EXPECT_EQ(options.renderDocStartupCaptureFrames, 0);
     EXPECT_FALSE(options.hasVerticalSynchronization);
-    EXPECT_FALSE(options.hasThreadedRendering);
+    EXPECT_FALSE(options.hasRhiThreadMode);
     EXPECT_FALSE(options.hasRenderDocStartupCaptureFrames);
 }
 
@@ -44,16 +44,16 @@ TEST(ProjectLaunchOptionsTests, RoundTripsEveryLaunchOptionWithoutDroppingOtherK
 
     NLS::Engine::Settings::ProjectLaunchOptions written;
     written.verticalSynchronization = false;
-    written.threadedRendering = false;
+    written.rhiThreadMode = NLS::Render::Settings::RhiThreadModePreference::ForceTasks;
     written.renderDocStartupCaptureFrames = 120;
     ASSERT_TRUE(NLS::Engine::Settings::WriteProjectLaunchOptions(projectFile, written));
 
     const auto read = NLS::Engine::Settings::ReadProjectLaunchOptions(projectFile);
     EXPECT_FALSE(read.verticalSynchronization);
-    EXPECT_FALSE(read.threadedRendering);
+    EXPECT_EQ(read.rhiThreadMode, written.rhiThreadMode);
     EXPECT_EQ(read.renderDocStartupCaptureFrames, 120);
     EXPECT_TRUE(read.hasVerticalSynchronization);
-    EXPECT_TRUE(read.hasThreadedRendering);
+    EXPECT_TRUE(read.hasRhiThreadMode);
     EXPECT_TRUE(read.hasRenderDocStartupCaptureFrames);
 
     // The launcher must not disturb the other project keys it does not own.
@@ -96,11 +96,60 @@ TEST(ProjectLaunchOptionsTests, WriteCreatesTheProjectFileWhenAbsent)
     std::filesystem::remove(projectFile);
 
     NLS::Engine::Settings::ProjectLaunchOptions written;
-    written.threadedRendering = false;
+    written.rhiThreadMode = NLS::Render::Settings::RhiThreadModePreference::ForceDedicatedThread;
     ASSERT_TRUE(NLS::Engine::Settings::WriteProjectLaunchOptions(projectFile, written));
 
     ASSERT_TRUE(std::filesystem::exists(projectFile));
     const auto read = NLS::Engine::Settings::ReadProjectLaunchOptions(projectFile);
-    EXPECT_FALSE(read.threadedRendering);
-    EXPECT_TRUE(read.hasThreadedRendering);
+    EXPECT_EQ(read.rhiThreadMode, written.rhiThreadMode);
+    EXPECT_TRUE(read.hasRhiThreadMode);
+}
+
+TEST(ProjectLaunchOptionsTests, AllRhiModesRoundTripAsCanonicalSettings)
+{
+    using NLS::Render::Settings::RhiThreadModePreference;
+    const auto projectFile = MakeProjectFile("rhi-modes.nullus");
+    for (const auto mode : {RhiThreadModePreference::BackendDefault, RhiThreadModePreference::ForceNone,
+        RhiThreadModePreference::ForceDedicatedThread, RhiThreadModePreference::ForceTasks})
+    {
+        NLS::Engine::Settings::ProjectLaunchOptions options;
+        options.rhiThreadMode = mode;
+        ASSERT_TRUE(NLS::Engine::Settings::WriteProjectLaunchOptions(projectFile, options));
+        std::string error;
+        const auto loaded = NLS::Engine::Settings::ReadProjectLaunchOptions(projectFile, &error);
+        EXPECT_TRUE(error.empty());
+        EXPECT_TRUE(loaded.hasRhiThreadMode);
+        EXPECT_EQ(loaded.rhiThreadMode, mode);
+        NLS::Filesystem::IniFile file(projectFile.string());
+        EXPECT_EQ(file.Get<std::string>(NLS::Engine::Settings::ProjectLaunchOptionKeys::RhiThreadMode),
+            NLS::Render::Settings::ToConfigString(mode));
+    }
+}
+
+TEST(ProjectLaunchOptionsTests, InvalidRhiModeIsReportedWithoutRewritingTheFile)
+{
+    const auto projectFile = MakeProjectFile("invalid-rhi-mode.nullus", "rhi_thread_mode=invalid\nvsync=false\n");
+    std::string error;
+    const auto loaded = NLS::Engine::Settings::ReadProjectLaunchOptions(projectFile, &error);
+    EXPECT_EQ(error, "Invalid rhi_thread_mode: invalid");
+    EXPECT_FALSE(loaded.hasRhiThreadMode);
+    NLS::Engine::Settings::ProjectLaunchOptions invalid;
+    invalid.rhiThreadMode = static_cast<NLS::Render::Settings::RhiThreadModePreference>(255u);
+    EXPECT_FALSE(NLS::Engine::Settings::WriteProjectLaunchOptions(projectFile, invalid, &error));
+    EXPECT_FALSE(error.empty());
+    NLS::Filesystem::IniFile file(projectFile.string());
+    EXPECT_EQ(file.Get<std::string>("rhi_thread_mode"), "invalid");
+    EXPECT_FALSE(file.Get<bool>("vsync"));
+}
+
+TEST(ProjectLaunchOptionsTests, ObsoleteThreadedRenderingToggleIsIgnoredAndRemovedOnSave)
+{
+    const auto projectFile = MakeProjectFile("obsolete-rendering-toggle.nullus",
+        "enable_threaded_rendering=false\nrhi_thread_mode=tasks\nstart_scene=Assets/Scenes/Main.scene\n");
+    const auto loaded = NLS::Engine::Settings::ReadProjectLaunchOptions(projectFile);
+    EXPECT_EQ(loaded.rhiThreadMode, NLS::Render::Settings::RhiThreadModePreference::ForceTasks);
+    ASSERT_TRUE(NLS::Engine::Settings::WriteProjectLaunchOptions(projectFile, loaded));
+    NLS::Filesystem::IniFile file(projectFile.string());
+    EXPECT_FALSE(file.IsKeyExisting("enable_threaded_rendering"));
+    EXPECT_EQ(file.Get<std::string>("start_scene"), "Assets/Scenes/Main.scene");
 }

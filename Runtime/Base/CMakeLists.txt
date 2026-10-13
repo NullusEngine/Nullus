@@ -7,6 +7,12 @@ nls_add_runtime_target(
     ${NLS_ThirdParty_DIR}
 )
 
+if(MSVC)
+  # Task failures must unwind locks and thread-local rendering scopes even when
+  # cached CMAKE_CXX_FLAGS omit the compiler's usual exception-handling flags.
+  target_compile_options(NLS_Base PUBLIC "$<$<COMPILE_LANGUAGE:CXX>:/EHsc>")
+endif()
+
 target_compile_definitions(NLS_Base PUBLIC
   $<$<BOOL:${NLS_ENABLE_PROFILING}>:NLS_ENABLE_PROFILING=1>
   $<$<BOOL:${NLS_ENABLE_TRACY}>:NLS_ENABLE_TRACY=1>

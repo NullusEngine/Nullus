@@ -203,6 +203,16 @@ namespace
                 initialDataSize);
         }
     };
+
+    void SetTextureTestDevice(
+        NLS::Render::Context::Driver& driver,
+        const std::shared_ptr<TestExplicitDevice>& device)
+    {
+        NLS::Render::Context::DriverTestAccess::PauseThreadedRenderingWorkers(driver);
+        // These devices exercise texture creation and upload, without a native queue.
+        (void)NLS::Render::Context::DriverTestAccess::EnsureFrameContext(driver, 0u);
+        NLS::Render::Context::DriverTestAccess::SetExplicitDevice(driver, device);
+    }
 }
 
 TEST(TextureResourceLifecycleTests, FailedRecreateKeepsPreviousTextureAndView)
@@ -214,7 +224,7 @@ TEST(TextureResourceLifecycleTests, FailedRecreateKeepsPreviousTextureAndView)
     NLS::Render::Context::Driver driver(settings);
     NLS::Core::ServiceLocator::Provide(driver);
     auto explicitDevice = std::make_shared<TestExplicitDevice>();
-    NLS::Render::Context::DriverTestAccess::SetExplicitDevice(driver, explicitDevice);
+    SetTextureTestDevice(driver, explicitDevice);
 
     TestTextureResource texture;
     const auto previousTexture = texture.GetTextureHandle();
@@ -241,7 +251,7 @@ TEST(TextureResourceLifecycleTests, SameSizeTextureDataUpdateUsesInPlaceUploadIn
     NLS::Render::Context::Driver driver(settings);
     NLS::Core::ServiceLocator::Provide(driver);
     auto explicitDevice = std::make_shared<TestExplicitDevice>();
-    NLS::Render::Context::DriverTestAccess::SetExplicitDevice(driver, explicitDevice);
+    SetTextureTestDevice(driver, explicitDevice);
 
     TestTextureResource texture;
     const uint32_t firstPixels[4] = { 0xffffffffu, 0xffffffffu, 0xffffffffu, 0xffffffffu };
@@ -270,7 +280,7 @@ TEST(TextureResourceLifecycleTests, FailedCreateFromMemoryUploadKeepsFallbackTex
     NLS::Render::Context::Driver driver(settings);
     NLS::Core::ServiceLocator::Provide(driver);
     auto explicitDevice = std::make_shared<TestExplicitDevice>();
-    NLS::Render::Context::DriverTestAccess::SetExplicitDevice(driver, explicitDevice);
+    SetTextureTestDevice(driver, explicitDevice);
 
     uint8_t pixels[2u * 2u * 4u] {};
     explicitDevice->failTextureCreateCall = explicitDevice->textureCreateCalls + 2u;
@@ -302,7 +312,7 @@ TEST(TextureResourceLifecycleTests, CreateFromMemoryPreservesFallbackTextureComp
     NLS::Render::Context::Driver driver(settings);
     NLS::Core::ServiceLocator::Provide(driver);
     auto explicitDevice = std::make_shared<TestExplicitDevice>();
-    NLS::Render::Context::DriverTestAccess::SetExplicitDevice(driver, explicitDevice);
+    SetTextureTestDevice(driver, explicitDevice);
 
     uint8_t pixels[3u * 2u * 4u] {};
     std::unique_ptr<NLS::Render::Resources::Texture2D> texture(
@@ -333,7 +343,7 @@ TEST(TextureResourceLifecycleTests, CreateFromRgba8MemoryUploadsDirectly)
     NLS::Render::Context::Driver driver(settings);
     NLS::Core::ServiceLocator::Provide(driver);
     auto explicitDevice = std::make_shared<TestExplicitDevice>();
-    NLS::Render::Context::DriverTestAccess::SetExplicitDevice(driver, explicitDevice);
+    SetTextureTestDevice(driver, explicitDevice);
 
     uint8_t pixels[3u * 2u * 4u] {};
     std::unique_ptr<NLS::Render::Resources::Texture2D> texture(
@@ -366,7 +376,7 @@ TEST(TextureResourceLifecycleTests, FailedCreateFromRgba8MemoryUploadReturnsNull
     NLS::Render::Context::Driver driver(settings);
     NLS::Core::ServiceLocator::Provide(driver);
     auto explicitDevice = std::make_shared<TestExplicitDevice>();
-    NLS::Render::Context::DriverTestAccess::SetExplicitDevice(driver, explicitDevice);
+    SetTextureTestDevice(driver, explicitDevice);
 
     uint8_t pixels[2u * 2u * 4u] {};
     explicitDevice->failTextureCreateCall = explicitDevice->textureCreateCalls + 1u;
@@ -405,7 +415,7 @@ TEST(TextureResourceLifecycleTests, FailedTextureArtifactUploadReturnsNull)
     NLS::Render::Context::Driver driver(settings);
     NLS::Core::ServiceLocator::Provide(driver);
     auto explicitDevice = std::make_shared<TestExplicitDevice>();
-    NLS::Render::Context::DriverTestAccess::SetExplicitDevice(driver, explicitDevice);
+    SetTextureTestDevice(driver, explicitDevice);
 
     NLS::Render::Assets::TextureArtifactData artifact;
     artifact.width = 2u;
@@ -439,7 +449,7 @@ TEST(TextureResourceLifecycleTests, TextureArtifactUploadCreatesOnlyFinalTexture
     NLS::Render::Context::Driver driver(settings);
     NLS::Core::ServiceLocator::Provide(driver);
     auto explicitDevice = std::make_shared<TestExplicitDevice>();
-    NLS::Render::Context::DriverTestAccess::SetExplicitDevice(driver, explicitDevice);
+    SetTextureTestDevice(driver, explicitDevice);
 
     NLS::Render::Assets::TextureArtifactData artifact;
     artifact.width = 2u;
@@ -476,7 +486,7 @@ TEST(TextureResourceLifecycleTests, WrapExternalTexture2DSkipsFallbackTextureCre
     NLS::Render::Context::Driver driver(settings);
     NLS::Core::ServiceLocator::Provide(driver);
     auto explicitDevice = std::make_shared<TestExplicitDevice>();
-    NLS::Render::Context::DriverTestAccess::SetExplicitDevice(driver, explicitDevice);
+    SetTextureTestDevice(driver, explicitDevice);
 
     NLS::Render::RHI::RHITextureDesc desc{};
     desc.extent.width = 4u;
@@ -527,7 +537,7 @@ TEST(TextureResourceLifecycleTests, TextureLoaderCreateParsesNativeTextureArtifa
     NLS::Render::Context::Driver driver(settings);
     NLS::Core::ServiceLocator::Provide(driver);
     auto explicitDevice = std::make_shared<TestExplicitDevice>();
-    NLS::Render::Context::DriverTestAccess::SetExplicitDevice(driver, explicitDevice);
+    SetTextureTestDevice(driver, explicitDevice);
 
     auto* texture = NLS::Render::Resources::Loaders::TextureLoader::Create(
         texturePath.string(),
@@ -682,7 +692,7 @@ TEST(TextureResourceLifecycleTests, TextureLoaderCreateFromArtifactRecordsRuntim
     NLS::Render::Context::Driver driver(settings);
     NLS::Core::ServiceLocator::Provide(driver);
     auto explicitDevice = std::make_shared<TestExplicitDevice>();
-    NLS::Render::Context::DriverTestAccess::SetExplicitDevice(driver, explicitDevice);
+    SetTextureTestDevice(driver, explicitDevice);
 
     NLS::Render::Assets::TextureArtifactData artifact;
     artifact.width = 2u;
@@ -742,7 +752,7 @@ TEST(TextureResourceLifecycleTests, DefaultTextureViewCoversUploadedMipChain)
     NLS::Render::Context::Driver driver(settings);
     NLS::Core::ServiceLocator::Provide(driver);
     auto explicitDevice = std::make_shared<TestExplicitDevice>();
-    NLS::Render::Context::DriverTestAccess::SetExplicitDevice(driver, explicitDevice);
+    SetTextureTestDevice(driver, explicitDevice);
 
     NLS::Render::Resources::Texture texture;
     NLS::Render::RHI::RHITextureDesc desc{};
@@ -769,7 +779,7 @@ TEST(TextureResourceLifecycleTests, CompressedTextureArtifactFailsClosedWhenDevi
     NLS::Render::Context::Driver driver(settings);
     NLS::Core::ServiceLocator::Provide(driver);
     auto explicitDevice = std::make_shared<TestExplicitDevice>();
-    NLS::Render::Context::DriverTestAccess::SetExplicitDevice(driver, explicitDevice);
+    SetTextureTestDevice(driver, explicitDevice);
 
     NLS::Render::Assets::TextureArtifactData artifact;
     artifact.width = 4u;
@@ -802,7 +812,7 @@ TEST(TextureResourceLifecycleTests, FailedTextureCubeUploadReportsFailureAndKeep
     NLS::Render::Context::Driver driver(settings);
     NLS::Core::ServiceLocator::Provide(driver);
     auto explicitDevice = std::make_shared<TestExplicitDevice>();
-    NLS::Render::Context::DriverTestAccess::SetExplicitDevice(driver, explicitDevice);
+    SetTextureTestDevice(driver, explicitDevice);
 
     std::vector<NLS::Image> images;
     images.reserve(NLS::Render::RHI::GetTextureLayerCount(NLS::Render::RHI::TextureDimension::TextureCube));
@@ -834,7 +844,7 @@ TEST(TextureResourceLifecycleTests, CreateCubeMapReturnsNullWhenSourceImagesCann
     NLS::Render::Context::Driver driver(settings);
     NLS::Core::ServiceLocator::Provide(driver);
     auto explicitDevice = std::make_shared<TestExplicitDevice>();
-    NLS::Render::Context::DriverTestAccess::SetExplicitDevice(driver, explicitDevice);
+    SetTextureTestDevice(driver, explicitDevice);
 
     const std::vector<std::string> filePaths {
         "__missing_cubemap_px__.png",
@@ -875,7 +885,7 @@ TEST(TextureResourceLifecycleTests, CreateCubeMapRejectsRuntimeSourceImages)
     NLS::Render::Context::Driver driver(settings);
     NLS::Core::ServiceLocator::Provide(driver);
     auto explicitDevice = std::make_shared<TestExplicitDevice>();
-    NLS::Render::Context::DriverTestAccess::SetExplicitDevice(driver, explicitDevice);
+    SetTextureTestDevice(driver, explicitDevice);
 
     std::unique_ptr<NLS::Render::Resources::TextureCube> cubeMap(
         NLS::Render::Resources::Loaders::TextureLoader::CreateCubeMap(filePaths));

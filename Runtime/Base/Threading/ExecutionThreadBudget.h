@@ -6,8 +6,12 @@
 namespace NLS::Base::Threading
 {
     inline constexpr uint32_t kFallbackHardwareConcurrency = 4u;
-    // Main/Game, Render, and RHI each own a dedicated lane outside the pools.
+    // Main/Game, Render, and (in DedicatedThread mode) RHI each own a dedicated
+    // lane outside the pools.
     inline constexpr uint32_t kReservedNamedExecutionLaneCount = 3u;
+    // Tasks mode runs the logical RHI lane on pool workers, so only the game and
+    // render lanes stay outside the pools.
+    inline constexpr uint32_t kReservedNamedExecutionLaneCountWithoutDedicatedRhi = 2u;
     inline constexpr uint32_t kMaximumPoolWorkerCount = 31u;
     inline constexpr uint32_t kMaximumTaskGraphWorkerCount = 12u;
     inline constexpr uint32_t kMaximumBackgroundJobWorkerCount = 16u;
@@ -26,22 +30,31 @@ namespace NLS::Base::Threading
      * between the rendering TaskGraph and the general Jobs pools. Both systems
      * resolve the same hardware concurrency, so neither one can over-subscribe
      * the machine on its own.
+     *
+     * `reserveDedicatedRhiLane` must be false when the RHI lane runs on
+     * TaskGraph workers (RhiThreadMode::Tasks or None); otherwise the pool is
+     * undersized by one lane and the tasks lane loses the worker it needs.
      */
     inline ExecutionPoolBudget ResolveExecutionPoolBudget(
         uint32_t hardwareConcurrency,
-        uint32_t requestedBackgroundJobWorkerCount = 0u)
+        uint32_t requestedBackgroundJobWorkerCount = 0u,
+        bool reserveDedicatedRhiLane = true)
     {
         const uint32_t availableConcurrency = hardwareConcurrency == 0u
             ? kFallbackHardwareConcurrency
             : hardwareConcurrency;
+
+        const uint32_t reservedNamedLanes = reserveDedicatedRhiLane
+            ? kReservedNamedExecutionLaneCount
+            : kReservedNamedExecutionLaneCountWithoutDedicatedRhi;
 
         ExecutionPoolBudget budget;
         budget.totalPoolWorkerCount = std::min(
             kMaximumPoolWorkerCount,
             (std::max)(
                 2u,
-                availableConcurrency > kReservedNamedExecutionLaneCount
-                    ? availableConcurrency - kReservedNamedExecutionLaneCount
+                availableConcurrency > reservedNamedLanes
+                    ? availableConcurrency - reservedNamedLanes
                     : 2u));
         budget.taskGraphWorkerCount = std::min(
             kMaximumTaskGraphWorkerCount,

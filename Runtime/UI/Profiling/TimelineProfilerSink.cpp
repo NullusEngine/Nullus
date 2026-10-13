@@ -13,6 +13,8 @@
 #if defined(_WIN32)
 #include <d3d12.h>
 #include <windows.h>
+#include <Debug/Logger.h>
+#include "Rendering/Context/RhiCommandListExecutor.h"
 #endif
 
 namespace
@@ -66,22 +68,23 @@ void ShutdownTimelineGpuProfilerForSink(bool& gpuInitialized)
     if (!gpuInitialized)
         return;
 
-    std::lock_guard lock(g_timelineGpuProfilerMutex);
-    gAssert(g_timelineGpuProfilerOwnerCount > 0u, "Timeline GPU profiler owner count underflow.");
-    const bool lastOwner = g_timelineGpuProfilerOwnerCount == 1u;
-    if (lastOwner && g_timelineGpuProfilerInitialized)
-    {
-        if (gGPUProfiler.Shutdown())
-        {
 #if defined(_WIN32)
-            ClearTimelineGpuProfilerContextLocked();
+    const auto result = NLS::Render::Context::RhiCommandListExecutor::Get().RunBackendOperation(
+        "TimelineProfiler::Shutdown", [&]
+        {
+            std::lock_guard lock(g_timelineGpuProfilerMutex);
+            gAssert(g_timelineGpuProfilerOwnerCount > 0u, "Timeline GPU profiler owner count underflow.");
+            const bool lastOwner = g_timelineGpuProfilerOwnerCount == 1u;
+            if (lastOwner && g_timelineGpuProfilerInitialized && gGPUProfiler.Shutdown())
+                ClearTimelineGpuProfilerContextLocked();
+            if (g_timelineGpuProfilerOwnerCount > 0u)
+                --g_timelineGpuProfilerOwnerCount;
+            gpuInitialized = false;
+            return NLS::Render::RHI::RHIQueueOperationResult{};
+        });
+    if (!result.Succeeded())
+        NLS_LOG_ERROR(result.message);
 #endif
-        }
-    }
-
-    if (g_timelineGpuProfilerOwnerCount > 0u)
-        --g_timelineGpuProfilerOwnerCount;
-    gpuInitialized = false;
 }
 
 void ReleaseTimelineGpuProfilerOwnershipForSink(bool& gpuInitialized)
@@ -288,26 +291,48 @@ void TimelineProfilerSink::InitializeGpuContext(const ProfilerGpuContextEvent& e
     EnsureTimelineProfilerInitialized();
     auto* device = static_cast<ID3D12Device*>(event.nativeDevice);
     const uint32 frameLatency = event.frameLatency != 0u ? event.frameLatency : 2u;
-    {
-        std::lock_guard lock(g_timelineGpuProfilerMutex);
-        const bool wasOwner = m_gpuInitialized;
-        if (!InitializeTimelineGpuProfilerLocked(device, queues, frameLatency))
+    const auto result = NLS::Render::Context::RhiCommandListExecutor::Get().RunBackendOperation(
+        "TimelineProfiler::Initialize", [&]
         {
-            ReleaseTimelineGpuProfilerOwnershipForSink(m_gpuInitialized);
-            m_gpuScopesAvailable = false;
-            return;
-        }
-
-        m_gpuScopesAvailable = gGPUProfiler.HasProfileableQueues();
-
-        if (!wasOwner)
-        {
-            ++g_timelineGpuProfilerOwnerCount;
-            m_gpuInitialized = true;
-        }
-    }
+            std::lock_guard lock(g_timelineGpuProfilerMutex);
+            const bool wasOwner = m_gpuInitialized;
+            if (!InitializeTimelineGpuProfilerLocked(device, queues, frameLatency))
+            {
+                ReleaseTimelineGpuProfilerOwnershipForSink(m_gpuInitialized);
+                m_gpuScopesAvailable = false;
+                return NLS::Render::RHI::RHIQueueOperationResult{};
+            }
+            m_gpuScopesAvailable = gGPUProfiler.HasProfileableQueues();
+            if (!wasOwner)
+            {
+                ++g_timelineGpuProfilerOwnerCount;
+                m_gpuInitialized = true;
+            }
+            return NLS::Render::RHI::RHIQueueOperationResult{};
+        });
+    if (!result.Succeeded())
+        NLS_LOG_ERROR(result.message);
 #else
     (void)event;
+#endif
+}
+
+void TimelineProfilerSink::ClearGpuContext(void* nativeDevice)
+{
+#if NLS_ENABLE_TIMELINE_PROFILER && defined(_WIN32)
+    {
+        std::lock_guard lock(g_timelineGpuProfilerMutex);
+        if (!m_gpuInitialized ||
+            (nativeDevice != nullptr && nativeDevice != g_timelineGpuProfilerDevice))
+        {
+            return;
+        }
+    }
+    ShutdownTimelineGpuProfilerForSink(m_gpuInitialized);
+    ReleaseTimelineGpuProfilerOwnershipForSinkLocked(m_gpuInitialized);
+    m_gpuScopesAvailable = false;
+#else
+    (void)nativeDevice;
 #endif
 }
 
@@ -358,8 +383,18 @@ void TimelineProfilerSink::TickFrame()
     {
         gProfiler.Tick();
         NLS_PROFILE_NAMED_SCOPE("TimelineProfiler::TickFrame");
-        std::lock_guard lock(g_timelineGpuProfilerMutex);
-        gGPUProfiler.Tick();
+#if defined(_WIN32)
+        // Earlier translations and submits must finish before taking their profiler lock.
+        const auto result = NLS::Render::Context::RhiCommandListExecutor::Get().RunBackendOperation(
+            "TimelineProfiler::Tick", []
+            {
+                std::lock_guard lock(g_timelineGpuProfilerMutex);
+                gGPUProfiler.Tick();
+                return NLS::Render::RHI::RHIQueueOperationResult{};
+            });
+        if (!result.Succeeded())
+            NLS_LOG_ERROR(result.message);
+#endif
     }
     if (!m_frameStarted)
     {

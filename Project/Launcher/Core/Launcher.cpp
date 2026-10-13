@@ -31,6 +31,7 @@
 #include <Rendering/Resources/Texture2D.h>
 #include <Rendering/Resources/Loaders/TextureLoader.h>
 #include <Rendering/Context/DriverAccess.h>
+#include <Rendering/Context/RenderingThreadSystem.h>
 #include <Rendering/Settings/GraphicsBackendUtils.h>
 #include <Rendering/Tooling/RenderDocEnvironment.h>
 #include <Utils/PathParser.h>
@@ -1172,7 +1173,8 @@ private:
     {
         m_launchOptionsProjectPath = p_projectPath;
         m_launchOptionsError.clear();
-        m_launchOptions = Engine::Settings::ReadProjectLaunchOptions(ResolveProjectSettingsFilePath(p_projectPath));
+        m_launchOptions = Engine::Settings::ReadProjectLaunchOptions(
+            ResolveProjectSettingsFilePath(p_projectPath), &m_launchOptionsError);
         m_launchOptionsOpen = true;
     }
 
@@ -1214,9 +1216,32 @@ private:
         ImGui::Checkbox(
             (std::string(Tr(LauncherTextKey::VerticalSynchronization)) + "##Vsync").c_str(),
             &m_launchOptions.verticalSynchronization);
-        ImGui::Checkbox(
-            (std::string(Tr(LauncherTextKey::ThreadedRendering)) + "##ThreadedRendering").c_str(),
-            &m_launchOptions.threadedRendering);
+        constexpr Render::Settings::RhiThreadModePreference modes[] = {
+            Render::Settings::RhiThreadModePreference::BackendDefault,
+            Render::Settings::RhiThreadModePreference::ForceNone,
+            Render::Settings::RhiThreadModePreference::ForceDedicatedThread,
+            Render::Settings::RhiThreadModePreference::ForceTasks
+        };
+        constexpr LauncherTextKey modeLabels[] = {
+            LauncherTextKey::RhiBackendDefault, LauncherTextKey::RhiNone,
+            LauncherTextKey::RhiDedicatedThread, LauncherTextKey::RhiTasks
+        };
+        size_t selectedMode = 0u;
+        for (size_t index = 0u; index < std::size(modes); ++index)
+            if (m_launchOptions.rhiThreadMode == modes[index])
+                selectedMode = index;
+        ImGui::SetNextItemWidth(180.0f);
+        if (ImGui::BeginCombo(Tr(LauncherTextKey::RhiThreadMode), Tr(modeLabels[selectedMode])))
+        {
+            for (size_t index = 0u; index < std::size(modes); ++index)
+            {
+                if (ImGui::Selectable(Tr(modeLabels[index]), index == selectedMode))
+                    m_launchOptions.rhiThreadMode = modes[index];
+                if (index == selectedMode)
+                    ImGui::SetItemDefaultFocus();
+            }
+            ImGui::EndCombo();
+        }
         ImGui::SetNextItemWidth(180.0f);
         ImGui::InputInt(
             (std::string(Tr(LauncherTextKey::RenderDocCaptureFrames)) + "##RenderDocCapture").c_str(),
@@ -1337,6 +1362,7 @@ LauncherRunResult Launcher::Run()
 {
     while (!m_window->ShouldClose())
     {
+        (void)Render::Context::RenderingThreadSystem::PumpGameThreadTasks(64u);
         m_device->PollEvents();
 
         m_uiManager->Render();
@@ -1388,8 +1414,9 @@ void Launcher::SetupContext()
 
     Render::Settings::DriverSettings driverSettings;
     driverSettings.graphicsBackend = m_graphicsBackend;
-    driverSettings.enableThreadedRendering = true;
-    driverSettings.threadedFrameSlotCount = driverSettings.framesInFlight;
+    // Backend default: DX12/Vulkan use the TaskGraph RHI lane, Metal stays on a
+    // dedicated thread until its Tasks mode is validated on device.
+    driverSettings.rhiThreadMode = Render::Settings::RhiThreadModePreference::BackendDefault;
     if (m_renderDocOverride.has_value() &&
         (m_renderDocOverride->enabled || m_renderDocOverride->startupCaptureAfterFrames > 0))
     {

@@ -2298,11 +2298,16 @@ bool Editor::Panels::SceneView::ShouldRequestPickingFrame() const
     if (request && !clickPickingFrame)
     {
         const auto* sceneRenderer = dynamic_cast<const Engine::Rendering::BaseSceneRenderer*>(m_renderer.get());
+        const auto visiblePickableSources =
+            sceneRenderer != nullptr
+                ? sceneRenderer->GetLastVisiblePickablePrimitiveDrawSources()
+                : nullptr;
         if (sceneRenderer != nullptr &&
             sceneRenderer->HasLastVisiblePickablePrimitiveDrawSources() &&
+            visiblePickableSources != nullptr &&
             ShouldSkipSceneHoverPickingForVisibleDrawBudget(
                 false,
-                static_cast<uint64_t>(sceneRenderer->GetLastVisiblePickablePrimitiveDrawSources().size()),
+                static_cast<uint64_t>(visiblePickableSources->size()),
                 kSceneViewHoverPickingVisibleDrawBudget))
         {
             NLS_PROFILE_NAMED_SCOPE("SceneView::PickingSkipped::HoverVisibleDrawBudget");
@@ -2381,6 +2386,13 @@ void Editor::Panels::SceneView::HandleGameObjectPicking()
             m_highlightedGameObject = nullptr;
             m_hasPickingSample = false;
             return;
+        }
+
+        if (m_pendingClickPickRenderPos.has_value() && m_pendingClickPickingSignature.has_value() &&
+            gameObjectPickingFeature.GetSubmittedPickingFrameSerial() < m_pendingClickMinReadablePickingFrameSerial)
+        {
+            LogScenePickingDiagnostics("retry pending click after picking frame publication failed");
+            m_pendingClickPickingSignature.reset();
         }
 
         const auto localMousePos = GetLocalViewPosition(screenMousePos);

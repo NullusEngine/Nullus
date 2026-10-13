@@ -1,5 +1,6 @@
 #include "Core/Application.h"
 #include "LaunchArgs.h"
+#include "Rendering/Context/RenderingThreadSystem.h"
 
 #include <cstdio>
 #include <filesystem>
@@ -25,6 +26,7 @@ namespace
 
 int main(int argc, char** argv)
 {
+		const Render::Context::ScopedGameThread gameThread;
 	const auto launchWorkingDirectory = std::filesystem::current_path();
 	std::filesystem::current_path(std::filesystem::path(argv[0]).parent_path());
 

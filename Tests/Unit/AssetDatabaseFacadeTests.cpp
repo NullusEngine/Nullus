@@ -999,7 +999,10 @@ NLS::Render::Context::Driver& EnsureAssetDatabaseFacadeTestDriver()
         settings.enableExplicitRHI = false;
         return settings;
     }());
-    NLS::Core::ServiceLocator::Provide(*driver);
+    // No render thread: this suite does not exercise threaded frame ownership, so its
+    // fixture driver must not keep a process-wide render thread alive for another suite.
+    driver->ShutdownThreadedRendering();
+NLS::Core::ServiceLocator::Provide(*driver);
     return *driver;
 }
 }
@@ -4517,8 +4520,7 @@ TEST(AssetDatabaseFacadeTests, ReimportAssetRefreshesNativeTextureArtifactsAndCe
 
     NLS::Render::Settings::DriverSettings settings;
     settings.graphicsBackend = NLS::Render::Settings::EGraphicsBackend::NONE;
-    settings.enableThreadedRendering = true;
-    settings.threadedFrameSlotCount = 1u;
+    settings.framesInFlight = 1u;
     NLS::Render::Context::Driver driver(settings);
     const ScopedAssetDatabaseFacadeDriverService driverService(driver);
     auto explicitDevice = std::make_shared<TextureReimportTestDevice>();

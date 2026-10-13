@@ -10,9 +10,11 @@
 #include <Debug/Logger.h>
 
 #include <Rendering/Context/DriverAccess.h>
+#include <Rendering/Context/RenderingThreadSystem.h>
 #include <Rendering/UI/UIDrawSnapshotAdapter.h>
 #include <Rendering/RHI/Core/RHIDevice.h>
 #include <Rendering/RHI/Core/RHIResource.h>
+#include <Rendering/RHI/Core/RHISync.h>
 #include <Rendering/FrameGraph/ExternalResourceBridge.h>
 #include <Rendering/Settings/EPixelDataFormat.h>
 #include <Rendering/Settings/EPixelDataType.h>
@@ -76,6 +78,7 @@ Game::Core::Game::~Game()
 
 void Game::Core::Game::PreUpdate()
 {
+	(void)Render::Context::RenderingThreadSystem::PumpGameThreadTasks(64u);
 	m_context.device->PollEvents();
 }
 
@@ -114,7 +117,8 @@ void Game::Core::Game::PreUpdate()
 
 		void RenderCurrentScene(
 		Engine::Rendering::BaseSceneRenderer& p_renderer,
-		const Game::Context& p_context
+			const Game::Context& p_context,
+			const Render::Context::PostSubmitTextureReadbackRequest* readback = nullptr
 	)
 	{
 		if (auto currentScene = p_context.sceneManager.GetCurrentScene())
@@ -136,6 +140,8 @@ void Game::Core::Game::PreUpdate()
 
 				p_renderer.BeginFrame(frameDescriptor);
 				p_renderer.DrawFrame();
+					if (readback != nullptr)
+						p_renderer.SetNextFramePostSubmitTextureReadback(*readback);
 				p_renderer.EndFrame();
 			}
 			else
@@ -149,10 +155,11 @@ void Game::Core::Game::PreUpdate()
 		}
 	}
 
-	std::shared_ptr<Render::RHI::RHITexture> RenderCurrentSceneToFramebuffer(
+		void RenderCurrentSceneToFramebuffer(
 		Engine::Rendering::BaseSceneRenderer& p_renderer,
 		const Game::Context& p_context,
-		Render::Buffers::Framebuffer& outputFramebuffer)
+			Render::Buffers::Framebuffer& outputFramebuffer,
+			Render::Context::PostSubmitTextureReadbackRequest readback)
 	{
 		if (auto currentScene = p_context.sceneManager.GetCurrentScene())
 		{
@@ -177,12 +184,12 @@ void Game::Core::Game::PreUpdate()
 
 				p_renderer.BeginFrame(frameDescriptor);
 				p_renderer.DrawFrame();
+					readback.texture = outputFramebuffer.GetExplicitTextureHandle();
+					p_renderer.SetNextFramePostSubmitTextureReadback(std::move(readback));
 				p_renderer.EndFrame();
-				return outputFramebuffer.GetExplicitTextureHandle();
 			}
 		}
 
-		return nullptr;
 	}
 
 	void WriteMaterialValidationFailureSummary(
@@ -399,12 +406,30 @@ void Game::Core::Game::Update(float p_deltaTime)
 			!m_materialValidationCaptured &&
 			m_presentedFrames + 1u >= std::max(1u, m_materialValidation->captureAfterFrames))
 		{
-			if (m_materialValidationFramebuffer == nullptr)
-				m_materialValidationFramebuffer = std::make_unique<Render::Buffers::Framebuffer>();
-			m_pendingMaterialValidationReadbackTexture = RenderCurrentSceneToFramebuffer(
-				*m_sceneRenderer,
-				m_context,
-				*m_materialValidationFramebuffer);
+				const auto windowSize = m_context.window->GetSize();
+				m_materialValidationReadbackWidth = static_cast<uint32_t>(windowSize.x);
+				m_materialValidationReadbackHeight = static_cast<uint32_t>(windowSize.y);
+				m_materialValidationReadbackPixels = std::make_shared<std::vector<uint8_t>>(
+					static_cast<size_t>(m_materialValidationReadbackWidth) * m_materialValidationReadbackHeight * 4u, 0u);
+				m_materialValidationReadbackState = std::make_shared<Render::Context::PostSubmitTextureReadbackState>();
+				Render::Context::PostSubmitTextureReadbackRequest readback;
+				readback.width = m_materialValidationReadbackWidth;
+				readback.height = m_materialValidationReadbackHeight;
+				readback.destination = m_materialValidationReadbackPixels->data();
+				readback.destinationKeepAlive = m_materialValidationReadbackPixels;
+				readback.state = m_materialValidationReadbackState;
+				if (m_materialValidation->captureSwapchain)
+				{
+					readback.source = Render::Context::TextureReadbackSource::FrameSwapchain;
+					RenderCurrentScene(*m_sceneRenderer, m_context, &readback);
+				}
+				else
+				{
+					if (m_materialValidationFramebuffer == nullptr)
+						m_materialValidationFramebuffer = std::make_unique<Render::Buffers::Framebuffer>();
+					RenderCurrentSceneToFramebuffer(*m_sceneRenderer, m_context,
+						*m_materialValidationFramebuffer, std::move(readback));
+				}
 		}
 		else
 		{
@@ -445,41 +470,37 @@ void Game::Core::Game::PostUpdate()
 		m_presentedFrames >= std::max(1u, m_materialValidation->captureAfterFrames))
 	{
 		m_materialValidationCaptured = true;
+		Render::Context::DriverRendererAccess::DrainThreadedRendering(*m_context.driver);
 
-		const auto readbackTexture = m_pendingMaterialValidationReadbackTexture != nullptr
-			? m_pendingMaterialValidationReadbackTexture
-			: Render::Context::DriverRendererAccess::ResolveReadbackTexture(*m_context.driver);
 		const std::string outputPath = m_materialValidation->outputPath;
 		const std::string summaryPath = m_materialValidation->summaryPath.empty()
 			? BuildDefaultSummaryPath(outputPath)
 			: m_materialValidation->summaryPath;
 
-		if (readbackTexture == nullptr)
+			Render::RHI::RHIReadbackResult readback {
+				Render::RHI::RHIReadbackStatusCode::BackendFailure,
+				"material validation readback was not carried into a rendered frame"
+			};
+			if (m_materialValidationReadbackState != nullptr)
 		{
-			const std::string message = "material validation readback source is unavailable";
-			NLS_LOG_ERROR(message);
-			WriteMaterialValidationFailureSummary(summaryPath, message);
-			m_context.window->SetShouldClose(true);
-			m_context.inputManager->ClearEvents();
-			return;
+				std::lock_guard lock(m_materialValidationReadbackState->mutex);
+				if (m_materialValidationReadbackState->beginAttempted)
+				{
+					readback.code = m_materialValidationReadbackState->resultCode;
+					readback.message = m_materialValidationReadbackState->resultMessage;
+					readback.completion = m_materialValidationReadbackState->completion;
+				}
 		}
-
-		const auto& desc = readbackTexture->GetDesc();
-		const uint32_t width = desc.extent.width;
-		const uint32_t height = desc.extent.height;
-		const uint32_t channels = 4u;
-		std::vector<uint8_t> pixels(static_cast<size_t>(width) * height * channels, 0u);
-
-		const auto readback = Render::Context::DriverRendererAccess::ReadPixelsChecked(
-			*m_context.driver,
-			readbackTexture,
-			0u,
-			0u,
-			width,
-			height,
-			Render::Settings::EPixelDataFormat::RGBA,
-			Render::Settings::EPixelDataType::UNSIGNED_BYTE,
-			pixels.data());
+			if (readback.Succeeded() && readback.completion != nullptr)
+			{
+				const auto completion = readback.completion->Wait(300'000'000'000ull);
+				if (!completion.Succeeded())
+				{
+					readback.code = Render::RHI::RHIReadbackStatusCode::BackendFailure;
+					readback.message = completion.message.empty()
+						? "material validation GPU readback did not complete" : completion.message;
+				}
+			}
 
 		if (!readback.Succeeded())
 		{
@@ -491,6 +512,10 @@ void Game::Core::Game::PostUpdate()
 			return;
 		}
 
+			const uint32_t width = m_materialValidationReadbackWidth;
+			const uint32_t height = m_materialValidationReadbackHeight;
+			const uint32_t channels = 4u;
+			const auto& pixels = *m_materialValidationReadbackPixels;
 		const auto evidence = Render::Tooling::AnalyzeMaterialVisualEvidence(
 			pixels.data(),
 			width,

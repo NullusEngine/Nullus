@@ -27,6 +27,7 @@
 #include <vector>
 
 #include "Debug/Logger.h"
+#include "Rendering/Context/RhiCommandListExecutor.h"
 #include "Rendering/RHI/BindingPointMap.h"
 #include "Rendering/RHI/Core/RHIBinding.h"
 #include "Rendering/RHI/Core/RHICommand.h"
@@ -44,6 +45,72 @@ namespace NLS::Render::Backend
         constexpr uint32_t kMetalSpirvStorageBindingOffset = 64u;
         constexpr uint32_t kMetalSpirvTextureBindingOffset = 128u;
         constexpr uint32_t kMetalSpirvSamplerBindingOffset = 192u;
+
+        void RetainUnsafeMetalResource(id resource)
+        {
+            if (resource == nil)
+                return;
+            auto owner = std::shared_ptr<void>((__bridge void*)[resource retain], [](void* value)
+            {
+                [(__bridge id)value release];
+            });
+            (void)NLS::Render::Context::RhiCommandListExecutor::Get().DeferRelease({std::move(owner)});
+        }
+
+        NLS::Render::RHI::RHIQueueOperationResult CommitMetalCommandBuffer(
+            id<MTLCommandBuffer> commandBuffer,
+            const std::string& debugName,
+            const bool waitForCompletion = false,
+            const bool presents = false)
+        {
+            return NLS::Render::Context::RhiCommandListExecutor::Get().RunBackendOperation(
+                debugName, [commandBuffer, debugName, waitForCompletion]
+                {
+                    @autoreleasepool
+                    {
+                        using namespace NLS::Render::RHI;
+                        if (commandBuffer == nil)
+                            return RHIQueueOperationResult{RHIQueueOperationStatusCode::InvalidArgument,
+                                debugName + ": Metal command buffer is unavailable"};
+
+                        [commandBuffer addCompletedHandler:^(id<MTLCommandBuffer> completed)
+                        {
+                            if (completed.status == MTLCommandBufferStatusError)
+                            {
+                                const char* message = completed.error.localizedDescription.UTF8String;
+                                NLS::Render::Context::RhiCommandListExecutor::Get().NotifyDeviceLost(
+                                    debugName + ": " + std::string(message != nullptr ? message : "Metal command buffer failed"));
+                                RetainUnsafeMetalResource(completed);
+                            }
+                        }];
+                        [commandBuffer commit];
+                        RHIQueueOperationResult result{};
+                        result.mayHaveQueuedGpuWork = true;
+                        if (waitForCompletion)
+                        {
+                            while (commandBuffer.status != MTLCommandBufferStatusCompleted &&
+                                commandBuffer.status != MTLCommandBufferStatusError)
+                            {
+                                if (NLS::Render::Context::RhiCommandListExecutor::Get().HasFailed())
+                                {
+                                    result.code = RHIQueueOperationStatusCode::BackendFailure;
+                                    result.message = NLS::Render::Context::RhiCommandListExecutor::Get().GetFailureDiagnostic();
+                                    return result;
+                                }
+                                std::this_thread::sleep_for(std::chrono::microseconds(100));
+                            }
+                            if (commandBuffer.status != MTLCommandBufferStatusCompleted)
+                            {
+                                const char* message = commandBuffer.error.localizedDescription.UTF8String;
+                                result.code = RHIQueueOperationStatusCode::BackendFailure;
+                                result.message = debugName + ": " +
+                                    std::string(message != nullptr ? message : "Metal GPU completion was not confirmed");
+                            }
+                        }
+                        return result;
+                    }
+                }, presents);
+        }
 
         uint32_t ResolveMetalSwapchainImageCount(const uint32_t requestedImageCount)
         {
@@ -1186,6 +1253,8 @@ namespace NLS::Render::Backend
                 std::lock_guard lock(m_mutex);
                 if (m_status.IsComplete())
                     return m_status;
+                if (NLS::Render::Context::RhiCommandListExecutor::Get().HasFailed())
+                    return CompleteWithFailure(NLS::Render::Context::RhiCommandListExecutor::Get().GetFailureDiagnostic());
                 if (m_commandBuffer == nil || m_source == nullptr || m_source->GetBuffer() == nil ||
                     m_readbackBuffer == nil)
                     return CompleteWithFailure("Metal buffer readback completion token is missing backend resources");
@@ -1223,13 +1292,6 @@ namespace NLS::Render::Backend
 
             NLS::Render::RHI::RHICompletionStatus Wait(const uint64_t timeoutNanoseconds = 0u) override
             {
-                if (timeoutNanoseconds == 0u)
-                {
-                    if (m_commandBuffer != nil)
-                        [m_commandBuffer waitUntilCompleted];
-                    return Poll();
-                }
-
                 const auto deadline = std::chrono::steady_clock::now() +
                     std::chrono::nanoseconds(timeoutNanoseconds);
                 for (;;)
@@ -1239,7 +1301,7 @@ namespace NLS::Render::Backend
                         return status;
 
                     const auto now = std::chrono::steady_clock::now();
-                    if (now >= deadline)
+                    if (timeoutNanoseconds != 0u && now >= deadline)
                     {
                         return {
                             NLS::Render::RHI::RHICompletionStatusCode::Pending,
@@ -1247,15 +1309,20 @@ namespace NLS::Render::Backend
                         };
                     }
 
-                    std::this_thread::sleep_for((std::min)(
-                        std::chrono::duration_cast<std::chrono::nanoseconds>(deadline - now),
-                        std::chrono::nanoseconds(100000u)));
+                    std::this_thread::sleep_for(std::chrono::microseconds(100));
                 }
             }
 
         private:
             NLS::Render::RHI::RHICompletionStatus CompleteWithFailure(std::string message)
             {
+                if (m_commandBuffer != nil && m_commandBuffer.status != MTLCommandBufferStatusCompleted)
+                {
+                    RetainUnsafeMetalResource(m_commandBuffer);
+                    RetainUnsafeMetalResource(m_readbackBuffer);
+                    if (m_source != nullptr)
+                        (void)NLS::Render::Context::RhiCommandListExecutor::Get().DeferRelease({m_source});
+                }
                 m_status = {
                     NLS::Render::RHI::RHICompletionStatusCode::Failed,
                     std::move(message)
@@ -1388,6 +1455,8 @@ namespace NLS::Render::Backend
                 std::lock_guard lock(m_mutex);
                 if (m_status.IsComplete())
                     return m_status;
+                if (NLS::Render::Context::RhiCommandListExecutor::Get().HasFailed())
+                    return CompleteWithFailure(NLS::Render::Context::RhiCommandListExecutor::Get().GetFailureDiagnostic());
                 if (m_commandBuffer == nil || m_source == nullptr ||
                     m_source->GetTexture() == nil || m_stagingBuffer == nil ||
                     m_destination == nullptr)
@@ -1420,13 +1489,6 @@ namespace NLS::Render::Backend
 
             NLS::Render::RHI::RHICompletionStatus Wait(const uint64_t timeoutNanoseconds = 0u) override
             {
-                if (timeoutNanoseconds == 0u)
-                {
-                    if (m_commandBuffer != nil)
-                        [m_commandBuffer waitUntilCompleted];
-                    return Poll();
-                }
-
                 const auto deadline = std::chrono::steady_clock::now() +
                     std::chrono::nanoseconds(timeoutNanoseconds);
                 for (;;)
@@ -1436,7 +1498,7 @@ namespace NLS::Render::Backend
                         return status;
 
                     const auto now = std::chrono::steady_clock::now();
-                    if (now >= deadline)
+                    if (timeoutNanoseconds != 0u && now >= deadline)
                     {
                         return {
                             NLS::Render::RHI::RHICompletionStatusCode::Pending,
@@ -1444,9 +1506,7 @@ namespace NLS::Render::Backend
                         };
                     }
 
-                    std::this_thread::sleep_for((std::min)(
-                        std::chrono::duration_cast<std::chrono::nanoseconds>(deadline - now),
-                        std::chrono::nanoseconds(100000u)));
+                    std::this_thread::sleep_for(std::chrono::microseconds(100));
                 }
             }
 
@@ -1482,6 +1542,13 @@ namespace NLS::Render::Backend
 
             NLS::Render::RHI::RHICompletionStatus CompleteWithFailure(std::string message)
             {
+                if (m_commandBuffer != nil && m_commandBuffer.status != MTLCommandBufferStatusCompleted)
+                {
+                    RetainUnsafeMetalResource(m_commandBuffer);
+                    RetainUnsafeMetalResource(m_stagingBuffer);
+                    if (m_source != nullptr)
+                        (void)NLS::Render::Context::RhiCommandListExecutor::Get().DeferRelease({m_source});
+                }
                 m_status = {
                     NLS::Render::RHI::RHICompletionStatusCode::Failed,
                     std::move(message)
@@ -1558,29 +1625,43 @@ namespace NLS::Render::Backend
             {
                 std::lock_guard lock(m_mutex);
                 m_signaled.store(false, std::memory_order_release);
+                m_failed.store(false, std::memory_order_release);
             }
             bool Wait(const uint64_t timeoutNanoseconds) override
             {
                 std::unique_lock lock(m_mutex);
-                const auto signaled = [this]()
+                const auto complete = [this]()
                 {
-                    return m_signaled.load(std::memory_order_acquire);
+                    return m_signaled.load(std::memory_order_acquire) ||
+                        m_failed.load(std::memory_order_acquire);
                 };
-                if (timeoutNanoseconds == 0u)
+                const auto deadline = std::chrono::steady_clock::now() +
+                    std::chrono::nanoseconds(timeoutNanoseconds);
+                while (!complete())
                 {
-                    m_condition.wait(lock, signaled);
-                    return true;
+                    if (NLS::Render::Context::RhiCommandListExecutor::Get().HasFailed())
+                        return false;
+                    if (timeoutNanoseconds != 0u && std::chrono::steady_clock::now() >= deadline)
+                        return false;
+                    m_condition.wait_for(lock, std::chrono::milliseconds(1));
                 }
-                return m_condition.wait_for(
-                    lock,
-                    std::chrono::nanoseconds(timeoutNanoseconds),
-                    signaled);
+                return !m_failed.load(std::memory_order_acquire);
             }
             void Signal()
             {
                 {
                     std::lock_guard lock(m_mutex);
-                    m_signaled.store(true, std::memory_order_release);
+                    m_signaled.store(!m_failed.load(std::memory_order_acquire), std::memory_order_release);
+                }
+                m_condition.notify_all();
+            }
+
+            void Fail()
+            {
+                {
+                    std::lock_guard lock(m_mutex);
+                    m_failed.store(true, std::memory_order_release);
+                    m_signaled.store(false, std::memory_order_release);
                 }
                 m_condition.notify_all();
             }
@@ -1588,6 +1669,7 @@ namespace NLS::Render::Backend
         private:
             std::string m_debugName;
             std::atomic_bool m_signaled { true };
+            std::atomic_bool m_failed { false };
             std::mutex m_mutex;
             std::condition_variable m_condition;
         };
@@ -2620,7 +2702,7 @@ namespace NLS::Render::Backend
                     }
                     if (buffer->GetDesc().memoryUsage != NLS::Render::RHI::MemoryUsage::GPUOnly)
                     {
-                        const auto effectiveBefore = barrier.before == NLS::Render::RHI::ResourceState::Unknown
+                        const auto effectiveBefore = !desc.statesAreExplicit && barrier.before == NLS::Render::RHI::ResourceState::Unknown
                             ? buffer->GetState()
                             : barrier.before;
                         if (!IsLegalMetalCpuVisibleBufferState(*buffer, effectiveBefore) ||
@@ -2689,6 +2771,8 @@ namespace NLS::Render::Backend
                     // the required ordering point before a later render or compute encoder.
                     EndBlitEncoder();
                 }
+                if (desc.statesAreExplicit)
+                    return {};
                 for (size_t index = 0u; index < buffersToTransition.size(); ++index)
                     buffersToTransition[index].first->SetState(buffersToTransition[index].second);
                 for (size_t index = 0u; index < texturesToTransition.size(); ++index)
@@ -2699,6 +2783,25 @@ namespace NLS::Render::Backend
                         texturesToTransition[index].first->MarkPartialStateDirty();
                 }
                 return {};
+            }
+
+            void CommitResourceStates(const NLS::Render::RHI::RHIBarrierDesc& desc) override
+            {
+                for (const auto& barrier : desc.bufferBarriers)
+                    if (const auto buffer = std::dynamic_pointer_cast<MetalBuffer>(barrier.buffer);
+                        buffer != nullptr && buffer->GetDesc().memoryUsage == NLS::Render::RHI::MemoryUsage::GPUOnly)
+                        buffer->SetState(barrier.after);
+                for (const auto& barrier : desc.textureBarriers)
+                {
+                    const auto texture = std::dynamic_pointer_cast<MetalTexture>(barrier.texture);
+                    if (texture == nullptr)
+                        continue;
+                    const auto range = NLS::Render::RHI::NormalizeTextureSubresourceRange(texture->GetDesc(), barrier.subresourceRange);
+                    if (range.has_value() && NLS::Render::RHI::IsFullTextureSubresourceRange(texture->GetDesc(), *range))
+                        texture->SetState(barrier.after);
+                    else
+                        texture->MarkPartialStateDirty();
+                }
             }
 
             void Barrier(const NLS::Render::RHI::RHIBarrierDesc& desc) override
@@ -2945,7 +3048,7 @@ namespace NLS::Render::Backend
             }
             void* GetNativeWindowHandle() const { return m_nativeWindowHandle; }
 
-            bool Present(
+            NLS::Render::RHI::RHIQueueOperationResult Present(
                 id<MTLCommandQueue> queue,
                 const uint32_t imageIndex,
                 const std::vector<std::shared_ptr<MetalSemaphore>>& waitSemaphores,
@@ -2953,31 +3056,48 @@ namespace NLS::Render::Backend
             {
                 if (queue == nil || m_drawable == nil ||
                     !m_currentImageIndex.has_value() || imageIndex != *m_currentImageIndex)
-                    return false;
+                    return {NLS::Render::RHI::RHIQueueOperationStatusCode::InvalidArgument,
+                        "Metal swapchain does not own the requested drawable"};
 
                 id<MTLCommandBuffer> commandBuffer = [queue commandBuffer];
                 if (commandBuffer == nil)
-                    return false;
+                    return {NLS::Render::RHI::RHIQueueOperationStatusCode::BackendFailure,
+                        "Metal present could not create a command buffer"};
                 for (const auto& semaphore : waitSemaphores)
                 {
                     if (semaphore == nullptr || semaphore->GetEvent() == nil || semaphore->GetWaitValue() == 0u)
-                        return false;
+                        return {NLS::Render::RHI::RHIQueueOperationStatusCode::InvalidArgument,
+                            "Metal present received an unscheduled wait semaphore"};
                     [commandBuffer encodeWaitForEvent:semaphore->GetEvent()
                                                value:semaphore->GetWaitValue()];
                 }
                 [commandBuffer presentDrawable:m_drawable];
+                const bool signalsFence = signalFence != nullptr;
                 if (signalFence != nullptr)
                 {
                     const auto completionFence = std::move(signalFence);
                     completionFence->Reset();
-                    [commandBuffer addCompletedHandler:^(id<MTLCommandBuffer>)
+                    [commandBuffer addCompletedHandler:^(id<MTLCommandBuffer> completed)
                     {
-                        completionFence->Signal();
+                        if (completed.status == MTLCommandBufferStatusCompleted)
+                            completionFence->Signal();
+                        else
+                            completionFence->Fail();
                     }];
                 }
-                [commandBuffer commit];
+                auto submission = CommitMetalCommandBuffer(commandBuffer, "MetalSwapchain::Present", false, true);
+                if (!submission.Succeeded())
+                {
+                    if (submission.mayHaveQueuedGpuWork)
+                    {
+                        RetainUnsafeMetalResource(commandBuffer);
+                        RetainUnsafeMetalResource(m_drawable);
+                    }
+                    return submission;
+                }
+                submission.frameFenceSignalQueued = signalsFence;
                 ReleaseCurrentDrawable();
-                return true;
+                return submission;
             }
 
         private:
@@ -3052,6 +3172,23 @@ namespace NLS::Render::Backend
             }
             NLS::Render::RHI::RHIQueueOperationResult SubmitChecked(
                 const NLS::Render::RHI::RHISubmitDesc& submitDesc) override
+            {
+                auto result = NLS::Render::Context::RhiCommandListExecutor::Get().RunBackendOperation(
+                    "MetalQueue::Submit", [this, &submitDesc]
+                    {
+                        @autoreleasepool { return SubmitOnSubmitLane(submitDesc); }
+                    });
+                if (!result.Succeeded())
+                {
+                    if (const auto fence = std::dynamic_pointer_cast<MetalFence>(submitDesc.signalFence))
+                        fence->Fail();
+                }
+                return result;
+            }
+
+        private:
+            NLS::Render::RHI::RHIQueueOperationResult SubmitOnSubmitLane(
+                const NLS::Render::RHI::RHISubmitDesc& submitDesc)
             {
                 std::vector<std::pair<std::shared_ptr<MetalSemaphore>, uint64_t>> waitSemaphores;
                 waitSemaphores.reserve(submitDesc.waitSemaphores.size());
@@ -3156,41 +3293,61 @@ namespace NLS::Render::Backend
                     if (signalFence != nullptr)
                     {
                         const auto completionFence = signalFence;
-                        [completionCommands addCompletedHandler:^(id<MTLCommandBuffer>)
+                        [completionCommands addCompletedHandler:^(id<MTLCommandBuffer> completed)
                         {
-                            completionFence->Signal();
+                            if (completed.status == MTLCommandBufferStatusCompleted)
+                                completionFence->Signal();
+                            else
+                                completionFence->Fail();
                         }];
                     }
                 }
 
-                if (waitCommands != nil)
-                    [waitCommands commit];
+                NLS::Render::RHI::RHIQueueOperationResult result{};
+                const auto commit = [&result](id<MTLCommandBuffer> commands, const char* debugName)
+                {
+                    auto submission = CommitMetalCommandBuffer(commands, debugName);
+                    submission.mayHaveQueuedGpuWork |= result.mayHaveQueuedGpuWork;
+                    result = submission;
+                    return submission.Succeeded();
+                };
+                if (waitCommands != nil && !commit(waitCommands, "MetalQueue::WaitSemaphores"))
+                    return result;
 
                 for (const auto& commandBuffer : commandBuffers)
                 {
                     id<MTLCommandBuffer> nativeCommandBuffer = commandBuffer->GetMetalCommandBuffer();
-                    [nativeCommandBuffer addCompletedHandler:^(id<MTLCommandBuffer> completedCommandBuffer)
-                    {
-                        if (completedCommandBuffer.status == MTLCommandBufferStatusError)
-                        {
-                            const char* message = completedCommandBuffer.error.localizedDescription.UTF8String;
-                            NLS_LOG_ERROR("Metal command buffer failed: " +
-                                std::string(message != nullptr ? message : "unknown error"));
-                        }
-                    }];
-                    [nativeCommandBuffer commit];
+                    if (!commit(nativeCommandBuffer, "MetalQueue::CommandBuffer"))
+                        return result;
                     commandBuffer->MarkSubmitted();
                 }
-                if (completionCommands != nil)
-                    [completionCommands commit];
+                if (completionCommands != nil && !commit(completionCommands, "MetalQueue::SignalSemaphores"))
+                    return result;
 
-                NLS::Render::RHI::RHIQueueOperationResult result{};
                 result.mayHaveQueuedGpuWork = waitCommands != nil || !commandBuffers.empty() || completionCommands != nil;
                 result.frameFenceSignalQueued = signalFence != nullptr && completionCommands != nil;
                 return result;
             }
+        public:
             NLS::Render::RHI::RHIQueueOperationResult PresentChecked(
                 const NLS::Render::RHI::RHIPresentDesc& presentDesc) override
+            {
+                auto result = NLS::Render::Context::RhiCommandListExecutor::Get().RunBackendOperation(
+                    "MetalQueue::Present", [this, &presentDesc]
+                    {
+                        @autoreleasepool { return PresentOnSubmitLane(presentDesc); }
+                    }, true);
+                if (!result.Succeeded())
+                {
+                    if (const auto fence = std::dynamic_pointer_cast<MetalFence>(presentDesc.signalFence))
+                        fence->Fail();
+                }
+                return result;
+            }
+
+        private:
+            NLS::Render::RHI::RHIQueueOperationResult PresentOnSubmitLane(
+                const NLS::Render::RHI::RHIPresentDesc& presentDesc)
             {
                 const auto swapchain = std::dynamic_pointer_cast<MetalSwapchain>(presentDesc.swapchain);
                 if (swapchain == nullptr)
@@ -3222,21 +3379,11 @@ namespace NLS::Render::Backend
                     }
                     waitSemaphores.push_back(semaphore);
                 }
-                if (!swapchain->Present(
+                return swapchain->Present(
                         m_queue,
                         presentDesc.imageIndex,
                         waitSemaphores,
-                        signalFence))
-                {
-                    return {
-                        NLS::Render::RHI::RHIQueueOperationStatusCode::BackendFailure,
-                        "Metal swapchain does not own an acquired drawable."
-                    };
-                }
-                NLS::Render::RHI::RHIQueueOperationResult result{};
-                result.mayHaveQueuedGpuWork = true;
-                result.frameFenceSignalQueued = signalFence != nullptr;
-                return result;
+                        signalFence);
             }
 
         private:
@@ -3402,16 +3549,20 @@ namespace NLS::Render::Backend
                    destinationOffset:uploadDesc.destinationOffset
                                 size:uploadDesc.dataSize];
                 [blit endEncoding];
-                [uploadCommands commit];
-                [uploadCommands waitUntilCompleted];
-                [staging release];
-                if (uploadCommands.status == MTLCommandBufferStatusError)
+                const auto submission = CommitMetalCommandBuffer(uploadCommands, "MetalDevice::CreateBuffer", true);
+                if (!submission.Succeeded())
                 {
-                    const char* message = uploadCommands.error.localizedDescription.UTF8String;
-                    NLS_LOG_ERROR("CreateMetalBuffer: GPUOnly initial upload failed: " +
-                        std::string(message != nullptr ? message : "unknown Metal error"));
+                    if (submission.mayHaveQueuedGpuWork)
+                    {
+                        RetainUnsafeMetalResource(staging);
+                        RetainUnsafeMetalResource(result->GetBuffer());
+                        RetainUnsafeMetalResource(uploadCommands);
+                    }
+                    [staging release];
+                    NLS_LOG_ERROR("CreateMetalBuffer: " + submission.message);
                     return nullptr;
                 }
+                [staging release];
                 return result;
             }
             std::shared_ptr<NLS::Render::RHI::RHITexture> CreateTexture(
@@ -3631,17 +3782,21 @@ namespace NLS::Render::Backend
                         }
                     }
                     [blit endEncoding];
-                    [uploadCommands commit];
-                    [uploadCommands waitUntilCompleted];
-                    [stagingTexture release];
-                    if (uploadCommands.status == MTLCommandBufferStatusError)
+                    const auto submission = CommitMetalCommandBuffer(uploadCommands, "MetalDevice::CreateTexture", true);
+                    if (!submission.Succeeded())
                     {
-                        const char* message = uploadCommands.error.localizedDescription.UTF8String;
-                        NLS_LOG_ERROR("CreateMetalTexture: GPUOnly initial upload failed: " +
-                            std::string(message != nullptr ? message : "unknown Metal error"));
+                        if (submission.mayHaveQueuedGpuWork)
+                        {
+                            RetainUnsafeMetalResource(stagingTexture);
+                            RetainUnsafeMetalResource(texture);
+                            RetainUnsafeMetalResource(uploadCommands);
+                        }
+                        [stagingTexture release];
+                        NLS_LOG_ERROR("CreateMetalTexture: " + submission.message);
                         [texture release];
                         return nullptr;
                     }
+                    [stagingTexture release];
                 }
 
                 const auto initialState = uploadDesc.HasData()
@@ -3857,18 +4012,22 @@ namespace NLS::Render::Backend
                      destinationLevel:desc.mipLevel
                     destinationOrigin:MTLOriginMake(desc.x, desc.y, desc.z)];
                 [blit endEncoding];
-                [updateCommands commit];
-                [updateCommands waitUntilCompleted];
-                [stagingTexture release];
-                if (updateCommands.status == MTLCommandBufferStatusError)
+                const auto submission = CommitMetalCommandBuffer(updateCommands, "MetalDevice::UpdateTexture", true);
+                if (!submission.Succeeded())
                 {
-                    const char* message = updateCommands.error.localizedDescription.UTF8String;
+                    if (submission.mayHaveQueuedGpuWork)
+                    {
+                        RetainUnsafeMetalResource(stagingTexture);
+                        RetainUnsafeMetalResource(texture->GetTexture());
+                        RetainUnsafeMetalResource(updateCommands);
+                    }
+                    [stagingTexture release];
                     return {
                         NLS::Render::RHI::RHIUpdateStatusCode::BackendFailure,
-                        "Metal texture staging update failed: " +
-                            std::string(message != nullptr ? message : "unknown Metal error")
+                        submission.message
                     };
                 }
+                [stagingTexture release];
                 texture->SetState(textureDesc.usage != NLS::Render::RHI::TextureUsageFlags::None
                     ? ResolveUploadedMetalTextureState(textureDesc)
                     : texture->GetState());
@@ -4567,9 +4726,8 @@ namespace NLS::Render::Backend
                     };
                 }
 
-                // Every exposed Metal queue is backed by this serial MTLCommandQueue. Enqueuing
-                // the completion marker after frame submission orders it after graphics/compute
-                // writes, including logical semaphore dependencies from the shared queue.
+                // Cross-queue producers reach the graphics readback marker through
+                // their SharedEvent dependencies; all commits share the submit lane.
                 id<MTLCommandBuffer> completionMarker = [m_graphicsQueue commandBuffer];
                 if (completionMarker == nil)
                 {
@@ -4619,7 +4777,13 @@ namespace NLS::Render::Backend
                     desc.debugName);
                 if (readbackBuffer != source->GetBuffer())
                     [readbackBuffer release];
-                [completionMarker commit];
+                const auto submission = CommitMetalCommandBuffer(completionMarker, "MetalDevice::BeginReadBuffer");
+                if (!submission.Succeeded())
+                {
+                    if (submission.mayHaveQueuedGpuWork)
+                        (void)NLS::Render::Context::RhiCommandListExecutor::Get().DeferRelease({completion});
+                    return {NLS::Render::RHI::RHIReadbackStatusCode::BackendFailure, submission.message};
+                }
                 return {
                     NLS::Render::RHI::RHIReadbackStatusCode::Success,
                     {},
@@ -4790,7 +4954,13 @@ namespace NLS::Render::Backend
                     format,
                     data);
                 [stagingBuffer release];
-                [readbackCommands commit];
+                const auto submission = CommitMetalCommandBuffer(readbackCommands, "MetalDevice::BeginReadPixels");
+                if (!submission.Succeeded())
+                {
+                    if (submission.mayHaveQueuedGpuWork)
+                        (void)NLS::Render::Context::RhiCommandListExecutor::Get().DeferRelease({completion});
+                    return {NLS::Render::RHI::RHIReadbackStatusCode::BackendFailure, submission.message};
+                }
                 return {
                     NLS::Render::RHI::RHIReadbackStatusCode::Success,
                     {},
@@ -4836,6 +5006,11 @@ namespace NLS::Render::Backend
                 capabilities.SetFeature(NLS::Render::RHI::RHIDeviceFeature::AsyncReadback, true);
                 capabilities.SetFeature(NLS::Render::RHI::RHIDeviceFeature::UIOverlayFrameGraph, true,
                     "Metal uses the backend-neutral RHI ImGui overlay pass and ordered swapchain submission");
+                // Metal defaults to a dedicated RHI thread. Tasks mode stays
+                // disabled until thread ownership, UI commit ordering and long-run
+                // stability are verified on device.
+                capabilities.SetFeature(NLS::Render::RHI::RHIDeviceFeature::RhiTasksMode, false,
+                    "Metal RHI tasks mode is gated until thread ownership and concurrent submission are validated on device");
                 capabilities.maxTextureDimension2D = 16384u;
                 capabilities.maxColorAttachments = 8u;
 

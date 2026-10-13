@@ -4,7 +4,7 @@
 #include <Math/Matrix4.h>
 #include <Math/Vector3.h>
 #include <Resources/Material.h>
-#include <Rendering/Context/ThreadedRenderingLifecycle.h>
+#include <Rendering/Context/RenderScenePackage.h>
 
 #include <optional>
 #include <vector>

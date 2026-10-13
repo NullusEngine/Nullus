@@ -1,6 +1,7 @@
 #pragma once
 
 #include <memory>
+#include <vector>
 
 #include <Engine/Rendering/BaseSceneRenderer.h>
 #include <Components/CameraComponent.h>
@@ -60,7 +61,10 @@ namespace NLS::Game::Core
 
 		std::unique_ptr<Engine::Rendering::BaseSceneRenderer> m_sceneRenderer;
 		std::unique_ptr<Render::Buffers::Framebuffer> m_materialValidationFramebuffer;
-		std::shared_ptr<Render::RHI::RHITexture> m_pendingMaterialValidationReadbackTexture;
+		std::shared_ptr<Render::Context::PostSubmitTextureReadbackState> m_materialValidationReadbackState;
+		std::shared_ptr<std::vector<uint8_t>> m_materialValidationReadbackPixels;
+		uint32_t m_materialValidationReadbackWidth = 0u;
+		uint32_t m_materialValidationReadbackHeight = 0u;
 		std::optional<Launch::MaterialValidationLaunchSettings> m_materialValidation;
 		uint32_t m_presentedFrames = 0u;
 		bool m_materialValidationCaptured = false;

@@ -88,7 +88,9 @@ namespace NLS::Base::TaskGraph
     /**
      * Copyable completion token. Waiting from a registered named thread pumps
      * that thread's queue while it waits, so dependency chains that terminate
-     * on the same named thread cannot deadlock the caller.
+     * on the same named thread cannot deadlock the caller. Waiting from a pool
+     * worker assists the pool instead of parking, so a nested wait cannot
+     * deadlock even when the graph owns a single worker.
      */
     class NLS_BASE_API TaskCompletion final
     {
@@ -123,6 +125,8 @@ namespace NLS::Base::TaskGraph
 
         bool RegisterCurrentThread(NamedThread thread);
         void UnregisterCurrentThread(NamedThread thread);
+        /** Releases a joined thread's registration from its lifecycle owner. */
+        void UnregisterThread(NamedThread thread, std::thread::id threadId);
         [[nodiscard]] bool IsNamedThreadRegistered(NamedThread thread) const;
         [[nodiscard]] NamedThread GetCurrentNamedThread() const;
 
@@ -133,6 +137,7 @@ namespace NLS::Base::TaskGraph
             TaskPriority priority = TaskPriority::Normal,
             std::string debugName = {});
 
+        /** Pumps the current named lane, or assists runnable work on a pool worker. */
         size_t PumpCurrentThread(size_t maxTasks = 0u);
         size_t Pump(NamedThread thread, size_t maxTasks = 0u);
         bool WaitForWork(NamedThread thread, std::chrono::milliseconds timeout);
@@ -141,6 +146,19 @@ namespace NLS::Base::TaskGraph
         TaskStatus Wait(TaskHandle handle);
         bool WaitFor(TaskHandle handle, std::chrono::milliseconds timeout);
         [[nodiscard]] TaskCompletion GetCompletion(TaskHandle handle) const;
+
+        /**
+         * Requests cancellation of one task.
+         *
+         * A task that has not started yet is finalized as Cancelled and its
+         * dependents are cancelled transitively. A task that already entered its
+         * body cannot be preempted: the request is recorded so the body and any
+         * observer can read IsCancellationRequested, and the terminal status is
+         * whatever the body reports. Returns false when the handle is unknown,
+         * stale, or already terminal.
+         */
+        bool RequestCancel(TaskHandle handle);
+        [[nodiscard]] bool IsCancellationRequested(TaskHandle handle) const;
 
         /**
          * Releases the captured payloads of terminal nodes while keeping their
@@ -161,6 +179,15 @@ namespace NLS::Base::TaskGraph
         [[nodiscard]] size_t GetRunningTaskCount() const;
         [[nodiscard]] size_t GetNamedThreadQueueDepth(NamedThread thread) const;
         [[nodiscard]] bool IsWorkerThread() const noexcept;
+
+        /**
+         * Scheduling telemetry: how many task bodies were executed from a
+         * worker's own lane versus stolen from another lane. Used by the
+         * work-stealing validation tests and by rendering telemetry.
+         */
+        [[nodiscard]] size_t GetWorkerStealCount() const;
+        [[nodiscard]] size_t GetWorkerLocalExecutionCount() const;
+        [[nodiscard]] size_t GetWorkerInjectionExecutionCount() const;
 
     private:
         friend struct TaskCompletionState;

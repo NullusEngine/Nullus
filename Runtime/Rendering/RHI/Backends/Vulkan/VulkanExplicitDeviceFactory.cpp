@@ -11,11 +11,14 @@
 #include <vector>
 
 #include <Debug/Logger.h>
+#include "Rendering/Context/DriverAccess.h"
+#include "Rendering/Context/RhiCommandListExecutor.h"
 #include "Rendering/RHI/Core/RHIDevice.h"
 #include "Rendering/RHI/Core/RHICommand.h"
 #include "Rendering/RHI/Core/RHISync.h"
 #include "Rendering/RHI/Core/RHIBinding.h"
 #include "Rendering/RHI/Core/RHIPipeline.h"
+#include "Rendering/RHI/Core/RHISubresourceRangeUtils.h"
 #include "Rendering/RHI/BindingPointMap.h"
 
 #if NLS_HAS_VULKAN
@@ -29,9 +32,112 @@
 namespace NLS::Render::Backend
 {
 
+#if defined(NLS_ENABLE_TEST_HOOKS)
+    namespace { std::atomic_uint64_t g_vulkanValidationErrorCount { 0u }; }
+
+    uint64_t GetVulkanValidationErrorCountForTesting()
+    {
+        return g_vulkanValidationErrorCount.load(std::memory_order_relaxed);
+    }
+#endif
+
 #if NLS_HAS_VULKAN
 	namespace
 	{
+        struct VulkanSynchronousSubmission
+        {
+            NLS::Render::RHI::RHIQueueOperationResult result;
+            bool gpuCompleted = false;
+        };
+
+#if defined(VK_EXT_debug_utils)
+        /**
+         * Names a live Vulkan object for the validation layer and GPU captures.
+         *
+         * The backend already carries a debug name for every command buffer, pool
+         * and pipeline, but never published it, so validation messages identified
+         * objects only by opaque handle (for example `VkCommandBuffer 0x...[]`).
+         * Without the name a reported hazard cannot be attributed to the pass or
+         * the lane that recorded it. `vkSetDebugUtilsObjectNameEXT` needs the
+         * instance extension, which the device factory already enables whenever
+         * the loader offers it, so this is a no-op when the extension is missing.
+         */
+        void SetVulkanObjectDebugName(
+            VkDevice device,
+            const VkObjectType objectType,
+            const uint64_t objectHandle,
+            const std::string& debugName)
+        {
+            if (device == VK_NULL_HANDLE || objectHandle == 0u || debugName.empty())
+                return;
+
+            const auto setName = reinterpret_cast<PFN_vkSetDebugUtilsObjectNameEXT>(
+                vkGetDeviceProcAddr(device, "vkSetDebugUtilsObjectNameEXT"));
+            if (setName == nullptr)
+                return;
+
+            VkDebugUtilsObjectNameInfoEXT nameInfo{};
+            nameInfo.sType = VK_STRUCTURE_TYPE_DEBUG_UTILS_OBJECT_NAME_INFO_EXT;
+            nameInfo.objectType = objectType;
+            nameInfo.objectHandle = objectHandle;
+            nameInfo.pObjectName = debugName.c_str();
+            (void)setName(device, &nameInfo);
+        }
+#endif
+
+        VulkanSynchronousSubmission SubmitAndWaitVulkanCommands(
+            VkQueue queue, const VkSubmitInfo& submitInfo, const std::string& debugName)
+        {
+            VulkanSynchronousSubmission submission;
+            submission.result = NLS::Render::Context::RhiCommandListExecutor::Get().RunBackendOperation(
+                debugName,
+                [&]
+                {
+                    const VkResult submitResult = vkQueueSubmit(queue, 1u, &submitInfo, VK_NULL_HANDLE);
+                    const bool mayHaveQueued = submitResult != VK_ERROR_OUT_OF_HOST_MEMORY &&
+                        submitResult != VK_ERROR_OUT_OF_DEVICE_MEMORY;
+                    const VkResult completionResult = submitResult == VK_SUCCESS
+                        ? vkQueueWaitIdle(queue) : submitResult;
+                    submission.gpuCompleted = completionResult == VK_SUCCESS;
+                    return NLS::Render::RHI::RHIQueueOperationResult{
+                        submission.gpuCompleted ? NLS::Render::RHI::RHIQueueOperationStatusCode::Success :
+                            (completionResult == VK_ERROR_DEVICE_LOST ? NLS::Render::RHI::RHIQueueOperationStatusCode::DeviceLost :
+                                NLS::Render::RHI::RHIQueueOperationStatusCode::BackendFailure),
+                        submission.gpuCompleted ? std::string{} : debugName + ": VkResult=" + std::to_string(completionResult),
+                        mayHaveQueued};
+                });
+            if (!submission.gpuCompleted && submission.result.mayHaveQueuedGpuWork)
+            {
+                NLS::Render::Context::MarkLocatedDriverUnsafeGpuWorkQuarantined(submission.result.message);
+                if (submission.result.code == NLS::Render::RHI::RHIQueueOperationStatusCode::DeviceLost)
+                    NLS::Render::Context::MarkLocatedDriverDeviceLost(submission.result.message);
+            }
+            return submission;
+        }
+
+        NLS::Render::RHI::RHIQueueOperationResult WaitVulkanQueueIdle(VkQueue queue)
+        {
+            return NLS::Render::Context::RhiCommandListExecutor::Get().RunBackendOperation(
+                "Vulkan::WaitQueueIdle",
+                [queue]
+                {
+                    const VkResult result = vkQueueWaitIdle(queue);
+                    return NLS::Render::RHI::RHIQueueOperationResult{
+                        result == VK_SUCCESS ? NLS::Render::RHI::RHIQueueOperationStatusCode::Success :
+                            (result == VK_ERROR_DEVICE_LOST ? NLS::Render::RHI::RHIQueueOperationStatusCode::DeviceLost :
+                                NLS::Render::RHI::RHIQueueOperationStatusCode::BackendFailure),
+                        result == VK_SUCCESS ? std::string{} : "Vulkan queue wait failed VkResult=" + std::to_string(result)};
+                });
+        }
+
+        void RetainUnsafeVulkanResource(const std::shared_ptr<void>& owner)
+        {
+            static auto* mutex = new std::mutex();
+            static auto* owners = new std::vector<std::shared_ptr<void>>();
+            std::lock_guard lock(*mutex);
+            owners->push_back(owner);
+        }
+
 #if defined(VK_EXT_debug_utils)
         VKAPI_ATTR VkBool32 VKAPI_CALL VulkanDebugCallback(
             VkDebugUtilsMessageSeverityFlagBitsEXT severity,
@@ -48,7 +154,12 @@ namespace NLS::Render::Backend
                     ? "[Vulkan][Validation][Warning] "
                     : "[Vulkan][Validation] ";
             if ((severity & VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT) != 0)
+            {
+#if defined(NLS_ENABLE_TEST_HOOKS)
+                g_vulkanValidationErrorCount.fetch_add(1u, std::memory_order_relaxed);
+#endif
                 NLS_LOG_ERROR(std::string(prefix) + callbackData->pMessage);
+            }
             else
                 NLS_LOG_WARNING(std::string(prefix) + callbackData->pMessage);
             return VK_FALSE;
@@ -394,6 +505,8 @@ namespace NLS::Render::Backend
 #endif
 
 		private:
+			NLS::Render::RHI::RHIQueueOperationResult SubmitOnSubmitLane(const NLS::Render::RHI::RHISubmitDesc& submitDesc);
+			NLS::Render::RHI::RHIQueueOperationResult PresentOnSubmitLane(const NLS::Render::RHI::RHIPresentDesc& presentDesc);
 			std::mutex m_queueMutex;
 			VkDevice m_device = nullptr;
 			VkQueue m_queue = nullptr;
@@ -667,9 +780,10 @@ namespace NLS::Render::Backend
 				submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
 				submitInfo.commandBufferCount = 1u;
 				submitInfo.pCommandBuffers = &commandBuffer;
-				transitioned = vkQueueSubmit(queue, 1u, &submitInfo, VK_NULL_HANDLE) == VK_SUCCESS;
-				if (transitioned)
-					transitioned = vkQueueWaitIdle(queue) == VK_SUCCESS;
+					const auto submission = SubmitAndWaitVulkanCommands(queue, submitInfo, "Vulkan::FallbackTexture");
+					transitioned = submission.gpuCompleted;
+					if (!transitioned && submission.result.mayHaveQueuedGpuWork)
+						return false;
 			}
 			if (commandPool != VK_NULL_HANDLE)
 				vkDestroyCommandPool(device, commandPool, nullptr);
@@ -694,12 +808,41 @@ namespace NLS::Render::Backend
 		}
 #endif
 
+		/**
+		 * Owns one VkCommandPool until the last command buffer allocated from it is
+		 * gone.
+		 *
+		 * The pool object and its command buffers have independent C++ lifetimes: a
+		 * frame slot can release its command pool while a translated batch still holds
+		 * a buffer that was allocated from it. Destroying the pool first frees those
+		 * buffers inside the ICD, so the buffer's later vkFreeCommandBuffers touches a
+		 * destroyed pool - which crashed AMDVLK with an access violation. Holding this
+		 * token from every command buffer keeps the pool valid until the last owner
+		 * releases it, which is also the ordering Vulkan requires.
+		 */
+		struct NativeVulkanCommandPoolLifetime
+		{
+#if NLS_HAS_VULKAN
+			VkDevice device = nullptr;
+			VkCommandPool commandPool = nullptr;
+
+			~NativeVulkanCommandPoolLifetime()
+			{
+				if (device != nullptr && commandPool != nullptr)
+					vkDestroyCommandPool(device, commandPool, nullptr);
+			}
+#endif
+		};
+
 		class NativeVulkanCommandBuffer final : public NLS::Render::RHI::RHICommandBuffer
 		{
 		public:
-			NativeVulkanCommandBuffer(VkDevice device, VkCommandPool commandPool, const std::string& debugName, bool dynamicRenderingEnabled)
+			NativeVulkanCommandBuffer(VkDevice device, VkCommandPool commandPool,
+				std::shared_ptr<NativeVulkanCommandPoolLifetime> poolLifetime,
+				const std::string& debugName, bool dynamicRenderingEnabled)
 				: m_device(device)
 				, m_commandPool(commandPool)
+				, m_poolLifetime(std::move(poolLifetime))
 				, m_debugName(debugName)
 				, m_dynamicRenderingEnabled(dynamicRenderingEnabled)
 			{
@@ -715,6 +858,12 @@ namespace NLS::Render::Backend
 					VkResult result = vkAllocateCommandBuffers(device, &allocInfo, &m_commandBuffer);
 					if (result != VK_SUCCESS)
 						m_commandBuffer = nullptr;
+					else
+						SetVulkanObjectDebugName(
+							device,
+							VK_OBJECT_TYPE_COMMAND_BUFFER,
+							reinterpret_cast<uint64_t>(m_commandBuffer),
+							m_debugName);
 				}
 #endif
 			}
@@ -731,6 +880,7 @@ namespace NLS::Render::Backend
 			std::string_view GetDebugName() const override { return m_debugName; }
 			void Begin() override
 			{
+                m_explicitResourceStates = false;
 #if NLS_HAS_VULKAN
 				if (m_commandBuffer == nullptr)
 					return;
@@ -1008,7 +1158,8 @@ namespace NLS::Render::Backend
 						colorRange.baseArrayLayer);
 					if (attachment.initialLayout == VK_IMAGE_LAYOUT_UNDEFINED && presentAttachment)
 						attachment.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-					attachment.finalLayout = presentAttachment ? VK_IMAGE_LAYOUT_PRESENT_SRC_KHR : VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+					attachment.finalLayout = presentAttachment && !desc.attachmentsRequireExternalStateTransitions
+                        ? VK_IMAGE_LAYOUT_PRESENT_SRC_KHR : VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
 					attachments.push_back(attachment);
 					colorReferences.push_back({ static_cast<uint32_t>(attachments.size() - 1u), VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL });
 					imageViews.push_back(imageView);
@@ -1034,10 +1185,21 @@ namespace NLS::Render::Backend
 					attachment.storeOp = toStoreOp(depth.depthStoreOp);
 					attachment.stencilLoadOp = toLoadOp(depth.stencilLoadOp);
 					attachment.stencilStoreOp = toStoreOp(depth.stencilStoreOp);
-					attachment.initialLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
-					attachment.finalLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+                        const auto depthLayout = depth.readOnlyDepthStencil
+                            ? VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL : VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+                        const auto nativeImage = depth.view->GetTexture()->GetNativeImageHandle();
+                        const auto depthImage = static_cast<VkImage>(nativeImage.handle);
+                        const auto& depthRange = depth.view->GetDesc().subresourceRange;
+                        // Initial layout describes the preceding commands, not the
+                        // layout the subpass will use after its implicit transition.
+                        attachment.initialLayout = GetTrackedImageLayout(
+                            depthImage, depthRange.baseMipLevel, depthRange.baseArrayLayer);
+                        if (attachment.initialLayout == VK_IMAGE_LAYOUT_UNDEFINED &&
+                            desc.attachmentsRequireExternalStateTransitions)
+                            attachment.initialLayout = depthLayout;
+                        attachment.finalLayout = depthLayout;
 					attachments.push_back(attachment);
-					depthReference = { static_cast<uint32_t>(attachments.size() - 1u), VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL };
+						depthReference = { static_cast<uint32_t>(attachments.size() - 1u), depthLayout };
 					imageViews.push_back(imageView);
 					VkClearValue clear{};
 					clear.depthStencil = { depth.clearValue.depth, depth.clearValue.stencil };
@@ -1121,7 +1283,7 @@ namespace NLS::Render::Backend
 							VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
 							colorRange.baseMipLevel,
 							colorRange.baseArrayLayer);
-						if (isPresent(color.view))
+							if (isPresent(color.view) && !desc.attachmentsRequireExternalStateTransitions)
 							m_activePresentImages.push_back(image);
 					}
 				}
@@ -1135,7 +1297,8 @@ namespace NLS::Render::Backend
 						const auto& depthRange = desc.depthStencilAttachment->view->GetDesc().subresourceRange;
 						SetTrackedImageLayout(
 							static_cast<VkImage>(native.handle),
-							VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
+								desc.depthStencilAttachment->readOnlyDepthStencil
+                                    ? VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL : VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
 							depthRange.baseMipLevel,
 							depthRange.baseArrayLayer);
 					}
@@ -1361,8 +1524,50 @@ namespace NLS::Render::Backend
 				vkCmdCopyImage(m_commandBuffer, srcImage, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, dstImage, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &copyRegion);
 #endif
 			}
+            NLS::Render::RHI::RHIBarrierDesc FilterBarrierDesc(const NLS::Render::RHI::RHIBarrierDesc& barrier) const override
+            {
+                if (barrier.statesAreExplicit)
+                    return barrier;
+                auto resolved = barrier;
+#if NLS_HAS_VULKAN
+                for (auto& transition : resolved.textureBarriers)
+                {
+                    if (transition.texture == nullptr || transition.before != NLS::Render::RHI::ResourceState::Present)
+                        continue;
+                    const auto handle = transition.texture->GetNativeImageHandle();
+                    if (handle.backend == NLS::Render::RHI::BackendType::Vulkan &&
+                        !HasVulkanImageLayout(static_cast<VkImage>(handle.handle),
+                            transition.subresourceRange.baseMipLevel, transition.subresourceRange.baseArrayLayer))
+                        transition.before = NLS::Render::RHI::ResourceState::Unknown;
+                }
+#endif
+                return resolved;
+            }
+
+            void CommitResourceStates(const NLS::Render::RHI::RHIBarrierDesc& barrier) override
+            {
+#if NLS_HAS_VULKAN
+                for (const auto& transition : barrier.textureBarriers)
+                {
+                    if (transition.texture == nullptr)
+                        continue;
+                    const auto handle = transition.texture->GetNativeImageHandle();
+                    const auto range = NLS::Render::RHI::NormalizeTextureSubresourceRange(
+                        transition.texture->GetDesc(), transition.subresourceRange);
+                    const auto layout = ToVkImageLayout(transition.after);
+                    if (handle.backend != NLS::Render::RHI::BackendType::Vulkan || !range.has_value() ||
+                        layout == VK_IMAGE_LAYOUT_UNDEFINED || layout == VK_IMAGE_LAYOUT_PREINITIALIZED)
+                        continue;
+                    for (uint32_t mip = range->baseMipLevel; mip < range->baseMipLevel + range->mipLevelCount; ++mip)
+                        for (uint32_t layer = range->baseArrayLayer; layer < range->baseArrayLayer + range->arrayLayerCount; ++layer)
+                            SetVulkanImageLayout(static_cast<VkImage>(handle.handle), layout, mip, layer);
+                    SetVulkanTextureLogicalState(transition.texture, transition.after);
+                }
+#endif
+            }
 			void Barrier(const NLS::Render::RHI::RHIBarrierDesc& barrier) override
 			{
+                m_explicitResourceStates = barrier.statesAreExplicit;
 #if NLS_HAS_VULKAN
 				if (m_commandBuffer == nullptr)
 					return;
@@ -1413,7 +1618,9 @@ namespace NLS::Render::Backend
 						: (baseArrayLayer < textureLayerCount ? textureLayerCount - baseArrayLayer : 0u);
 					if (mipLevelCount == 0u || arrayLayerCount == 0u)
 						continue;
-					if (HasTrackedImageLayout(image, baseMipLevel, baseArrayLayer))
+                    if (barrier.statesAreExplicit)
+                        vkBarrier.oldLayout = ToVkImageLayout(tb.before);
+					else if (HasTrackedImageLayout(image, baseMipLevel, baseArrayLayer))
 						vkBarrier.oldLayout = GetTrackedImageLayout(image, baseMipLevel, baseArrayLayer);
 					else
 					{
@@ -1454,7 +1661,8 @@ namespace NLS::Render::Backend
 						for (uint32_t arrayLayer = baseArrayLayer; arrayLayer < baseArrayLayer + arrayLayerCount; ++arrayLayer)
 							SetTrackedImageLayout(image, vkBarrier.newLayout, mipLevel, arrayLayer);
 					}
-					SetVulkanTextureLogicalState(tb.texture, tb.after);
+                    if (!barrier.statesAreExplicit)
+					    SetVulkanTextureLogicalState(tb.texture, tb.after);
 				}
 
 				VkPipelineStageFlags srcStage = VK_PIPELINE_STAGE_ALL_COMMANDS_BIT;
@@ -1480,9 +1688,15 @@ namespace NLS::Render::Backend
 			bool m_recording = false;
 			bool m_inRenderPass = false;
 			bool m_dynamicRenderingEnabled = false;
+            bool m_explicitResourceStates = false;
 #if NLS_HAS_VULKAN
 			VkDevice m_device = nullptr;
 			VkCommandPool m_commandPool = nullptr;
+			// Keeps the allocating pool (and its VkCommandPool) alive until this
+			// buffer is destroyed. The destructor body frees the buffer before its
+			// members - including this token - are released, so the free always sees
+			// a live pool.
+			std::shared_ptr<NativeVulkanCommandPoolLifetime> m_poolLifetime;
 			VkCommandBuffer m_commandBuffer = nullptr;
 			VkPipelineLayout m_boundPipelineLayout = VK_NULL_HANDLE;
 			NativeVulkanPipelineLayout* m_boundPipelineLayoutOwner = nullptr;
@@ -1510,7 +1724,7 @@ namespace NLS::Render::Backend
 					if (whole != m_imageLayouts.end())
 						return whole->second;
 				}
-				return GetVulkanImageLayout(image, mipLevel, arrayLayer);
+                return m_explicitResourceStates ? VK_IMAGE_LAYOUT_UNDEFINED : GetVulkanImageLayout(image, mipLevel, arrayLayer);
 			}
 
 			bool HasTrackedImageLayout(
@@ -1525,7 +1739,7 @@ namespace NLS::Render::Backend
 					if (m_imageLayouts.find({ image, kWholeImageSubresource, kWholeImageSubresource }) != m_imageLayouts.end())
 						return true;
 				}
-				return HasVulkanImageLayout(image, mipLevel, arrayLayer);
+                return !m_explicitResourceStates && HasVulkanImageLayout(image, mipLevel, arrayLayer);
 			}
 
 			void SetTrackedImageLayout(
@@ -1535,7 +1749,8 @@ namespace NLS::Render::Backend
 				uint32_t arrayLayer = kWholeImageSubresource)
 			{
 				m_imageLayouts[{ image, mipLevel, arrayLayer }] = layout;
-				SetVulkanImageLayout(image, layout, mipLevel, arrayLayer);
+                if (!m_explicitResourceStates)
+				    SetVulkanImageLayout(image, layout, mipLevel, arrayLayer);
 			}
 
 			void DestroyActiveRenderPass()
@@ -1594,9 +1809,11 @@ namespace NLS::Render::Backend
 				case NLS::Render::RHI::ResourceState::RenderTarget:
 					return VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
 				case NLS::Render::RHI::ResourceState::DepthRead:
+					return VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL;
 				case NLS::Render::RHI::ResourceState::DepthWrite:
 					return VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
 				case NLS::Render::RHI::ResourceState::ShaderRead:
+					case NLS::Render::RHI::ResourceState::ShaderReadNonPixel:
 					return VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 				case NLS::Render::RHI::ResourceState::Present:
 					return VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
@@ -1610,6 +1827,12 @@ namespace NLS::Render::Backend
 		};
 
 		NLS::Render::RHI::RHIQueueOperationResult NativeVulkanQueue::SubmitChecked(const NLS::Render::RHI::RHISubmitDesc& submitDesc)
+		{
+			return NLS::Render::Context::RhiCommandListExecutor::Get().RunBackendOperation(
+				"NativeVulkanQueue::Submit", [this, &submitDesc] { return SubmitOnSubmitLane(submitDesc); });
+		}
+
+		NLS::Render::RHI::RHIQueueOperationResult NativeVulkanQueue::SubmitOnSubmitLane(const NLS::Render::RHI::RHISubmitDesc& submitDesc)
 		{
 			NLS::Render::RHI::RHIQueueOperationResult result;
 #if NLS_HAS_VULKAN
@@ -1636,7 +1859,8 @@ namespace NLS::Render::Backend
 				}
 				vkCommandBuffers.push_back(nativeCmdBuffer->GetCommandBuffer());
 			}
-			if (vkCommandBuffers.empty())
+			if (vkCommandBuffers.empty() && submitDesc.signalFence == nullptr &&
+				submitDesc.signalSemaphores.empty() && submitDesc.waitSemaphores.empty())
 			{
 				result.code = NLS::Render::RHI::RHIQueueOperationStatusCode::InvalidArgument;
 				result.message = "Submit contains no command buffers";
@@ -1664,7 +1888,12 @@ namespace NLS::Render::Backend
 			// intentionally reuses semaphore wrappers, so retire their previous
 			// signal after all earlier queue work has completed and give this submit a
 			// fresh VkSemaphore handle.
-			(void)vkQueueWaitIdle(m_queue);
+			if (!submitDesc.signalSemaphores.empty())
+			{
+				const auto idle = WaitVulkanQueueIdle(m_queue);
+				if (!idle.Succeeded())
+					return idle;
+			}
 			for (const auto& semaphore : submitDesc.signalSemaphores)
 			{
 				auto* nativeSemaphore = dynamic_cast<NativeVulkanSemaphore*>(semaphore.get());
@@ -1734,6 +1963,12 @@ namespace NLS::Render::Backend
 
 		NLS::Render::RHI::RHIQueueOperationResult NativeVulkanQueue::PresentChecked(const NLS::Render::RHI::RHIPresentDesc& presentDesc)
 		{
+			return NLS::Render::Context::RhiCommandListExecutor::Get().RunBackendOperation(
+				"NativeVulkanQueue::Present", [this, &presentDesc] { return PresentOnSubmitLane(presentDesc); }, true);
+		}
+
+		NLS::Render::RHI::RHIQueueOperationResult NativeVulkanQueue::PresentOnSubmitLane(const NLS::Render::RHI::RHIPresentDesc& presentDesc)
+		{
 			NLS::Render::RHI::RHIQueueOperationResult result;
 #if NLS_HAS_VULKAN
 			std::lock_guard<std::mutex> queueLock(m_queueMutex);
@@ -1776,8 +2011,14 @@ namespace NLS::Render::Backend
 			presentInfo.pSwapchains = &swapchain;
 			presentInfo.pImageIndices = &presentDesc.imageIndex;
 			const VkResult vkResult = vkQueuePresentKHR(m_queue, &presentInfo);
-			result.mayHaveQueuedGpuWork = vkResult == VK_SUCCESS || vkResult == VK_SUBOPTIMAL_KHR;
-			if (vkResult == VK_SUCCESS || vkResult == VK_SUBOPTIMAL_KHR)
+			// VK_ERROR_OUT_OF_DATE_KHR is the routine "the window changed under the
+			// swapchain" answer, not a queue failure. The present may or may not have
+			// been executed, so the GPU work still has to be retired through the frame
+			// fence, and the caller rebuilds the swapchain instead of failing the frame.
+			const bool presentAccepted = vkResult == VK_SUCCESS || vkResult == VK_SUBOPTIMAL_KHR;
+			const bool swapchainOutOfDate = vkResult == VK_ERROR_OUT_OF_DATE_KHR;
+			result.mayHaveQueuedGpuWork = presentAccepted || swapchainOutOfDate;
+			if (presentAccepted || swapchainOutOfDate)
 			{
 				if (presentDesc.signalFence != nullptr)
 				{
@@ -1798,8 +2039,12 @@ namespace NLS::Render::Backend
 						}
 					}
 				}
-				result.code = NLS::Render::RHI::RHIQueueOperationStatusCode::Success;
-				if (vkResult == VK_SUBOPTIMAL_KHR)
+				result.code = swapchainOutOfDate
+					? NLS::Render::RHI::RHIQueueOperationStatusCode::SwapchainOutOfDate
+					: NLS::Render::RHI::RHIQueueOperationStatusCode::Success;
+				if (swapchainOutOfDate)
+					result.message = "vkQueuePresentKHR returned VK_ERROR_OUT_OF_DATE_KHR";
+				else if (vkResult == VK_SUBOPTIMAL_KHR)
 					result.message = "vkQueuePresentKHR returned VK_SUBOPTIMAL_KHR";
 				return result;
 			}
@@ -1834,21 +2079,22 @@ namespace NLS::Render::Backend
 				, m_debugName(debugName)
 				, m_dynamicRenderingEnabled(dynamicRenderingEnabled)
 			{
-			}
-			~NativeVulkanCommandPool()
-			{
 #if NLS_HAS_VULKAN
-				if (m_device != VK_NULL_HANDLE && m_commandPool != VK_NULL_HANDLE)
-					vkDestroyCommandPool(m_device, m_commandPool, nullptr);
+				m_lifetime = std::make_shared<NativeVulkanCommandPoolLifetime>();
+				m_lifetime->device = device;
+				m_lifetime->commandPool = commandPool;
 #endif
 			}
+			~NativeVulkanCommandPool() = default;
 
 			std::string_view GetDebugName() const override { return m_debugName; }
 			NLS::Render::RHI::QueueType GetQueueType() const override { return m_queueType; }
 			std::shared_ptr<NLS::Render::RHI::RHICommandBuffer> CreateCommandBuffer(std::string debugName) override
 			{
 #if NLS_HAS_VULKAN
-				return std::make_shared<NativeVulkanCommandBuffer>(m_device, m_commandPool, debugName.empty() ? m_debugName : debugName, m_dynamicRenderingEnabled);
+				return std::make_shared<NativeVulkanCommandBuffer>(
+					m_device, m_commandPool, m_lifetime,
+					debugName.empty() ? m_debugName : debugName, m_dynamicRenderingEnabled);
 #else
 				return nullptr;
 #endif
@@ -1868,6 +2114,9 @@ namespace NLS::Render::Backend
 		private:
 			VkDevice m_device = nullptr;
 			VkCommandPool m_commandPool = nullptr;
+#if NLS_HAS_VULKAN
+			std::shared_ptr<NativeVulkanCommandPoolLifetime> m_lifetime;
+#endif
 			NLS::Render::RHI::QueueType m_queueType = NLS::Render::RHI::QueueType::Graphics;
 			std::string m_debugName;
 			bool m_dynamicRenderingEnabled = false;
@@ -2021,6 +2270,13 @@ namespace NLS::Render::Backend
 			{
 				// Don't fetch images here - physical device may not be set yet.
 				// Images will be fetched lazily when GetBackbufferView is first called.
+#if defined(VK_EXT_debug_utils)
+					SetVulkanObjectDebugName(
+						m_device,
+						VK_OBJECT_TYPE_SWAPCHAIN_KHR,
+						reinterpret_cast<uint64_t>(m_swapchain),
+						"NativeVulkanSwapchain");
+#endif
 			}
 
 			~NativeVulkanSwapchain()
@@ -2040,13 +2296,26 @@ namespace NLS::Render::Backend
 			{
 #if NLS_HAS_VULKAN
 				if (m_device == nullptr || m_swapchain == nullptr)
+				{
+					NLS_LOG_WARNING(
+						"NativeVulkanSwapchain::AcquireNextImage: swapchain is not initialized");
 					return std::nullopt;
+				}
 
 				// Acquire semaphores and swapchain images are binary/exclusive resources.
 				// Serialize the WSL baseline path so a previous present has completed before
 				// the frame slot's semaphore and image are reused.
 				if (m_queue != VK_NULL_HANDLE)
-					(void)vkQueueWaitIdle(m_queue);
+				{
+					const auto idle = WaitVulkanQueueIdle(m_queue);
+					if (!idle.Succeeded())
+					{
+						NLS_LOG_WARNING(
+							"NativeVulkanSwapchain::AcquireNextImage: queue idle wait failed: " +
+							idle.message);
+						return std::nullopt;
+					}
+				}
 
 				// Wait on fence if provided (same pattern as DX12)
 				if (signalFence != nullptr)
@@ -2063,20 +2332,44 @@ namespace NLS::Render::Backend
 
 				// Actually acquire the next image from the swapchain
 				uint32_t imageIndex = 0;
-					// The WSLg/Mesa surface can report minImageCount == imageCount - 1.
-					// In that case an infinite acquire timeout is invalid while one image
-					// remains acquired. A non-blocking acquire lets the frame scheduler
-					// retry without tripping VUID-vkAcquireNextImageKHR-swapchain-01802.
-					VkResult result = vkAcquireNextImageKHR(
-					m_device,
-					m_swapchain,
-					0u,
-					vkSemaphore,
-					VK_NULL_HANDLE, // no fence in AcquireNextImage (we use the one in Driver)
-					&imageIndex);
+				// A finite timeout is legal even when an image is still held; only an
+				// infinite one trips VUID-vkAcquireNextImageKHR-swapchain-01802 on
+				// surfaces whose minImageCount is one below the image count (WSLg/Mesa).
+				//
+				// VK_NOT_READY and VK_TIMEOUT mean "the presentation engine has not freed
+				// an image yet", which happens routinely: the present that releases the
+				// image is ordered before this acquire on the submit lane but the
+				// presentation engine finishes asynchronously. They are retryable, so wait
+				// for the image instead of failing the frame. Every other result - most
+				// importantly VK_ERROR_OUT_OF_DATE_KHR - is reported to the caller, which
+				// rebuilds the swapchain.
+				constexpr uint64_t kAcquireWaitNanoseconds = 100'000'000ull; // 100 ms per attempt
+				constexpr uint32_t kAcquireMaxAttempts = 10u;                // ~1 s worst case
+				VkResult result = VK_NOT_READY;
+				for (uint32_t attempt = 0u; attempt < kAcquireMaxAttempts; ++attempt)
+				{
+					result = vkAcquireNextImageKHR(
+						m_device,
+						m_swapchain,
+						kAcquireWaitNanoseconds,
+						vkSemaphore,
+						VK_NULL_HANDLE, // no fence in AcquireNextImage (we use the one in Driver)
+						&imageIndex);
+					if (result == VK_SUCCESS || result == VK_SUBOPTIMAL_KHR)
+						break;
+					// Neither result signals the semaphore, so it stays reusable here.
+					if (result != VK_NOT_READY && result != VK_TIMEOUT)
+						break;
+				}
 
 				if (result != VK_SUCCESS && result != VK_SUBOPTIMAL_KHR)
+				{
+					NLS_LOG_WARNING(
+						"NativeVulkanSwapchain::AcquireNextImage: vkAcquireNextImageKHR returned VkResult=" +
+						std::to_string(static_cast<int>(result)) +
+						" after " + std::to_string(kAcquireMaxAttempts) + " attempts");
 					return std::nullopt;
+				}
 
 				NLS::Render::RHI::RHIAcquiredImage image;
 				image.imageIndex = imageIndex;
@@ -2140,8 +2433,15 @@ namespace NLS::Render::Backend
 
 				// Determine extent
 				VkExtent2D extent{};
-				extent.width = width > 0 ? width : surfaceCapabilities.currentExtent.width;
-				extent.height = height > 0 ? height : surfaceCapabilities.currentExtent.height;
+                    if (surfaceCapabilities.currentExtent.width != UINT32_MAX)
+                        extent = surfaceCapabilities.currentExtent;
+                    else
+                    {
+                        extent.width = std::clamp(width, surfaceCapabilities.minImageExtent.width, surfaceCapabilities.maxImageExtent.width);
+                        extent.height = std::clamp(height, surfaceCapabilities.minImageExtent.height, surfaceCapabilities.maxImageExtent.height);
+                    }
+                    if (extent.width == 0u || extent.height == 0u)
+                        return false;
 
 				// Determine image count
 				uint32_t imageCount = std::max(surfaceCapabilities.minImageCount, m_imageCount);
@@ -2344,7 +2644,8 @@ namespace NLS::Render::Backend
 					bufferInfo.usage |= VK_BUFFER_USAGE_INDEX_BUFFER_BIT;
 				if (NLS::Render::RHI::HasBufferUsage(desc.usage, NLS::Render::RHI::BufferUsageFlags::Uniform))
 					bufferInfo.usage |= VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT;
-				if (NLS::Render::RHI::HasBufferUsage(desc.usage, NLS::Render::RHI::BufferUsageFlags::Storage))
+					if (NLS::Render::RHI::HasBufferUsage(desc.usage, NLS::Render::RHI::BufferUsageFlags::Storage) ||
+                        NLS::Render::RHI::HasBufferUsage(desc.usage, NLS::Render::RHI::BufferUsageFlags::ShaderRead))
 					bufferInfo.usage |= VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
 				if (NLS::Render::RHI::HasBufferUsage(desc.usage, NLS::Render::RHI::BufferUsageFlags::Indirect))
 					bufferInfo.usage |= VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT;
@@ -4325,8 +4626,15 @@ namespace NLS::Render::Backend
 
 				// Determine extent
 				VkExtent2D extent{};
-				extent.width = desc.width > 0 ? desc.width : surfaceCapabilities.currentExtent.width;
-				extent.height = desc.height > 0 ? desc.height : surfaceCapabilities.currentExtent.height;
+                    if (surfaceCapabilities.currentExtent.width != UINT32_MAX)
+                        extent = surfaceCapabilities.currentExtent;
+                    else
+                    {
+                        extent.width = std::clamp(desc.width, surfaceCapabilities.minImageExtent.width, surfaceCapabilities.maxImageExtent.width);
+                        extent.height = std::clamp(desc.height, surfaceCapabilities.minImageExtent.height, surfaceCapabilities.maxImageExtent.height);
+                    }
+                    if (extent.width == 0u || extent.height == 0u)
+                        return nullptr;
 
 				// Determine image count
 				uint32_t imageCount = std::max(surfaceCapabilities.minImageCount, desc.imageCount > 0 ? desc.imageCount : 2);
@@ -4814,9 +5122,13 @@ namespace NLS::Render::Backend
 				0u,
 				nullptr
 			};
-			const bool submitted = vkQueueSubmit(m_graphicsQueue, 1u, &submitInfo, VK_NULL_HANDLE) == VK_SUCCESS;
-			if (submitted)
-				vkQueueWaitIdle(m_graphicsQueue);
+			const auto submission = SubmitAndWaitVulkanCommands(m_graphicsQueue, submitInfo, "Vulkan::TextureUpload");
+			const bool submitted = submission.gpuCompleted;
+			if (!submitted && submission.result.mayHaveQueuedGpuWork)
+			{
+				RetainUnsafeVulkanResource(texture);
+				return false;
+			}
 			vkFreeCommandBuffers(m_device, commandPool, 1u, &commandBuffer);
 			vkDestroyCommandPool(m_device, commandPool, nullptr);
 			vmaDestroyBuffer(m_allocator, stagingBuffer, stagingAllocation);
@@ -5028,7 +5340,8 @@ namespace NLS::Render::Backend
 				switch (texture->GetState())
 				{
 				case NLS::Render::RHI::ResourceState::Present: return VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
-				case NLS::Render::RHI::ResourceState::ShaderRead: return VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+				case NLS::Render::RHI::ResourceState::ShaderRead:
+				case NLS::Render::RHI::ResourceState::ShaderReadNonPixel: return VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 				case NLS::Render::RHI::ResourceState::RenderTarget: return VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
 				case NLS::Render::RHI::ResourceState::CopySrc: return VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
 				// Readback must restore a legal destination layout. Unknown is a
@@ -5113,16 +5426,20 @@ namespace NLS::Render::Backend
 				0,
 				nullptr
 			};
-			if (vkQueueSubmit(m_graphicsQueue, 1, &submitInfo, VK_NULL_HANDLE) != VK_SUCCESS)
+			const auto submission = SubmitAndWaitVulkanCommands(m_graphicsQueue, submitInfo, "Vulkan::ReadPixels");
+			if (!submission.gpuCompleted)
 			{
+				if (submission.result.mayHaveQueuedGpuWork)
+				{
+					RetainUnsafeVulkanResource(texture);
+					return;
+				}
 				vkFreeCommandBuffers(m_device, commandPool, 1, &commandBuffer);
 				vkDestroyCommandPool(m_device, commandPool, nullptr);
 				vmaDestroyBuffer(m_allocator, readbackBuffer, readbackAllocation);
 				return;
 			}
 
-			// Wait for completion
-			vkQueueWaitIdle(m_graphicsQueue);
 			SetVulkanImageLayout(srcImage, sourceLayout, 0u, 0u);
 
 			// Map memory and copy data
@@ -5375,6 +5692,7 @@ namespace NLS::Render::Backend
 		vkEnumeratePhysicalDevices(instance, &physicalDeviceCount, physicalDevices.data());
 
 		VkPhysicalDevice physicalDevice = VK_NULL_HANDLE;
+            std::vector<const char*> enabledDeviceExtensions;
 		uint32_t graphicsQueueFamilyIndex = 0;
 		for (const auto device : physicalDevices)
 		{
@@ -5409,6 +5727,12 @@ namespace NLS::Render::Backend
 				});
 				if (hasSwapchainExtension)
 				{
+                        enabledDeviceExtensions = { VK_KHR_SWAPCHAIN_EXTENSION_NAME };
+                        // DXC's reflection annotations declare these SPIR-V extensions.
+                        for (const char* name : { "VK_GOOGLE_hlsl_functionality1", "VK_GOOGLE_user_type" })
+                            if (std::any_of(deviceExtensions.begin(), deviceExtensions.end(), [name](const auto& extension)
+                                { return std::strcmp(extension.extensionName, name) == 0; }))
+                                enabledDeviceExtensions.push_back(name);
 					physicalDevice = device;
 					graphicsQueueFamilyIndex = candidateQueueFamily;
 				}
@@ -5439,10 +5763,6 @@ namespace NLS::Render::Backend
 		};
 
 		// Vulkan 1.1 baseline: use the classic render-pass path.
-		constexpr const char* deviceExtensions[] = {
-			VK_KHR_SWAPCHAIN_EXTENSION_NAME
-		};
-
 		const VkDeviceCreateInfo deviceCreateInfo{
 			VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO,
 			nullptr,
@@ -5451,8 +5771,8 @@ namespace NLS::Render::Backend
 			&queueCreateInfo,
 			0,
 			nullptr,
-			1,
-			deviceExtensions,
+                static_cast<uint32_t>(enabledDeviceExtensions.size()),
+                enabledDeviceExtensions.data(),
 			nullptr
 		};
 
@@ -5491,8 +5811,9 @@ namespace NLS::Render::Backend
 		capabilities.supportsExplicitBarriers = true;
 		capabilities.supportsCentralizedDescriptorManagement = true;
 		capabilities.supportsPipelineStateCache = true;
-		// The threaded foundation path uses the backend's explicit resource
-		// lifetime management even though command recording remains serial.
+		// Independent command pools and explicit planned barriers isolate translation.
+		capabilities.SetFeature(NLS::Render::RHI::RHIDeviceFeature::ParallelCommandRecording, true);
+		capabilities.SetFeature(NLS::Render::RHI::RHIDeviceFeature::ParallelCommandTranslation, true);
 		capabilities.supportsTransientResourceAllocator = true;
 		capabilities.supportsAsyncReadback = true;
 		capabilities.supportsUIOverlayFrameGraph = true;
@@ -5501,6 +5822,10 @@ namespace NLS::Render::Backend
 		capabilities.SetFeature(
 			NLS::Render::RHI::RHIDeviceFeature::UITextureAtlasRegionUpload,
 			true);
+		capabilities.SetFeature(
+			NLS::Render::RHI::RHIDeviceFeature::RhiTasksMode,
+			true,
+			"Vulkan supports the logical RHI lane on TaskGraph workers: pools are per worker/slot/queue family and vkQueueSubmit is serialized by the lane");
 
 		// Get vendor/hardware info
 		VkPhysicalDeviceProperties properties;

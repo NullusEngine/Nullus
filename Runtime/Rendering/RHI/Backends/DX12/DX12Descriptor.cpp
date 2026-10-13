@@ -345,26 +345,36 @@ namespace NLS::Render::Backend
 						{
 							constexpr UINT64 fenceValue = 1u;
 							HRESULT signalResult = S_OK;
+								bool mayHaveQueuedGpuWork = false;
 							{
-								NLS::Render::RHI::DX12::ScopedDX12QueueLock queueLock(m_commandQueue);
 								ID3D12CommandList* cmdLists[] = { tempCmdList.Get() };
-								m_commandQueue->ExecuteCommandLists(1, cmdLists);
-								signalResult = m_commandQueue->Signal(fence.Get(), fenceValue);
+								const auto submission = NLS::Render::RHI::DX12::SubmitDX12CommandLists(
+									m_commandQueue, cmdLists, fence.Get(), fenceValue, m_heapDebugName + " initialization");
+									mayHaveQueuedGpuWork = submission.operation.mayHaveQueuedGpuWork;
+								signalResult = submission.Succeeded() ? S_OK :
+									(FAILED(submission.nativeStatus) ? submission.nativeStatus : E_FAIL);
+								if (!submission.Succeeded())
+									NLS_LOG_ERROR(submission.operation.message);
 							}
 							if (FAILED(signalResult))
 							{
 								m_quarantined = true;
-								QuarantineDX12DescriptorInitializationSubmissionAfterExecute(
-									m_device,
-									m_heap,
-									allocator,
-									tempCmdList,
-									fence,
-									signalResult);
+									if (mayHaveQueuedGpuWork)
+									{
+										QuarantineDX12DescriptorInitializationSubmissionAfterExecute(
+											m_device,
+												m_heap,
+												allocator,
+												tempCmdList,
+												fence,
+												signalResult);
+									}
 								const HRESULT deviceStatus = m_device->GetDeviceRemovedReason();
 								NLS_LOG_ERROR(
 									m_heapDebugName +
-									": failed to signal descriptor heap initialization fence after ExecuteCommandLists; quarantined submitted resources hr=" +
+										(mayHaveQueuedGpuWork
+											? ": descriptor heap initialization queued GPU work without a reliable fence; quarantined submitted resources hr="
+											: ": descriptor heap initialization was rejected before queueing GPU work hr=") +
 									std::to_string(signalResult) +
 									" deviceStatus=" +
 									std::to_string(deviceStatus));

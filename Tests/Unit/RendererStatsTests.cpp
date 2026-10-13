@@ -1,7 +1,10 @@
 #include <gtest/gtest.h>
 
 #include <cstring>
+#include <atomic>
+#include <chrono>
 #include <memory>
+#include <thread>
 #include <vector>
 
 #include "Core/ServiceLocator.h"
@@ -11,7 +14,7 @@
 #include "Rendering/Data/DrawCallOptimizationStats.h"
 #include "Rendering/Context/Driver.h"
 #include "Rendering/Context/DriverAccess.h"
-#include "Rendering/Context/ThreadedRenderingLifecycle.h"
+#include "Rendering/Context/FrameSubmissionTelemetry.h"
 #include "Rendering/EngineDrawableDescriptor.h"
 #include "Rendering/Geometry/Vertex.h"
 #include "Rendering/RHI/Core/RHICommand.h"
@@ -26,18 +29,133 @@
 
 namespace
 {
-    NLS::Render::Context::Driver& EnsureTestDriver()
+    /**
+     * Recording and reading RendererStats legitimately overlap: the threaded
+     * prepared builder records on the render thread while the editor reads frame
+     * info on the game thread. These tests drive that overlap directly.
+     */
+    TEST(RendererStatsConcurrencyTests, RecordsFromOneThreadWhileAnotherReadsSnapshots)
     {
-        static auto driver = std::make_unique<NLS::Render::Context::Driver>([]()
+        NLS::Render::Core::RendererStats stats;
+        stats.BeginFrame();
+        // GetFrameInfo() asserts unless the frame was marked complete. Reading it
+        // after EndFrame() mirrors AView, which gates on IsFrameInfoValid() before
+        // reading while the threaded builder may still be recording for that frame.
+        stats.EndFrame();
+
+        constexpr uint32_t kWriterIterations = 20000u;
+        std::atomic_bool writerDone { false };
+        std::atomic<uint64_t> snapshotCount { 0u };
+        std::atomic_bool sawImpossibleValue { false };
+
+        std::thread writer([&stats, &writerDone]
         {
-            NLS::Render::Settings::DriverSettings settings;
-            settings.graphicsBackend = NLS::Render::Settings::EGraphicsBackend::NONE;
-            settings.enableExplicitRHI = false;
-            return settings;
-        }());
-        NLS::Core::ServiceLocator::Provide(*driver);
-        return *driver;
+            for (uint32_t index = 0u; index < kWriterIterations; ++index)
+            {
+                // Cumulative counters only ever grow, so a reader must never see
+                // a cumulative value below the per-frame value it accumulated.
+                stats.RecordRenderBindingSetCreation(1u);
+                stats.RecordDrawCommandMove(1u);
+                stats.RecordSceneParse(1u, 0u, 0u);
+            }
+            writerDone.store(true, std::memory_order_release);
+        });
+
+        std::thread reader([&stats, &writerDone, &snapshotCount, &sawImpossibleValue]
+        {
+            while (!writerDone.load(std::memory_order_acquire))
+            {
+                // Values are returned by copy, so this must be a coherent
+                // snapshot rather than a torn read of the underlying members.
+                const auto frameInfo = stats.GetFrameInfo();
+                const auto cumulative = stats.GetCumulativeFrameInfo();
+                if (cumulative.renderBindingSetCreationCount <
+                    frameInfo.renderBindingSetCreationCount)
+                {
+                    sawImpossibleValue.store(true, std::memory_order_release);
+                }
+                if (cumulative.drawCommandMoveCount < frameInfo.drawCommandMoveCount)
+                {
+                    sawImpossibleValue.store(true, std::memory_order_release);
+                }
+                snapshotCount.fetch_add(1u, std::memory_order_relaxed);
+            }
+        });
+
+        writer.join();
+        reader.join();
+
+        EXPECT_FALSE(sawImpossibleValue.load(std::memory_order_acquire))
+            << "a reader observed an incoherent frame/cumulative pair";
+        EXPECT_GT(snapshotCount.load(std::memory_order_relaxed), 0u)
+            << "the reader must actually have observed data for this test to prove anything";
+
+        // The writers' work must all be present; locking must not drop updates.
+        const auto frameInfo = stats.GetFrameInfo();
+        const auto cumulative = stats.GetCumulativeFrameInfo();
+        EXPECT_EQ(frameInfo.renderBindingSetCreationCount, kWriterIterations);
+        EXPECT_EQ(frameInfo.drawCommandMoveCount, kWriterIterations);
+        EXPECT_EQ(frameInfo.parseSceneCallCount, kWriterIterations);
+        EXPECT_EQ(cumulative.renderBindingSetCreationCount, kWriterIterations);
+        EXPECT_EQ(cumulative.drawCommandMoveCount, kWriterIterations);
     }
+
+    TEST(RendererStatsConcurrencyTests, ConcurrentReadersAndWritersDoNotDeadlock)
+    {
+        NLS::Render::Core::RendererStats stats;
+        stats.BeginFrame();
+        stats.EndFrame();
+
+        std::atomic_bool stop { false };
+        std::atomic<uint32_t> records { 0u };
+
+        std::vector<std::thread> readers;
+        for (uint32_t index = 0u; index < 3u; ++index)
+        {
+            readers.emplace_back([&stats, &stop]
+            {
+                while (!stop.load(std::memory_order_acquire))
+                {
+                    (void)stats.GetFrameInfo();
+                    (void)stats.GetCumulativeFrameInfo();
+                    (void)stats.IsFrameInfoValid();
+                }
+            });
+        }
+
+        for (uint32_t index = 0u; index < 5000u; ++index)
+        {
+            stats.RecordDrawCommandCopy(1u);
+            stats.RecordLargeSceneTelemetry({});
+            stats.RecordGBufferMaterialSync();
+            records.fetch_add(3u, std::memory_order_relaxed);
+        }
+
+        stop.store(true, std::memory_order_release);
+        for (auto& reader : readers)
+            reader.join();
+
+        EXPECT_EQ(records.load(std::memory_order_relaxed), 15000u);
+        EXPECT_EQ(stats.GetFrameInfo().drawCommandCopyCount, 5000u);
+        EXPECT_EQ(stats.GetFrameInfo().gBufferMaterialSyncCount, 5000u);
+    }
+
+    class ScopedDriverService final
+    {
+    public:
+        explicit ScopedDriverService(NLS::Render::Context::Driver& driver)
+        {
+            NLS::Core::ServiceLocator::Provide(driver);
+        }
+
+        ~ScopedDriverService()
+        {
+            NLS::Core::ServiceLocator::Remove<NLS::Render::Context::Driver>();
+        }
+
+        ScopedDriverService(const ScopedDriverService&) = delete;
+        ScopedDriverService& operator=(const ScopedDriverService&) = delete;
+    };
 
     class TestCommandBuffer final : public NLS::Render::RHI::RHICommandBuffer
     {
@@ -224,7 +342,12 @@ namespace
         std::string_view GetDebugName() const override { return "RendererStatsTestsQueue"; }
         NLS::Render::RHI::QueueType GetType() const override { return NLS::Render::RHI::QueueType::Graphics; }
         void Submit(const NLS::Render::RHI::RHISubmitDesc&) override {}
-        NLS::Render::RHI::RHIQueueOperationResult SubmitChecked(const NLS::Render::RHI::RHISubmitDesc&) override { return {}; }
+        NLS::Render::RHI::RHIQueueOperationResult SubmitChecked(const NLS::Render::RHI::RHISubmitDesc& desc) override
+        {
+            if (desc.signalFence != nullptr)
+                (void)desc.signalFence->Wait();
+            return { NLS::Render::RHI::RHIQueueOperationStatusCode::Success, {}, true, desc.signalFence != nullptr };
+        }
         void Present(const NLS::Render::RHI::RHIPresentDesc&) override {}
         NLS::Render::RHI::RHIQueueOperationResult PresentChecked(const NLS::Render::RHI::RHIPresentDesc&) override { return {}; }
     };
@@ -369,7 +492,6 @@ namespace
 
     std::unique_ptr<NLS::Render::Resources::Mesh> CreateTriangleMesh()
     {
-        EnsureTestDriver();
         std::vector<NLS::Render::Geometry::Vertex> vertices(3);
         vertices[0].position[0] = 0.0f;
         vertices[1].position[0] = 1.0f;
@@ -392,14 +514,16 @@ namespace
         NLS::Render::Settings::DriverSettings settings;
         settings.graphicsBackend = NLS::Render::Settings::EGraphicsBackend::NONE;
         settings.enableExplicitRHI = false;
-        settings.enableThreadedRendering = true;
-        settings.threadedFrameSlotCount = 1u;
+        settings.framesInFlight = 1u;
         return settings;
     }
 }
 
 TEST(RendererStatsTests, RendererStatsTracksSubmittedDrawCounts)
 {
+    NLS::Render::Context::Driver driver(MakeThreadedRendererStatsSettings());
+    const ScopedDriverService driverService(driver);
+    NLS::Render::Context::DriverTestAccess::PauseThreadedRenderingWorkers(driver);
     NLS::Render::Core::RendererStats stats;
     NLS::Render::Resources::Material material;
     material.SetGPUInstances(2);
@@ -465,7 +589,7 @@ TEST(RendererStatsTests, RendererStatsTracksRenderPreparationCounters)
 TEST(RendererStatsTests, CompositeRendererExposesFinalizedFrameInfoWithoutFeatureRegistration)
 {
     NLS::Render::Context::Driver driver(MakeThreadedRendererStatsSettings());
-    NLS::Core::ServiceLocator::Provide(driver);
+    const ScopedDriverService driverService(driver);
     NLS::Render::Context::DriverTestAccess::PauseThreadedRenderingWorkers(driver);
 
     StatsOnlyRenderer renderer(driver);
@@ -493,7 +617,7 @@ TEST(RendererStatsTests, CompositeRendererExposesFinalizedFrameInfoWithoutFeatur
 TEST(RendererStatsTests, CompositeRendererFinalizedFrameInfoIsZeroWhenNoDrawsWereSubmitted)
 {
     NLS::Render::Context::Driver driver(MakeThreadedRendererStatsSettings());
-    NLS::Core::ServiceLocator::Provide(driver);
+    const ScopedDriverService driverService(driver);
     NLS::Render::Context::DriverTestAccess::PauseThreadedRenderingWorkers(driver);
 
     StatsOnlyRenderer renderer(driver);
@@ -510,16 +634,33 @@ TEST(RendererStatsTests, CompositeRendererFinalizedFrameInfoIsZeroWhenNoDrawsWer
     EXPECT_EQ(frameInfo.vertexCount, 0u);
 }
 
+TEST(RendererStatsTests, RejectedFrameStillFinalizesStatistics)
+{
+    NLS::Render::Context::Driver driver(MakeThreadedRendererStatsSettings());
+    const ScopedDriverService driverService(driver);
+    NLS::Render::Context::DriverTestAccess::PauseThreadedRenderingWorkers(driver);
+    StatsOnlyRenderer activeRenderer(driver);
+    StatsOnlyRenderer rejectedRenderer(driver);
+    NLS::Render::Entities::Camera camera;
+    const auto descriptor = MakeFrameDescriptor(camera);
+    activeRenderer.BeginFrame(descriptor);
+    rejectedRenderer.BeginFrame(descriptor);
+    EXPECT_FALSE(rejectedRenderer.IsFrameActive());
+    rejectedRenderer.EndFrame();
+    EXPECT_TRUE(rejectedRenderer.IsFrameInfoValid());
+    EXPECT_EQ(rejectedRenderer.GetFrameInfo().batchCount, 0u);
+    activeRenderer.EndFrame();
+}
+
 TEST(RendererStatsTests, IndexedObjectDrawsCreateOneObjectBindingSetForRepeatedVisibleDraws)
 {
     NLS::Render::Settings::DriverSettings settings;
     settings.graphicsBackend = NLS::Render::Settings::EGraphicsBackend::NONE;
     settings.enableExplicitRHI = false;
-    settings.enableThreadedRendering = true;
-    settings.threadedFrameSlotCount = 1u;
+    settings.framesInFlight = 1u;
 
     NLS::Render::Context::Driver driver(settings);
-    NLS::Core::ServiceLocator::Provide(driver);
+    const ScopedDriverService driverService(driver);
     NLS::Render::Context::DriverTestAccess::PauseThreadedRenderingWorkers(driver);
     auto explicitDevice = std::make_shared<TestExplicitDevice>();
     NLS::Render::Context::DriverTestAccess::SetExplicitDevice(driver, explicitDevice);
@@ -563,8 +704,9 @@ TEST(RendererStatsTests, IndexedObjectDrawsCreateOneObjectBindingSetForRepeatedV
     renderer.EndFrame();
 
     const auto& frameInfo = renderer.GetFrameInfo();
-    EXPECT_EQ(frameInfo.renderBindingSetCreationCount, 1u);
-    EXPECT_EQ(frameInfo.renderSnapshotBufferCreationCount, 0u);
+    // One frozen frame binding plus one shared indexed-object binding for all draws.
+    EXPECT_EQ(frameInfo.renderBindingSetCreationCount, 2u);
+    EXPECT_EQ(frameInfo.renderSnapshotBufferCreationCount, 1u);
 
     const auto objectBindingSets = static_cast<size_t>(std::count_if(
         explicitDevice->bindingSetDescs.begin(),
@@ -577,7 +719,6 @@ TEST(RendererStatsTests, IndexedObjectDrawsCreateOneObjectBindingSetForRepeatedV
     EXPECT_LT(frameInfo.renderBindingSetCreationCount, 3u);
     EXPECT_LT(frameInfo.renderSnapshotBufferCreationCount, 3u);
 
-    NLS::Render::Context::DriverTestAccess::SetExplicitFrameActive(driver, false);
 }
 
 TEST(RendererStatsTests, RendererStatsTracksThreadedFrameTelemetryFields)
@@ -589,7 +730,6 @@ TEST(RendererStatsTests, RendererStatsTracksThreadedFrameTelemetryFields)
     telemetry.inFlightFrameCount = 2u;
     telemetry.blockedPublishCount = 1u;
     telemetry.publishState = NLS::Render::Data::FramePublishState::BackPressured;
-    telemetry.stageSummary = NLS::Render::Data::ThreadedFrameStageSummary::Rhi;
     telemetry.retirementState = NLS::Render::Data::FrameRetirementState::Pending;
     telemetry.unsafeGpuWorkQuarantined = true;
     telemetry.unsafeGpuWorkQuarantineReason = "queued work without retirement fence";
@@ -600,7 +740,6 @@ TEST(RendererStatsTests, RendererStatsTracksThreadedFrameTelemetryFields)
     EXPECT_EQ(frameInfo.inFlightFrameCount, 2u);
     EXPECT_EQ(frameInfo.blockedFrameCount, 1u);
     EXPECT_EQ(frameInfo.publishState, NLS::Render::Data::FramePublishState::BackPressured);
-    EXPECT_EQ(frameInfo.stageSummary, NLS::Render::Data::ThreadedFrameStageSummary::Rhi);
     EXPECT_EQ(frameInfo.retirementState, NLS::Render::Data::FrameRetirementState::Pending);
     EXPECT_TRUE(frameInfo.unsafeGpuWorkQuarantined);
     EXPECT_EQ(frameInfo.unsafeGpuWorkQuarantineReason, "queued work without retirement fence");
@@ -618,7 +757,6 @@ TEST(RendererStatsTests, RendererStatsReusesLastThreadedTelemetryWhenRefreshIsUn
     telemetry.reservedSlotWaitTotalNs = 2400000u;
     telemetry.reservedSlotWaitMaxNs = 1700000u;
     telemetry.publishState = NLS::Render::Data::FramePublishState::BackPressured;
-    telemetry.stageSummary = NLS::Render::Data::ThreadedFrameStageSummary::Rhi;
     telemetry.retirementState = NLS::Render::Data::FrameRetirementState::Pending;
     telemetry.pipelineMainlineActive = true;
     telemetry.pipelineCacheGraphicsHits = 4u;
@@ -644,7 +782,6 @@ TEST(RendererStatsTests, RendererStatsReusesLastThreadedTelemetryWhenRefreshIsUn
     EXPECT_EQ(frameInfo.reservedSlotWaitTotalNs, 2400000u);
     EXPECT_EQ(frameInfo.reservedSlotWaitMaxNs, 1700000u);
     EXPECT_EQ(frameInfo.publishState, NLS::Render::Data::FramePublishState::BackPressured);
-    EXPECT_EQ(frameInfo.stageSummary, NLS::Render::Data::ThreadedFrameStageSummary::Rhi);
     EXPECT_EQ(frameInfo.retirementState, NLS::Render::Data::FrameRetirementState::Pending);
     EXPECT_TRUE(frameInfo.pipelineMainlineActive);
     EXPECT_EQ(frameInfo.pipelineCacheGraphicsHits, 4u);
@@ -661,7 +798,6 @@ TEST(RendererStatsTests, RendererStatsDoesNotReuseThreadedTelemetryBeforeFirstSa
     const auto& frameInfo = stats.GetFrameInfo();
     EXPECT_EQ(frameInfo.inFlightFrameCount, 0u);
     EXPECT_EQ(frameInfo.publishState, NLS::Render::Data::FramePublishState::Direct);
-    EXPECT_EQ(frameInfo.stageSummary, NLS::Render::Data::ThreadedFrameStageSummary::Direct);
     EXPECT_EQ(frameInfo.retirementState, NLS::Render::Data::FrameRetirementState::Direct);
 }
 

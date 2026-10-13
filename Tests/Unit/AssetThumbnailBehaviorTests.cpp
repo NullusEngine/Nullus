@@ -183,6 +183,7 @@ NLS::Render::Context::Driver& EnsureThumbnailPerformanceTestDriver()
         settings.enableExplicitRHI = false;
         return settings;
     }());
+    driver->ShutdownThreadedRendering();
     NLS::Core::ServiceLocator::Provide(*driver);
     return *driver;
 }
@@ -200,36 +201,92 @@ DeterministicThumbnailGpuTestContext EnsureDeterministicThumbnailGpuTestDriver()
         NLS::Render::Settings::DriverSettings settings;
         settings.graphicsBackend = NLS::Render::Settings::EGraphicsBackend::NONE;
         settings.enableExplicitRHI = false;
-        settings.enableThreadedRendering = false;
         return settings;
     }());
+    driver->ShutdownThreadedRendering();
     static auto device = std::make_shared<NLS::Tests::DeterministicTextureRhiDevice>();
     NLS::Render::Context::DriverTestAccess::SetExplicitDevice(*driver, device);
     NLS::Core::ServiceLocator::Provide(*driver);
     return { *driver, device };
 }
 
-NLS::Render::Context::Driver& EnsureThumbnailPerformanceGpuTestDriver()
+std::unique_ptr<NLS::Render::Context::Driver>& ThumbnailPerformanceGpuTestDriverSlot()
 {
-    static auto driver = std::make_unique<NLS::Render::Context::Driver>([]()
-    {
-        NLS::Render::Settings::DriverSettings settings;
-#if defined(_WIN32)
-        settings.graphicsBackend = NLS::Render::Settings::EGraphicsBackend::DX12;
-#elif defined(__APPLE__)
-        settings.graphicsBackend = NLS::Render::Settings::EGraphicsBackend::METAL;
-#elif defined(__linux__)
-        settings.graphicsBackend = NLS::Render::Settings::EGraphicsBackend::VULKAN;
-#endif
-        settings.enableExplicitRHI = true;
-        settings.enableThreadedRendering = false;
-        settings.enableLightGrid = true;
-        return settings;
-    }());
-    NLS::Core::ServiceLocator::Provide(*driver);
-    return *driver;
+    static std::unique_ptr<NLS::Render::Context::Driver> driver;
+    return driver;
 }
 
+void ReleaseThumbnailPerformanceGpuTestDriver();
+
+NLS::Render::Context::Driver& EnsureThumbnailPerformanceGpuTestDriver()
+{
+    auto& slot = ThumbnailPerformanceGpuTestDriverSlot();
+    if (slot == nullptr)
+    {
+        slot = std::make_unique<NLS::Render::Context::Driver>([]()
+        {
+            NLS::Render::Settings::DriverSettings settings;
+#if defined(_WIN32)
+            settings.graphicsBackend = NLS::Render::Settings::EGraphicsBackend::DX12;
+#elif defined(__APPLE__)
+            settings.graphicsBackend = NLS::Render::Settings::EGraphicsBackend::METAL;
+#elif defined(__linux__)
+            settings.graphicsBackend = NLS::Render::Settings::EGraphicsBackend::VULKAN;
+#endif
+            settings.enableExplicitRHI = true;
+            settings.enableLightGrid = true;
+            return settings;
+        }());
+    }
+    NLS::Render::Context::Driver& driver = *slot;
+    // The standalone inline frame path is gone, so a thumbnail renderer can only
+    // produce pixels while the threaded pipeline is running. Shutting the pipeline
+    // down here would put the driver in the "explicit device without a pipeline"
+    // state that BeginRendererFrame reports as a named configuration error, and every
+    // preview attempt would fail as render-busy.
+    NLS::Core::ServiceLocator::Provide(driver);
+    return driver;
+}
+
+void ReleaseThumbnailPerformanceGpuTestDriver()
+{
+    auto& slot = ThumbnailPerformanceGpuTestDriverSlot();
+    if (slot == nullptr)
+        return;
+
+    // Stop the process-wide render thread and submit lane before dropping the
+    // device, so the next test can join the test lane again.
+    slot->ShutdownThreadedRendering();
+    slot.reset();
+}
+
+/**
+ * Owns the shared performance-driver for the duration of one test.
+ *
+ * The driver is deliberately released at the end of the test that used it: this
+ * project allows only one live driver/RHI device at a time, and the render thread
+ * and executor submit lane are process-wide. A driver that outlives its test keeps
+ * a render thread alive, which makes a later driver's synchronous drain unable to
+ * join the test lane and therefore unable to make progress.
+ */
+class ScopedThumbnailPerformanceGpuTestDriver final
+{
+public:
+    ScopedThumbnailPerformanceGpuTestDriver() : m_driver(&EnsureThumbnailPerformanceGpuTestDriver()) {}
+
+    ~ScopedThumbnailPerformanceGpuTestDriver()
+    {
+        ReleaseThumbnailPerformanceGpuTestDriver();
+    }
+
+    ScopedThumbnailPerformanceGpuTestDriver(const ScopedThumbnailPerformanceGpuTestDriver&) = delete;
+    ScopedThumbnailPerformanceGpuTestDriver& operator=(const ScopedThumbnailPerformanceGpuTestDriver&) = delete;
+
+    NLS::Render::Context::Driver& Get() const { return *m_driver; }
+
+private:
+    NLS::Render::Context::Driver* m_driver = nullptr;
+};
 class ScopedThumbnailResourceManagerAssetPaths final
 {
 public:
@@ -5020,7 +5077,8 @@ TEST(AssetThumbnailBehaviorTests, GpuPrefabPreviewRendersReadyPrefabToVisiblePix
         std::filesystem::remove_all(root);
         GTEST_SKIP() << "Native DXC is unavailable for prefab thumbnail render verification.";
     }
-    auto& driver = EnsureThumbnailPerformanceGpuTestDriver();
+    ScopedThumbnailPerformanceGpuTestDriver driverScope;
+    auto& driver = driverScope.Get();
     if (driver.GetActiveGraphicsBackend() == NLS::Render::Settings::EGraphicsBackend::NONE)
     {
         std::filesystem::remove_all(root);
@@ -5761,7 +5819,8 @@ TEST(AssetThumbnailBehaviorTests, MeshArtifactPumpQueuesRuntimeUploadWithoutCrea
 #else
     using namespace NLS::Core::ResourceManagement;
 
-    auto& driver = EnsureThumbnailPerformanceGpuTestDriver();
+    ScopedThumbnailPerformanceGpuTestDriver driverScope;
+    auto& driver = driverScope.Get();
     if (!NLS::Render::Context::DriverRendererAccess::HasExplicitRHI(driver))
         GTEST_SKIP() << "An explicit RHI is required to exercise deferred runtime mesh upload queuing.";
 
@@ -5795,7 +5854,8 @@ TEST(AssetThumbnailBehaviorTests, MeshManagerRetiresRuntimeUploadWithEmptyPathWi
 #else
     using namespace NLS::Core::ResourceManagement;
 
-    auto& driver = EnsureThumbnailPerformanceGpuTestDriver();
+    ScopedThumbnailPerformanceGpuTestDriver driverScope;
+    auto& driver = driverScope.Get();
     if (!NLS::Render::Context::DriverRendererAccess::HasExplicitRHI(driver))
         GTEST_SKIP() << "An explicit RHI is required to exercise deferred runtime mesh upload retirement.";
 

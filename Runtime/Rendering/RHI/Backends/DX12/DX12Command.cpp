@@ -1772,6 +1772,7 @@ namespace NLS::Render::Backend
 	{
 #if defined(_WIN32)
 		NLS::Render::RHI::RHIBarrierDesc filtered;
+			filtered.statesAreExplicit = barrier.statesAreExplicit;
 		filtered.bufferBarriers = barrier.bufferBarriers;
 		filtered.textureBarriers.reserve(barrier.textureBarriers.size());
 
@@ -1781,7 +1782,7 @@ namespace NLS::Render::Backend
 				continue;
 
 			if (auto* nativeTexture = dynamic_cast<NativeDX12Texture*>(textureBarrier.texture.get());
-				nativeTexture != nullptr &&
+					nativeTexture != nullptr && !barrier.statesAreExplicit &&
 				ShouldFilterUnresolvedPartialTextureBarrier(*nativeTexture, textureBarrier))
 			{
 				nativeTexture->MarkPartialStateDirty();
@@ -1791,12 +1792,59 @@ namespace NLS::Render::Backend
 			filtered.textureBarriers.push_back(textureBarrier);
 		}
 
+            if (m_commandListType == D3D12_COMMAND_LIST_TYPE_COMPUTE)
+            {
+                const auto computeReadState = [](const NLS::Render::RHI::ResourceState state)
+                {
+                    using NLS::Render::RHI::ResourceState;
+                    const auto bits = static_cast<uint32_t>(state);
+                    return (bits & static_cast<uint32_t>(ResourceState::ShaderRead)) != 0u
+                        ? static_cast<ResourceState>((bits & ~static_cast<uint32_t>(ResourceState::ShaderRead)) |
+                            static_cast<uint32_t>(ResourceState::ShaderReadNonPixel)) : state;
+                };
+                for (auto& transition : filtered.bufferBarriers)
+                    if (transition.buffer != nullptr &&
+                        transition.buffer->GetDesc().memoryUsage == NLS::Render::RHI::MemoryUsage::GPUOnly)
+                        transition.after = computeReadState(transition.after);
+                for (auto& transition : filtered.textureBarriers)
+                    transition.after = computeReadState(transition.after);
+            }
+
 		return filtered;
 #else
 		(void)barrier;
 		return {};
 #endif
 	}
+
+        NLS::Render::RHI::RHIBarrierDesc NativeDX12CommandBuffer::BuildQueueReleaseBarriers(
+            const NLS::Render::RHI::RHIBarrierDesc& desc) const
+        {
+            NLS::Render::RHI::RHIBarrierDesc release;
+#if defined(_WIN32)
+            if (m_commandListType != D3D12_COMMAND_LIST_TYPE_COMPUTE)
+                return release;
+            constexpr auto graphicsOnly = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE |
+                D3D12_RESOURCE_STATE_RENDER_TARGET | D3D12_RESOURCE_STATE_DEPTH_READ |
+                D3D12_RESOURCE_STATE_DEPTH_WRITE;
+            for (auto transition : desc.bufferBarriers)
+            {
+                if (transition.buffer == nullptr ||
+                    transition.buffer->GetDesc().memoryUsage != NLS::Render::RHI::MemoryUsage::GPUOnly ||
+                    (ToD3D12ResourceState(transition.before) & graphicsOnly) == 0u)
+                    continue;
+                release.bufferBarriers.push_back(std::move(transition));
+            }
+            for (auto transition : desc.textureBarriers)
+            {
+                if (transition.texture == nullptr ||
+                    (ToD3D12ResourceState(transition.before) & graphicsOnly) == 0u)
+                    continue;
+                release.textureBarriers.push_back(std::move(transition));
+            }
+#endif
+            return release;
+        }
 
 	NLS::Render::RHI::RHICommandRecordingResult NativeDX12CommandBuffer::BarrierChecked(
 		const NLS::Render::RHI::RHIBarrierDesc& barrierDesc)
@@ -1819,6 +1867,29 @@ namespace NLS::Render::Backend
 		}
 
 		const auto filteredBarrierDesc = FilterBarrierDesc(barrierDesc);
+            if (m_commandListType == D3D12_COMMAND_LIST_TYPE_COMPUTE)
+            {
+                constexpr auto graphicsOnly = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE |
+                    D3D12_RESOURCE_STATE_RENDER_TARGET | D3D12_RESOURCE_STATE_DEPTH_READ |
+                    D3D12_RESOURCE_STATE_DEPTH_WRITE;
+                const auto invalidState = [](const auto& transition)
+                {
+                    return ((ToD3D12ResourceState(transition.before) |
+                        ToD3D12ResourceState(transition.after)) & graphicsOnly) != 0u;
+                };
+                for (const auto& transition : filteredBarrierDesc.bufferBarriers)
+                    if (transition.buffer != nullptr &&
+                        transition.buffer->GetDesc().memoryUsage == NLS::Render::RHI::MemoryUsage::GPUOnly &&
+                        invalidState(transition))
+                        return { NLS::Render::RHI::RHICommandRecordingStatusCode::InvalidArgument,
+                            "DX12 Compute barrier requires a Graphics queue release: " +
+                                std::string(transition.buffer->GetDebugName()) };
+                for (const auto& transition : filteredBarrierDesc.textureBarriers)
+                    if (transition.texture != nullptr && invalidState(transition))
+                        return { NLS::Render::RHI::RHICommandRecordingStatusCode::InvalidArgument,
+                            "DX12 Compute barrier requires a Graphics queue release: " +
+                                std::string(transition.texture->GetDebugName()) };
+            }
 		std::vector<D3D12_RESOURCE_BARRIER> barriers;
 
 		for (const auto& bufferBarrier : filteredBarrierDesc.bufferBarriers)
@@ -1830,7 +1901,7 @@ namespace NLS::Render::Backend
 				bufferDesc.memoryUsage == NLS::Render::RHI::MemoryUsage::GPUToCPU)
 			{
 				auto effectiveBefore = bufferBarrier.before;
-				if (effectiveBefore == NLS::Render::RHI::ResourceState::Unknown)
+					if (!barrierDesc.statesAreExplicit && effectiveBefore == NLS::Render::RHI::ResourceState::Unknown)
 					effectiveBefore = bufferBarrier.buffer->GetState();
 				if (IsLegalCpuVisibleBufferTransition(*bufferBarrier.buffer, effectiveBefore, bufferBarrier.after))
 					continue;
@@ -1849,7 +1920,7 @@ namespace NLS::Render::Backend
 				continue;
 
 			auto effectiveBefore = bufferBarrier.before;
-			if (effectiveBefore == NLS::Render::RHI::ResourceState::Unknown && bufferBarrier.buffer != nullptr)
+				if (!barrierDesc.statesAreExplicit && effectiveBefore == NLS::Render::RHI::ResourceState::Unknown && bufferBarrier.buffer != nullptr)
 				effectiveBefore = bufferBarrier.buffer->GetState();
 			const auto stateBefore = ToD3D12ResourceState(effectiveBefore);
 			const auto stateAfter = ToD3D12ResourceState(bufferBarrier.after);
@@ -1870,7 +1941,8 @@ namespace NLS::Render::Backend
 			barrier.Transition.StateAfter = stateAfter;
 			barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
 			barriers.push_back(barrier);
-			if (auto* nativeBuffer = dynamic_cast<NativeDX12Buffer*>(bufferBarrier.buffer.get()))
+				if (auto* nativeBuffer = dynamic_cast<NativeDX12Buffer*>(bufferBarrier.buffer.get());
+                    nativeBuffer != nullptr && !barrierDesc.statesAreExplicit)
 				nativeBuffer->SetState(bufferBarrier.after);
 		}
 
@@ -1892,11 +1964,11 @@ namespace NLS::Render::Backend
 					textureBarrier.subresourceRange);
 			auto effectiveBefore = textureBarrier.before;
 			auto* nativeTexture = dynamic_cast<NativeDX12Texture*>(textureBarrier.texture.get());
-			const bool wholeTextureStateKnown =
-				nativeTexture == nullptr
+				const bool wholeTextureStateKnown = barrierDesc.statesAreExplicit ||
+					(nativeTexture == nullptr
 					? m_partialTextureStateDirty.find(textureBarrier.texture.get()) == m_partialTextureStateDirty.end()
-					: !nativeTexture->HasPartialStateDirty();
-			if (effectiveBefore == NLS::Render::RHI::ResourceState::Unknown && wholeTextureStateKnown)
+						: !nativeTexture->HasPartialStateDirty());
+				if (!barrierDesc.statesAreExplicit && effectiveBefore == NLS::Render::RHI::ResourceState::Unknown && wholeTextureStateKnown)
 			{
 				effectiveBefore = textureBarrier.texture->GetState();
 			}
@@ -1916,7 +1988,9 @@ namespace NLS::Render::Backend
 			if (stateBefore == stateAfter)
 			{
 				if ((stateAfter & D3D12_RESOURCE_STATE_UNORDERED_ACCESS) == 0)
+				{
 					continue;
+				}
 				barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_UAV;
 				barrier.UAV.pResource = resource;
 				barriers.push_back(barrier);
@@ -1946,7 +2020,9 @@ namespace NLS::Render::Backend
 					barriers.push_back(barrier);
 				}
 			}
-			if (coversWholeTexture)
+				if (barrierDesc.statesAreExplicit)
+                    continue;
+				if (coversWholeTexture)
 			{
 				if (nativeTexture != nullptr)
 					nativeTexture->SetState(textureBarrier.after);
@@ -1971,7 +2047,24 @@ namespace NLS::Render::Backend
 #endif
 	}
 
-	void NativeDX12CommandBuffer::Barrier(const NLS::Render::RHI::RHIBarrierDesc& barrierDesc)
+        void NativeDX12CommandBuffer::CommitResourceStates(const NLS::Render::RHI::RHIBarrierDesc& desc)
+        {
+            for (const auto& barrier : desc.bufferBarriers)
+                if (auto* buffer = dynamic_cast<NativeDX12Buffer*>(barrier.buffer.get()); buffer != nullptr &&
+                    buffer->GetDesc().memoryUsage == NLS::Render::RHI::MemoryUsage::GPUOnly)
+                    buffer->SetState(barrier.after);
+            for (const auto& barrier : desc.textureBarriers)
+            {
+                if (auto* texture = dynamic_cast<NativeDX12Texture*>(barrier.texture.get()))
+                {
+                    if (NLS::Render::RHI::DX12::DoesDX12BarrierRangeCoverWholeTexture(texture->GetDesc(), barrier.subresourceRange))
+                        texture->SetState(barrier.after);
+                    else
+                        texture->MarkPartialStateDirty();
+                }
+            }
+        }
+		void NativeDX12CommandBuffer::Barrier(const NLS::Render::RHI::RHIBarrierDesc& barrierDesc)
 	{
 		(void)BarrierChecked(barrierDesc);
 	}
@@ -2089,6 +2182,8 @@ namespace NLS::Render::Backend
 			result |= D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER;
 		if (static_cast<uint32_t>(state) & static_cast<uint32_t>(NLS::Render::RHI::ResourceState::ShaderRead))
 			result |= D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE | D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
+			if (static_cast<uint32_t>(state) & static_cast<uint32_t>(NLS::Render::RHI::ResourceState::ShaderReadNonPixel))
+				result |= D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
 		if (static_cast<uint32_t>(state) & static_cast<uint32_t>(NLS::Render::RHI::ResourceState::ShaderWrite))
 			result |= D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
 		if (static_cast<uint32_t>(state) & static_cast<uint32_t>(NLS::Render::RHI::ResourceState::RenderTarget))

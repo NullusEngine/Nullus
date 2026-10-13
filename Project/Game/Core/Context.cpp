@@ -9,8 +9,10 @@
 #include <Engine/UI/UIDocumentSourceResolver.h>
 #include <Debug/Logger.h>
 #include <stdexcept>
+#include <Settings/ProjectLaunchOptions.h>
 #include <Platform/Process/Process.h>
 #include "Rendering/BaseSceneRenderer.h"
+#include "Rendering/SceneRenderStoreRegistry.h"
 #include "Rendering/Settings/GraphicsBackendUtils.h"
 #include "Rendering/Tooling/RenderDocEnvironment.h"
 #include "Utils/PathParser.h"
@@ -239,8 +241,6 @@ Game::Context::Context(
 		projectSettings.Add<bool>("multi_sampling", true);
 	if (!projectSettings.IsKeyExisting("enable_light_grid"))
 		projectSettings.Add<bool>("enable_light_grid", true);
-	if (!projectSettings.IsKeyExisting("enable_threaded_rendering"))
-		projectSettings.Add<bool>("enable_threaded_rendering", true);
 	if (!projectSettings.IsKeyExisting("renderdoc_enabled"))
 		projectSettings.Add<bool>("renderdoc_enabled", false);
 	if (!projectSettings.IsKeyExisting("renderdoc_capture_after_frames"))
@@ -292,9 +292,13 @@ Game::Context::Context(
 
 	NLS::Render::Settings::DriverSettings driverSettings;
 	driverSettings.graphicsBackend = graphicsBackend;
-	driverSettings.enableThreadedRendering = projectSettings.GetOrDefault<bool>("enable_threaded_rendering", true);
+	std::string launchOptionsError;
+	const auto launchOptions = NLS::Engine::Settings::ReadProjectLaunchOptions(
+		resolvedProjectPaths.settingsPath, &launchOptionsError);
+	if (!launchOptionsError.empty())
+		throw std::runtime_error("Game: " + launchOptionsError);
+	driverSettings.rhiThreadMode = launchOptions.rhiThreadMode;
 	driverSettings.enableLightGrid = projectSettings.GetOrDefault<bool>("enable_light_grid", true);
-	driverSettings.threadedFrameSlotCount = driverSettings.framesInFlight;
 	driverSettings.defaultPipelineState = basePSO;
 
 	Render::Settings::RenderDocSettings renderDocSettings;
@@ -447,5 +451,8 @@ Game::Context::~Context()
 void Game::Context::ShutdownThreadedRendering()
 {
 	if (driver != nullptr)
+	{
+		NLS::Engine::Rendering::SceneRenderStoreRegistry::ReleaseAll();
 		driver->ShutdownThreadedRendering();
+	}
 }

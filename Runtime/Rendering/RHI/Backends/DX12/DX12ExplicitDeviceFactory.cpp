@@ -109,6 +109,7 @@ namespace NLS::Render::Backend
 
 			~NativeDX12ExplicitDevice()
 			{
+					(void)WaitForDX12InitialUploads(m_device.Get());
 					if (m_gpuProfilerInitialized)
 						NLS::Base::Profiling::Profiler::ClearGpuContext(m_device.Get());
 					m_initialUploadCommandObjects.reset();
@@ -222,11 +223,11 @@ namespace NLS::Render::Backend
 			}
 			bool HasPendingInitialUploads() override
 			{
-				return HasPendingDX12InitialUploads();
+					return HasPendingDX12InitialUploads(m_device.Get());
 			}
 			size_t WaitForInitialUploads() override
 			{
-				return WaitForDX12InitialUploads();
+					return WaitForDX12InitialUploads(m_device.Get());
 			}
 			std::shared_ptr<NLS::Render::RHI::RHITexture> CreateTexture(
 				const NLS::Render::RHI::RHITextureDesc& desc,

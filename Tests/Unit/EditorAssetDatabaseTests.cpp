@@ -628,7 +628,10 @@ NLS::Render::Context::Driver& EnsureEditorAssetDatabaseTestDriver()
         settings.enableExplicitRHI = false;
         return settings;
     }());
-    NLS::Core::ServiceLocator::Provide(*driver);
+    // No render thread: this suite does not exercise threaded frame ownership, so its
+    // fixture driver must not keep a process-wide render thread alive for another suite.
+    driver->ShutdownThreadedRendering();
+NLS::Core::ServiceLocator::Provide(*driver);
     return *driver;
 }
 

@@ -268,13 +268,13 @@ void Editor::Panels::AView::SyncViewToCurrentContentRegion()
         (Editor::Panels::ShouldDeferRetirementAwareViewResizeUntilTelemetryAvailable(
                 requestedSize,
                 m_lastResolvedViewSize,
-                RequiresRetiredFrameConsumption(),
+                RequiresImmediateRetiredFrameReadback(),
                 currentTelemetry.has_value()) ||
             (currentTelemetry.has_value() &&
                 Editor::Panels::ShouldDeferRetirementAwareViewResize(
                     requestedSize,
                     m_lastResolvedViewSize,
-                    RequiresRetiredFrameConsumption(),
+                    RequiresImmediateRetiredFrameReadback(),
                     currentTelemetry.value()))))
     {
         m_pendingResolvedViewSize = requestedSize;
@@ -283,9 +283,6 @@ void Editor::Panels::AView::SyncViewToCurrentContentRegion()
             static_cast<float>(m_lastResolvedViewSize.second));
         return;
     }
-
-    if (m_pendingResolvedViewSize.has_value())
-        requestedSize = m_pendingResolvedViewSize.value();
 
     if (!ApplyResolvedViewSize(requestedSize.first, requestedSize.second))
     {
@@ -704,13 +701,13 @@ bool Editor::Panels::AView::ApplyResolvedViewSize(const uint16_t p_width, const 
             (Editor::Panels::ShouldDeferRetirementAwareViewResizeUntilTelemetryAvailable(
                     { p_width, p_height },
                     m_lastResolvedViewSize,
-                    RequiresRetiredFrameConsumption(),
+                    RequiresImmediateRetiredFrameReadback(),
                     currentTelemetry.has_value()) ||
                 (currentTelemetry.has_value() &&
                     Editor::Panels::ShouldDeferRetirementAwareViewResize(
                         { p_width, p_height },
                         m_lastResolvedViewSize,
-                        RequiresRetiredFrameConsumption(),
+                        RequiresImmediateRetiredFrameReadback(),
                         currentTelemetry.value()))))
         {
             m_pendingResolvedViewSize = { p_width, p_height };

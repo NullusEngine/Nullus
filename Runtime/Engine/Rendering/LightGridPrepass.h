@@ -7,7 +7,7 @@
 
 #include <fg/FrameGraph.hpp>
 
-#include <Rendering/Context/ThreadedRenderingLifecycle.h>
+#include <Rendering/Context/RenderScenePackage.h>
 #include <Rendering/Data/FrameDescriptor.h>
 #include <Rendering/Data/LightingDescriptor.h>
 #include <Rendering/FrameGraph/FrameGraphExecutionTypes.h>

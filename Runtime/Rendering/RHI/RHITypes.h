@@ -4,6 +4,7 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -364,6 +365,10 @@ namespace NLS::Render::RHI
 		AsyncReadback,
 		UIOverlayFrameGraph,
 		UITextureAtlasRegionUpload,
+		// Whether the logical RHI lane may run on TaskGraph workers. This is
+		// deliberately separate from ParallelCommandTranslation: a backend can
+		// translate in parallel while still requiring a dedicated submit thread.
+		RhiTasksMode,
 		Count
 	};
 
@@ -408,17 +413,51 @@ namespace NLS::Render::RHI
 		bool supportsConservativeOcclusion = false;
 		bool supportsAsyncReadback = false;
 		bool supportsUIOverlayFrameGraph = false;
+		bool supportsRhiTasksMode = false;
 		uint32_t maxTextureDimension2D = 0;
 		uint32_t maxColorAttachments = 0;
 		RHIDeviceLimits limits{};
 		std::array<RHIDeviceFeatureState, static_cast<size_t>(RHIDeviceFeature::Count)> features{};
 		std::array<TextureFormatCapability, TextureFormatToIndex(TextureFormat::Count)> textureFormatCapabilities{};
 
+		/**
+		 * Returns one feature's state.
+		 *
+		 * Only the requested feature is synchronised from its legacy flag. This used
+		 * to copy the whole capability set and re-sync every feature, which allocates
+		 * one reason string per unsupported feature - and this accessor sits on the
+		 * per-frame threaded-rendering decision path, so the cost was paid thousands
+		 * of times per frame.
+		 */
 		RHIDeviceFeatureState GetFeature(RHIDeviceFeature feature) const
 		{
-			auto copy = *this;
-			copy.SynchronizeLegacyFields();
-			return copy.features[static_cast<size_t>(feature)];
+			const size_t index = static_cast<size_t>(feature);
+			if (index >= features.size())
+				return {};
+
+			RHIDeviceFeatureState state = features[index];
+			if (const auto legacy = TryGetLegacyFeatureFlag(feature); legacy.has_value())
+				ApplyLegacyFeatureState(feature, *legacy, state);
+			return state;
+		}
+
+		/**
+		 * Hot path for callers that only need the flag.
+		 *
+		 * Builds no string at all, so a per-frame capability query stops allocating.
+		 */
+		bool SupportsFeature(RHIDeviceFeature feature) const
+		{
+			const size_t index = static_cast<size_t>(feature);
+			if (index >= features.size())
+				return false;
+
+			// The legacy flag is authoritative wherever one exists; the feature table
+			// is derived from it. Features without a legacy flag (a newer flag that
+			// predates a legacy field) keep their explicit state.
+			if (const auto legacy = TryGetLegacyFeatureFlag(feature); legacy.has_value())
+				return *legacy;
+			return features[index].supported;
 		}
 
 		void SetFeature(RHIDeviceFeature feature, bool supported, std::string reason = {})
@@ -458,6 +497,7 @@ namespace NLS::Render::RHI
 			SetFeatureStateFromLegacy(RHIDeviceFeature::ConservativeOcclusion, supportsConservativeOcclusion);
 			SetFeatureStateFromLegacy(RHIDeviceFeature::AsyncReadback, supportsAsyncReadback);
 			SetFeatureStateFromLegacy(RHIDeviceFeature::UIOverlayFrameGraph, supportsUIOverlayFrameGraph);
+			SetFeatureStateFromLegacy(RHIDeviceFeature::RhiTasksMode, supportsRhiTasksMode);
 		}
 
 		const TextureFormatCapability& GetTextureFormatCapability(TextureFormat format) const
@@ -495,7 +535,23 @@ namespace NLS::Render::RHI
 
 		void SetFeatureStateFromLegacy(RHIDeviceFeature feature, bool supported)
 		{
-			auto& state = features[static_cast<size_t>(feature)];
+			const size_t index = static_cast<size_t>(feature);
+			if (index >= features.size())
+				return;
+			ApplyLegacyFeatureState(feature, supported, features[index]);
+		}
+
+		/**
+		 * Applies the legacy-flag rule to one feature state.
+		 *
+		 * Shared by the bulk synchronisation and the single-feature accessors so the
+		 * reason-string policy cannot drift between them.
+		 */
+		static void ApplyLegacyFeatureState(
+			RHIDeviceFeature feature,
+			bool supported,
+			RHIDeviceFeatureState& state)
+		{
 			const bool wasSupported = state.supported;
 			const std::string_view defaultUnsupportedReason = GetDefaultUnsupportedFeatureReason(feature);
 			state.supported = supported;
@@ -507,6 +563,52 @@ namespace NLS::Render::RHI
 			else if (wasSupported || state.reason.empty())
 			{
 				state.reason.assign(defaultUnsupportedReason.data(), defaultUnsupportedReason.size());
+			}
+		}
+
+		/**
+		 * The legacy flag behind a feature, when the feature has one.
+		 *
+		 * nullopt means the feature is stored only in the feature table, so there is
+		 * nothing to derive and the table value is authoritative.
+		 */
+		std::optional<bool> TryGetLegacyFeatureFlag(RHIDeviceFeature feature) const
+		{
+			switch (feature)
+			{
+			case RHIDeviceFeature::BackendReady: return backendReady;
+			case RHIDeviceFeature::Graphics: return supportsGraphics;
+			case RHIDeviceFeature::Compute: return supportsCompute;
+			case RHIDeviceFeature::AsyncCompute: return supportsAsyncCompute;
+			case RHIDeviceFeature::DedicatedComputeQueue: return supportsDedicatedComputeQueue;
+			case RHIDeviceFeature::CopyQueue: return supportsCopyQueue;
+			case RHIDeviceFeature::Swapchain: return supportsSwapchain;
+			case RHIDeviceFeature::FramebufferBlit: return supportsFramebufferBlit;
+			case RHIDeviceFeature::DepthBlit: return supportsDepthBlit;
+			case RHIDeviceFeature::CurrentSceneRenderer: return supportsCurrentSceneRenderer;
+			case RHIDeviceFeature::OffscreenFramebuffers: return supportsOffscreenFramebuffers;
+			case RHIDeviceFeature::FramebufferReadback: return supportsFramebufferReadback;
+			case RHIDeviceFeature::EditorPickingReadback: return supportsEditorPickingReadback;
+			case RHIDeviceFeature::UITextureHandles: return supportsUITextureHandles;
+			case RHIDeviceFeature::Cubemaps: return supportsCubemaps;
+			case RHIDeviceFeature::MultiRenderTargets: return supportsMultiRenderTargets;
+			case RHIDeviceFeature::ExplicitBarriers: return supportsExplicitBarriers;
+			case RHIDeviceFeature::ParallelCommandRecording: return supportsParallelCommandRecording;
+			case RHIDeviceFeature::ParallelCommandTranslation: return supportsParallelCommandTranslation;
+			case RHIDeviceFeature::InRenderPassChildCommandBuffers: return supportsInRenderPassChildCommandBuffers;
+			case RHIDeviceFeature::TransientResourceAllocator: return supportsTransientResourceAllocator;
+			case RHIDeviceFeature::CentralizedDescriptorManagement: return supportsCentralizedDescriptorManagement;
+			case RHIDeviceFeature::PipelineStateCache: return supportsPipelineStateCache;
+			case RHIDeviceFeature::HierarchicalZBuffer: return supportsHierarchicalZBuffer;
+			case RHIDeviceFeature::ConservativeOcclusion: return supportsConservativeOcclusion;
+			case RHIDeviceFeature::AsyncReadback: return supportsAsyncReadback;
+			case RHIDeviceFeature::UIOverlayFrameGraph: return supportsUIOverlayFrameGraph;
+			case RHIDeviceFeature::RhiTasksMode: return supportsRhiTasksMode;
+			// No legacy field: the feature table is the only storage.
+			case RHIDeviceFeature::UITextureAtlasRegionUpload:
+			case RHIDeviceFeature::Count:
+			default:
+				return std::nullopt;
 			}
 		}
 
@@ -542,6 +644,7 @@ namespace NLS::Render::RHI
 			case RHIDeviceFeature::ConservativeOcclusion: supportsConservativeOcclusion = supported; break;
 			case RHIDeviceFeature::AsyncReadback: supportsAsyncReadback = supported; break;
 			case RHIDeviceFeature::UIOverlayFrameGraph: supportsUIOverlayFrameGraph = supported; break;
+			case RHIDeviceFeature::RhiTasksMode: supportsRhiTasksMode = supported; break;
 			case RHIDeviceFeature::Count: break;
 			}
 		}

@@ -195,6 +195,80 @@ TEST(TaskGraphTests, WorkerExecutesDependencyChainInOrder)
     graph.Shutdown();
 }
 
+TEST(TaskGraphTests, CompletedSuccessfulDependenciesDoNotCancelLateDependents)
+{
+    NLS::Base::TaskGraph::TaskGraph graph({1u, false, true});
+    ASSERT_TRUE(graph.Start());
+
+    const auto first = graph.Submit([] {});
+    const auto second = graph.Submit([] {});
+    ASSERT_EQ(graph.Wait(first), NLS::Base::TaskGraph::TaskStatus::Succeeded);
+    ASSERT_EQ(graph.Wait(second), NLS::Base::TaskGraph::TaskStatus::Succeeded);
+
+    std::atomic_bool ran {false};
+    NLS::Base::TaskGraph::TaskDesc dependent;
+    dependent.prerequisites = {first, second};
+    dependent.function = [&ran] { ran.store(true); };
+    const auto handle = graph.Submit(std::move(dependent));
+    ASSERT_TRUE(handle.IsValid());
+    EXPECT_TRUE(graph.WaitFor(handle, 1s));
+    EXPECT_EQ(graph.GetCompletion(handle).GetStatus(), NLS::Base::TaskGraph::TaskStatus::Succeeded);
+    EXPECT_TRUE(ran.load());
+    graph.Shutdown();
+}
+
+TEST(TaskGraphTests, LateDependentWaitsOnlyForItsPendingDependencies)
+{
+    NLS::Base::TaskGraph::TaskGraph graph({1u, false, true});
+    ASSERT_TRUE(graph.Start());
+
+    const auto completed = graph.Submit([] {});
+    ASSERT_EQ(graph.Wait(completed), NLS::Base::TaskGraph::TaskStatus::Succeeded);
+    const auto pending = graph.Submit([] {}, NLS::Base::TaskGraph::NamedThread::Render);
+    ASSERT_TRUE(pending.IsValid());
+
+    std::atomic_bool ran {false};
+    NLS::Base::TaskGraph::TaskDesc dependent;
+    dependent.prerequisites = {completed, pending};
+    dependent.function = [&ran] { ran.store(true); };
+    const auto handle = graph.Submit(std::move(dependent));
+    ASSERT_TRUE(handle.IsValid());
+    EXPECT_FALSE(graph.WaitFor(handle, 10ms));
+    EXPECT_FALSE(ran.load());
+    EXPECT_EQ(graph.Pump(NLS::Base::TaskGraph::NamedThread::Render), 1u);
+    EXPECT_TRUE(graph.WaitFor(handle, 1s));
+    EXPECT_EQ(graph.GetCompletion(handle).GetStatus(), NLS::Base::TaskGraph::TaskStatus::Succeeded);
+    EXPECT_TRUE(ran.load());
+    graph.Shutdown();
+}
+
+TEST(TaskGraphTests, CompletedFailedOrCancelledDependenciesCancelLateDependents)
+{
+    NLS::Base::TaskGraph::TaskGraph graph({1u, false, true});
+    ASSERT_TRUE(graph.Start());
+
+    const auto completed = graph.Submit([] {});
+    ASSERT_EQ(graph.Wait(completed), NLS::Base::TaskGraph::TaskStatus::Succeeded);
+    const auto failed = graph.Submit([] { throw std::runtime_error("expected failure"); });
+    ASSERT_EQ(graph.Wait(failed), NLS::Base::TaskGraph::TaskStatus::Failed);
+    const auto cancelled = graph.Submit([] {}, NLS::Base::TaskGraph::NamedThread::Render);
+    ASSERT_TRUE(graph.RequestCancel(cancelled));
+    ASSERT_EQ(graph.Wait(cancelled), NLS::Base::TaskGraph::TaskStatus::Cancelled);
+
+    for (const auto unsuccessful : {failed, cancelled})
+    {
+        bool ran = false;
+        NLS::Base::TaskGraph::TaskDesc dependent;
+        dependent.prerequisites = {completed, unsuccessful};
+        dependent.function = [&ran] { ran = true; };
+        const auto handle = graph.Submit(std::move(dependent));
+        ASSERT_TRUE(handle.IsValid());
+        EXPECT_EQ(graph.Wait(handle), NLS::Base::TaskGraph::TaskStatus::Cancelled);
+        EXPECT_FALSE(ran);
+    }
+    graph.Shutdown();
+}
+
 TEST(TaskGraphTests, NamedThreadTasksOnlyRunWhenTheirThreadPumps)
 {
     NLS::Base::TaskGraph::TaskGraph graph({1u, false, true});
@@ -363,5 +437,212 @@ TEST(TaskGraphTests, AutoWorkerCountUsesTheSharedExecutionPoolBudget)
         EXPECT_LT(graph.GetWorkerCount(), hardware)
             << "The rendering TaskGraph must leave lanes for the game, render, and RHI threads.";
     }
+    graph.Shutdown();
+}
+
+TEST(TaskGraphTests, SingleWorkerNestedWaitCompletesThroughAssist)
+{
+    // A one-worker pool can only satisfy a nested wait if the blocked worker runs
+    // runnable work itself instead of parking on the completion.
+    NLS::Base::TaskGraph::TaskGraph graph({1u, false, true});
+    ASSERT_TRUE(graph.Start());
+
+    std::atomic<uint32_t> observedValue {0u};
+    const auto outer = graph.Submit([&graph, &observedValue]
+    {
+        NLS::Base::TaskGraph::TaskDesc nested;
+        nested.debugName = "NestedOnSingleWorker";
+        nested.function = [&observedValue]
+        {
+            observedValue.fetch_add(4u, std::memory_order_acq_rel);
+        };
+        const auto nestedHandle = graph.Submit(std::move(nested));
+        if (!nestedHandle.IsValid())
+            return;
+
+        graph.Wait(nestedHandle);
+        observedValue.fetch_add(1u, std::memory_order_acq_rel);
+    });
+    ASSERT_TRUE(outer.IsValid());
+
+    EXPECT_EQ(graph.Wait(outer), NLS::Base::TaskGraph::TaskStatus::Succeeded);
+    EXPECT_EQ(observedValue.load(std::memory_order_acquire), 5u);
+    graph.Shutdown();
+}
+
+TEST(TaskGraphTests, NestedSubmissionsAreExecutedByThePoolWithoutExternalPumping)
+{
+    // Nested work must be visible to every lane: the submitting worker may be busy
+    // and an idle peer has to steal it.
+    NLS::Base::TaskGraph::TaskGraph graph({4u, false, true});
+    ASSERT_TRUE(graph.Start());
+
+    std::atomic<uint32_t> completedChildren {0u};
+    std::vector<NLS::Base::TaskGraph::TaskHandle> roots;
+    for (uint32_t parent = 0u; parent < 16u; ++parent)
+    {
+        roots.push_back(graph.Submit([&graph, &completedChildren]
+        {
+            for (uint32_t child = 0u; child < 8u; ++child)
+            {
+                const auto childHandle = graph.Submit([&completedChildren]
+                {
+                    completedChildren.fetch_add(1u, std::memory_order_acq_rel);
+                });
+                if (childHandle.IsValid())
+                    graph.Wait(childHandle);
+            }
+        }));
+    }
+
+    for (const auto handle : roots)
+        EXPECT_EQ(graph.Wait(handle), NLS::Base::TaskGraph::TaskStatus::Succeeded);
+
+    EXPECT_EQ(completedChildren.load(std::memory_order_acquire), 128u);
+
+    // Both worker paths ran: the pool popped nested work from the submitting lane
+    // and consumed externally submitted work from the injection queue. Whether a
+    // peer *stole* anything is a scheduling coincidence here - a worker that is
+    // inside its parent pops its own lane first and can drain it before an idle
+    // peer looks - so the steal path is pinned by
+    // `IdleWorkerStealsChildrenQueuedByAParkedPeer`, which makes a steal the only
+    // way the work can complete.
+    EXPECT_GT(graph.GetWorkerLocalExecutionCount(), 0u);
+    EXPECT_GT(graph.GetWorkerInjectionExecutionCount(), 0u);
+
+    graph.Shutdown();
+}
+
+TEST(TaskGraphTests, IdleWorkerStealsChildrenQueuedByAParkedPeer)
+{
+    // Two workers, and the parent parks without nesting a wait after publishing its
+    // children. Nested submissions stay on the submitting worker's lane, so those
+    // children can only complete if the idle peer steals that lane: the steal path is
+    // a required part of the contract here instead of a timing coincidence.
+    NLS::Base::TaskGraph::TaskGraph graph({2u, false, true});
+    ASSERT_TRUE(graph.Start());
+
+    constexpr uint32_t kChildCount = 8u;
+    std::atomic<uint32_t> completedChildren {0u};
+    std::atomic_bool childrenQueued {false};
+    std::atomic_bool releaseParent {false};
+
+    const auto parent = graph.Submit(
+        [&graph, &completedChildren, &childrenQueued, &releaseParent]
+        {
+            for (uint32_t child = 0u; child < kChildCount; ++child)
+            {
+                (void)graph.Submit([&completedChildren]
+                {
+                    completedChildren.fetch_add(1u, std::memory_order_acq_rel);
+                });
+            }
+            childrenQueued.store(true, std::memory_order_release);
+
+            // Deliberately not graph.Wait: a nested wait assists, which would let
+            // this worker run its own children. That assist path is covered by
+            // `SingleWorkerNestedWaitCompletesThroughAssist`.
+            while (!releaseParent.load(std::memory_order_acquire))
+                std::this_thread::yield();
+        });
+    ASSERT_TRUE(parent.IsValid());
+
+    ASSERT_TRUE(WaitUntil(
+        [&childrenQueued] { return childrenQueued.load(std::memory_order_acquire); },
+        2s));
+    const bool drainedByPeer = WaitUntil(
+        [&completedChildren] { return completedChildren.load(std::memory_order_acquire) == kChildCount; },
+        2s);
+
+    releaseParent.store(true, std::memory_order_release);
+    EXPECT_EQ(graph.Wait(parent), NLS::Base::TaskGraph::TaskStatus::Succeeded);
+
+    EXPECT_TRUE(drainedByPeer)
+        << "the idle worker never drained the parked worker's lane";
+    EXPECT_EQ(completedChildren.load(std::memory_order_acquire), kChildCount);
+    EXPECT_GT(graph.GetWorkerStealCount(), 0u)
+        << "the parked worker's lane was drained without a steal";
+    graph.Shutdown();
+}
+
+TEST(TaskGraphTests, RequestCancelCancelsQueuedTaskAndItsDependents)
+{
+    NLS::Base::TaskGraph::TaskGraph graph({1u, false, true});
+    ASSERT_TRUE(graph.Start());
+
+    // Hold the single worker so the cancelled task cannot be claimed first.
+    std::atomic_bool releaseWorker {false};
+    const auto blocker = graph.Submit([&releaseWorker]
+    {
+        while (!releaseWorker.load(std::memory_order_acquire))
+            std::this_thread::sleep_for(1ms);
+    });
+    ASSERT_TRUE(blocker.IsValid());
+
+    std::atomic_bool cancelledBodyRan {false};
+    const auto victim = graph.Submit([&cancelledBodyRan]
+    {
+        cancelledBodyRan.store(true, std::memory_order_release);
+    });
+    ASSERT_TRUE(victim.IsValid());
+
+    NLS::Base::TaskGraph::TaskDesc dependentDesc;
+    dependentDesc.function = [] {};
+    dependentDesc.prerequisites.push_back(victim);
+    const auto dependent = graph.Submit(std::move(dependentDesc));
+    ASSERT_TRUE(dependent.IsValid());
+
+    ASSERT_TRUE(graph.RequestCancel(victim));
+    EXPECT_TRUE(graph.IsCancellationRequested(victim));
+    EXPECT_EQ(graph.GetCompletion(victim).GetStatus(), NLS::Base::TaskGraph::TaskStatus::Cancelled);
+    EXPECT_EQ(graph.GetCompletion(dependent).GetStatus(), NLS::Base::TaskGraph::TaskStatus::Cancelled);
+
+    releaseWorker.store(true, std::memory_order_release);
+    EXPECT_EQ(graph.Wait(blocker), NLS::Base::TaskGraph::TaskStatus::Succeeded);
+    EXPECT_FALSE(cancelledBodyRan.load(std::memory_order_acquire));
+
+    graph.Shutdown();
+}
+
+TEST(TaskGraphTests, RequestCancelOnRunningTaskIsCooperative)
+{
+    NLS::Base::TaskGraph::TaskGraph graph({2u, false, true});
+    ASSERT_TRUE(graph.Start());
+
+    std::atomic_bool bodyEntered {false};
+    std::atomic_bool releaseBody {false};
+    const auto running = graph.Submit([&bodyEntered, &releaseBody]
+    {
+        bodyEntered.store(true, std::memory_order_release);
+        while (!releaseBody.load(std::memory_order_acquire))
+            std::this_thread::sleep_for(1ms);
+    });
+    ASSERT_TRUE(running.IsValid());
+    ASSERT_TRUE(WaitUntil([&bodyEntered] { return bodyEntered.load(std::memory_order_acquire); }, 2s));
+
+    // The body cannot be preempted, so the request is recorded and the body's own
+    // result is the terminal status.
+    EXPECT_TRUE(graph.RequestCancel(running));
+    EXPECT_TRUE(graph.IsCancellationRequested(running));
+    EXPECT_EQ(graph.GetCompletion(running).GetStatus(), NLS::Base::TaskGraph::TaskStatus::Pending);
+
+    releaseBody.store(true, std::memory_order_release);
+    EXPECT_EQ(graph.Wait(running), NLS::Base::TaskGraph::TaskStatus::Succeeded);
+    graph.Shutdown();
+}
+
+TEST(TaskGraphTests, RequestCancelRejectsUnknownStaleAndTerminalHandles)
+{
+    NLS::Base::TaskGraph::TaskGraph graph({1u, false, true});
+    ASSERT_TRUE(graph.Start());
+
+    EXPECT_FALSE(graph.RequestCancel({}));
+    EXPECT_FALSE(graph.RequestCancel({9999u, 4242u}));
+
+    const auto finished = graph.Submit([] {});
+    ASSERT_TRUE(finished.IsValid());
+    EXPECT_EQ(graph.Wait(finished), NLS::Base::TaskGraph::TaskStatus::Succeeded);
+    EXPECT_FALSE(graph.RequestCancel(finished));
+
     graph.Shutdown();
 }

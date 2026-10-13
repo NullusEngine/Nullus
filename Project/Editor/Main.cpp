@@ -7,6 +7,7 @@
 #include "Assets/EditorStartupAssetPreimport.h"
 #include "Debug/Logger.h"
 #include "Rendering/Settings/GraphicsBackendUtils.h"
+#include "Rendering/Context/RenderingThreadSystem.h"
 #include <chrono>
 #include <cstdio>
 #include <exception>
@@ -40,6 +41,7 @@ namespace
 
 int main(int argc, char** argv)
 {
+		const Render::Context::ScopedGameThread gameThread;
 	const auto launchBegin = std::chrono::steady_clock::now();
 	const auto launchWorkingDirectory = std::filesystem::current_path();
 	std::filesystem::current_path(std::filesystem::path(argv[0]).parent_path());
@@ -187,9 +189,12 @@ static bool TryRun(const std::string& projectPath, const std::string& projectNam
 					std::chrono::steady_clock::now() - launchBegin).count()));
 		}
 		NLS::Context::Device::ErrorEvent -= listenerId;
+		app->Run();
+		return app->DidRunSuccessfully();
 	}
 	catch (const std::exception& e)
 	{
+		NLS_LOG_ERROR("Editor runtime failed: " + std::string(e.what()));
 		std::fprintf(stderr, "[Editor::TryRun] std::exception: %s\n", e.what());
 		return false;
 	}
@@ -199,10 +204,5 @@ static bool TryRun(const std::string& projectPath, const std::string& projectNam
 		return false;
 	}
 
-	if (app)
-	{
-		app->Run();
-		return app->DidRunSuccessfully();
-	}
 	return false;
 }

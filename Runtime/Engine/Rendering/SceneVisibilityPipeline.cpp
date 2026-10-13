@@ -4,12 +4,16 @@
 #include <array>
 #include <atomic>
 #include <cmath>
+#include <chrono>
+#include <cstdint>
+#include <string>
 #include <limits>
 #include <optional>
 #include <unordered_map>
 #include <unordered_set>
 
 #include <Math/Vector4.h>
+#include <Debug/Logger.h>
 #include <Profiling/Profiler.h>
 
 #include "Rendering/Geometry/BoundingSphereUtils.h"
@@ -661,8 +665,24 @@ namespace
 		const SnapshotLookup& lookup)
 	{
 		NLS_PROFILE_NAMED_SCOPE("SceneVisibilityPipeline::EvaluateFullScanParallel");
+		auto reportSerialFallback = [](const char* reason)
+		{
+			static std::atomic<uint64_t> lastLogMs { 0u };
+			const uint64_t nowMs = static_cast<uint64_t>(
+				std::chrono::duration_cast<std::chrono::milliseconds>(
+					std::chrono::steady_clock::now().time_since_epoch()).count());
+			uint64_t previousMs = lastLogMs.load(std::memory_order_relaxed);
+			if (nowMs >= previousMs + 2000u &&
+				lastLogMs.compare_exchange_strong(previousMs, nowMs))
+			{
+				NLS_LOG_WARNING(std::string("[Visibility] parallel scan fell back to serial: ") + reason);
+			}
+		};
 		if (primitives.primitiveRecords.empty() || !NLS::Base::Jobs::IsJobSystemInitialized())
+		{
+			reportSerialFallback("job system not initialized or no primitives");
 			return EvaluateFullScanSerial(options, primitives, lookup);
+		}
 
 		const auto primitivesPerTask = std::max<size_t>(1u, options.parallelVisibilityPrimitivesPerTask);
 		const auto hardwareThreads = std::max<uint32_t>(1u, NLS::Base::Jobs::GetJobWorkerCount() + 1u);
@@ -675,7 +695,10 @@ namespace
 		const auto taskLimit = std::max<uint32_t>(1u, std::min(hardwareThreads, maxVisibilityJobs));
 		const auto taskCount = std::min<size_t>(taskLimit, desiredTaskCount);
 		if (taskCount <= 1u)
+		{
+			reportSerialFallback("taskCount <= 1");
 			return EvaluateFullScanSerial(options, primitives, lookup);
+		}
 
 		const auto rangeBaseSize = primitives.primitiveRecords.size() / taskCount;
 		const auto largerRangeCount = primitives.primitiveRecords.size() % taskCount;
@@ -726,13 +749,19 @@ namespace
 			static_cast<uint32_t>(taskCount),
 			scheduleOptions);
 		if (handle.id == 0u)
+		{
+			reportSerialFallback("ScheduleParallelFor returned an empty handle");
 			return EvaluateFullScanSerial(options, primitives, lookup);
+		}
 
 		NLS::Base::Jobs::Complete(handle);
 		for (const auto& completed : rangeCompleted)
 		{
 			if (!completed.load(std::memory_order_acquire))
+			{
+				reportSerialFallback("a visibility range did not complete");
 				return EvaluateFullScanSerial(options, primitives, lookup);
+			}
 		}
 
 		SceneVisibilityPipelineResult result;

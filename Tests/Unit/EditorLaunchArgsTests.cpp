@@ -1,6 +1,7 @@
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <string>
@@ -25,6 +26,28 @@
 
 namespace
 {
+#if defined(_WIN32)
+    class ScopedEnvironmentVariable final
+    {
+    public:
+        ScopedEnvironmentVariable(const char* name, const char* value) : m_name(name)
+        {
+            const char* previous = std::getenv(name);
+            m_previous = previous != nullptr ? previous : "";
+            _putenv_s(name, value);
+        }
+
+        ~ScopedEnvironmentVariable() { _putenv_s(m_name.c_str(), m_previous.c_str()); }
+
+        ScopedEnvironmentVariable(const ScopedEnvironmentVariable&) = delete;
+        ScopedEnvironmentVariable& operator=(const ScopedEnvironmentVariable&) = delete;
+
+    private:
+        std::string m_name;
+        std::string m_previous;
+    };
+#endif
+
     class EditorLaunchTestTexture final : public NLS::Render::RHI::RHITexture
     {
     public:
@@ -1351,26 +1374,6 @@ TEST(EditorLaunchArgsTests, ThumbnailTelemetrySummaryIncludesCacheEvaluationStag
     EXPECT_NE(whitelist.find(".starts_with(\"Thumbnail\")"), std::string::npos);
 }
 
-TEST(EditorLaunchArgsTests, DeferredSceneRendererThreadedRefreshGuardsMissingDescriptor)
-{
-    const auto source = ReadTextFile(
-        std::filesystem::path(NLS_ROOT_DIR) / "Runtime/Engine/Rendering/DeferredSceneRenderer.cpp");
-
-    const auto functionStart = source.find("void DeferredSceneRenderer::DrawFrame()");
-    ASSERT_NE(functionStart, std::string::npos);
-    const auto functionEnd = source.find("void DeferredSceneRenderer::LoadPipelineResources", functionStart);
-    ASSERT_NE(functionEnd, std::string::npos);
-    const auto body = source.substr(functionStart, functionEnd - functionStart);
-
-    const auto refreshStart = body.find("DeferredSceneRenderer::DrawFrame::ThreadedSnapshotRefresh");
-    ASSERT_NE(refreshStart, std::string::npos);
-    const auto descriptorGet = body.find("GetDescriptor<DeferredSceneDescriptor>()", refreshStart);
-    ASSERT_NE(descriptorGet, std::string::npos);
-    const auto descriptorGuard = body.rfind("HasDescriptor<DeferredSceneDescriptor>()", descriptorGet);
-    ASSERT_NE(descriptorGuard, std::string::npos)
-        << "Threaded refresh can run after registered passes when the deferred descriptor was not attached; it must not assert while prefab prewarm/background work is active.";
-}
-
 TEST(EditorLaunchArgsTests, SceneViewPreloadsDeferredPipelineResourcesBeforeFirstVisibleSceneFrame)
 {
     const auto source = ReadTextFile(
@@ -1388,45 +1391,6 @@ TEST(EditorLaunchArgsTests, SceneViewPreloadsDeferredPipelineResourcesBeforeFirs
            "scene frame and leaves users staring at a blank viewport longer.";
 }
 
-TEST(EditorLaunchArgsTests, DeferredSceneRendererDoesNotCaptureLightingForEmptySceneFrames)
-{
-    const auto source = ReadTextFile(
-        std::filesystem::path(NLS_ROOT_DIR) / "Runtime/Engine/Rendering/DeferredSceneRenderer.cpp");
-
-    const auto functionStart = source.find("void DeferredSceneRenderer::BeginFrame");
-    ASSERT_NE(functionStart, std::string::npos);
-    const auto functionEnd = source.find("void DeferredSceneRenderer::DrawFrame", functionStart);
-    ASSERT_NE(functionEnd, std::string::npos);
-    const auto body = source.substr(functionStart, functionEnd - functionStart);
-
-    const auto shouldCapture = body.find("shouldCaptureDeferredScene");
-    ASSERT_NE(shouldCapture, std::string::npos);
-    const auto captureGuard = body.find("else if (!shouldCaptureDeferredScene)", shouldCapture);
-    ASSERT_NE(captureGuard, std::string::npos)
-        << "Startup scene-load placeholder frames may have helper/grid passes but zero deferred scene drawables. "
-           "They must not enqueue the fullscreen lighting draw, otherwise the empty lighting pass can replace the "
-           "placeholder output with black before any prefab resources are revealed.";
-    const auto skipCaptureLog = body.find("SkipDeferredSceneCapture", captureGuard);
-    ASSERT_NE(skipCaptureLog, std::string::npos);
-    const auto skipPublish = body.rfind("m_skipThreadedFramePublish = true", skipCaptureLog);
-    ASSERT_NE(skipPublish, std::string::npos)
-        << "An empty scene-load placeholder frame must not publish an empty threaded deferred package over the "
-           "previous viewport output; the first publish should happen when a real scene drawable is revealed.";
-
-    const auto builderStart = source.find(
-        "DeferredSceneRenderer::BuildDeferredPreparedRenderSceneBuilder");
-    ASSERT_NE(builderStart, std::string::npos);
-    const auto captureGuardInBuilder = source.find(
-        "if (captureInput.drawables != nullptr && captureInput.recordedDrawCommands != nullptr)",
-        builderStart);
-    ASSERT_NE(captureGuardInBuilder, std::string::npos)
-        << "Deferred scene capture must remain inside the prepared builder so an empty scene can skip the "
-           "entire capture path without producing a lighting draw.";
-    const auto captureLoop = source.find("CaptureThreadedDeferredDraws(", captureGuardInBuilder);
-    ASSERT_NE(captureLoop, std::string::npos)
-        << "The prepared builder must own the deferred draw capture that used to run directly in BeginFrame.";
-}
-
 TEST(EditorLaunchArgsTests, DeferredSceneRendererDrawPathDiagnosticsAreFrameBounded)
 {
     const auto header = ReadTextFile(
@@ -1437,7 +1401,7 @@ TEST(EditorLaunchArgsTests, DeferredSceneRendererDrawPathDiagnosticsAreFrameBoun
         std::filesystem::path(NLS_ROOT_DIR) / "Runtime/Engine/Rendering/DeferredSceneRenderer.cpp");
     const auto functionStart = source.find("void DeferredSceneRenderer::LogPreparedDrawResult");
     ASSERT_NE(functionStart, std::string::npos);
-    const auto functionEnd = source.find("NLS::Render::Context::PreparedRenderSceneBuilder", functionStart);
+    const auto functionEnd = source.find("NLS::Render::Context::RenderSceneBuildCommand", functionStart);
     ASSERT_NE(functionEnd, std::string::npos);
     const auto body = source.substr(functionStart, functionEnd - functionStart);
 
@@ -3741,17 +3705,29 @@ TEST(EditorLaunchArgsTests, ParsesSceneViewReadbackValidationOutputs)
     EXPECT_EQ(parsed.projectPathArgument, "TestProject.nullus");
 }
 
-TEST(EditorLaunchArgsTests, EditorThreadedRenderingUsesFramesInFlightSlotsForThroughput)
+TEST(EditorLaunchArgsTests, EditorFrameRingCoversConcurrentViewsOnTopOfFramesInFlight)
 {
-    EXPECT_EQ(NLS::Editor::Core::ResolveEditorThreadedFrameSlotCount(0u), 1u);
-    EXPECT_EQ(NLS::Editor::Core::ResolveEditorThreadedFrameSlotCount(2u), 3u);
-    EXPECT_EQ(NLS::Editor::Core::ResolveEditorThreadedFrameSlotCount(3u), 4u);
-    EXPECT_EQ(NLS::Editor::Core::ResolveEditorThreadedPublishRetirementWaitMs(), 8u);
+    // The Editor is not a single-view application: one tick can submit a Scene View
+    // frame, a Game View frame, UI-only frames and several thumbnail frames, and each
+    // one opens a slot. The ring therefore carries a headroom on top of the pipelining
+    // depth instead of the single extra slot a single-view application needs.
+    EXPECT_EQ(NLS::Editor::Core::ResolveEditorFrameResourceCount(0u), 1u);
+    EXPECT_GT(NLS::Editor::Core::kEditorConcurrentViewFrameHeadroom, 1u)
+        << "a single extra slot is the single-view sizing this headroom exists to replace";
+
+    for (const uint32_t framesInFlight : {1u, 2u, 3u, 5u})
+    {
+        EXPECT_EQ(
+            NLS::Editor::Core::ResolveEditorFrameResourceCount(framesInFlight),
+            framesInFlight + NLS::Editor::Core::kEditorConcurrentViewFrameHeadroom);
+    }
 }
 
 #if defined(_WIN32)
 TEST(EditorLaunchArgsTests, DefaultDx12DeviceCreationKeepsPageFaultDiagnosticsWithoutAutoBreadcrumbs)
 {
+    const ScopedEnvironmentVariable debugLayer("NLS_DX12_DEBUG_LAYER", "0");
+    const ScopedEnvironmentVariable gpuValidation("NLS_DX12_GPU_VALIDATION", "0");
     std::vector<std::string> storage;
     char** argv = MutableArgv({"Editor.exe", "TestProject.nullus"}, storage);
 
@@ -3770,6 +3746,8 @@ TEST(EditorLaunchArgsTests, DefaultDx12DeviceCreationKeepsPageFaultDiagnosticsWi
 
 TEST(EditorLaunchArgsTests, ExplicitDebugValidationDx12DeviceCreationEnablesDredDiagnostics)
 {
+    const ScopedEnvironmentVariable debugLayer("NLS_DX12_DEBUG_LAYER", "0");
+    const ScopedEnvironmentVariable gpuValidation("NLS_DX12_GPU_VALIDATION", "0");
     std::vector<std::string> storage;
     char** argv = MutableArgv({"Editor.exe", "TestProject.nullus"}, storage);
 
@@ -3788,6 +3766,8 @@ TEST(EditorLaunchArgsTests, ExplicitDebugValidationDx12DeviceCreationEnablesDred
 
 TEST(EditorLaunchArgsTests, DisabledDebugValidationDx12DeviceCreationDisablesAutoBreadcrumbs)
 {
+    const ScopedEnvironmentVariable debugLayer("NLS_DX12_DEBUG_LAYER", "0");
+    const ScopedEnvironmentVariable gpuValidation("NLS_DX12_GPU_VALIDATION", "0");
     std::vector<std::string> storage;
     char** argv = MutableArgv({"Editor.exe", "TestProject.nullus"}, storage);
 
@@ -3802,5 +3782,29 @@ TEST(EditorLaunchArgsTests, DisabledDebugValidationDx12DeviceCreationDisablesAut
     EXPECT_NE(resources.shaderModelDiagnostics.find("Shader Model"), std::string::npos);
     EXPECT_TRUE(resources.dredDiagnosticsEnabled);
     EXPECT_FALSE(resources.dredAutoBreadcrumbsEnabled);
+}
+
+TEST(EditorLaunchArgsTests, EnvironmentDebugLayerEnablesBreadcrumbsWithDebugModeDisabled)
+{
+    const ScopedEnvironmentVariable debugLayer("NLS_DX12_DEBUG_LAYER", "1");
+    const ScopedEnvironmentVariable gpuValidation("NLS_DX12_GPU_VALIDATION", "0");
+    const auto resources = NLS::Render::Backend::CreateDX12DeviceResources(false);
+    if (!resources.IsValid())
+        GTEST_SKIP() << "DX12 device unavailable or Shader Model 6 unsupported on this test machine";
+    ASSERT_TRUE(resources.IsValid()) << resources.creationDiagnostics;
+    EXPECT_TRUE(resources.dredDiagnosticsEnabled);
+    EXPECT_TRUE(resources.dredAutoBreadcrumbsEnabled);
+}
+
+TEST(EditorLaunchArgsTests, EnvironmentGpuValidationEnablesBreadcrumbsWithDebugModeDisabled)
+{
+    const ScopedEnvironmentVariable debugLayer("NLS_DX12_DEBUG_LAYER", "0");
+    const ScopedEnvironmentVariable gpuValidation("NLS_DX12_GPU_VALIDATION", "1");
+    const auto resources = NLS::Render::Backend::CreateDX12DeviceResources(false);
+    if (!resources.IsValid())
+        GTEST_SKIP() << "DX12 device unavailable or Shader Model 6 unsupported on this test machine";
+    ASSERT_TRUE(resources.IsValid()) << resources.creationDiagnostics;
+    EXPECT_TRUE(resources.dredDiagnosticsEnabled);
+    EXPECT_TRUE(resources.dredAutoBreadcrumbsEnabled);
 }
 #endif

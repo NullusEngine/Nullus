@@ -9,6 +9,7 @@
 #include <fstream>
 #include <cstdint>
 #include <limits>
+#include <stdexcept>
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
@@ -32,7 +33,9 @@
 #include "Assets/ArtifactManifest.h"
 #include "Rendering/Context/DriverAccess.h"
 #include "Rendering/Context/RenderScenePackageBuilder.h"
-#include "Rendering/Context/ThreadedRenderingLifecycle.h"
+#include "Rendering/Context/RenderScenePackage.h"
+#include "Rendering/Context/RenderCommandPipe.h"
+#include "Rendering/Context/RenderingThreadSystem.h"
 #include "Rendering/FrameGraph/ExternalResourceBridge.h"
 #include "Rendering/FrameGraph/SceneRenderGraphBuilderDeferred.h"
 #include "Rendering/Data/ObjectDataLimits.h"
@@ -686,11 +689,32 @@ BaseSceneRenderer::BaseSceneRenderer(Render::Context::Driver& p_driver)
 	SetFrameObjectBindingProvider(std::make_unique<EngineFrameObjectBindingProvider>(*this));
 	m_lightGridPrepass = std::make_shared<LightGridPrepass>(p_driver);
 	m_sceneLightingProvider = std::make_unique<SceneLightingProvider>();
+	m_renderSceneLightingProvider = std::make_unique<SceneLightingProvider>();
 }
 
 BaseSceneRenderer::~BaseSceneRenderer()
 {
+	// First statement, before this class or any subclass member is released: a
+	// published frame's builder still references both this renderer and the
+	// frame-object binding provider it owns.
+	DrainPublishedFramesBeforeTeardown();
+	// The drain above may have discarded builders while the scene state was still
+	// alive. From here on nothing may call back into this renderer: an un-run
+	// builder retained by the driver outlives it, and its dropper would otherwise
+	// lock a mutex inside freed memory.
+	m_sceneParseCaptureLifetime.reset();
 	ForgetVisibleMaterialTexturePumpState(*this);
+}
+
+BaseSceneRenderer::SceneParseCaptureDropper BaseSceneRenderer::MakeSceneParseCaptureDropper(
+	std::shared_ptr<SceneParseInput> input)
+{
+	SceneParseCaptureDropper dropper;
+	dropper.state = std::make_shared<SceneParseCaptureDropper::State>();
+	dropper.state->ownerLifetime = m_sceneParseCaptureLifetime;
+	dropper.state->owner = this;
+	dropper.state->input = std::move(input);
+	return dropper;
 }
 
 bool BaseSceneRenderer::PreloadSceneFallbackShader(
@@ -719,14 +743,14 @@ void BaseSceneRenderer::BeginFrame(const Render::Data::FrameDescriptor& p_frameD
 
 	auto& sceneDescriptor = GetDescriptor<SceneDescriptor>();
 	RefreshSceneLightingDescriptor(sceneDescriptor.scene);
+	ConfigureRenderSceneSynchronizationDepth();
 
 	Render::Core::CompositeRenderer::BeginFrame(p_frameDescriptor);
 	if (!IsFrameActive())
 		return;
 
-	m_lastCullReasonDebugSnapshot = {};
-	if (const auto snapshot = BuildFrameSnapshot(p_frameDescriptor); snapshot.has_value())
-		SetPendingFrameSnapshot(snapshot.value());
+	if (const auto packet = BuildRenderFramePacket(p_frameDescriptor); packet.has_value())
+		SetPendingRenderFramePacket(packet.value());
 }
 
 void BaseSceneRenderer::BeginFrameForBackgroundPreview(const Render::Data::FrameDescriptor& p_frameDescriptor)
@@ -737,46 +761,32 @@ void BaseSceneRenderer::BeginFrameForBackgroundPreview(const Render::Data::Frame
 
 	auto& sceneDescriptor = GetDescriptor<SceneDescriptor>();
 	RefreshSceneLightingDescriptor(sceneDescriptor.scene);
+	ConfigureRenderSceneSynchronizationDepth();
 
 	Render::Core::CompositeRenderer::BeginFrameForBackgroundPreview(p_frameDescriptor);
 	if (!IsFrameActive())
 		return;
 
-	m_lastCullReasonDebugSnapshot = {};
-	if (const auto snapshot = BuildFrameSnapshot(p_frameDescriptor); snapshot.has_value())
-		SetPendingFrameSnapshot(snapshot.value());
+	if (const auto packet = BuildRenderFramePacket(p_frameDescriptor); packet.has_value())
+		SetPendingRenderFramePacket(packet.value());
 }
 
-std::optional<Render::Context::FrameSnapshot> BaseSceneRenderer::BuildFrameSnapshot(
-	const Render::Data::FrameDescriptor& frameDescriptor) const
+void BaseSceneRenderer::RefreshFrameBuildMetadata(Render::Context::RenderSceneBuildData& scene) const
 {
-	NLS_PROFILE_SCOPE();
-	auto snapshot = Render::Core::ABaseRenderer::BuildFrameSnapshot(frameDescriptor);
-	if (!snapshot.has_value())
-		return snapshot;
-
-	if (!HasDescriptor<SceneDescriptor>())
-		return snapshot;
-
-	const auto& scene = GetDescriptor<SceneDescriptor>().scene;
-	const auto& fastAccess = scene.GetFastAccessComponents();
-	snapshot->hasSceneInput = true;
-	snapshot->sceneGameObjectCount = static_cast<uint64_t>(scene.GetGameObjects().size());
-	snapshot->sceneModelRendererCount = static_cast<uint64_t>(fastAccess.modelRenderers.size());
-	snapshot->sceneLightCount = static_cast<uint64_t>(fastAccess.lights.size());
-	snapshot->sceneSkyboxCount = static_cast<uint64_t>(fastAccess.skyboxs.size());
-	snapshot->visibleOpaqueDrawCount = 0u;
-	snapshot->visibleDecalDrawCount = 0u;
-	snapshot->visibleTransparentDrawCount = 0u;
-	snapshot->visibleSkyboxDrawCount = 0u;
-	snapshot->visibleHelperDrawCount = 0u;
-	snapshot->largeSceneCullReasonSnapshot = m_lastCullReasonDebugSnapshot;
-	snapshot->streamingDependencyPins = m_lastStreamingDependencyPins;
-	return snapshot;
+	if (!NLS::Render::Context::RenderingThreadSystem::IsInRenderingThread())
+		throw std::logic_error("Scene build metadata requires the Render Thread");
+	scene.sceneGameObjectCount = m_renderSceneGameObjectCount;
+	const auto lighting = m_renderSceneLightingProvider->ReadPublishedLightingDescriptor();
+	scene.sceneLightCount = lighting != nullptr ? static_cast<uint64_t>(lighting->lights.size()) : 0u;
+	std::lock_guard lock(m_lastParseResultMutex);
+	if (m_publishedCullReasonDebugSnapshot != nullptr)
+		scene.largeSceneCullReasonSnapshot = *m_publishedCullReasonDebugSnapshot;
+	if (m_publishedStreamingDependencyPins != nullptr)
+		scene.streamingDependencyPins = *m_publishedStreamingDependencyPins;
 }
 
-void BaseSceneRenderer::RefreshFrameSnapshotVisibility(
-	Render::Context::FrameSnapshot& snapshot,
+void BaseSceneRenderer::RefreshSceneBuildVisibility(
+	Render::Context::RenderSceneBuildData& snapshot,
 	const AllDrawables& drawables)
 {
 	snapshot.visibleOpaqueDrawCount = static_cast<uint64_t>(drawables.opaques.size());
@@ -843,9 +853,60 @@ NLS::Render::FrameGraph::LightGridCompileContext BaseSceneRenderer::BuildLightGr
 	const bool suppressCompute) const
 {
 	NLS_PROFILE_SCOPE();
+	// Live path: the caller runs on the game thread, so m_frameDescriptor is stable
+	// for the duration of this copy.
 	const auto frameSnapshot =
 		NLS::Render::FrameGraph::CaptureExternalSceneOutputSnapshot(GetFrameDescriptor());
+	return BuildLightGridCompileContextFromFrame(
+		frameSnapshot,
+		CaptureLightGridFrameInputs(hasSkyboxTexture),
+		suppressCompute,
+		true);
+}
 
+NLS::Render::FrameGraph::LightGridCompileContext BaseSceneRenderer::BuildLightGridCompileContext(
+	const NLS::Render::FrameGraph::FrozenFrameDescriptor& frozenFrame,
+	const bool hasSkyboxTexture,
+	const bool suppressCompute) const
+{
+	// Game-thread overload: the lighting descriptor is read here, where it is
+	// owned, and only the captured values cross to the render thread.
+	return BuildLightGridCompileContext(
+		frozenFrame,
+		CaptureLightGridFrameInputs(hasSkyboxTexture),
+		suppressCompute);
+}
+
+NLS::Render::FrameGraph::LightGridCompileContext BaseSceneRenderer::BuildLightGridCompileContext(
+	const NLS::Render::FrameGraph::FrozenFrameDescriptor& frozenFrame,
+	const LightGridFrameCapture& capture,
+	const bool suppressCompute) const
+{
+	NLS_PROFILE_SCOPE();
+	auto context = BuildLightGridCompileContextFromFrame(
+		frozenFrame.descriptor,
+		capture,
+		suppressCompute,
+		false);
+
+	// A cache hit returns the context an earlier frame built. Re-point it at this
+	// frame's frozen camera before it leaves the caller's scope: the camera that
+	// produced the cached entry is already gone, and the pass compiler dereferences
+	// this pointer for the frame's clear state.
+	context.frameDescriptor.renderWidth = frozenFrame.descriptor.renderWidth;
+	context.frameDescriptor.renderHeight = frozenFrame.descriptor.renderHeight;
+	context.frameDescriptor.camera = frozenFrame.descriptor.camera;
+	context.frameDescriptor.clearColorOverride = frozenFrame.descriptor.clearColorOverride;
+	return context;
+}
+
+NLS::Render::FrameGraph::LightGridCompileContext BaseSceneRenderer::BuildLightGridCompileContextFromFrame(
+	const NLS::Render::Data::FrameDescriptor& frameSnapshot,
+	const LightGridFrameCapture& capture,
+	const bool suppressCompute,
+	const bool keyedByLiveCamera) const
+{
+	const bool hasSkyboxTexture = capture.hasSkyboxTexture;
 	if (!NLS::Render::Context::DriverRendererAccess::IsLightGridEnabled(m_driver) || suppressCompute)
 	{
 		if (m_lightGridPrepass != nullptr)
@@ -857,7 +918,7 @@ NLS::Render::FrameGraph::LightGridCompileContext BaseSceneRenderer::BuildLightGr
 	}
 
 	std::lock_guard lock(m_lightGridCompileContextCacheMutex);
-	if (IsLightGridCompileContextCacheHit(frameSnapshot, hasSkyboxTexture))
+	if (IsLightGridCompileContextCacheHit(frameSnapshot, hasSkyboxTexture, keyedByLiveCamera))
 		return m_lightGridCompileContextCache.context;
 
 	NLS::Render::FrameGraph::PreparedComputeDispatchSource preparedComputeSource;
@@ -866,7 +927,7 @@ NLS::Render::FrameGraph::LightGridCompileContext BaseSceneRenderer::BuildLightGr
 		const auto preparedComputeRequest = LightGridPrepass::BuildPreparedComputeRequest(
 			frameSnapshot,
 			GetLightGridPrepass(),
-			BuildLightGridFrameInputs(hasSkyboxTexture));
+			capture.frameInputs);
 		preparedComputeSource = LightGridPrepass::BuildPreparedComputeDispatchSource(preparedComputeRequest);
 	}
 	catch (const std::exception& exception)
@@ -893,6 +954,7 @@ NLS::Render::FrameGraph::LightGridCompileContext BaseSceneRenderer::BuildLightGr
 
 	m_lightGridCompileContextCache.valid = true;
 	m_lightGridCompileContextCache.hasSkyboxTexture = hasSkyboxTexture;
+	m_lightGridCompileContextCache.keyedByLiveCamera = keyedByLiveCamera;
 	m_lightGridCompileContextCache.frameDescriptor = frameSnapshot;
 	if (frameSnapshot.camera != nullptr)
 	{
@@ -912,12 +974,25 @@ std::optional<LightGridPrepass::PreparedFrameInputs> BaseSceneRenderer::BuildLig
 	const bool hasSkyboxTexture) const
 {
 	NLS_PROFILE_SCOPE();
-	if (m_lightGridPrepass == nullptr || !HasDescriptor<LightingDescriptor>())
+	if (m_lightGridPrepass == nullptr || m_sceneLightingProvider == nullptr)
 		return std::nullopt;
 
-	return LightGridPrepass::CaptureFrameInputs(
-		GetDescriptor<LightingDescriptor>(),
-		hasSkyboxTexture);
+	// Each lane owns its provider; the render lane sees only resolved proxy lights.
+	const auto lighting = GetSceneLightingProvider().ReadPublishedLightingDescriptor();
+	if (lighting == nullptr)
+		return std::nullopt;
+
+	return LightGridPrepass::CaptureFrameInputs(*lighting, hasSkyboxTexture);
+}
+
+BaseSceneRenderer::LightGridFrameCapture BaseSceneRenderer::CaptureLightGridFrameInputs(
+	const bool hasSkyboxTexture) const
+{
+	NLS_PROFILE_SCOPE();
+	LightGridFrameCapture capture;
+	capture.hasSkyboxTexture = hasSkyboxTexture;
+	capture.frameInputs = BuildLightGridFrameInputs(hasSkyboxTexture);
+	return capture;
 }
 
 const std::shared_ptr<LightGridPrepass>& BaseSceneRenderer::GetLightGridPrepass() const
@@ -927,7 +1002,7 @@ const std::shared_ptr<LightGridPrepass>& BaseSceneRenderer::GetLightGridPrepass(
 
 uint64_t BaseSceneRenderer::GetSceneRenderContentRevision() const
 {
-	return m_sceneRenderContentRevision;
+	return m_sceneRenderContentRevision.load(std::memory_order_relaxed);
 }
 
 size_t BaseSceneRenderer::GetRenderScenePrimitiveCount() const
@@ -963,6 +1038,13 @@ BaseSceneRenderer::Material* BaseSceneRenderer::ResolveDefaultSceneMaterial()
 			m_sceneFallbackMaterial->SetRawParameter("_BaseColor", Maths::Vector4(0.72f, 0.74f, 0.78f, 1.0f));
 			m_sceneFallbackMaterial->SetRawParameter("_Metallic", 0.0f);
 			m_sceneFallbackMaterial->SetRawParameter("_Roughness", 0.72f);
+			m_sceneFallbackMaterial->SetRawParameter("_AmbientOcclusion", 1.0f);
+			m_sceneFallbackMaterial->SetRawParameter("_NormalScale", 1.0f);
+			m_sceneFallbackMaterial->SetRawParameter("_MetallicMapChannel", Maths::Vector4(1.0f, 0.0f, 0.0f, 0.0f));
+			m_sceneFallbackMaterial->SetRawParameter("_RoughnessMapChannel", Maths::Vector4(1.0f, 0.0f, 0.0f, 0.0f));
+			m_sceneFallbackMaterial->SetRawParameter("_EmissiveColor", Maths::Vector4(0.0f, 0.0f, 0.0f, 1.0f));
+			m_sceneFallbackMaterial->SetRawParameter("_SpecularColor", Maths::Vector4(0.0f, 0.0f, 0.0f, 1.0f));
+			m_sceneFallbackMaterial->SetRawParameter("_Cutoff", 0.5f);
 			m_sceneFallbackMaterial->SetRawParameter("u_Albedo", Maths::Vector4(0.72f, 0.74f, 0.78f, 1.0f));
 			m_sceneFallbackMaterial->SetRawParameter("u_Metallic", 0.0f);
 			m_sceneFallbackMaterial->SetRawParameter("u_Roughness", 0.72f);
@@ -994,18 +1076,29 @@ void BaseSceneRenderer::InvalidateLightGridCompileContextCache() const
 
 bool BaseSceneRenderer::IsLightGridCompileContextCacheHit(
 	const NLS::Render::Data::FrameDescriptor& frameDescriptor,
-	const bool hasSkyboxTexture) const
+	const bool hasSkyboxTexture,
+	const bool keyedByLiveCamera) const
 {
+	// A frozen key cannot be compared against a live one: the live entry proves a
+	// stable camera address that a frozen entry does not have, and a frozen entry
+	// leaves a released camera pointer behind.
 	return m_lightGridCompileContextCache.valid &&
+		m_lightGridCompileContextCache.keyedByLiveCamera == keyedByLiveCamera &&
 		m_lightGridCompileContextCache.hasSkyboxTexture == hasSkyboxTexture &&
-		AreSameLightGridFrameInputs(m_lightGridCompileContextCache, frameDescriptor);
+		AreSameLightGridFrameInputs(
+			m_lightGridCompileContextCache,
+			frameDescriptor,
+			keyedByLiveCamera);
 }
 
 bool BaseSceneRenderer::AreSameLightGridFrameInputs(
 	const LightGridCompileContextCache& cached,
-	const NLS::Render::Data::FrameDescriptor& current) const
+	const NLS::Render::Data::FrameDescriptor& current,
+	const bool requireSameCameraAddress) const
 {
 	const auto& cachedFrame = cached.frameDescriptor;
+	const bool sameCameraAddress =
+		!requireSameCameraAddress || cachedFrame.camera == current.camera;
 	const bool sameCameraTransform =
 		current.camera == nullptr ||
 		(Maths::Vector3::Distance(cached.cameraPosition, current.camera->GetPosition()) <= 1e-5f &&
@@ -1016,7 +1109,7 @@ bool BaseSceneRenderer::AreSameLightGridFrameInputs(
 
 	return cachedFrame.renderWidth == current.renderWidth &&
 		cachedFrame.renderHeight == current.renderHeight &&
-		cachedFrame.camera == current.camera &&
+		sameCameraAddress &&
 		sameCameraTransform &&
 		cachedFrame.outputBuffer == current.outputBuffer &&
 		cachedFrame.outputColorTexture == current.outputColorTexture &&
@@ -1164,8 +1257,37 @@ bool BaseSceneRenderer::CaptureThreadedPreparedDraw(
 	std::string_view lightMode,
 	PreparedRecordedDraw& outDraw)
 {
+	return CaptureThreadedPreparedDraw(
+		drawable,
+		effectiveMaterial,
+		std::move(pipelineOverrides),
+		depthCompareOverride,
+		lightMode,
+		outDraw,
+		nullptr);
+}
+
+bool BaseSceneRenderer::CaptureThreadedPreparedDraw(
+	const Drawable& drawable,
+	Material& effectiveMaterial,
+	Render::Resources::MaterialPipelineStateOverrides pipelineOverrides,
+	Render::Settings::EComparaisonAlgorithm depthCompareOverride,
+	std::string_view lightMode,
+	PreparedRecordedDraw& outDraw,
+	CaptureDrawPhaseTimings* outTimings)
+{
+	const bool measurePhases = outTimings != nullptr;
+	if (measurePhases)
+		*outTimings = {};
+	const auto elapsedNsSince = [](const std::chrono::steady_clock::time_point start)
+	{
+		return static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(
+			std::chrono::steady_clock::now() - start).count());
+	};
+
 	auto effectivePso = CreatePipelineState();
 	auto* bindingProvider = GetFrameObjectBindingProvider();
+	const auto prepareDrawStart = measurePhases ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point {};
 	if (bindingProvider != nullptr)
 	{
 		auto* effectiveShader = lightMode.empty()
@@ -1179,9 +1301,13 @@ bool BaseSceneRenderer::CaptureThreadedPreparedDraw(
 			return false;
 		}
 	}
+	if (measurePhases)
+		outTimings->prepareDrawNs += elapsedNsSince(prepareDrawStart);
 
 	const auto snapshotBufferCreationCountBefore =
 		GetExplicitUniformSnapshotBufferCreationCount();
+	const auto prepareRecordedDrawStart =
+		measurePhases ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point {};
 	if (!PrepareRecordedDraw(
 		drawable,
 		effectiveMaterial,
@@ -1190,6 +1316,8 @@ bool BaseSceneRenderer::CaptureThreadedPreparedDraw(
 		lightMode,
 		outDraw))
 		return false;
+	if (measurePhases)
+		outTimings->prepareRecordedDrawNs += elapsedNsSince(prepareRecordedDrawStart);
 	const auto snapshotBufferCreationCountAfter =
 		GetExplicitUniformSnapshotBufferCreationCount();
 	if (snapshotBufferCreationCountAfter > snapshotBufferCreationCountBefore)
@@ -1203,22 +1331,30 @@ bool BaseSceneRenderer::CaptureThreadedPreparedDraw(
 
 	if (outDraw.commandBuffer == nullptr && bindingProvider != nullptr)
 	{
+		const auto captureBindingSetsStart =
+			measurePhases ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point {};
 		Render::Core::FrameObjectBindingProvider::PreparedBindingSets bindingSets;
-		if (!bindingProvider->CapturePreparedBindingSets(effectivePso, drawable, bindingSets))
 		{
-			if (!bindingProvider->IsFramePrepared() ||
-				!bindingProvider->CapturePreparedObjectBindingSet(effectivePso, drawable, bindingSets))
+			if (!bindingProvider->CapturePreparedBindingSets(effectivePso, drawable, bindingSets))
 			{
-				return false;
+				if (!bindingProvider->IsFramePrepared() ||
+					!bindingProvider->CapturePreparedObjectBindingSet(effectivePso, drawable, bindingSets))
+				{
+					return false;
+				}
 			}
 		}
 
 		if (bindingSets.frameBindingSet == nullptr && bindingProvider->IsFramePrepared())
+		{
 			(void)bindingProvider->CaptureFrameBindingSet(bindingSets.frameBindingSet);
+		}
 		outDraw.frameBindingSet = std::move(bindingSets.frameBindingSet);
 		outDraw.objectBindingSet = std::move(bindingSets.objectBindingSet);
 		outDraw.objectConstants = bindingSets.objectConstants;
 		outDraw.usesObjectIndex = bindingSets.usesObjectIndex;
+		if (measurePhases)
+			outTimings->captureBindingSetsNs += elapsedNsSince(captureBindingSetsStart);
 	}
 
 	outDraw.commandBuffer.reset();
@@ -1228,33 +1364,23 @@ bool BaseSceneRenderer::CaptureThreadedPreparedDraw(
 		outDraw.instanceCount > 0u;
 }
 
-Render::Context::RenderScenePackage BaseSceneRenderer::BuildSnapshotOwnedRenderScenePackage(
-	const Render::Context::FrameSnapshot& snapshot,
-	const SnapshotRenderScenePackageBuildMode buildMode)
-{
-	return Render::Context::BuildSnapshotOwnedRenderScenePackage(snapshot, buildMode);
-}
-
-Render::Context::RenderScenePackage BaseSceneRenderer::BuildRenderScenePackage(
-	const Render::Context::FrameSnapshot& snapshot) const
-{
-	NLS_PROFILE_SCOPE();
-	return BuildSnapshotOwnedRenderScenePackage(snapshot);
-}
-
 SceneLightingProvider& BaseSceneRenderer::GetSceneLightingProvider()
 {
-	return *m_sceneLightingProvider;
+    return NLS::Render::Context::RenderingThreadSystem::IsInRenderingThread()
+        ? *m_renderSceneLightingProvider : *m_sceneLightingProvider;
 }
 
 const SceneLightingProvider& BaseSceneRenderer::GetSceneLightingProvider() const
 {
-	return *m_sceneLightingProvider;
+    return NLS::Render::Context::RenderingThreadSystem::IsInRenderingThread()
+        ? *m_renderSceneLightingProvider : *m_sceneLightingProvider;
 }
 
-const SceneOcclusionPrimitivePacketBuildResult& BaseSceneRenderer::GetLastHZBOcclusionPrimitivePacketBuildResult() const
+std::shared_ptr<const SceneOcclusionPrimitivePacketBuildResult>
+BaseSceneRenderer::GetLastHZBOcclusionPrimitivePacketBuildResult() const
 {
-	return m_lastHZBOcclusionPrimitivePacketBuildResult;
+	std::lock_guard lock(m_lastParseResultMutex);
+	return m_publishedHZBOcclusionPrimitivePacketBuildResult;
 }
 
 const SceneOcclusionHistory& BaseSceneRenderer::GetHZBOcclusionHistoryForTesting() const
@@ -1274,13 +1400,15 @@ const LargeSceneSettings& BaseSceneRenderer::GetLargeSceneSettings() const
 
 bool BaseSceneRenderer::HasLastVisiblePickablePrimitiveDrawSources() const
 {
-	return m_hasLastVisiblePickablePrimitiveDrawSources;
+	std::lock_guard lock(m_lastParseResultMutex);
+	return m_publishedHasVisiblePickablePrimitiveDrawSources;
 }
 
-const std::vector<ScenePickablePrimitiveDrawSource>&
+std::shared_ptr<const std::vector<ScenePickablePrimitiveDrawSource>>
 BaseSceneRenderer::GetLastVisiblePickablePrimitiveDrawSources() const
 {
-	return m_lastVisiblePickablePrimitiveDrawSources;
+	std::lock_guard lock(m_lastParseResultMutex);
+	return m_publishedVisiblePickablePrimitiveDrawSources;
 }
 
 bool BaseSceneRenderer::HasCompletedVisibleMaterialTexturePumpForReadback() const
@@ -1312,9 +1440,10 @@ const Render::Data::DrawCallOptimizationStats& BaseSceneRenderer::GetLastDrawCal
 }
 #endif
 
-const SceneOcclusionFrameInput& BaseSceneRenderer::GetLastHZBOcclusionFrameInput() const
+SceneOcclusionFrameInput BaseSceneRenderer::GetLastHZBOcclusionFrameInput() const
 {
-	return m_lastHZBOcclusionFrameInput;
+	std::lock_guard lock(m_lastParseResultMutex);
+	return m_publishedHZBOcclusionFrameInput;
 }
 
 bool BaseSceneRenderer::HasPendingHZBOcclusionObservationFrame() const
@@ -1392,10 +1521,46 @@ void BaseSceneRenderer::RefreshSceneLightingDescriptor(SceneSystem::Scene& scene
 
 void BaseSceneRenderer::SetSceneLightingDescriptor()
 {
+		// The descriptor map and scene-component lights belong to the Game Thread.
+	const auto published = GetSceneLightingProvider().ReadPublishedLightingDescriptor();
+	const std::vector<std::reference_wrapper<const NLS::Render::Entities::Light>> lights =
+		published != nullptr
+			? published->lights
+			: std::vector<std::reference_wrapper<const NLS::Render::Entities::Light>> {};
+
 	if (HasDescriptor<LightingDescriptor>())
 		RemoveDescriptor<LightingDescriptor>();
-	AddDescriptor<LightingDescriptor>(
-		LightingDescriptor{ GetSceneLightingProvider().GetLightingDescriptor().lights });
+	AddDescriptor<LightingDescriptor>(LightingDescriptor{ lights });
+}
+
+void BaseSceneRenderer::ConfigureRenderSceneSynchronizationDepth()
+{
+	std::lock_guard additiveScenesLock(m_additiveRenderScenesMutex);
+	if (!NLS::Render::Context::DriverRendererAccess::IsThreadedRenderingEnabled(m_driver))
+	{
+		// Inline path: capture and resolve still alternate, so one is correct and
+		// keeps the "unresolved capture is refused" guard meaningful.
+		m_renderScene.SetMaxOutstandingSynchronizations(1u);
+		for (auto& entry : m_additiveRenderScenes)
+			entry.second->SetMaxOutstandingSynchronizations(1u);
+		return;
+	}
+
+	// The game thread runs ahead by however many frames the pipeline can hold, so
+	// the depth has to match or the next capture is refused and that frame is
+	// dropped. Two is the floor: with the game thread strictly ahead of the render
+	// thread, one outstanding capture is already occupied by the frame being
+	// resolved.
+	size_t depth = NLS::Render::Context::DriverRendererAccess::GetFrameResourceSlotCount(m_driver);
+	depth = (std::max)(size_t { 2u }, depth);
+
+	if (m_renderScene.GetMaxOutstandingSynchronizations() != depth)
+		m_renderScene.SetMaxOutstandingSynchronizations(depth);
+	for (auto& entry : m_additiveRenderScenes)
+	{
+		if (entry.second->GetMaxOutstandingSynchronizations() != depth)
+			entry.second->SetMaxOutstandingSynchronizations(depth);
+	}
 }
 
 void BaseSceneRenderer::DrawModelWithSingleMaterial(
@@ -1422,9 +1587,44 @@ void BaseSceneRenderer::DrawModelWithSingleMaterial(
 	DrawEntity(element);
 }
 
-	BaseSceneRenderer::AllDrawables BaseSceneRenderer::ParseScene()
+void BaseSceneRenderer::ReleaseUnresolvedSceneParseCapture(SceneParseInput& input)
+{
+	for (auto& capture : input.scenes)
+	{
+		// Queued updates own the capture independently of the view frame. Dropping
+		// the view must neither discard them nor mutate the proxy store on Game.
+		if (capture.synchronizationResult != nullptr)
+			continue;
+		if (capture.renderScene == nullptr)
+			continue;
+
+		// Skip anything the resolve already consumed: applying one batch twice would
+		// duplicate proxy updates, so release only what is still claimed.
+		if (!capture.renderScene->HasOutstandingSynchronization(capture.syncRequest.captureSerial))
+			continue;
+
+		NLS::Render::Context::EnqueueRenderCommand<struct DroppedSceneProxyUpdateCommand>(
+			[lifetime = std::weak_ptr(m_sceneParseCaptureLifetime),
+			 renderScene = capture.renderScene, request = capture.syncRequest,
+			 owner = capture.renderSceneOwner]
+			{
+				if (!lifetime.expired())
+					renderScene->ApplyDroppedSynchronizeCapture(request);
+				else if (request.proxyStore != nullptr && !request.proxyBatch.commands.empty())
+					(void)request.proxyStore->Apply(request.proxyBatch);
+			});
+	}
+}
+
+BaseSceneRenderer::AllDrawables BaseSceneRenderer::ResolveSceneParse(
+	SceneParseInput& input,
+	const NLS::Render::FrameGraph::FrozenFrameDescriptor& frame)
 	{
 		NLS_PROFILE_SCOPE();
+		m_renderSceneGameObjectCount = 0u;
+		for (const auto& capture : input.scenes)
+			if (capture.isMainScene)
+				m_renderSceneGameObjectCount = capture.syncRequest.sceneGameObjectCount;
 		const bool logStartupParseSceneStages = []()
 		{
 			static bool shouldLog = true;
@@ -1463,43 +1663,20 @@ void BaseSceneRenderer::DrawModelWithSingleMaterial(
 	TransparentDrawables transparents;
 	SkyboxDrawables skyboxes;
 
-	auto& camera = *m_frameDescriptor.camera;
-	auto& sceneDescriptor = GetDescriptor<SceneDescriptor>();
-	auto overrideMaterial = sceneDescriptor.overrideMaterial;
+	auto& camera = *frame.descriptor.camera;
+	// Every descriptor read the resolve half needs was frozen by BeginSceneParse:
+	// the descriptor itself is game-thread state.
+	const auto overrideMaterial = input.overrideMaterial;
 	std::optional<Render::Data::Frustum> frustum = std::nullopt;
 
 	if (camera.HasFrustumGeometryCulling())
 	{
-		auto& frustumOverride = sceneDescriptor.frustumOverride;
+		auto& frustumOverride = input.frustumOverride;
 		frustum = frustumOverride ? frustumOverride : camera.GetFrustum();
 	}
 
-	const auto occlusionSettings = [&]()
-	{
-		auto settings = m_largeSceneSettings;
-		const auto diagnostics = NLS::Render::Context::DriverRendererAccess::GetDiagnosticsSettings(m_driver);
-		if (diagnostics.editorValidationOcclusionStackCount != 0u)
-			settings.enableHZBOcclusion = true;
-		SceneOcclusionCapabilityRequest capabilityRequest;
-		capabilityRequest.opaqueDepthFormat =
-			static_cast<NLS::Render::RHI::TextureFormat>(ResolveDepthFormatKey(m_frameDescriptor));
-		const auto device = NLS::Render::Context::DriverRendererAccess::GetExplicitDevice(m_driver);
-		const auto support = device != nullptr
-			? SceneOcclusionSystem::ResolveCapabilities(*device, capabilityRequest)
-			: SceneOcclusionCapabilitySupport{};
-		settings.enableHZBOcclusion =
-			settings.enableHZBOcclusion &&
-			support.backendSupported;
-			if (diagnostics.editorValidationDisableHZBOcclusion)
-			{
-				settings.enableHZBOcclusion = false;
-				if (diagnostics.logRenderDrawPath)
-					NLS_LOG_INFO("[BaseSceneRenderer][HZB] disabled by editor validation override");
-			}
-			if (sceneDescriptor.suppressHZBOcclusion)
-				settings.enableHZBOcclusion = false;
-			return settings;
-		}();
+	// Resolved once by BeginSceneParse so both halves agree on the same settings.
+	const auto& occlusionSettings = input.occlusionSettings;
 
 	SceneOcclusionFrameInput occlusionFrameInput;
 	occlusionFrameInput.enabled = occlusionSettings.enableHZBOcclusion;
@@ -1507,13 +1684,13 @@ void BaseSceneRenderer::DrawModelWithSingleMaterial(
 	occlusionFrameInput.historyTextureValid = occlusionSettings.enableHZBOcclusion;
 	occlusionFrameInput.frameSerial = ++m_hzbOcclusionFrameSerial;
 	occlusionFrameInput.maxHistoryAge = occlusionSettings.maxOcclusionHistoryAge;
-	occlusionFrameInput.viewKey = BuildHZBViewKey(m_frameDescriptor);
+	occlusionFrameInput.viewKey = BuildHZBViewKey(frame.descriptor);
 	occlusionFrameInput.viewCompatibilityHash = HashCameraViewCompatibility(camera);
 	occlusionFrameInput.projectionHash = HashMatrix(camera.GetProjectionMatrix());
 	occlusionFrameInput.jitterHash = 0u;
-	occlusionFrameInput.depthFormatKey = ResolveDepthFormatKey(m_frameDescriptor);
-		occlusionFrameInput.viewportWidth = static_cast<uint32_t>(m_frameDescriptor.renderWidth);
-		occlusionFrameInput.viewportHeight = static_cast<uint32_t>(m_frameDescriptor.renderHeight);
+		occlusionFrameInput.depthFormatKey = ResolveDepthFormatKey(frame.descriptor);
+			occlusionFrameInput.viewportWidth = static_cast<uint32_t>(frame.descriptor.renderWidth);
+			occlusionFrameInput.viewportHeight = static_cast<uint32_t>(frame.descriptor.renderHeight);
 		m_lastHZBOcclusionFrameInput = occlusionFrameInput;
 		logStartupParseSceneStage("BuildOcclusionFrameInput");
 
@@ -1557,29 +1734,40 @@ void BaseSceneRenderer::DrawModelWithSingleMaterial(
 	};
 
 		auto appendSceneDrawables = [&](
-			SceneSystem::Scene& scene,
-			RenderScene& renderScene,
-		const bool includeSkyboxes,
-		const bool requireExplicitMaterialTextures,
-		const bool allowDefaultMaterialForUnresolvedExplicitMaterials,
-		const bool trustSceneRenderContentRevision)
-	{
-		RenderSceneSyncStats syncStats;
+			const SceneSynchronizeCapture& capture)
 		{
-			NLS_PROFILE_NAMED_SCOPE("BaseSceneRenderer::ParseScene::SynchronizeRenderScene");
-			syncStats = renderScene.Synchronize(scene, {
-				ResolveDefaultSceneMaterial(),
-				overrideMaterial,
-					requireExplicitMaterialTextures,
-					allowDefaultMaterialForUnresolvedExplicitMaterials,
-					&occlusionSettings,
-					trustSceneRenderContentRevision
-				});
+			RenderScene& renderScene = *capture.renderScene;
+			RenderSceneSyncStats syncStats;
+			{
+				NLS_PROFILE_NAMED_SCOPE("BaseSceneRenderer::ParseScene::SynchronizeRenderScene");
+				// The proxy batch was collected during BeginSceneParse; this half
+				// only applies it and rebuilds, which needs no scene dereference.
+				if (capture.synchronizationResult != nullptr)
+				{
+					if (!capture.synchronizationResult->completed)
+						throw std::logic_error("Scene proxy update did not precede its render frame");
+					syncStats = capture.synchronizationResult->stats;
+				}
+					else
+					syncStats = renderScene.CompleteSynchronize(
+					capture.syncRequest,
+					{
+						input.defaultMaterial,
+						input.overrideMaterial,
+						capture.requireExplicitMaterialTextures,
+						capture.allowDefaultMaterialForUnresolvedExplicitMaterials,
+						&input.occlusionSettings,
+						capture.trustSceneRenderContentRevision
+					});
 			}
 			if (&renderScene == &m_renderScene)
 			{
-				m_sceneLightingProvider->CollectFromStore(renderScene.GetProxyStore());
-				SetSceneLightingDescriptor();
+				// Hold the handle for the whole read: the store may be replaced by a
+				// later synchronization, and this walk must see one consistent store.
+				if (const auto proxyStore = renderScene.GetProxyStoreHandle())
+				{
+					m_renderSceneLightingProvider->CollectFromStore(*proxyStore);
+				}
 			}
 			logStartupParseSceneStage("SynchronizeRenderScene");
 			// Advance the scene-scoped content revision only when the synchronization
@@ -1588,7 +1776,7 @@ void BaseSceneRenderer::DrawModelWithSingleMaterial(
 			// caller that does not opt into the revision fast path, permanently
 			// invalidating view frame caches. The fast path already reports no change.
 			if (syncStats.detectedRenderContentChange)
-				++m_sceneRenderContentRevision;
+				m_sceneRenderContentRevision.fetch_add(1u, std::memory_order_relaxed);
 			rebuiltCachedCommandCount += syncStats.rebuiltCachedCommandCount;
 		if (occlusionSettings.enableHZBOcclusion && !renderScene.GetLastRemovedPrimitiveHandles().empty())
 		{
@@ -1620,10 +1808,12 @@ void BaseSceneRenderer::DrawModelWithSingleMaterial(
 			visibilityOptions.verticalFovRadians = Maths::DegreesToRadians(camera.GetFov());
 			visibilityOptions.lodHistoryViewKey = 0u;
 			visibilityOptions.allowHLOD = true;
-			visibilityOptions.inspectionRootInstanceIds = GetEditorInspectionRoots();
+			// Frozen by BeginSceneParse: the editor override reads the game-thread
+			// descriptor map, which this half must not touch.
+			visibilityOptions.inspectionRootInstanceIds = input.inspectionRootInstanceIds;
 			visibilityOptions.editorInspectionView = !visibilityOptions.inspectionRootInstanceIds.empty();
-			visibilityOptions.enableCullReasonDebugSnapshot = ShouldPublishCullReasonDebugSnapshots();
-			visibilityOptions.maxCullReasonDebugSnapshotEntries = GetCullReasonDebugSnapshotMaxEntries();
+			visibilityOptions.enableCullReasonDebugSnapshot = input.publishCullReasonDebugSnapshots;
+			visibilityOptions.maxCullReasonDebugSnapshotEntries = input.cullReasonDebugSnapshotMaxEntries;
 			visibilityOptions.occlusion = occlusionState.primitiveInputs != nullptr ? &occlusionState : nullptr;
 				visibilityOptions.representationResidency = &m_lastRepresentationResidency;
 				retainedDrawables = renderScene.GatherVisibleCommands(visibilityOptions);
@@ -1669,8 +1859,8 @@ void BaseSceneRenderer::DrawModelWithSingleMaterial(
 			hzbBuildTimeNs += ElapsedNanoseconds(packetSourceStart);
 			SceneOcclusionPrimitivePacketBuildInput packetInput;
 			packetInput.viewProjection = camera.GetProjectionMatrix() * camera.GetViewMatrix();
-			packetInput.viewportWidth = static_cast<uint32_t>(m_frameDescriptor.renderWidth);
-			packetInput.viewportHeight = static_cast<uint32_t>(m_frameDescriptor.renderHeight);
+			packetInput.viewportWidth = static_cast<uint32_t>(frame.descriptor.renderWidth);
+			packetInput.viewportHeight = static_cast<uint32_t>(frame.descriptor.renderHeight);
 			const auto packetBuildStart = std::chrono::steady_clock::now();
 			const auto packetBuild = SceneOcclusionSystem::BuildHZBPrimitivePackets(
 				packetInput,
@@ -1750,10 +1940,13 @@ void BaseSceneRenderer::DrawModelWithSingleMaterial(
 				std::make_move_iterator(retainedDrawables.transparents.end()));
 		}
 
-		if (!includeSkyboxes)
+		if (!capture.includeSkyboxes)
 			return;
 
-		renderScene.GetProxyStore().ForEachSkyBox(
+	const std::shared_ptr<SceneRenderStore> skyboxStore = renderScene.GetProxyStoreHandle();
+	if (skyboxStore == nullptr)
+		return;
+	skyboxStore->ForEachSkyBox(
 			[&skyboxes](
 				const SceneProxyHandle&,
 				const SceneProxyPayload& payload,
@@ -1774,7 +1967,7 @@ void BaseSceneRenderer::DrawModelWithSingleMaterial(
 			});
 		};
 
-		if (sceneDescriptor.skipSceneDrawables)
+		if (input.skipSceneDrawables)
 		{
 			NLS_PROFILE_NAMED_SCOPE("BaseSceneRenderer::ParseScene::SkipSceneDrawables");
 			m_lastStreamingDependencyPins.clear();
@@ -1785,27 +1978,27 @@ void BaseSceneRenderer::DrawModelWithSingleMaterial(
 			return {};
 		}
 
-			appendSceneDrawables(
-				sceneDescriptor.scene,
-				m_renderScene,
-			sceneDescriptor.includeSkyboxes,
-			sceneDescriptor.requireExplicitMaterialTextures,
-			sceneDescriptor.allowDefaultMaterialForUnresolvedExplicitMaterials,
-			sceneDescriptor.trustSceneRenderContentRevision);
+	// The captures arrive in main-scene-first order from BeginSceneParse, so the
+	// main-scene-only lighting refresh below keeps its meaning.
+	for (const auto& capture : input.scenes)
+		appendSceneDrawables(capture);
+
+	{
+	std::lock_guard additiveScenesLock(m_additiveRenderScenesMutex);
 	for (auto it = m_additiveRenderScenes.begin(); it != m_additiveRenderScenes.end();)
 	{
 		const auto* cachedScene = it->first;
 		const auto isStillActive = std::find(
-			sceneDescriptor.additiveScenes.begin(),
-			sceneDescriptor.additiveScenes.end(),
-			cachedScene) != sceneDescriptor.additiveScenes.end();
-		if (isStillActive)
+			input.activeAdditiveSceneIdentities.begin(),
+			input.activeAdditiveSceneIdentities.end(),
+			cachedScene) != input.activeAdditiveSceneIdentities.end();
+		if (isStillActive || it->second.use_count() > 1u)
 			++it;
 		else
 		{
 			if (occlusionSettings.enableHZBOcclusion)
 			{
-				const auto droppedSceneHandles = it->second.GetLivePrimitiveHandles();
+				const auto droppedSceneHandles = it->second->GetLivePrimitiveHandles();
 				const auto pruneStart = std::chrono::steady_clock::now();
 				const auto pruneStats = m_hzbOcclusionHistory.PruneHandles(droppedSceneHandles);
 				recordOcclusionPrune(pruneStats, ElapsedNanoseconds(pruneStart));
@@ -1813,18 +2006,6 @@ void BaseSceneRenderer::DrawModelWithSingleMaterial(
 			it = m_additiveRenderScenes.erase(it);
 		}
 	}
-	for (auto* additiveScene : sceneDescriptor.additiveScenes)
-	{
-		if (!additiveScene)
-			continue;
-		auto& additiveRenderScene = m_additiveRenderScenes[additiveScene];
-		appendSceneDrawables(
-			*additiveScene,
-			additiveRenderScene,
-			false,
-			true,
-			sceneDescriptor.allowDefaultMaterialForUnresolvedExplicitMaterials,
-			false);
 	}
 	if (occlusionPruneTelemetry.hzbHistoryPruneTouchedHandleCount > 0u ||
 		occlusionPruneTelemetry.hzbHistoryPruneRemovedHandleCount > 0u ||
@@ -2017,7 +2198,7 @@ void BaseSceneRenderer::DrawModelWithSingleMaterial(
 		}
 			logStartupParseSceneStage("ReassignObjectIndices");
 
-					if (!sceneDescriptor.suppressVisibleMaterialTextureRequests)
+					if (!input.suppressVisibleMaterialTextureRequests)
 					{
 						NLS_PROFILE_NAMED_SCOPE("BaseSceneRenderer::ParseScene::PumpVisibleMaterialTextures");
 						VisibleMaterialTexturePumpBudget texturePumpBudget {
@@ -2091,6 +2272,221 @@ void BaseSceneRenderer::DrawModelWithSingleMaterial(
 	optimizationStats.opaqueSortTokenRebuildCount = opaqueSortTokenRebuildCount;
 	optimizationStats.objectDataOverflowDroppedObjectCount = objectDataOverflowDroppedObjectCount;
 	m_rendererStats.RecordDrawCallOptimizationStats(optimizationStats);
+
+	// Publish this parse's results for cross-thread readers. The parse owns the
+	// accumulators; moving them into immutable snapshots under the lock means a
+	// reader either sees the previous publication or this one, never a half-written
+	// parse, and holding a snapshot keeps it valid across the next parse.
+	{
+		std::lock_guard lock(m_lastParseResultMutex);
+		m_publishedVisiblePickablePrimitiveDrawSources =
+			std::make_shared<const std::vector<ScenePickablePrimitiveDrawSource>>(
+				std::move(m_lastVisiblePickablePrimitiveDrawSources));
+		m_publishedStreamingDependencyPins =
+			std::make_shared<const std::vector<uint64_t>>(
+				std::move(m_lastStreamingDependencyPins));
+		m_publishedCullReasonDebugSnapshot =
+			std::make_shared<const NLS::Render::Context::LargeSceneCullReasonDebugSnapshot>(
+				std::move(m_lastCullReasonDebugSnapshot));
+		m_publishedHZBOcclusionPrimitivePacketBuildResult =
+			std::make_shared<const SceneOcclusionPrimitivePacketBuildResult>(
+				std::move(m_lastHZBOcclusionPrimitivePacketBuildResult));
+		m_publishedHZBOcclusionFrameInput = m_lastHZBOcclusionFrameInput;
+		m_publishedHasVisiblePickablePrimitiveDrawSources =
+			m_hasLastVisiblePickablePrimitiveDrawSources;
+	}
 	return { opaques, decals, transparents, skyboxes };
+}
+
+BaseSceneRenderer::SceneParseInput BaseSceneRenderer::BeginSceneParse(
+	const NLS::Render::FrameGraph::FrozenFrameDescriptor& frame)
+{
+	NLS_PROFILE_SCOPE();
+	SceneParseInput input;
+
+	auto& sceneDescriptor = GetDescriptor<SceneDescriptor>();
+	input.overrideMaterial = sceneDescriptor.overrideMaterial;
+	input.frustumOverride = sceneDescriptor.frustumOverride;
+	input.skipSceneDrawables = sceneDescriptor.skipSceneDrawables;
+		input.suppressVisibleMaterialTextureRequests =
+			sceneDescriptor.suppressVisibleMaterialTextureRequests;
+	input.defaultMaterial = ResolveDefaultSceneMaterial();
+
+	// Resolved here because both halves need identical settings, and the resolve
+	// half must not read the live renderer configuration itself.
+	input.occlusionSettings = [&]()
+	{
+		auto settings = m_largeSceneSettings;
+		const auto diagnostics =
+			NLS::Render::Context::DriverRendererAccess::GetDiagnosticsSettings(m_driver);
+		if (diagnostics.editorValidationOcclusionStackCount != 0u)
+			settings.enableHZBOcclusion = true;
+		SceneOcclusionCapabilityRequest capabilityRequest;
+		capabilityRequest.opaqueDepthFormat =
+			static_cast<NLS::Render::RHI::TextureFormat>(ResolveDepthFormatKey(frame.descriptor));
+		const auto device =
+			NLS::Render::Context::DriverRendererAccess::GetExplicitDevice(m_driver);
+		const auto support = device != nullptr
+			? SceneOcclusionSystem::ResolveCapabilities(*device, capabilityRequest)
+			: SceneOcclusionCapabilitySupport{};
+		settings.enableHZBOcclusion = settings.enableHZBOcclusion && support.backendSupported;
+		if (diagnostics.editorValidationDisableHZBOcclusion)
+		{
+			settings.enableHZBOcclusion = false;
+			if (diagnostics.logRenderDrawPath)
+				NLS_LOG_INFO("[BaseSceneRenderer][HZB] disabled by editor validation override");
+		}
+		if (sceneDescriptor.suppressHZBOcclusion)
+			settings.enableHZBOcclusion = false;
+		return settings;
+	}();
+
+	// The editor overrides of these hooks read the renderer's descriptor map, which
+	// the game thread owns and rebuilds every frame. Answer them here, while this
+	// half still runs on the game thread, so the render-thread half never touches
+	// that map.
+	input.inspectionRootInstanceIds = GetEditorInspectionRoots();
+	input.publishCullReasonDebugSnapshots = ShouldPublishCullReasonDebugSnapshots();
+	input.cullReasonDebugSnapshotMaxEntries = GetCullReasonDebugSnapshotMaxEntries();
+
+	const auto makeCapture = [this, &input](
+		SceneSystem::Scene& scene,
+		RenderScene& renderScene,
+		const bool includeSkyboxes,
+		const bool requireExplicitMaterialTextures,
+		const bool allowDefaultMaterialForUnresolvedExplicitMaterials,
+		const bool trustSceneRenderContentRevision,
+		const bool isMainScene,
+		std::shared_ptr<RenderScene> renderSceneOwner = {})
+	{
+		SceneSynchronizeCapture capture;
+		capture.sceneIdentity = &scene;
+		capture.renderScene = &renderScene;
+		capture.renderSceneOwner = renderSceneOwner;
+		capture.includeSkyboxes = includeSkyboxes;
+		capture.requireExplicitMaterialTextures = requireExplicitMaterialTextures;
+		capture.allowDefaultMaterialForUnresolvedExplicitMaterials =
+			allowDefaultMaterialForUnresolvedExplicitMaterials;
+		capture.trustSceneRenderContentRevision = trustSceneRenderContentRevision;
+		capture.isMainScene = isMainScene;
+
+		const RenderSceneSyncOptions options {
+			input.defaultMaterial,
+			input.overrideMaterial,
+			requireExplicitMaterialTextures,
+			allowDefaultMaterialForUnresolvedExplicitMaterials,
+			&input.occlusionSettings,
+			trustSceneRenderContentRevision
+		};
+		capture.syncRequest = renderScene.BeginSynchronize(scene, options);
+		// A refused claim means this scene contributes nothing to the frame. The
+		// refusal is recorded instead of ignored so the frame can be dropped:
+		// resolving an empty capture would silently publish a scene-less frame.
+		if (capture.syncRequest.captureSerial == 0u)
+			input.captureRefused = true;
+			else
+		{
+			capture.synchronizationResult =
+				std::make_shared<SceneSynchronizeCapture::SynchronizationResult>();
+				auto apply =
+				[lifetime = std::weak_ptr(m_sceneParseCaptureLifetime),
+				 renderScenePtr = &renderScene, request = capture.syncRequest,
+				 result = capture.synchronizationResult, syncOptions = options,
+				 renderSceneOwner = std::move(renderSceneOwner),
+				 settings = input.occlusionSettings]() mutable
+				{
+						if (lifetime.expired())
+						{
+							if (request.proxyStore != nullptr && !request.proxyBatch.commands.empty())
+								(void)request.proxyStore->Apply(request.proxyBatch);
+							return;
+						}
+					syncOptions.largeSceneSettings = &settings;
+					result->stats = renderScenePtr->CompleteSynchronize(std::move(request), syncOptions);
+						result->completed = true;
+					};
+				if (NLS::Render::Context::RenderingThreadSystem::IsInRenderingThread())
+					apply();
+				else
+					NLS::Render::Context::EnqueueRenderCommand<struct SceneProxyUpdateCommand>(std::move(apply));
+		}
+		return capture;
+	};
+
+	input.scenes.push_back(makeCapture(
+		sceneDescriptor.scene,
+		m_renderScene,
+		sceneDescriptor.includeSkyboxes,
+		sceneDescriptor.requireExplicitMaterialTextures,
+		sceneDescriptor.allowDefaultMaterialForUnresolvedExplicitMaterials,
+		sceneDescriptor.trustSceneRenderContentRevision,
+		true));
+
+	for (auto* additiveScene : sceneDescriptor.additiveScenes)
+	{
+		if (additiveScene == nullptr)
+			continue;
+
+		// A descriptor may list the same scene twice; collecting it twice would be
+		// refused by the capture guard and would double-count drawables.
+		if (std::find(
+				input.activeAdditiveSceneIdentities.begin(),
+				input.activeAdditiveSceneIdentities.end(),
+				additiveScene) != input.activeAdditiveSceneIdentities.end())
+		{
+			continue;
+		}
+		input.activeAdditiveSceneIdentities.push_back(additiveScene);
+
+		std::shared_ptr<RenderScene> additiveRenderScene;
+		{
+			std::lock_guard additiveScenesLock(m_additiveRenderScenesMutex);
+			auto& cached = m_additiveRenderScenes[additiveScene];
+			if (cached == nullptr)
+			{
+				cached = std::make_shared<RenderScene>();
+				cached->SetMaxOutstandingSynchronizations(m_renderScene.GetMaxOutstandingSynchronizations());
+			}
+			additiveRenderScene = cached;
+		}
+		auto capture = makeCapture(
+			*additiveScene,
+			*additiveRenderScene,
+			false,
+			true,
+			sceneDescriptor.allowDefaultMaterialForUnresolvedExplicitMaterials,
+			false,
+			false,
+				additiveRenderScene);
+		input.scenes.push_back(std::move(capture));
+	}
+
+	return input;
+}
+
+BaseSceneRenderer::AllDrawables BaseSceneRenderer::ParseScene(
+	const NLS::Render::FrameGraph::FrozenFrameDescriptor& frame)
+{
+	auto input = BeginSceneParse(frame);
+	if (!NLS::Render::Context::RenderingThreadSystem::IsInRenderingThread())
+	{
+		auto drawables = std::make_shared<AllDrawables>();
+		const auto completion = NLS::Render::Context::EnqueueRenderCommand<struct ResolveSceneViewCommand>(
+			[this, input = std::move(input), frame, drawables]() mutable
+			{
+				*drawables = ResolveSceneParse(input, frame);
+			});
+#if defined(NLS_ENABLE_TEST_HOOKS)
+		if (!NLS::Render::Context::RenderingThreadSystem::HasActiveRenderThread())
+			(void)NLS::Render::Context::RenderCommandDispatcher::Dispatch();
+#endif
+		completion.Wait();
+		if (!completion.Succeeded())
+			throw std::runtime_error(completion.GetDiagnostic());
+		if (NLS::Render::Context::HasRenderFatalError())
+			throw std::runtime_error(NLS::Render::Context::GetRenderFatalError());
+		return std::move(*drawables);
+	}
+	return ResolveSceneParse(input, frame);
 }
 }

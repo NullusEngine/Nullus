@@ -259,25 +259,6 @@ namespace
 		}
 	}
 
-	const char* ToThreadedFrameStageSummaryText(const Render::Data::ThreadedFrameStageSummary stageSummary)
-	{
-		switch (stageSummary)
-		{
-		case Render::Data::ThreadedFrameStageSummary::Direct:
-			return "Direct";
-		case Render::Data::ThreadedFrameStageSummary::Logic:
-			return "Logic";
-		case Render::Data::ThreadedFrameStageSummary::RenderScene:
-			return "RenderScene";
-		case Render::Data::ThreadedFrameStageSummary::Rhi:
-			return "RHI";
-		case Render::Data::ThreadedFrameStageSummary::Retired:
-			return "Retired";
-		default:
-			return "Unknown";
-		}
-	}
-
 	const char* ToFrameRetirementStateText(const Render::Data::FrameRetirementState retirementState)
 	{
 		switch (retirementState)
@@ -297,9 +278,7 @@ namespace
 
 	std::string BuildFrameStateValue(const Render::Data::FrameInfo& frameInfo)
 	{
-		return std::string(ToThreadedFrameStageSummaryText(frameInfo.stageSummary)) +
-			" -> " +
-			ToFramePublishStateText(frameInfo.publishState) +
+			return std::string(ToFramePublishStateText(frameInfo.publishState)) +
 			" -> " +
 			ToFrameRetirementStateText(frameInfo.retirementState);
 	}

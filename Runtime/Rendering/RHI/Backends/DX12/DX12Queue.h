@@ -30,6 +30,11 @@ namespace NLS::Render::Backend
 			const NLS::Render::RHI::RHIPresentDesc& presentDesc) override;
 
 	private:
+			NLS::Render::RHI::RHIQueueOperationResult SubmitOnSubmitLane(
+				const NLS::Render::RHI::RHISubmitDesc& submitDesc);
+			NLS::Render::RHI::RHIQueueOperationResult PresentOnSubmitLane(
+				const NLS::Render::RHI::RHIPresentDesc& presentDesc);
+
 		ID3D12Device* m_device = nullptr;
 		ID3D12CommandQueue* m_queue = nullptr;
 		NLS::Render::RHI::QueueType m_queueType = NLS::Render::RHI::QueueType::Graphics;

@@ -13,6 +13,7 @@ namespace NLS::Game::Launch
 		std::string outputPath;
 		std::string summaryPath;
 		uint32_t captureAfterFrames = 30u;
+			bool captureSwapchain = false;
 	};
 
 	struct ParsedGameLaunchArgs

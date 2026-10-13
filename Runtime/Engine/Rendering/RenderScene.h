@@ -1,7 +1,9 @@
 #pragma once
 
 #include <array>
+#include <atomic>
 #include <cstdint>
+#include <deque>
 #include <limits>
 #include <memory>
 #include <optional>
@@ -193,6 +195,61 @@ namespace NLS::Engine::Rendering
 		uint64_t syncTimeNs = 0u;
 	};
 
+	/**
+	 * Result of the scene-owning (game) thread's half of a synchronization.
+	 *
+	 * It carries only values: the scene pointer, the revisions that were observed
+	 * and, when the fast path did not apply, the collected proxy batch. No
+	 * SceneSystem::Scene reference is dereferenced by the consuming half, which is
+	 * what lets the apply-and-rebuild step run on the render thread.
+	 *
+	 * Hand-off contract: BeginSynchronize and CompleteSynchronize must not run
+	 * concurrently for the same RenderScene. They alternate once per frame, because
+	 * the resolve mutates state the capture reads (the proxy store, the primitive
+	 * index, the pending declared-texture set).
+	 *
+	 * The contract is enforced rather than assumed: a second capture that starts
+	 * while one is outstanding is refused with a diagnostic instead of silently
+	 * racing. Only one capture may be outstanding at a time.
+	 *
+	 * A capture must always be resolved, one way or another. Collection advances
+	 * the shared SceneProxySourceRegistry cursor, so simply discarding a captured
+	 * request would lose those updates rather than defer them, and re-collecting
+	 * is not equivalent: Reset() clears the registry's tracking maps, so the next
+	 * scan reallocates every handle and churns the whole store.
+	 *
+	 * A dropped frame therefore calls ApplyDroppedSynchronizeCapture, which
+	 * applies the captured batch and releases the claim.
+	 */
+	struct RenderSceneSyncRequest
+	{
+		// Identity of the scene the facts were read from. The scene must stay alive
+		// until CompleteSynchronize has consumed this request; the pointer is only
+		// compared and stored, never dereferenced.
+		const SceneSystem::Scene* sceneIdentity = nullptr;
+		uint64_t sceneInstanceId = 0u;
+			// Captured with the proxy update, including objects with no render proxy.
+			uint64_t sceneGameObjectCount = 0u;
+		uint64_t sceneRenderContentRevision = 0u;
+		uint64_t meshMutationEpoch = 0u;
+		uint64_t frameSerial = 0u;
+		// Identifies the capture this request came from, so the resolve can mark
+		// exactly that capture complete.
+		uint64_t captureSerial = 0u;
+		std::shared_ptr<SceneRenderStore> proxyStore;
+		SceneProxyUpdateBatch proxyBatch;
+		bool sceneIdentityChanged = false;
+		bool synchronizationOptionsChanged = false;
+		bool sourceNeedsCollection = false;
+		bool canReuseProxySynchronization = false;
+		// Captured so the consuming half does not have to re-derive mutation
+		// observations from state that may have advanced since.
+		bool meshMutationObserved = false;
+		bool trackedMaterialMutationObserved = false;
+
+		[[nodiscard]] bool IsValid() const noexcept { return sceneIdentity != nullptr; }
+	};
+
 	struct RenderSceneVisibilityOptions
 	{
 		const NLS::Render::Data::Frustum* frustum = nullptr;
@@ -294,17 +351,92 @@ namespace NLS::Engine::Rendering
 		RenderScene& operator=(RenderScene&& other) noexcept;
 		~RenderScene();
 
-		RenderSceneSyncStats Synchronize(
+		/**
+		 * Game-thread half: captures the scene facts a synchronization needs and,
+		 * when the revision fast path does not apply, walks the scene to collect
+		 * the proxy update batch.
+		 *
+		 * Safe to call on the thread that owns SceneSystem::Scene. The result is
+		 * consumed by CompleteSynchronize on the RenderScene-owning thread.
+		 */
+		[[nodiscard]] RenderSceneSyncRequest BeginSynchronize(
 			SceneSystem::Scene& scene,
 			const RenderSceneSyncOptions& options = {});
+
+		/**
+		 * Render-thread half: applies the collected batch, rebuilds primitives,
+		 * spatial index and HLOD records, and publishes the sync telemetry.
+		 *
+		 * `options` must match the options passed to BeginSynchronize, because the
+		 * synchronization stamp is derived from them.
+		 */
+		RenderSceneSyncStats CompleteSynchronize(
+			RenderSceneSyncRequest request,
+			const RenderSceneSyncOptions& options = {});
+
+		/**
+		 * Resolves a capture whose frame was dropped before it could be rendered.
+		 *
+		 * Collection already advanced the SceneProxySourceRegistry cursor, so the
+		 * updates in this request exist nowhere else and must not be discarded. This
+		 * applies the captured batch to the proxy store and releases the capture,
+		 * but deliberately skips the primitive rebuild: nothing will be gathered or
+		 * drawn from this frame.
+		 *
+		 * The next CompleteSynchronize observes the store change and rebuilds from
+		 * it, so the render-side state converges on the very next rendered frame.
+		 * Between the two calls the proxy store is ahead of the primitive index,
+		 * which is harmless because no gather runs in that window.
+		 */
+		SceneRenderStoreApplyStats ApplyDroppedSynchronizeCapture(
+			const RenderSceneSyncRequest& request);
 
 		[[nodiscard]] SceneProxyUpdateBatch CollectProxyUpdates(
 			SceneSystem::Scene& scene,
 			const RenderSceneSyncOptions& options = {},
 			uint64_t frameId = 0u);
 		SceneRenderStoreApplyStats ApplyProxyUpdates(const SceneProxyUpdateBatch& batch);
-		[[nodiscard]] const SceneRenderStore& GetProxyStore() const noexcept;
-		[[nodiscard]] SceneRenderStore& GetProxyStore() noexcept;
+		/**
+		 * Returns a strong handle to this render scene's proxy store, or null when
+		 * no store has been acquired yet.
+		 *
+		 * A handle rather than a reference: the store pointer is reassigned by both
+		 * halves of the synchronization hand-off - the capture half acquires it for
+		 * a new scene, the resolve half re-acquires it when the applied batch
+		 * belongs to a different store - so a caller holding a bare reference could
+		 * be left pointing at a store another thread has already replaced. The
+		 * handle keeps whatever it read alive for as long as the caller uses it,
+		 * which is what makes reading the store from the render thread safe while
+		 * the game thread is publishing.
+		 */
+		[[nodiscard]] std::shared_ptr<const SceneRenderStore> GetProxyStoreHandle() const;
+		[[nodiscard]] std::shared_ptr<SceneRenderStore> GetProxyStoreHandle();
+		[[nodiscard]] const void* GetProxySceneIdentity() const;
+		void SetProxySceneIdentity(const void* sceneIdentity);
+		/**
+		 * How many captured synchronizations may be outstanding at once.
+		 *
+		 * One is the hand-off shape this class was built for: the capture and the
+		 * resolve alternate, so a second capture while one is unresolved is
+		 * refused. Raising it lets the capture run ahead of the resolve, which is
+		 * what a render-thread consumer needs, and beyond the limit the capture is
+		 * refused rather than queued without bound.
+		 *
+		 * Raising the limit is only sound because everything the resolve rewrites
+		 * that the capture reads is now behind a published snapshot or a guarded
+		 * handle; at depth one neither half can observe the other's partial state.
+		 */
+		void SetMaxOutstandingSynchronizations(size_t maxOutstanding);
+		[[nodiscard]] size_t GetMaxOutstandingSynchronizations() const;
+		[[nodiscard]] size_t GetOutstandingSynchronizationCount() const;
+		/**
+		 * True while that exact capture serial is still claimed.
+		 *
+		 * Lets a caller release a claim it may or may not still hold without risking
+		 * a double release, which matters for the queued hand-off: a dropped frame and
+		 * a partially resolved one both need "release only what is still mine".
+		 */
+		[[nodiscard]] bool HasOutstandingSynchronization(uint64_t captureSerial) const;
 
 		[[nodiscard]] RenderSceneVisibleQueues GatherVisibleCommands(
 			const RenderSceneVisibilityOptions& options = {},
@@ -454,6 +586,31 @@ namespace NLS::Engine::Rendering
 			[[nodiscard]] bool operator==(const SceneSynchronizationStamp& other) const = default;
 		};
 
+		/**
+		 * Immutable snapshot of the materials the last resolve tracks.
+		 *
+		 * The capture half has to answer "did any material I care about change?"
+		 * before the resolve half runs, and the resolve half rebuilds the tracked
+		 * set whenever primitives change. Publishing an immutable copy under the
+		 * resolved-state mutex is what lets those two run on different threads
+		 * without the capture reading a set that is being rewritten underneath it.
+		 */
+		struct TrackedMaterialKeys
+		{
+			std::unordered_set<const NLS::Render::Resources::Material*> materials;
+			std::unordered_set<uint64_t> instanceIds;
+		};
+
+		struct ResolvedSceneSynchronizationState
+		{
+			uint64_t sceneRenderContentRevision = 0u;
+			uint64_t meshMutationEpoch = 0u;
+			uint64_t storeChangeSerial = 0u;
+			bool hasPendingDeclaredTextures = false;
+			bool hasSynchronizationStamp = false;
+			SceneSynchronizationStamp synchronizationStamp{};
+		};
+
 		struct TrackedMaterialState
 		{
 			uint64_t instanceId = 0u;
@@ -532,7 +689,9 @@ namespace NLS::Engine::Rendering
 			bool SynchronizeProxyPrimitives(
 				const RenderSceneSyncOptions& options,
 				RenderSceneSyncStats& stats,
-				bool forceFullResync);
+				bool forceFullResync,
+				uint64_t baseStoreChangeSerial,
+				uint64_t& outObservedStoreChangeSerial);
 		NLS::Render::Resources::Material* ResolveMaterialForMesh(
 			RenderPrimitive& primitive,
 			NLS::Render::Resources::Mesh& mesh,
@@ -608,8 +767,24 @@ namespace NLS::Engine::Rendering
 		[[nodiscard]] bool HasTrackedMaterialMutation();
 		void RefreshTrackedMaterialStates();
 		[[nodiscard]] static SceneSynchronizationStamp BuildSceneSynchronizationStamp(
-			const SceneSystem::Scene& scene,
+			const SceneSystem::Scene* scene,
 			const RenderSceneSyncOptions& options);
+		/**
+		 * Single source of truth for what the resolve half last accounted for.
+		 *
+		 * The capture half decides whether it may reuse the previous
+		 * synchronization from exactly these values, so they are the hand-off
+		 * between the two halves. They are published as one block under one mutex
+		 * rather than as loose members: a torn read would let the capture half
+		 * believe it had accounted for changes the resolve half had not applied
+		 * yet, and it would then skip collecting them.
+		 */
+		[[nodiscard]] ResolvedSceneSynchronizationState ReadResolvedSynchronizationState() const;
+		void PublishResolvedSynchronizationState(const ResolvedSceneSynchronizationState& state);
+		[[nodiscard]] std::shared_ptr<const TrackedMaterialKeys> ReadTrackedMaterialKeys() const;
+		void PublishTrackedMaterialKeys(std::shared_ptr<const TrackedMaterialKeys> keys);
+		/** Marks the capture with this serial resolved. Never moves it backwards. */
+		void ReleaseCaptureClaim(uint64_t captureSerial) noexcept;
 		void ResetMovedFromState() noexcept;
 
 		uint64_t m_sceneId = 0u;
@@ -624,7 +799,6 @@ namespace NLS::Engine::Rendering
 		std::optional<size_t> m_firstFreePrimitiveSlot;
 		size_t m_livePrimitiveCount = 0u;
 		uint64_t m_lastSceneFastAccessRevision = 0u;
-		std::optional<SceneSynchronizationStamp> m_lastSceneSynchronizationStamp;
 		uint64_t m_lastMeshMutationEpoch = 0u;
 		uint64_t m_lastObservedMaterialMutationEpoch = 0u;
 		mutable std::unordered_map<const NLS::Render::Resources::Mesh*, uint64_t>
@@ -651,11 +825,41 @@ namespace NLS::Engine::Rendering
 		mutable uint64_t m_spatialCandidateSnapshotCacheHitCount = 0u;
 		std::vector<SceneHLODClusterHandle> m_importedHierarchyHLODClusterHandles;
 		std::shared_ptr<SceneProxySourceRegistry> m_proxySourceRegistry;
-		std::shared_ptr<SceneRenderStore> m_proxyStore;
+			std::shared_ptr<SceneRenderStore> m_proxyStore;
+			// Guards the two handles above. They are read by the capture half and
+			// rewritten by both halves, so every access goes through the accessors.
+			mutable std::mutex m_proxyHandleMutex;
+			/**
+			 * Identity of the scene the handles above belong to.
+			 *
+			 * Read and written by the capture half, and read by the resolve half when
+			 * it has to acquire a store for an applied batch, so it lives under the
+			 * same lock as the handles it describes.
+			 */
 		const void* m_proxySceneIdentity = nullptr;
 			uint64_t m_proxyFrameSerial = 0u;
-			uint64_t m_lastProxySceneRevision = 0u;
-			uint64_t m_lastProxyMeshMutationEpoch = 0u;
-			uint64_t m_lastProxyStoreChangeSerial = 0u;
+			// Alternation guard for the capture / resolve hand-off. The capture and
+			// the resolve touch overlapping state, so only one capture may be
+			// outstanding. Serials advance only on a successful claim and are
+			// recorded on completion, which keeps a rejected capture from wedging
+			// the scene: once the outstanding capture completes, claims work again.
+			mutable std::mutex m_outstandingSynchronizationMutex;
+			/**
+			 * Capture serials that have been claimed but not resolved, oldest first.
+			 *
+			 * Replaces a pair of start/complete counters: the counters could only
+			 * express "none or one outstanding", which is exactly the constraint the
+			 * render-thread hand-off has to lift. The queue keeps the same refusal
+			 * behaviour at depth one and simply allows more entries at a higher
+			 * limit. Resolution removes by serial, so a caller that resolves out of
+			 * order still releases exactly its own claim.
+			 */
+			std::deque<uint64_t> m_outstandingSynchronizations;
+			uint64_t m_nextCaptureSerial = 0u;
+			size_t m_maxOutstandingSynchronizations = 1u;
+			mutable std::mutex m_resolvedSynchronizationMutex;
+			ResolvedSceneSynchronizationState m_resolvedSynchronization;
+		// Guarded by m_resolvedSynchronizationMutex. Immutable once published.
+		std::shared_ptr<const TrackedMaterialKeys> m_trackedMaterialKeys;
 		};
 }

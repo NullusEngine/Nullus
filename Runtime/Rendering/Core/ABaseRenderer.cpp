@@ -1,5 +1,7 @@
 #include <algorithm>
 #include <array>
+#include <chrono>
+#include <cstdint>
 #include <functional>
 #include <fstream>
 #include <filesystem>
@@ -14,7 +16,8 @@
 #include "Rendering/Context/DriverAccess.h"
 #include "Rendering/Context/RenderScenePackageBuilder.h"
 #include "Rendering/Context/RenderThreadCoordinator.h"
-#include "Rendering/Context/ThreadedRenderingLifecycle.h"
+#include "Rendering/Context/RenderingThreadSystem.h"
+#include "Rendering/Context/RenderScenePackage.h"
 #include "Rendering/FrameGraph/ExternalResourceBridge.h"
 #include "Rendering/Geometry/Vertex.h"
 #include "Rendering/RHI/BindingPointMap.h"
@@ -32,10 +35,13 @@ namespace NLS::Render::Core
 {
 std::atomic_bool ABaseRenderer::s_isDrawing{ false };
 
+
 const Entities::Camera kDefaultCamera;
 
 namespace
 {
+    thread_local std::shared_ptr<RHI::RHIBindingSet> g_activePreparedPassBindingSet;
+
     Maths::Vector4 ToOpaqueClearColor(const Maths::Vector3& color)
     {
         return { color.x, color.y, color.z, 1.0f };
@@ -108,22 +114,6 @@ namespace
             outputFramebuffer != nullptr ||
             NLS::Render::FrameGraph::FrameTargetsSwapchain(frameDescriptor);
         return state;
-    }
-
-    std::shared_ptr<NLS::Render::RHI::RHITexture> ResolveFrameOutputColorTexture(
-        const Data::FrameDescriptor& frameDescriptor)
-    {
-        if (frameDescriptor.outputColorTexture != nullptr)
-            return frameDescriptor.outputColorTexture;
-        if (frameDescriptor.outputColorView != nullptr)
-            return frameDescriptor.outputColorView->GetTexture();
-        if (auto* outputFramebuffer =
-                NLS::Render::FrameGraph::ResolveExternalSceneOutputFramebuffer(frameDescriptor);
-            outputFramebuffer != nullptr)
-        {
-            return outputFramebuffer->GetExplicitTextureHandle();
-        }
-        return nullptr;
     }
 
     std::optional<Resources::MaterialPipelineStateOverrides> BuildMaterialPipelineStateOverrides(
@@ -374,6 +364,68 @@ ABaseRenderer::~ABaseRenderer()
     Resources::Loaders::TextureLoader::Destroy(m_emptyTexture);
 }
 
+const ABaseRenderer::PreparedFrameScope*& ABaseRenderer::CurrentPreparedFrameScope()
+{
+    static thread_local const PreparedFrameScope* scope = nullptr;
+    return scope;
+}
+
+ABaseRenderer::PreparedFrameScope::PreparedFrameScope(
+    const ABaseRenderer& renderer,
+    const Data::FrameDescriptor& frame,
+    PipelineState pipelineState)
+    : m_renderer(&renderer)
+    , m_frame(frame)
+    , m_pipelineState(pipelineState)
+    , m_previous(CurrentPreparedFrameScope())
+    , m_previousPassBindingSet(std::move(g_activePreparedPassBindingSet))
+{
+    CurrentPreparedFrameScope() = this;
+}
+
+ABaseRenderer::PreparedFrameScope::~PreparedFrameScope()
+{
+    CurrentPreparedFrameScope() = m_previous;
+    g_activePreparedPassBindingSet = std::move(m_previousPassBindingSet);
+}
+
+const ABaseRenderer::PreparedFrameScope* ABaseRenderer::FindPreparedFrameScope() const
+{
+    for (auto* scope = CurrentPreparedFrameScope(); scope != nullptr; scope = scope->m_previous)
+    {
+        if (scope->m_renderer == this)
+            return scope;
+    }
+    return nullptr;
+}
+
+const Data::FrameDescriptor& ABaseRenderer::GetDrawFrameDescriptor() const
+{
+    if (const auto* scope = FindPreparedFrameScope(); scope != nullptr)
+        return scope->m_frame;
+    return m_frameDescriptor;
+}
+
+void ABaseRenderer::DrainPublishedFramesBeforeTeardown()
+{
+    NLS_PROFILE_SCOPE();
+
+    // A drain driven from inside the render thread would be draining the work it
+    // is itself running, so it is deliberately refused rather than attempted.
+    if (Context::RenderingThreadSystem::IsInRenderingThread())
+        return;
+
+    // Unconditional: a paused or already stopped worker set can still hold
+    // published frames, and the drain is a no-op when there is no lifecycle.
+    if (!Context::DriverRendererAccess::TryDrainThreadedRendering(m_driver, false))
+    {
+        NLS_LOG_ERROR(
+            "Renderer destroyed while threaded frames were still in flight, and the "
+            "drain timed out. Render-thread work may still reference destroyed "
+            "renderer state.");
+    }
+}
+
 void ABaseRenderer::BeginFrameInternal(
     const Data::FrameDescriptor& p_frameDescriptor,
     bool globalFrameAlreadyAcquired)
@@ -390,6 +442,7 @@ void ABaseRenderer::BeginFrameInternal(
             m_globalFrameReleaseDeferred = true;
             return;
         }
+
     }
     NLS_ASSERT(p_frameDescriptor.IsValid(), "Invalid FrameDescriptor!");
 
@@ -399,57 +452,28 @@ void ABaseRenderer::BeginFrameInternal(
         m_threadedRecordedDrawCommands.clear();
         m_activeRecordedPassColorViews.clear();
         m_activeRecordedPassDepthStencilView.reset();
-        m_pendingFrameSnapshot.reset();
-        m_pendingPreparedRenderSceneBuilder = {};
+        m_pendingRenderFramePacket.reset();
+        m_pendingRenderSceneCommand = {};
         m_lastThreadedFramePublished = false;
         m_frameActive = false;
         m_globalFrameReleaseDeferred = globalFrameAlreadyAcquired;
     }
     {
         NLS_PROFILE_NAMED_SCOPE("ABaseRenderer::BeginFrameInternal::MaintainPreparedDrawCache");
+        std::lock_guard cacheLock(m_preparedResourceCacheMutex);
         ++m_preparedRecordedDrawStaticBaseCacheFrame;
         InvalidateExplicitDeviceDependentCachesIfNeeded();
         TrimPreparedRecordedDrawStaticBaseCache(true);
     }
-    const bool targetsSwapchain = NLS::Render::FrameGraph::FrameTargetsSwapchain(p_frameDescriptor);
-    auto* externalOutputBuffer =
-        NLS::Render::FrameGraph::ResolveExternalSceneOutputFramebuffer(p_frameDescriptor);
-
-    const bool usesThreadedRendering = Context::RenderThreadCoordinator::IsThreadedRenderingEnabled(m_driver);
     const bool rendererFrameStarted = Context::RenderThreadCoordinator::BeginRendererFrame(
         m_driver,
-        targetsSwapchain);
-
-    const bool usesExplicitRecording = GetActiveExplicitCommandBuffer() != nullptr;
-    if (!usesThreadedRendering &&
-        Context::DriverRendererAccess::HasExplicitRHI(m_driver) &&
-        !rendererFrameStarted)
+        !globalFrameAlreadyAcquired,
+        FrameGraph::FrameTargetsSwapchain(p_frameDescriptor));
+    if (!rendererFrameStarted)
     {
         return;
     }
-    if (!usesThreadedRendering && usesExplicitRecording && externalOutputBuffer != nullptr)
-    {
-        Context::DriverRendererAccess::SetActiveReadbackTexture(
-            m_driver,
-            ResolveFrameOutputColorTexture(p_frameDescriptor));
-    }
-
     m_basePipelineState = Context::DriverRendererAccess::CreatePipelineState(m_driver);
-    if (!usesThreadedRendering && !usesExplicitRecording)
-    {
-        Context::DriverRendererAccess::SetViewport(
-            m_driver,
-            0,
-            0,
-            p_frameDescriptor.renderWidth,
-            p_frameDescriptor.renderHeight);
-        Clear(
-            p_frameDescriptor.camera->GetClearColorBuffer(),
-            p_frameDescriptor.camera->GetClearDepthBuffer(),
-            p_frameDescriptor.camera->GetClearStencilBuffer(),
-            ResolveFrameClearColor(p_frameDescriptor)
-        );
-    }
 
     p_frameDescriptor.camera->CacheMatrices(p_frameDescriptor.renderWidth, p_frameDescriptor.renderHeight);
 
@@ -469,11 +493,13 @@ void ABaseRenderer::BeginFrameForBackgroundPreview(const Data::FrameDescriptor& 
 
 void ABaseRenderer::AbortFrameForBackgroundPreview()
 {
+    if (m_frameActive && Context::RenderThreadCoordinator::IsThreadedRenderingEnabled(m_driver))
+        Context::RenderThreadCoordinator::EndRendererFrame(m_driver);
     m_threadedRecordedDrawCommands.clear();
     m_activeRecordedPassColorViews.clear();
     m_activeRecordedPassDepthStencilView.reset();
-    m_pendingFrameSnapshot.reset();
-    m_pendingPreparedRenderSceneBuilder = {};
+    m_pendingRenderFramePacket.reset();
+    m_pendingRenderSceneCommand = {};
     m_nextFramePostSubmitTextureReadbacks.clear();
     m_isDrawing = false;
     m_frameActive = false;
@@ -489,35 +515,18 @@ void ABaseRenderer::EndFrame()
         m_isDrawing = false;
         m_globalFrameReleaseDeferred = false;
         if (releaseGlobalFrame)
+        {
             s_isDrawing.store(false);
+
+        }
         return;
     }
     NLS_ASSERT(s_isDrawing, "Cannot call EndFrame() before calling BeginFrame()");
 
-    const bool usesThreadedRendering = Context::RenderThreadCoordinator::IsThreadedRenderingEnabled(m_driver);
-    const bool shouldPresentSwapchain = NLS::Render::FrameGraph::FrameTargetsSwapchain(m_frameDescriptor);
-    auto* externalOutputBuffer =
-        NLS::Render::FrameGraph::ResolveExternalSceneOutputFramebuffer(m_frameDescriptor);
-    const bool usesExplicitRecording =
-        Context::DriverRendererAccess::HasExplicitRHI(m_driver) &&
-        GetActiveExplicitCommandBuffer() != nullptr;
-    if (usesExplicitRecording && externalOutputBuffer != nullptr)
-    {
-        NLS::Render::FrameGraph::TransitionExternalSceneOutputToShaderRead(
-            m_driver,
-            m_frameDescriptor);
-    }
-    bool threadedFramePublished = false;
-    if (usesExplicitRecording)
-    {
-        Context::RenderThreadCoordinator::EndRendererFrame(m_driver, shouldPresentSwapchain);
-    }
-    else if (usesThreadedRendering)
-    {
-        threadedFramePublished = TryPublishThreadedFrame();
-    }
+    const bool threadedFramePublished = TryPublishThreadedFrame();
+    Context::RenderThreadCoordinator::EndRendererFrame(m_driver);
 
-    if (usesThreadedRendering && !threadedFramePublished)
+    if (!threadedFramePublished)
     {
         OnThreadedFramePublishFailed();
     }
@@ -527,14 +536,18 @@ void ABaseRenderer::EndFrame()
     const bool releaseGlobalFrame = !m_globalFrameReleaseDeferred;
     m_globalFrameReleaseDeferred = false;
     if (releaseGlobalFrame)
+    {
         s_isDrawing.store(false);
+    }
 }
 
 bool ABaseRenderer::TryBeginGlobalFrameForBackgroundPreview()
 {
     bool expectedDrawing = false;
     if (!s_isDrawing.compare_exchange_strong(expectedDrawing, true))
+    {
         return false;
+    }
     return true;
 }
 
@@ -545,8 +558,8 @@ void ABaseRenderer::EndGlobalFrameForBackgroundPreview()
 
 const Data::FrameDescriptor& ABaseRenderer::GetFrameDescriptor() const
 {
-    NLS_ASSERT(m_isDrawing, "Cannot call GetFrameDescriptor() outside of a frame");
-    return m_frameDescriptor;
+    NLS_ASSERT(IsDrawing(), "Cannot call GetFrameDescriptor() outside of a frame");
+    return GetDrawFrameDescriptor();
 }
 
 Context::Driver& ABaseRenderer::GetDriver()
@@ -561,34 +574,38 @@ const Context::Driver& ABaseRenderer::GetDriver() const
 
 ABaseRenderer::PipelineState ABaseRenderer::CreatePipelineState() const
 {
+    if (const auto* scope = FindPreparedFrameScope(); scope != nullptr)
+        return scope->m_pipelineState;
     return m_basePipelineState;
 }
 
 bool ABaseRenderer::IsDrawing() const
 {
-	return m_isDrawing;
+    return FindPreparedFrameScope() != nullptr || m_isDrawing;
 }
 
 bool ABaseRenderer::IsFrameActive() const
 {
-    return m_frameActive;
+    return FindPreparedFrameScope() != nullptr || m_frameActive;
 }
 
 bool ABaseRenderer::TryPublishThreadedFrame()
 {
     NLS_PROFILE_SCOPE();
-    const auto snapshot =
-        m_pendingFrameSnapshot.has_value()
-            ? m_pendingFrameSnapshot
-            : BuildFrameSnapshot(m_frameDescriptor);
+    auto snapshot =
+        m_pendingRenderFramePacket.has_value()
+            ? std::move(m_pendingRenderFramePacket)
+            : BuildRenderFramePacket(m_frameDescriptor);
     if (snapshot.has_value())
     {
-        auto renderSceneBuilder = BuildPreparedRenderSceneBuilder(snapshot.value());
+        if (!m_nextFramePostSubmitTextureReadbacks.empty())
+            snapshot->postSubmitTextureReadbacks = m_nextFramePostSubmitTextureReadbacks;
+        auto renderSceneBuilder = BuildRenderSceneCommand(snapshot.value());
         if (!renderSceneBuilder)
             return false;
 
         uint64_t publishedFrameId = 0u;
-        const bool published = Context::DriverRendererAccess::TryPublishPreparedFrameBuilder(
+        const bool published = Context::DriverRendererAccess::TryEnqueueRenderFrame(
             m_driver,
             snapshot.value(),
             std::move(renderSceneBuilder),
@@ -615,36 +632,41 @@ void ABaseRenderer::OnThreadedFramePublishFailed()
     m_nextFramePostSubmitTextureReadbacks.clear();
 }
 
-Context::PreparedRenderSceneBuilder ABaseRenderer::BuildPreparedRenderSceneBuilder(
-    const Context::FrameSnapshot& snapshot)
+Context::RenderSceneBuildCommand ABaseRenderer::BuildRenderSceneCommand(
+    const Context::RenderFramePacket& packet)
 {
-    if (m_pendingPreparedRenderSceneBuilder)
-        return m_pendingPreparedRenderSceneBuilder;
+    if (m_pendingRenderSceneCommand)
+        return m_pendingRenderSceneCommand;
 
-    return [snapshot]() mutable
+    return [packet, commands = std::move(m_threadedRecordedDrawCommands)](const size_t) mutable
     {
-        return Context::BuildSnapshotOwnedRenderScenePackage(snapshot);
+        Context::RenderSceneBuildData scene;
+        scene.visibleHelperDrawCount = static_cast<uint64_t>(commands.size());
+        scene.recordedDrawCommands = std::move(commands);
+        return Context::BuildRenderScenePackage(packet, std::move(scene));
     };
 }
 
-void ABaseRenderer::SetPendingFrameSnapshot(Context::FrameSnapshot snapshot)
+void ABaseRenderer::SetPendingRenderFramePacket(Context::RenderFramePacket packet)
 {
-    m_pendingFrameSnapshot = std::move(snapshot);
+    m_pendingRenderFramePacket = std::move(packet);
 }
 
-void ABaseRenderer::SetPendingPreparedRenderSceneBuilder(
-    Context::PreparedRenderSceneBuilder renderSceneBuilder)
+void ABaseRenderer::SetPendingRenderSceneCommand(
+    Context::RenderSceneBuildCommand renderSceneBuilder)
 {
-    m_pendingPreparedRenderSceneBuilder = std::move(renderSceneBuilder);
+    m_pendingRenderSceneCommand = std::move(renderSceneBuilder);
 }
 
-std::optional<NLS::Render::Context::FrameSnapshot> ABaseRenderer::BuildFrameSnapshot(
+std::optional<NLS::Render::Context::RenderFramePacket> ABaseRenderer::BuildRenderFramePacket(
     const Data::FrameDescriptor& frameDescriptor) const
 {
     if (!frameDescriptor.IsValid())
         return std::nullopt;
 
-    NLS::Render::Context::FrameSnapshot snapshot;
+    NLS::Render::Context::RenderFramePacket snapshot;
+    snapshot.view = std::make_shared<const FrameGraph::FrozenFrameDescriptor>(
+        FrameGraph::FreezeFrameDescriptor(frameDescriptor));
     snapshot.renderWidth = frameDescriptor.renderWidth;
     snapshot.renderHeight = frameDescriptor.renderHeight;
     const auto externalOutputSummary =
@@ -668,7 +690,6 @@ std::optional<NLS::Render::Context::FrameSnapshot> ABaseRenderer::BuildFrameSnap
     snapshot.clearStencilBuffer = camera.GetClearStencilBuffer();
     snapshot.hasGeometryFrustum = camera.GetGeometryFrustum() != nullptr;
     snapshot.hasLightFrustum = camera.GetLightFrustum() != nullptr;
-    snapshot.recordedDrawCommands = m_threadedRecordedDrawCommands;
     snapshot.postSubmitTextureReadbacks = m_nextFramePostSubmitTextureReadbacks;
     return snapshot;
 }
@@ -691,7 +712,7 @@ NLS::Render::FrameGraph::FrameGraphExecutionContext ABaseRenderer::CreateFrameGr
 
 void ABaseRenderer::SetActivePreparedPassBindingSet(const std::shared_ptr<NLS::Render::RHI::RHIBindingSet>& bindingSet)
 {
-    m_activePreparedPassBindingSet = bindingSet;
+    g_activePreparedPassBindingSet = bindingSet;
 }
 
 bool ABaseRenderer::BeginSingleTargetRenderPass(
@@ -1078,6 +1099,9 @@ void ABaseRenderer::EndOutputRenderPass(const bool p_startedRecordedPass)
 
 std::shared_ptr<NLS::Render::RHI::RHICommandBuffer> ABaseRenderer::GetActiveExplicitCommandBuffer() const
 {
+    // Prepared builders produce commands without borrowing another frame's RHI buffer.
+    if (FindPreparedFrameScope() != nullptr)
+        return nullptr;
     return Context::DriverRendererAccess::GetActiveExplicitCommandBuffer(m_driver);
 }
 
@@ -1100,56 +1124,83 @@ std::shared_ptr<NLS::Render::RHI::RHIBindingSet> ABaseRenderer::CreateExplicitUn
     const NLS::Render::Buffers::UniformBuffer& buffer,
     const ExplicitUniformBufferBindingDesc& desc) const
 {
-    const auto snapshotBuffer = buffer.CreateExplicitSnapshotBuffer(desc.snapshotDebugName);
-    if (snapshotBuffer != nullptr)
+    const auto snapshot = buffer.CreateExplicitSnapshot(desc.snapshotDebugName);
+    if (snapshot.createdBuffer)
         ++m_explicitUniformSnapshotBufferCreationCount;
-    return CreateExplicitUniformBufferBindingSetForSnapshot(buffer, desc, snapshotBuffer);
+    return CreateExplicitUniformBufferBindingSetForSnapshot(buffer, desc, snapshot.buffer, snapshot.offset);
 }
 
 
 std::shared_ptr<NLS::Render::RHI::RHIBindingSet> ABaseRenderer::CreateExplicitUniformBufferBindingSetForSnapshot(
     const NLS::Render::Buffers::UniformBuffer& buffer,
     const ExplicitUniformBufferBindingDesc& desc,
-    const std::shared_ptr<NLS::Render::RHI::RHIBuffer>& snapshotBuffer) const
+    const std::shared_ptr<NLS::Render::RHI::RHIBuffer>& snapshotBuffer,
+    const uint64_t snapshotOffset) const
 {
-    if (!m_frameActive)
-        InvalidateExplicitDeviceDependentCachesIfNeeded();
-    const auto& device = m_preparedRecordedDrawDevice;
-    const auto cacheKey = BuildExplicitUniformBindingLayoutCacheKey(desc, device);
-
-    std::shared_ptr<NLS::Render::RHI::RHIBindingLayout> layout;
-    if (const auto found = m_explicitUniformBindingLayouts.find(cacheKey);
-        found != m_explicitUniformBindingLayouts.end())
-    {
-        layout = found->second.lock();
-    }
-
-    if (layout == nullptr)
-    {
-        NLS::Render::RHI::RHIBindingLayoutDesc layoutDesc;
-        layoutDesc.debugName = desc.layoutDebugName;
-        layoutDesc.entries.push_back({
-            desc.entryName,
-            NLS::Render::RHI::BindingType::UniformBuffer,
-            desc.set,
-            desc.binding,
-            1u,
-            desc.stageMask,
-            desc.registerSpace,
-            0u
-        });
-        layout = Context::DriverRendererAccess::CreateExplicitBindingLayout(m_driver, layoutDesc);
-        if (layout != nullptr)
-            m_explicitUniformBindingLayouts[cacheKey] = layout;
-    }
-
-    if (layout == nullptr)
-        return nullptr;
-
     const auto bufferHandle = snapshotBuffer != nullptr
         ? snapshotBuffer
         : buffer.GetExplicitRHIBufferHandle();
     if (bufferHandle == nullptr)
+        return nullptr;
+
+    return CreateExplicitUniformBufferBindingSetAtOffset(
+        bufferHandle, snapshotBuffer != nullptr ? snapshotOffset : 0u, desc.range, desc);
+}
+
+std::shared_ptr<NLS::Render::RHI::RHIBindingLayout> ABaseRenderer::ResolveExplicitUniformBufferBindingLayout(
+    const ExplicitUniformBufferBindingDesc& desc) const
+{
+    std::lock_guard cacheLock(m_preparedResourceCacheMutex);
+    if (!IsFrameActive())
+        InvalidateExplicitDeviceDependentCachesIfNeeded();
+    const auto& device = m_preparedRecordedDrawDevice;
+    const auto cacheKey = BuildExplicitUniformBindingLayoutCacheKey(desc, device);
+    if (const auto found = m_explicitUniformBindingLayouts.find(cacheKey);
+        found != m_explicitUniformBindingLayouts.end())
+    {
+        if (auto layout = found->second.lock())
+            return layout;
+    }
+
+    NLS::Render::RHI::RHIBindingLayoutDesc layoutDesc;
+    layoutDesc.debugName = desc.layoutDebugName;
+    layoutDesc.entries.push_back({
+        desc.entryName,
+        NLS::Render::RHI::BindingType::UniformBuffer,
+        desc.set,
+        desc.binding,
+        1u,
+        desc.stageMask,
+        desc.registerSpace,
+        0u
+    });
+    auto layout = Context::DriverRendererAccess::CreateExplicitBindingLayout(m_driver, layoutDesc);
+    if (layout != nullptr)
+        m_explicitUniformBindingLayouts[cacheKey] = layout;
+    return layout;
+}
+
+std::shared_ptr<NLS::Render::RHI::RHIBindingSet> ABaseRenderer::CreateExplicitUniformBufferBindingSetAtOffset(
+    const std::shared_ptr<NLS::Render::RHI::RHIBuffer>& buffer,
+    const uint64_t bufferOffset,
+    const uint64_t bufferRange,
+    const ExplicitUniformBufferBindingDesc& desc) const
+{
+    return CreateExplicitUniformBufferBindingSetWithLayout(
+        ResolveExplicitUniformBufferBindingLayout(desc),
+        buffer,
+        bufferOffset,
+        bufferRange,
+        desc);
+}
+std::shared_ptr<NLS::Render::RHI::RHIBindingSet> ABaseRenderer::CreateExplicitUniformBufferBindingSetWithLayout(
+    const std::shared_ptr<NLS::Render::RHI::RHIBindingLayout>& layout,
+    const std::shared_ptr<NLS::Render::RHI::RHIBuffer>& buffer,
+    const uint64_t bufferOffset,
+    const uint64_t bufferRange,
+    const ExplicitUniformBufferBindingDesc& desc) const
+{
+    if (layout == nullptr || buffer == nullptr)
         return nullptr;
 
     NLS::Render::RHI::RHIBindingSetDesc bindingSetDesc;
@@ -1158,19 +1209,17 @@ std::shared_ptr<NLS::Render::RHI::RHIBindingSet> ABaseRenderer::CreateExplicitUn
     bindingSetDesc.entries.push_back({
         desc.binding,
         NLS::Render::RHI::BindingType::UniformBuffer,
-        bufferHandle,
-        0u,
-        desc.range != 0u ? desc.range : bufferHandle->GetDesc().size,
+        buffer,
+        bufferOffset,
+        bufferRange != 0u ? bufferRange : buffer->GetDesc().size,
         0u,
         nullptr,
         nullptr
     });
-    const auto allocationLifetime = Context::DriverRendererAccess::IsThreadedRenderingEnabled(m_driver)
-        ? NLS::Render::RHI::DescriptorAllocationLifetime::Persistent
-        : NLS::Render::RHI::DescriptorAllocationLifetime::TransientFrame;
+    // Captured bindings can outlive the frame that created them, including a paused render lane.
     auto bindingSet = Context::DriverRendererAccess::CreateExplicitBindingSet(m_driver,
         bindingSetDesc,
-        allocationLifetime);
+        NLS::Render::RHI::DescriptorAllocationLifetime::Persistent);
     if (bindingSet != nullptr)
         ++m_explicitUniformBindingSetCreationCount;
     return bindingSet;
@@ -1183,12 +1232,12 @@ bool ABaseRenderer::IsRenderCoordinateInBounds(uint32_t p_x, uint32_t p_y) const
 
 uint64_t ABaseRenderer::GetExplicitUniformBindingSetCreationCount() const
 {
-    return m_explicitUniformBindingSetCreationCount;
+    return m_explicitUniformBindingSetCreationCount.load(std::memory_order_relaxed);
 }
 
 uint64_t ABaseRenderer::GetExplicitUniformSnapshotBufferCreationCount() const
 {
-    return m_explicitUniformSnapshotBufferCreationCount;
+    return m_explicitUniformSnapshotBufferCreationCount.load(std::memory_order_relaxed);
 }
 
 void ABaseRenderer::CaptureRecordedPassAttachmentViews(const NLS::Render::RHI::RHIRenderPassDesc& renderPassDesc)
@@ -1301,7 +1350,7 @@ bool ABaseRenderer::PrepareRecordedDraw(
         return false;
     }
 
-    const auto pipelineOverrides = BuildMaterialPipelineStateOverrides(p_pso, *material, m_frameDescriptor);
+    const auto pipelineOverrides = BuildMaterialPipelineStateOverrides(p_pso, *material, GetDrawFrameDescriptor());
     if (!pipelineOverrides.has_value())
     {
         LogRecordedDrawPreparationState(m_driver, "pso", "attachment_sample_count_mismatch", p_drawable);
@@ -1323,7 +1372,7 @@ bool ABaseRenderer::PrepareRecordedDraw(
     }
 
     auto commandBuffer = GetActiveExplicitCommandBuffer();
-    const auto* staticBase = ResolvePreparedRecordedDrawStaticBase(
+    const auto staticBase = ResolvePreparedRecordedDrawStaticBase(
         "pso",
         p_drawable,
         *material,
@@ -1638,12 +1687,16 @@ void ABaseRenderer::ErasePreparedRecordedDrawStaticBaseEntry(
                 {
                     m_preparedRecordedDrawStaticBaseRevisionLruKeys.erase(
                         indexedRevision->second.lruIterator);
+                    indexedRevision->second.lruLinked = false;
                 }
                 m_preparedRecordedDrawStaticBaseRevisionIndex.erase(indexedRevision);
             }
         }
         if (found->second->lruLinked)
+        {
             m_preparedRecordedDrawStaticBaseLruKeys.erase(found->second->lruIterator);
+            found->second->lruLinked = false;
+        }
 
         m_preparedRecordedDrawStaticBaseCache.erase(found);
     }
@@ -1718,10 +1771,7 @@ void ABaseRenderer::RefreshPreparedRecordedDrawStaticBaseRevisionIndex(
     else if (revisionEntry->second.lruLinked)
     {
         revisionEntry->second.observedUseFrame = revisionEntry->second.lastUsedFrame;
-        m_preparedRecordedDrawStaticBaseRevisionLruKeys.splice(
-            m_preparedRecordedDrawStaticBaseRevisionLruKeys.end(),
-            m_preparedRecordedDrawStaticBaseRevisionLruKeys,
-            revisionEntry->second.lruIterator);
+        SplicePreparedRecordedDrawStaticBaseRevisionLruToBack(revisionEntry->second);
     }
 
     cacheEntry->second->revisionKeys.insert(revisionKey);
@@ -1743,7 +1793,10 @@ void ABaseRenderer::ErasePreparedRecordedDrawStaticBaseRevisionIndexEntry(
         revisionKeys.erase(revisionKey);
     }
     if (indexed->second.lruLinked)
+    {
         m_preparedRecordedDrawStaticBaseRevisionLruKeys.erase(indexed->second.lruIterator);
+        indexed->second.lruLinked = false;
+    }
     m_preparedRecordedDrawStaticBaseRevisionIndex.erase(indexed);
 }
 
@@ -1777,10 +1830,7 @@ void ABaseRenderer::TrimPreparedRecordedDrawStaticBaseRevisionIndex(
                 continue;
             }
 
-            m_preparedRecordedDrawStaticBaseRevisionLruKeys.splice(
-                m_preparedRecordedDrawStaticBaseRevisionLruKeys.end(),
-                m_preparedRecordedDrawStaticBaseRevisionLruKeys,
-                oldest->second.lruIterator);
+            SplicePreparedRecordedDrawStaticBaseRevisionLruToBack(oldest->second);
         }
     }
 
@@ -1798,10 +1848,7 @@ void ABaseRenderer::TrimPreparedRecordedDrawStaticBaseRevisionIndex(
         if (oldest->second.lastUsedFrame != oldest->second.observedUseFrame)
         {
             oldest->second.observedUseFrame = oldest->second.lastUsedFrame;
-            m_preparedRecordedDrawStaticBaseRevisionLruKeys.splice(
-                m_preparedRecordedDrawStaticBaseRevisionLruKeys.end(),
-                m_preparedRecordedDrawStaticBaseRevisionLruKeys,
-                oldest->second.lruIterator);
+            SplicePreparedRecordedDrawStaticBaseRevisionLruToBack(oldest->second);
             continue;
         }
         ErasePreparedRecordedDrawStaticBaseRevisionIndexEntry(oldestKey);
@@ -1829,21 +1876,33 @@ void ABaseRenderer::TouchPreparedRecordedDrawStaticBaseEntry(
 #if defined(NLS_ENABLE_TEST_HOOKS)
         ++m_preparedRecordedDrawStaticBaseLruSpliceCountForTesting;
 #endif
-        m_preparedRecordedDrawStaticBaseLruKeys.splice(
-            m_preparedRecordedDrawStaticBaseLruKeys.end(),
-            m_preparedRecordedDrawStaticBaseLruKeys,
-            entry.lruIterator);
+        SplicePreparedRecordedDrawStaticBaseLruToBack(entry);
     }
+}
+
+void ABaseRenderer::SplicePreparedRecordedDrawStaticBaseLruToBack(
+    PreparedRecordedDrawStaticBase& entry) const
+{
+    auto& lruKeys = m_preparedRecordedDrawStaticBaseLruKeys;
+
+    if (entry.lruLinked)
+        lruKeys.splice(lruKeys.end(), lruKeys, entry.lruIterator);
+}
+
+void ABaseRenderer::SplicePreparedRecordedDrawStaticBaseRevisionLruToBack(
+    PreparedRecordedDrawStaticBaseRevisionIndexEntry& entry) const
+{
+    auto& lruKeys = m_preparedRecordedDrawStaticBaseRevisionLruKeys;
+
+    if (entry.lruLinked)
+        lruKeys.splice(lruKeys.end(), lruKeys, entry.lruIterator);
 }
 
 void ABaseRenderer::TrimPreparedRecordedDrawStaticBaseCache(const bool includeFrameAgeSweep) const
 {
     if (m_preparedRecordedDrawStaticBaseCache.empty())
     {
-        m_preparedRecordedDrawStaticBaseStableIndex.clear();
-        m_preparedRecordedDrawStaticBaseRevisionIndex.clear();
-        m_preparedRecordedDrawStaticBaseRevisionLruKeys.clear();
-        m_preparedRecordedDrawStaticBaseLruKeys.clear();
+        ClearPreparedRecordedDrawStaticBaseCacheLocked();
         return;
     }
 
@@ -1870,10 +1929,7 @@ void ABaseRenderer::TrimPreparedRecordedDrawStaticBaseCache(const bool includeFr
                 : 0u;
             if (age <= kMaxPreparedRecordedDrawStaticBaseCacheFrameAge)
             {
-                m_preparedRecordedDrawStaticBaseLruKeys.splice(
-                    m_preparedRecordedDrawStaticBaseLruKeys.end(),
-                    m_preparedRecordedDrawStaticBaseLruKeys,
-                    oldest->second->lruIterator);
+                SplicePreparedRecordedDrawStaticBaseLruToBack(*oldest->second);
                 continue;
             }
 
@@ -1895,10 +1951,7 @@ void ABaseRenderer::TrimPreparedRecordedDrawStaticBaseCache(const bool includeFr
         if (evicted->second->lastUsedFrame != evicted->second->observedUseFrame)
         {
             evicted->second->observedUseFrame = evicted->second->lastUsedFrame;
-            m_preparedRecordedDrawStaticBaseLruKeys.splice(
-                m_preparedRecordedDrawStaticBaseLruKeys.end(),
-                m_preparedRecordedDrawStaticBaseLruKeys,
-                evicted->second->lruIterator);
+            SplicePreparedRecordedDrawStaticBaseLruToBack(*evicted->second);
             continue;
         }
         ErasePreparedRecordedDrawStaticBaseEntry(evictedKey);
@@ -1906,10 +1959,7 @@ void ABaseRenderer::TrimPreparedRecordedDrawStaticBaseCache(const bool includeFr
 
     if (m_preparedRecordedDrawStaticBaseCache.empty())
     {
-        m_preparedRecordedDrawStaticBaseStableIndex.clear();
-        m_preparedRecordedDrawStaticBaseRevisionIndex.clear();
-        m_preparedRecordedDrawStaticBaseRevisionLruKeys.clear();
-        m_preparedRecordedDrawStaticBaseLruKeys.clear();
+        ClearPreparedRecordedDrawStaticBaseCacheLocked();
     }
     else
     {
@@ -1928,11 +1978,11 @@ void ABaseRenderer::InvalidateExplicitDeviceDependentCachesIfNeeded() const
 
     m_cachedExplicitDeviceIdentity = deviceIdentity;
     m_cachedExplicitDeviceBackend = backend;
-    ClearPreparedRecordedDrawStaticBaseCache();
+    ClearPreparedRecordedDrawStaticBaseCacheLocked();
     m_explicitUniformBindingLayouts.clear();
 }
 
-const ABaseRenderer::PreparedRecordedDrawStaticBase* ABaseRenderer::ResolvePreparedRecordedDrawStaticBase(
+std::shared_ptr<const ABaseRenderer::PreparedRecordedDrawStaticBase> ABaseRenderer::ResolvePreparedRecordedDrawStaticBase(
     const char* preparationPath,
     const Entities::Drawable& drawable,
     Resources::Material& material,
@@ -1941,6 +1991,7 @@ const ABaseRenderer::PreparedRecordedDrawStaticBase* ABaseRenderer::ResolvePrepa
     const Data::PipelineState& pipelineState,
     const std::string_view lightMode) const
 {
+    std::lock_guard cacheLock(m_preparedResourceCacheMutex);
     auto* mesh = drawable.mesh;
     if (mesh == nullptr)
         return nullptr;
@@ -1954,7 +2005,9 @@ const ABaseRenderer::PreparedRecordedDrawStaticBase* ABaseRenderer::ResolvePrepa
         LogRecordedDrawPreparationState(m_driver, preparationPath, "shaderlab_lightmode_missing", drawable);
         return nullptr;
     }
-    const auto passBindingSet = material.RequiresPassDescriptorSet(effectiveShader) ? m_activePreparedPassBindingSet : nullptr;
+    const auto passBindingSet = material.RequiresPassDescriptorSet(effectiveShader)
+        ? g_activePreparedPassBindingSet
+        : nullptr;
     const auto* drawableDescriptor = drawable.TryGetDescriptor<Data::DrawableObjectDescriptor>();
     const bool hasTrustedRevision = drawableDescriptor != nullptr &&
         HasCompleteTrustedPreparedRecordedDrawStaticBaseRevision(*drawableDescriptor);
@@ -1967,7 +2020,7 @@ const ABaseRenderer::PreparedRecordedDrawStaticBase* ABaseRenderer::ResolvePrepa
             pipelineOverrides,
             depthCompareOverride,
             pipelineState,
-            m_activePreparedPassBindingSet,
+            g_activePreparedPassBindingSet,
             drawable.primitiveMode,
             lightMode);
         const auto indexedRevision = m_preparedRecordedDrawStaticBaseRevisionIndex.find(*revisionKey);
@@ -1994,7 +2047,7 @@ const ABaseRenderer::PreparedRecordedDrawStaticBase* ABaseRenderer::ResolvePrepa
                 indexedRevision->second.lastUsedFrame = m_preparedRecordedDrawStaticBaseCacheFrame;
                 if (auto* stats = GetMutableRendererStats(); stats != nullptr)
                     stats->RecordPreparedRecordedDrawStaticBaseFastPath(true);
-                return preparedBase.get();
+                return preparedBase;
             }
 
             if (preparedBase == nullptr)
@@ -2048,7 +2101,7 @@ const ABaseRenderer::PreparedRecordedDrawStaticBase* ABaseRenderer::ResolvePrepa
         refreshRevisionIndex(key);
         if (auto* stats = GetMutableRendererStats(); stats != nullptr)
             stats->RecordPreparedRecordedDrawStaticBaseCache(true);
-        return found->second.get();
+        return found->second;
     }
 
     auto bindingSet = material.GetRecordedBindingSet(device, effectiveShader);
@@ -2076,7 +2129,7 @@ const ABaseRenderer::PreparedRecordedDrawStaticBase* ABaseRenderer::ResolvePrepa
             refreshRevisionIndex(finalKey);
             if (auto* stats = GetMutableRendererStats(); stats != nullptr)
                 stats->RecordPreparedRecordedDrawStaticBaseCache(true);
-            return found->second.get();
+            return found->second;
         }
     }
 
@@ -2129,10 +2182,11 @@ const ABaseRenderer::PreparedRecordedDrawStaticBase* ABaseRenderer::ResolvePrepa
         TouchPreparedRecordedDrawStaticBaseEntry(*entry->second);
     IndexPreparedRecordedDrawStaticBaseEntry(finalKey);
     refreshRevisionIndex(finalKey);
+    const auto preparedBase = entry->second;
     TrimPreparedRecordedDrawStaticBaseCache(false);
     if (auto* stats = GetMutableRendererStats(); stats != nullptr)
         stats->RecordPreparedRecordedDrawStaticBaseCache(false);
-    return entry->second.get();
+    return preparedBase;
 }
 
 bool ABaseRenderer::PrepareRecordedDraw(
@@ -2202,7 +2256,8 @@ bool ABaseRenderer::PrepareRecordedDraw(
     auto commandBuffer = GetActiveExplicitCommandBuffer();
     auto effectivePipelineState = CreatePipelineState();
     effectivePipelineState.depthFunc = depthCompareOverride;
-    if (!ApplyAttachmentPipelineStateOverrides(m_frameDescriptor, pipelineOverrides))
+    const auto& frameDescriptor = GetDrawFrameDescriptor();
+    if (!ApplyAttachmentPipelineStateOverrides(frameDescriptor, pipelineOverrides))
     {
         LogRecordedDrawPreparationState(m_driver, "overrides", "attachment_sample_count_mismatch", p_drawable);
         return false;
@@ -2211,10 +2266,10 @@ bool ABaseRenderer::PrepareRecordedDraw(
     if (!pipelineOverrides.hasDepthAttachment.has_value())
     {
         pipelineOverrides.hasDepthAttachment =
-            NLS::Render::FrameGraph::ResolveExternalSceneOutputFramebuffer(m_frameDescriptor) != nullptr ||
-            NLS::Render::FrameGraph::FrameTargetsSwapchain(m_frameDescriptor);
+            NLS::Render::FrameGraph::ResolveExternalSceneOutputFramebuffer(frameDescriptor) != nullptr ||
+            NLS::Render::FrameGraph::FrameTargetsSwapchain(frameDescriptor);
     }
-    const auto* staticBase = ResolvePreparedRecordedDrawStaticBase(
+    const auto staticBase = ResolvePreparedRecordedDrawStaticBase(
         "overrides",
         p_drawable,
         effectiveMaterial,
@@ -2324,12 +2379,21 @@ bool ABaseRenderer::QueueThreadedRecordedDraw(
     drawCommand.vertexCount = preparedDraw.vertexCount;
     drawCommand.objectConstants = preparedDraw.objectConstants;
     drawCommand.usesObjectIndex = preparedDraw.usesObjectIndex;
+    drawCommand.objectBindingImmutable = preparedDraw.objectBindingImmutable;
     outCommands.push_back(std::move(drawCommand));
     return true;
 }
 
 void ABaseRenderer::ClearPreparedRecordedDrawStaticBaseCache() const
 {
+    std::lock_guard cacheLock(m_preparedResourceCacheMutex);
+    ClearPreparedRecordedDrawStaticBaseCacheLocked();
+}
+
+void ABaseRenderer::ClearPreparedRecordedDrawStaticBaseCacheLocked() const
+{
+    for (const auto& [key, entry] : m_preparedRecordedDrawStaticBaseCache)
+        entry->lruLinked = false;
     m_preparedRecordedDrawStaticBaseCache.clear();
     m_preparedRecordedDrawStaticBaseStableIndex.clear();
     m_preparedRecordedDrawStaticBaseRevisionIndex.clear();
@@ -2340,31 +2404,37 @@ void ABaseRenderer::ClearPreparedRecordedDrawStaticBaseCache() const
 #if defined(NLS_ENABLE_TEST_HOOKS)
 size_t ABaseRenderer::GetPreparedRecordedDrawStaticBaseCacheSizeForTesting() const
 {
+    std::lock_guard cacheLock(m_preparedResourceCacheMutex);
     return m_preparedRecordedDrawStaticBaseCache.size();
 }
 
 size_t ABaseRenderer::GetPreparedRecordedDrawStaticBaseStableIndexSizeForTesting() const
 {
+    std::lock_guard cacheLock(m_preparedResourceCacheMutex);
     return m_preparedRecordedDrawStaticBaseStableIndex.size();
 }
 
 size_t ABaseRenderer::GetPreparedRecordedDrawStaticBaseRevisionIndexSizeForTesting() const
 {
+    std::lock_guard cacheLock(m_preparedResourceCacheMutex);
     return m_preparedRecordedDrawStaticBaseRevisionIndex.size();
 }
 
 uint64_t ABaseRenderer::GetPreparedRecordedDrawStaticBaseFullKeyBuildCountForTesting() const
 {
+    std::lock_guard cacheLock(m_preparedResourceCacheMutex);
     return m_preparedRecordedDrawStaticBaseFullKeyBuildCountForTesting;
 }
 
 uint64_t ABaseRenderer::GetPreparedRecordedDrawStaticBaseLruSpliceCountForTesting() const
 {
+    std::lock_guard cacheLock(m_preparedResourceCacheMutex);
     return m_preparedRecordedDrawStaticBaseLruSpliceCountForTesting;
 }
 
 uint64_t ABaseRenderer::GetPreparedRecordedDrawStaticBaseGeneralCacheLookupCountForTesting() const
 {
+    std::lock_guard cacheLock(m_preparedResourceCacheMutex);
     return m_preparedRecordedDrawStaticBaseGeneralCacheLookupCountForTesting;
 }
 
@@ -2398,6 +2468,7 @@ size_t ABaseRenderer::GetPreparedRecordedDrawStaticBaseRevisionLookupKeyMaxSizeF
 
 void ABaseRenderer::SetPreparedRecordedDrawStaticBaseRevisionDigestMaskForTesting(const uint64_t mask) const
 {
+    std::lock_guard cacheLock(m_preparedResourceCacheMutex);
     m_preparedRecordedDrawStaticBaseRevisionDigestMaskForTesting = mask;
 }
 
@@ -2413,6 +2484,7 @@ size_t ABaseRenderer::GetPreparedRecordedDrawStaticBaseCacheAgeSweepBudgetForTes
 
 size_t ABaseRenderer::AdvancePreparedRecordedDrawStaticBaseCacheForTesting(const uint64_t frameCount) const
 {
+    std::lock_guard cacheLock(m_preparedResourceCacheMutex);
     const auto previousSize = m_preparedRecordedDrawStaticBaseCache.size();
     m_preparedRecordedDrawStaticBaseCacheFrame += frameCount;
     TrimPreparedRecordedDrawStaticBaseCache(true);

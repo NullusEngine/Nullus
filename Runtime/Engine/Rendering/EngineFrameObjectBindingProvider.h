@@ -11,7 +11,7 @@
 #include <vector>
 
 #include <Rendering/Buffers/UniformBuffer.h>
-#include <Rendering/Context/ThreadedRenderingLifecycle.h>
+#include <Rendering/Context/RenderScenePackage.h>
 #include <Rendering/Core/FrameObjectBindingProvider.h>
 #include <Rendering/RHI/Core/RHIBinding.h>
 #include <Rendering/RHI/Core/RHIResource.h>
@@ -42,7 +42,7 @@ public:
     bool TryReservePreparedFrameResourcesUntil(
         std::chrono::steady_clock::time_point retirementDeadline);
     void PrepareRenderScenePackage(
-        const NLS::Render::Context::FrameSnapshot& snapshot,
+        const NLS::Render::Context::RenderFramePacket& packet,
         NLS::Render::Context::RenderScenePackage& package) const;
 
     /**
@@ -98,6 +98,9 @@ protected:
         PreparedBindingSets& outBindings) override;
 
 private:
+    bool ReservePreparedFrameResources(
+        std::optional<std::chrono::steady_clock::time_point> retirementDeadline);
+
     /**
      * Per-frame-slot binding capture scratch. Everything a prepared draw needs in
      * order to be captured lives here instead of in provider-wide members, so a
@@ -118,6 +121,7 @@ private:
         uint64_t lastFrameGeneration = 0u;
         bool frameBindingSetDirty = true;
         bool legacyObjectBindingSetDirty = true;
+        bool legacyObjectBindingImmutable = false;
         bool currentDrawUsesIndexedObjectData = false;
         bool currentDrawRequiresIndexedObjectData = false;
         bool currentDrawUsesInstanceObjectIndirection = false;
@@ -134,7 +138,7 @@ private:
     FrameCaptureState* TryGetActiveCaptureState();
 
     void RefreshExplicitFrameBindingSet();
-    void RefreshExplicitLegacyObjectBindingSet();
+    void RefreshExplicitLegacyObjectBindingSet(bool requiresImmutableBinding = false);
     struct ObjectDataFrameSlot;
     std::optional<size_t> ResolveActiveObjectDataSlotIndex(
         std::optional<std::chrono::steady_clock::time_point> retirementDeadline = std::nullopt);
@@ -145,6 +149,7 @@ private:
     void InvalidateObjectDataDeviceCachesIfNeeded();
     bool EnsureObjectDataBufferCapacity(ObjectDataFrameSlot& slot, uint32_t objectIndex);
     bool EnsureIndirectionBufferCapacity(ObjectDataFrameSlot& slot, uint32_t lastIndex);
+    bool EnsureLegacyObjectConstantsCapacity(ObjectDataFrameSlot& slot, size_t requiredBlockCount);
     std::shared_ptr<NLS::Render::RHI::RHIBindingLayout> ResolveObjectDataBindingLayout(
         const bool usesInstanceIndirection,
         uint64_t deviceIdentity);
@@ -159,6 +164,16 @@ private:
     bool ShaderRequiresIndexedObjectData(const NLS::Render::Resources::Shader& shader) const;
     bool PreparedShaderUsesInstanceObjectIndirection() const;
     bool ShaderUsesInstanceObjectIndirection(const NLS::Render::Resources::Shader& shader) const;
+    /** How many legacy object bindings were served by the per-frame constants ring. */
+    uint64_t GetLegacyObjectConstantsRingHitCount() const override
+    {
+        return m_legacyObjectConstantsRingHitCount.load(std::memory_order_relaxed);
+    }
+    /** How many fell back to a dedicated snapshot buffer. */
+    uint64_t GetLegacyObjectConstantsRingFallbackCount() const override
+    {
+        return m_legacyObjectConstantsRingFallbackCount.load(std::memory_order_relaxed);
+    }
 
     std::chrono::high_resolution_clock::time_point m_startTime;
     std::unique_ptr<NLS::Render::Buffers::UniformBuffer> m_engineBuffer;
@@ -201,6 +216,22 @@ private:
         std::shared_ptr<NLS::Render::RHI::RHIBuffer> indirectBuffer;
         std::shared_ptr<NLS::Render::RHI::RHIBindingSet> bindingSet;
         std::shared_ptr<NLS::Render::RHI::RHIBindingSet> deferredBindingSet;
+        /**
+         * Per-frame ring holding one object-constant block per captured draw.
+         *
+         * The legacy object path hands every draw its own constants. Allocating a
+         * snapshot buffer per draw made that the most expensive part of the frame
+         * (a GPU buffer creation plus an upload plus a descriptor set per draw,
+         * then all of it destroyed again when the command list was recycled), so
+         * the constants are appended to this ring instead and each draw binds its
+         * own offset. The ring is owned by the frame slot, so the fence that
+         * retires the slot is also what makes the contents reusable.
+         */
+        std::shared_ptr<NLS::Render::RHI::RHIBuffer> legacyObjectConstantsBuffer;
+        std::vector<std::shared_ptr<NLS::Render::RHI::RHIBindingSet>> legacyObjectConstantsBindings;
+        uint64_t legacyObjectConstantsDeviceIdentity = 0u;
+        size_t legacyObjectConstantsCapacity = 0u;
+        size_t legacyObjectConstantsCursor = 0u;
         uint64_t deviceIdentity = 0u;
         std::vector<Maths::Matrix4> objectDataShadow;
         std::vector<Maths::Matrix4> objectDataSourceShadow;
@@ -227,6 +258,8 @@ private:
     mutable std::unordered_map<uint64_t, std::pair<uint64_t, bool>>
         m_instanceObjectIndirectionShaderSupportCache;
     mutable uint64_t m_indexedObjectDataShaderSupportQueryCount = 0u;
+    mutable std::atomic<uint64_t> m_legacyObjectConstantsRingHitCount{ 0u };
+    mutable std::atomic<uint64_t> m_legacyObjectConstantsRingFallbackCount{ 0u };
 #if defined(NLS_ENABLE_TEST_HOOKS)
     uint64_t m_legacyObjectBufferWriteCount = 0u;
     ObjectDataWorkCountsForTesting m_objectDataWorkCountsForTesting;

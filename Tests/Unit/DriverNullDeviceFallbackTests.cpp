@@ -1,14 +1,36 @@
 #include <gtest/gtest.h>
 
 #include <chrono>
-#include <thread>
 
+#include "Core/ServiceLocator.h"
 #include "Rendering/Context/Driver.h"
 #include "Rendering/Context/DriverAccess.h"
-#include "Rendering/Context/ThreadedRenderingLifecycle.h"
+#include "Rendering/Context/RenderScenePackage.h"
+#include "Rendering/Context/RenderScenePackageBuilder.h"
 #include "Rendering/Settings/DriverSettings.h"
 #include "Rendering/Settings/EGraphicsBackend.h"
 #include "Rendering/Settings/GraphicsBackendUtils.h"
+#include "Tests/RenderingThreadTestHelpers.h"
+
+TEST(DriverNullDeviceReadinessTests, DestructionUnregistersTheLocatedDriverBeforeBackendFailureNotifications)
+{
+    using namespace NLS::Render::Context;
+    NLS::Render::Settings::DriverSettings settings;
+    settings.graphicsBackend = NLS::Render::Settings::EGraphicsBackend::NONE;
+    settings.enableExplicitRHI = false;
+    for (size_t iteration = 0u; iteration < 2u; ++iteration)
+    {
+        {
+            Driver driver(settings);
+            NLS::Core::ServiceLocator::Provide(driver);
+            EXPECT_EQ(TryGetLocatedDriver(), &driver);
+        }
+        EXPECT_FALSE(NLS::Core::ServiceLocator::Contains<Driver>());
+        EXPECT_EQ(TryGetLocatedDriver(), nullptr);
+        EXPECT_NO_THROW(MarkLocatedDriverUnsafeGpuWorkQuarantined("No live driver owns this failure"));
+        EXPECT_NO_THROW(MarkLocatedDriverDeviceLost("No live driver owns this device"));
+    }
+}
 
 TEST(DriverNullDeviceReadinessTests, ReturnsSafeReadinessDecisionsWhenExplicitDeviceIsMissing)
 {
@@ -59,35 +81,22 @@ TEST(DriverNullDeviceReadinessTests, ThreadedOffscreenOnlyFramesRetireWithoutExp
 {
     NLS::Render::Settings::DriverSettings settings;
     settings.graphicsBackend = NLS::Render::Settings::EGraphicsBackend::NONE;
-    settings.framesInFlight = 1;
     settings.enableExplicitRHI = false;
-    settings.enableThreadedRendering = true;
-    settings.threadedFrameSlotCount = 1u;
+    settings.framesInFlight = 1u;
 
     NLS::Render::Context::Driver driver(settings);
-    auto* lifecycle = NLS::Render::Context::DriverTestAccess::GetThreadedRenderingLifecycle(driver);
-    ASSERT_NE(lifecycle, nullptr);
+    auto submission = NLS::Tests::ObserveNextRhiFrameForTest(driver);
 
-    NLS::Render::Context::FrameSnapshot snapshot;
+    NLS::Render::Context::RenderFramePacket snapshot;
     snapshot.frameId = 23u;
     snapshot.targetsSwapchain = false;
 
-    ASSERT_TRUE(NLS::Render::Context::DriverTestAccess::TryPublishHarnessFrameSnapshot(driver, snapshot));
-
-    const NLS::Render::Context::InFlightFrameSlot* retiredSlot = nullptr;
-    for (int attempt = 0; attempt < 100; ++attempt)
-    {
-        retiredSlot = lifecycle->PeekSlot(0u);
-        if (retiredSlot != nullptr && retiredSlot->stage == NLS::Render::Context::ThreadedFrameStage::Retired)
-            break;
-        std::this_thread::sleep_for(std::chrono::milliseconds(2));
-    }
-
-    ASSERT_NE(retiredSlot, nullptr);
-    EXPECT_EQ(retiredSlot->stage, NLS::Render::Context::ThreadedFrameStage::Retired);
-    ASSERT_TRUE(retiredSlot->submissionFrame.has_value());
-    EXPECT_EQ(retiredSlot->submissionFrame->frameId, 23u);
-    EXPECT_TRUE(retiredSlot->submissionFrame->offscreenOnly);
+    ASSERT_TRUE(NLS::Render::Context::DriverRendererAccess::TryEnqueueRenderFrame(
+        driver, snapshot, [snapshot](size_t) { return NLS::Render::Context::BuildRenderFramePackage(snapshot); }));
+    ASSERT_EQ(submission.wait_for(std::chrono::seconds(2)), std::future_status::ready);
+    const auto frame = submission.get();
+    EXPECT_EQ(frame.frameId, 23u);
+    EXPECT_TRUE(frame.offscreenOnly);
 }
 
 TEST(DriverNullDeviceReadinessTests, DX12NullDeviceDoesNotExposeDirectExplicitLegacyPath)
@@ -95,18 +104,16 @@ TEST(DriverNullDeviceReadinessTests, DX12NullDeviceDoesNotExposeDirectExplicitLe
     const auto requiredBackend = NLS::Render::Settings::GetPhase1RequiredRuntimeBackend();
     NLS::Render::Settings::DriverSettings settings;
     settings.graphicsBackend = requiredBackend;
-    settings.framesInFlight = 1;
-    settings.enableThreadedRendering = true;
-    settings.threadedFrameSlotCount = 1u;
+    settings.framesInFlight = 1u;
 
     NLS::Render::Context::Driver driver(settings);
     NLS::Render::Context::DriverTestAccess::SetExplicitDevice(driver, nullptr);
     NLS::Render::Context::DriverTestAccess::SetExplicitSwapchain(driver, nullptr);
 
     EXPECT_EQ(driver.GetActiveGraphicsBackend(), NLS::Render::Settings::EGraphicsBackend::NONE);
-    EXPECT_FALSE(NLS::Render::Context::DriverTestAccess::CanBeginStandaloneExplicitFrame(driver));
+    EXPECT_TRUE(NLS::Render::Context::DriverRendererAccess::IsThreadedRenderingEnabled(driver));
     EXPECT_EQ(NLS::Render::Context::DriverRendererAccess::GetActiveExplicitCommandBuffer(driver), nullptr);
-    EXPECT_FALSE(NLS::Render::Context::DriverUIAccess::PrepareUIRender(driver));
+    EXPECT_FALSE(NLS::Render::Context::DriverUIAccess::PublishUiOnlyFrame(driver, 128u, 72u));
 
     const auto editorDecision = driver.EvaluateEditorMainRuntimeReadiness(requiredBackend);
     ASSERT_TRUE(editorDecision.primaryWarning.has_value());
@@ -139,39 +146,35 @@ TEST(DriverNullDeviceReadinessTests, DX12NullDeviceDoesNotExposeDirectExplicitLe
         std::string::npos);
 }
 
-TEST(DriverNullDeviceReadinessTests, DX12NullDeviceRejectsHarnessPublishSurfaces)
+TEST(DriverNullDeviceReadinessTests, DX12NullDeviceRejectsRenderFrameCommands)
 {
     NLS::Render::Settings::DriverSettings settings;
     settings.graphicsBackend = NLS::Render::Settings::EGraphicsBackend::DX12;
-    settings.framesInFlight = 1;
-    settings.enableThreadedRendering = true;
-    settings.threadedFrameSlotCount = 1u;
+    settings.framesInFlight = 1u;
 
     NLS::Render::Context::Driver driver(settings);
     NLS::Render::Context::DriverTestAccess::PauseThreadedRenderingWorkers(driver);
     NLS::Render::Context::DriverTestAccess::SetExplicitDevice(driver, nullptr);
     NLS::Render::Context::DriverTestAccess::SetExplicitSwapchain(driver, nullptr);
 
-    NLS::Render::Context::FrameSnapshot snapshot;
+    NLS::Render::Context::RenderFramePacket snapshot;
     snapshot.frameId = 77u;
-    snapshot.visibleOpaqueDrawCount = 1u;
 
     NLS::Render::Context::RenderScenePackage renderScenePackage;
     renderScenePackage.frameId = 77u;
     renderScenePackage.visibleDrawCount = 1u;
     renderScenePackage.hasVisibleDraws = true;
 
-    EXPECT_FALSE(NLS::Render::Context::DriverTestAccess::TryPublishHarnessFrameSnapshot(
-        driver,
-        snapshot));
-    EXPECT_FALSE(NLS::Render::Context::DriverTestAccess::TryPublishHarnessPreparedFrame(
+    bool builderCalled = false;
+    EXPECT_FALSE(NLS::Render::Context::DriverRendererAccess::TryEnqueueRenderFrame(
         driver,
         snapshot,
-        renderScenePackage));
+        [&](size_t) { builderCalled = true; return renderScenePackage; }));
 
-    const auto* lifecycle = NLS::Render::Context::DriverTestAccess::GetThreadedRenderingLifecycle(driver);
-    ASSERT_NE(lifecycle, nullptr);
-    EXPECT_EQ(lifecycle->GetInFlightDepth(), 0u);
+    EXPECT_FALSE(builderCalled);
+    const auto telemetry = NLS::Render::Context::DriverRendererAccess::GetThreadedFrameTelemetry(driver);
+    EXPECT_EQ(telemetry.inFlightFrameCount, 0u);
+    EXPECT_EQ(telemetry.publishedFrameCount, 0u);
 }
 
 TEST(DriverNullDeviceReadinessTests, NonDx12RequestedBackendDoesNotCreatePhase1RuntimeDevice)

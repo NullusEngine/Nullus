@@ -28,6 +28,9 @@ std::unordered_map<GLFWwindow*, NLS::Windowing::Window*> NLS::Windowing::Window:
 #ifdef _WIN32
 namespace
 {
+constexpr UINT_PTR kNativeResizeRefreshTimerId = 0x4E4C5352u;
+constexpr UINT kNativeResizeRefreshIntervalMs = 16u;
+
 std::optional<NLS::Maths::Vector2> TryGetNativeClientSize(GLFWwindow* p_glfwWindow)
 {
     if (p_glfwWindow == nullptr)
@@ -623,6 +626,8 @@ void NLS::Windowing::Window::RestoreNativeWindowProc()
 
     if (HWND hwnd = glfwGetWin32Window(m_glfwWindow))
     {
+        KillTimer(hwnd, kNativeResizeRefreshTimerId);
+        m_nativeResizeInProgress = false;
         const auto currentWindowProc = reinterpret_cast<void*>(GetWindowLongPtr(hwnd, GWLP_WNDPROC));
         if (currentWindowProc == reinterpret_cast<void*>(&NullusWindowProc))
             SetWindowLongPtr(hwnd, GWLP_WNDPROC, reinterpret_cast<LONG_PTR>(m_originalWindowProc));
@@ -652,9 +657,12 @@ long long NLS::Windowing::Window::HandleNativeWindowMessage(void* p_hwnd, unsign
     if (p_msg == WM_ENTERSIZEMOVE)
     {
         m_nativeResizeInProgress = true;
+        // The OS sizing loop blocks the application's normal event/frame loop.
+        SetTimer(hwnd, kNativeResizeRefreshTimerId, kNativeResizeRefreshIntervalMs, nullptr);
     }
     else if (p_msg == WM_EXITSIZEMOVE)
     {
+        KillTimer(hwnd, kNativeResizeRefreshTimerId);
         m_nativeResizeInProgress = false;
     }
 
@@ -710,13 +718,14 @@ long long NLS::Windowing::Window::HandleNativeWindowMessage(void* p_hwnd, unsign
         result = DefWindowProc(hwnd, p_msg, static_cast<WPARAM>(p_wParam), static_cast<LPARAM>(p_lParam));
     }
 
-    const bool shouldRefreshDuringNativeResize =
-        m_nativeResizeInProgress &&
+    const bool shouldRefreshDuringNativeResize = p_msg == WM_EXITSIZEMOVE ||
+        (m_nativeResizeInProgress &&
         (p_msg == WM_PAINT ||
             p_msg == WM_SIZE ||
             p_msg == WM_SIZING ||
             p_msg == WM_WINDOWPOSCHANGING ||
-            p_msg == WM_WINDOWPOSCHANGED);
+            p_msg == WM_WINDOWPOSCHANGED ||
+            (p_msg == WM_TIMER && p_wParam == kNativeResizeRefreshTimerId)));
 
     if (shouldRefreshDuringNativeResize && !m_dispatchingNativeResizeRefresh)
     {

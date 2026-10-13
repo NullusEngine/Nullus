@@ -16,7 +16,7 @@
 #include "Rendering/Context/Driver.h"
 #include "Rendering/Context/DriverAccess.h"
 #include "Rendering/Context/DriverInternal.h"
-#include "Rendering/Context/ThreadedRenderingLifecycle.h"
+#include "Rendering/Context/RenderScenePackage.h"
 #include "Rendering/Data/FrameDescriptor.h"
 #include "Rendering/FrameGraph/FrameGraphBuffer.h"
 #include "Rendering/FrameGraph/ExternalResourceBridge.h"
@@ -33,6 +33,7 @@
 #include "Rendering/RHI/Core/RHIEnums.h"
 #include "Rendering/RHI/Utils/ResourceStateTracker/ResourceStateTracker.h"
 #include "Rendering/Settings/DriverSettings.h"
+#include "Tests/RenderingThreadTestHelpers.h"
 
 namespace
 {
@@ -329,6 +330,39 @@ namespace
         std::vector<NLS::Render::RHI::RHIBarrierDesc> barrierHistory;
     };
 
+    class TestCommandPool final : public NLS::Render::RHI::RHICommandPool
+    {
+    public:
+        explicit TestCommandPool(NLS::Render::RHI::QueueType queueType) : m_queueType(queueType) {}
+        std::string_view GetDebugName() const override { return "FrameGraphSceneTargetsTestsPool"; }
+        NLS::Render::RHI::QueueType GetQueueType() const override { return m_queueType; }
+        std::shared_ptr<NLS::Render::RHI::RHICommandBuffer> CreateCommandBuffer(std::string = {}) override
+        {
+            return std::make_shared<TestCommandBuffer>();
+        }
+        void Reset() override {}
+
+    private:
+        NLS::Render::RHI::QueueType m_queueType;
+    };
+
+    class TestFence final : public NLS::Render::RHI::RHIFence
+    {
+    public:
+        std::string_view GetDebugName() const override { return "FrameGraphSceneTargetsTestsFence"; }
+        bool IsSignaled() const override { return true; }
+        void Reset() override {}
+        bool Wait(uint64_t = 0u) override { return true; }
+    };
+
+    class TestSemaphore final : public NLS::Render::RHI::RHISemaphore
+    {
+    public:
+        std::string_view GetDebugName() const override { return "FrameGraphSceneTargetsTestsSemaphore"; }
+        bool IsSignaled() const override { return true; }
+        void Reset() override {}
+    };
+
     class TestQueue final : public NLS::Render::RHI::RHIQueue
     {
     public:
@@ -411,9 +445,12 @@ namespace
         std::shared_ptr<NLS::Render::RHI::RHIShaderModule> CreateShaderModule(const NLS::Render::RHI::RHIShaderModuleDesc&) override { return nullptr; }
         std::shared_ptr<NLS::Render::RHI::RHIGraphicsPipeline> CreateGraphicsPipeline(const NLS::Render::RHI::RHIGraphicsPipelineDesc&) override { return nullptr; }
         std::shared_ptr<NLS::Render::RHI::RHIComputePipeline> CreateComputePipeline(const NLS::Render::RHI::RHIComputePipelineDesc&) override { return nullptr; }
-        std::shared_ptr<NLS::Render::RHI::RHICommandPool> CreateCommandPool(NLS::Render::RHI::QueueType, std::string = {}) override { return nullptr; }
-        std::shared_ptr<NLS::Render::RHI::RHIFence> CreateFence(std::string = {}) override { return nullptr; }
-        std::shared_ptr<NLS::Render::RHI::RHISemaphore> CreateSemaphore(std::string = {}) override { return nullptr; }
+        std::shared_ptr<NLS::Render::RHI::RHICommandPool> CreateCommandPool(NLS::Render::RHI::QueueType queueType, std::string = {}) override
+        {
+            return std::make_shared<TestCommandPool>(queueType);
+        }
+        std::shared_ptr<NLS::Render::RHI::RHIFence> CreateFence(std::string = {}) override { return std::make_shared<TestFence>(); }
+        std::shared_ptr<NLS::Render::RHI::RHISemaphore> CreateSemaphore(std::string = {}) override { return std::make_shared<TestSemaphore>(); }
         void ReadPixels(
             const std::shared_ptr<NLS::Render::RHI::RHITexture>&,
             uint32_t,
@@ -434,6 +471,48 @@ namespace
         std::shared_ptr<NLS::Render::RHI::RHIQueue> m_queue;
         NLS::Render::RHI::NativeRenderDeviceInfo m_nativeDeviceInfo {};
         NLS::Render::RHI::RHIDeviceCapabilities m_capabilities {};
+    };
+
+    class PassRecordingRenderer : public NLS::Render::Core::CompositeRenderer
+    {
+    public:
+        using CompositeRenderer::CompositeRenderer;
+
+        void BeginPassRecording(const NLS::Render::Data::FrameDescriptor& frame)
+        {
+            m_frameDescriptor = frame;
+            m_frameActive = true;
+            m_isDrawing = true;
+        }
+
+        void EndPassRecording()
+        {
+            m_frameActive = false;
+            m_isDrawing = false;
+        }
+    };
+
+    class ScopedPassRecording final
+    {
+    public:
+        ScopedPassRecording(NLS::Render::Context::Driver& driver,
+            PassRecordingRenderer& renderer,
+            const NLS::Render::Data::FrameDescriptor& frame)
+            : m_driver(driver), m_renderer(renderer)
+        {
+            m_renderer.BeginPassRecording(frame);
+            m_frameResources.emplace(m_driver, 0u);
+        }
+        ~ScopedPassRecording()
+        {
+            m_frameResources.reset();
+            m_renderer.EndPassRecording();
+        }
+
+    private:
+        NLS::Render::Context::Driver& m_driver;
+        PassRecordingRenderer& m_renderer;
+        std::optional<NLS::Render::Context::ScopedFrameResourceContext> m_frameResources;
     };
 
     void ExpectDefaultOptimizedColorClearValue(
@@ -649,19 +728,14 @@ TEST(FrameGraphSceneTargetsTests, RecordedFramebufferPassDefaultClearMatchesOpti
     frameDescriptor.renderWidth = 320u;
     frameDescriptor.renderHeight = 180u;
 
-    NLS::Render::Core::CompositeRenderer renderer(driver);
-    renderer.BeginFrame(frameDescriptor);
+    PassRecordingRenderer renderer(driver);
     NLS::Render::Buffers::Framebuffer outputBuffer(320u, 180u);
-
-    ASSERT_TRUE(renderer.BeginRecordedRenderPass(
-        &outputBuffer,
-        320u,
-        180u,
-        true,
-        true,
-        true));
-    renderer.EndRecordedRenderPass();
-    renderer.EndFrame();
+    NLS::Tests::RunOnRenderThread([&]
+    {
+        ScopedPassRecording recording(driver, renderer, frameDescriptor);
+        ASSERT_TRUE(renderer.BeginRecordedRenderPass(&outputBuffer, 320u, 180u, true, true, true));
+        renderer.EndRecordedRenderPass();
+    });
 
     ASSERT_EQ(commandBuffer->beginRenderPassCalls, 1u);
     ASSERT_EQ(commandBuffer->lastRenderPassDesc.colorAttachments.size(), 1u);
@@ -3158,7 +3232,7 @@ TEST(FrameGraphSceneTargetsTests, VisibilityTransitionsPreferTrackerStateOverRes
     settings.enableExplicitRHI = false;
 
     NLS::Render::Context::Driver driver(settings);
-    NLS::Core::ServiceLocator::Provide(driver);
+    ASSERT_EQ(NLS::Render::Context::TryGetLocatedDriver(), nullptr);
 
     auto& frameContext = NLS::Render::Context::DriverTestAccess::EnsureFrameContext(driver, 0u);
     frameContext.frameIndex = 41u;
@@ -3694,17 +3768,15 @@ TEST(FrameGraphSceneTargetsTests, RendererOutputPassTransitionsExternalFramebuff
     frameDescriptor.camera = &camera;
     NLS::Render::FrameGraph::SetExternalSceneOutputFramebuffer(frameDescriptor, &outputBuffer);
 
-    NLS::Render::Core::CompositeRenderer renderer(driver);
-    renderer.BeginFrame(frameDescriptor);
-    const bool startedPass = renderer.BeginOutputRenderPass(
-        frameDescriptor.renderWidth,
-        frameDescriptor.renderHeight,
-        true,
-        true,
-        true);
-    ASSERT_TRUE(startedPass);
-    renderer.EndOutputRenderPass(startedPass);
-    renderer.EndFrame();
+    PassRecordingRenderer renderer(driver);
+    NLS::Tests::RunOnRenderThread([&]
+    {
+        ScopedPassRecording recording(driver, renderer, frameDescriptor);
+        const bool startedPass = renderer.BeginOutputRenderPass(
+            frameDescriptor.renderWidth, frameDescriptor.renderHeight, true, true, true);
+        ASSERT_TRUE(startedPass);
+        renderer.EndOutputRenderPass(startedPass);
+    });
 
     const auto colorTexture = outputBuffer.GetExplicitTextureHandle();
     ASSERT_NE(colorTexture, nullptr);
@@ -3759,19 +3831,16 @@ TEST(FrameGraphSceneTargetsTests, RendererOutputPassCanUseReadOnlyExternalDepthV
     frameDescriptor.camera = &camera;
     NLS::Render::FrameGraph::SetExternalSceneOutputFramebuffer(frameDescriptor, &outputBuffer);
 
-    NLS::Render::Core::CompositeRenderer renderer(driver);
-    renderer.BeginFrame(frameDescriptor);
-    const bool startedPass = renderer.BeginOutputRenderPass(
-        frameDescriptor.renderWidth,
-        frameDescriptor.renderHeight,
-        false,
-        false,
-        false,
-        gbufferDepthView,
-        false);
-    ASSERT_TRUE(startedPass);
-    renderer.EndOutputRenderPass(startedPass);
-    renderer.EndFrame();
+    PassRecordingRenderer renderer(driver);
+    NLS::Tests::RunOnRenderThread([&]
+    {
+        ScopedPassRecording recording(driver, renderer, frameDescriptor);
+        const bool startedPass = renderer.BeginOutputRenderPass(
+            frameDescriptor.renderWidth, frameDescriptor.renderHeight, false, false, false,
+            gbufferDepthView, false);
+        ASSERT_TRUE(startedPass);
+        renderer.EndOutputRenderPass(startedPass);
+    });
 
     ASSERT_EQ(commandBuffer->beginRenderPassCalls, 1u);
     ASSERT_EQ(commandBuffer->lastRenderPassDesc.colorAttachments.size(), 1u);
@@ -3816,16 +3885,7 @@ TEST(FrameGraphSceneTargetsTests, RendererMultiFramebufferPassTransitionsActiveA
     frameDescriptor.renderHeight = 64u;
     frameDescriptor.camera = &camera;
 
-    NLS::Render::Core::CompositeRenderer renderer(driver);
-    renderer.BeginFrame(frameDescriptor);
-    ASSERT_TRUE(renderer.BeginRecordedRenderPass(
-        &gBuffer,
-        frameDescriptor.renderWidth,
-        frameDescriptor.renderHeight,
-        true,
-        true,
-        true));
-
+    PassRecordingRenderer renderer(driver);
     const auto colorView0 = gBuffer.GetOrCreateExplicitColorView(0u, "MultiFramebufferColorView0");
     const auto colorView1 = gBuffer.GetOrCreateExplicitColorView(1u, "MultiFramebufferColorView1");
     const auto depthView = gBuffer.GetOrCreateExplicitDepthView("MultiFramebufferDepthView");
@@ -3833,8 +3893,13 @@ TEST(FrameGraphSceneTargetsTests, RendererMultiFramebufferPassTransitionsActiveA
     ASSERT_NE(colorView1, nullptr);
     ASSERT_NE(depthView, nullptr);
 
-    renderer.EndRecordedRenderPass();
-    renderer.EndFrame();
+    NLS::Tests::RunOnRenderThread([&]
+    {
+        ScopedPassRecording recording(driver, renderer, frameDescriptor);
+        ASSERT_TRUE(renderer.BeginRecordedRenderPass(
+            &gBuffer, frameDescriptor.renderWidth, frameDescriptor.renderHeight, true, true, true));
+        renderer.EndRecordedRenderPass();
+    });
 
     auto colorState0 = frameContext.resourceStateTracker->GetTextureState(
         colorView0->GetTexture(),
@@ -4083,8 +4148,8 @@ TEST(FrameGraphSceneTargetsTests, ApplyThreadedExecutionPlanSlicesLargeRecordedP
         EXPECT_TRUE(workUnit.commandInput.recordedDrawCommands.empty());
         EXPECT_EQ(workUnit.commandInput.drawCount, workUnit.recordedDrawCount);
         EXPECT_TRUE(workUnit.requiresOrderedSlicedSubmission);
-        EXPECT_FALSE(workUnit.eligibleForParallelRecording);
-        EXPECT_FALSE(workUnit.eligibleForParallelTranslation);
+        EXPECT_TRUE(workUnit.eligibleForParallelRecording);
+        EXPECT_TRUE(workUnit.eligibleForParallelTranslation);
         coveredOpaqueDraws += workUnit.recordedDrawCount;
         EXPECT_FALSE(workUnit.commandInput.clearColor);
         EXPECT_FALSE(workUnit.commandInput.clearDepth);
@@ -6830,4 +6895,117 @@ TEST(FrameGraphSceneTargetsTests, ExtractionVisibilityUsesAttachmentViewRangesFo
     EXPECT_EQ(transition.subresourceRange.mipLevelCount, viewDesc.subresourceRange.mipLevelCount);
     EXPECT_EQ(transition.subresourceRange.baseArrayLayer, viewDesc.subresourceRange.baseArrayLayer);
     EXPECT_EQ(transition.subresourceRange.arrayLayerCount, viewDesc.subresourceRange.arrayLayerCount);
+}
+
+namespace
+{
+    /**
+     * Builds a camera with distinctive values so a freeze that drops a field is
+     * detectable rather than silently equal to the default.
+     */
+    void ConfigureProbeCamera(NLS::Render::Entities::Camera& camera)
+    {
+        camera.SetPosition({ 1.0f, 2.0f, 3.0f });
+        camera.SetRotation(NLS::Maths::Quaternion::Identity);
+        camera.SetFov(75.0f);
+        camera.SetNear(0.25f);
+        camera.SetFar(750.0f);
+        camera.SetClearColorBuffer(false);
+        camera.SetClearDepthBuffer(true);
+        camera.SetFrustumGeometryCulling(true);
+        camera.SetFrustumLightCulling(true);
+        camera.SetVisibleLayerMask(0x0Fu);
+        camera.CacheMatrices(320u, 200u);
+    }
+}
+
+TEST(FrozenFrameDescriptorTests, CopyOutlivesAndIgnoresLaterMutationsOfTheSourceCamera)
+{
+    NLS::Maths::Transform sourceTransform;
+    NLS::Render::Entities::Camera sourceCamera(&sourceTransform);
+    ConfigureProbeCamera(sourceCamera);
+
+    NLS::Render::Data::FrameDescriptor descriptor;
+    descriptor.renderWidth = 320u;
+    descriptor.renderHeight = 200u;
+    descriptor.camera = &sourceCamera;
+
+    const auto frozen = NLS::Render::FrameGraph::FreezeFrameDescriptor(descriptor);
+    ASSERT_NE(frozen.camera, nullptr);
+    ASSERT_NE(frozen.descriptor.camera, nullptr);
+    EXPECT_NE(frozen.descriptor.camera, &sourceCamera)
+        << "the frozen descriptor must not alias the live camera";
+
+    // Mutate the live camera after freezing: the snapshot must be unaffected,
+    // which is what makes it safe to consume off the source thread.
+    sourceCamera.SetFov(20.0f);
+    sourceCamera.SetPosition({ 90.0f, 90.0f, 90.0f });
+    sourceCamera.SetVisibleLayerMask(0xFFFFu);
+    sourceCamera.SetNear(9.0f);
+
+    EXPECT_FLOAT_EQ(frozen.camera->GetFov(), 75.0f);
+    EXPECT_FLOAT_EQ(frozen.camera->GetNear(), 0.25f);
+    EXPECT_FLOAT_EQ(frozen.camera->GetFar(), 750.0f);
+    EXPECT_EQ(frozen.camera->GetVisibleLayerMask(), 0x0Fu);
+    EXPECT_FLOAT_EQ(frozen.camera->GetPosition().x, 1.0f);
+    EXPECT_FLOAT_EQ(frozen.camera->GetPosition().y, 2.0f);
+    EXPECT_FLOAT_EQ(frozen.camera->GetPosition().z, 3.0f);
+
+    // The source camera may be destroyed while the snapshot stays valid.
+    descriptor.camera = nullptr;
+    EXPECT_EQ(frozen.descriptor.renderWidth, 320u);
+    EXPECT_EQ(frozen.descriptor.renderHeight, 200u);
+    EXPECT_FLOAT_EQ(frozen.camera->GetFov(), 75.0f);
+}
+
+TEST(FrozenFrameDescriptorTests, PreservesVisibilityAndClearFlags)
+{
+    NLS::Maths::Transform sourceTransform;
+    NLS::Render::Entities::Camera sourceCamera(&sourceTransform);
+    ConfigureProbeCamera(sourceCamera);
+    sourceCamera.SetClearColorBuffer(false);
+    sourceCamera.SetClearStencilBuffer(false);
+
+    NLS::Render::Data::FrameDescriptor descriptor;
+    descriptor.renderWidth = 320u;
+    descriptor.renderHeight = 200u;
+    descriptor.camera = &sourceCamera;
+
+    const auto frozen = NLS::Render::FrameGraph::FreezeFrameDescriptor(descriptor);
+    ASSERT_NE(frozen.camera, nullptr);
+
+    // Layer filtering decides which layers a view renders, and the clear flags
+    // decide what the pass clears; dropping either changes the produced image.
+    EXPECT_EQ(frozen.camera->GetVisibleLayerMask(), sourceCamera.GetVisibleLayerMask());
+    EXPECT_EQ(frozen.camera->GetClearColorBuffer(), sourceCamera.GetClearColorBuffer());
+    EXPECT_EQ(frozen.camera->GetClearDepthBuffer(), sourceCamera.GetClearDepthBuffer());
+    EXPECT_EQ(frozen.camera->GetClearStencilBuffer(), sourceCamera.GetClearStencilBuffer());
+    EXPECT_EQ(
+        frozen.camera->HasFrustumGeometryCulling(),
+        sourceCamera.HasFrustumGeometryCulling());
+    EXPECT_EQ(
+        frozen.camera->HasFrustumLightCulling(),
+        sourceCamera.HasFrustumLightCulling());
+    // Matrices are cached during the freeze, so they must match the source.
+    EXPECT_TRUE(NLS::Maths::Matrix4::AreEquals(
+        frozen.camera->GetProjectionMatrix(),
+        sourceCamera.GetProjectionMatrix()));
+    EXPECT_TRUE(NLS::Maths::Matrix4::AreEquals(
+        frozen.camera->GetViewMatrix(),
+        sourceCamera.GetViewMatrix()));
+}
+
+TEST(FrozenFrameDescriptorTests, MissingCameraFreezesWithoutOwningOne)
+{
+    NLS::Render::Data::FrameDescriptor descriptor;
+    descriptor.renderWidth = 64u;
+    descriptor.renderHeight = 32u;
+    descriptor.camera = nullptr;
+
+    const auto frozen = NLS::Render::FrameGraph::FreezeFrameDescriptor(descriptor);
+    EXPECT_EQ(frozen.camera, nullptr);
+    EXPECT_EQ(frozen.descriptor.camera, nullptr);
+    // The value-only inputs must still be captured.
+    EXPECT_EQ(frozen.descriptor.renderWidth, 64u);
+    EXPECT_EQ(frozen.descriptor.renderHeight, 32u);
 }

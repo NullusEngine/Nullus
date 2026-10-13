@@ -18,6 +18,7 @@
 #include "Engine/UI/UILocalizationTable.h"
 #include "Engine/UI/UIStyleSheet.h"
 #include "Profiling/PerformanceStageStats.h"
+#include "Profiling/Profiler.h"
 #include "Rendering/Assets/ShaderArtifact.h"
 #include "Rendering/Assets/TextureArtifact.h"
 #include "Rendering/Assets/TextureBuildSettings.h"
@@ -2766,8 +2767,9 @@ bool AssetDatabaseFacade::ImportAssetsWithParallelModelPreparation(
         for (size_t workerIndex = 0u; workerIndex < workerCount; ++workerIndex)
         {
             workers.emplace_back(
-                [&]()
+                [&, workerIndex]()
                 {
+                    NLS_PROFILE_REGISTER_THREAD("Asset Import Worker " + std::to_string(workerIndex));
                     while (true)
                     {
                         const auto workIndex = nextWorkIndex.fetch_add(1u, std::memory_order_relaxed);

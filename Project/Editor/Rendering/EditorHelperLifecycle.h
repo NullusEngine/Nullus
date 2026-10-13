@@ -1,11 +1,22 @@
 #pragma once
 
+#include <algorithm>
 #include <cstdint>
 
-#include "Rendering/Context/ThreadedRenderingLifecycle.h"
+#include "Rendering/Context/RenderScenePackage.h"
 
 namespace NLS::Editor::Rendering
 {
+    inline bool CanCacheEditorDrawCommands(
+        const std::vector<NLS::Render::Context::RecordedDrawCommandInput>& commands)
+    {
+        return !commands.empty() && std::all_of(commands.begin(), commands.end(), [](const auto& command)
+        {
+            return !command.usesObjectIndex &&
+                (command.objectBindingSet == nullptr || command.objectBindingImmutable);
+        });
+    }
+
     struct ThreadedEditorHelperState
     {
         bool gridPassEnabled = true;

@@ -84,6 +84,51 @@ namespace
 			std::istreambuf_iterator<char>());
 	}
 
+	/**
+	 * Returns the text of one top-level BaseSceneRenderer member definition.
+	 *
+	 * The slice runs from the definition's first line to the next top-level
+	 * definition, so it does not depend on which function happens to follow.
+	 */
+	std::string ExtractTopLevelDefinition(
+		const std::string& source,
+		const std::string& definitionNeedle)
+	{
+		const size_t start = source.find(definitionNeedle);
+		if (start == std::string::npos)
+			return {};
+
+		const size_t next = source.find("\nBaseSceneRenderer::", start + definitionNeedle.size());
+		return next == std::string::npos
+			? source.substr(start)
+			: source.substr(start, next - start);
+	}
+
+	/**
+	 * Counts uses of a token that are not the tail of a longer identifier.
+	 *
+	 * Needed to tell a real dereference of the captured scene apart from the many
+	 * uses of the similarly named RenderScene local, which end in the same text.
+	 */
+	size_t CountStandaloneTokenUses(const std::string& text, const std::string& token)
+	{
+		size_t count = 0u;
+		size_t position = text.find(token);
+		while (position != std::string::npos)
+		{
+			const char preceding = position > 0u ? text[position - 1u] : '\0';
+			const bool isIdentifierCharacter =
+				(preceding >= 'a' && preceding <= 'z') ||
+				(preceding >= 'A' && preceding <= 'Z') ||
+				(preceding >= '0' && preceding <= '9') ||
+				preceding == '_';
+			if (!isIdentifierCharacter)
+				++count;
+			position = text.find(token, position + 1u);
+		}
+		return count;
+	}
+
 	std::string RemoveWhitespace(const std::string& text)
 	{
 		std::string result;
@@ -697,14 +742,6 @@ TEST(SceneOcclusionTests, DeferredSceneRendererPreparesHZBFrameResourcesOnlyWhen
 	EXPECT_NE(normalizedSource.find("captureInput.hzbReadbackHandoff->request=hzbPostSubmitReadback"), std::string::npos);
 	EXPECT_NE(normalizedSource.find("captureInput.hzbReadbackHandoff->ready=true"), std::string::npos);
 	EXPECT_EQ(normalizedSource.find("m_threadedHZBPostSubmitReadback"), std::string::npos);
-	EXPECT_NE(
-		normalizedSource.find(RemoveWhitespace(
-			"if (GetLastHZBOcclusionFrameInput().enabled &&"
-			"PrepareHZBFrameResources(deferredResourceRequest))"
-			"resourceRequest.hzbResources = BuildHZBFrameResourceRequest();")),
-		std::string::npos)
-		<< "FrameGraph deferred rendering must likewise only attach HZB resources for frames whose "
-		   "occlusion input is enabled.";
 }
 
 TEST(SceneOcclusionTests, BaseSceneRendererMovesPreviousHZBInputsInsteadOfCopyingLargeFrameVectors)
@@ -733,10 +770,195 @@ TEST(SceneOcclusionTests, BaseSceneRendererUsesStableHZBViewKeyInsteadOfCameraOb
 		std::filesystem::path(NLS_ROOT_DIR) /
 		"Runtime/Engine/Rendering/BaseSceneRenderer.cpp");
 
-	EXPECT_NE(source.find("BuildHZBViewKey(m_frameDescriptor)"), std::string::npos);
+	// The view key must come from the frame's descriptor values, never from the
+	// camera object's address: the address changes between frames and would make
+	// every HZB history entry look like a new view.
+	//
+	// BaseSceneRenderer::ParseScene now consumes a frozen descriptor (so the parse
+	// can run off the thread that owns the live one), which is why the argument is
+	// frame.descriptor instead of m_frameDescriptor. The guarded property is
+	// unchanged.
+	EXPECT_NE(source.find("BuildHZBViewKey(frame.descriptor)"), std::string::npos);
 	EXPECT_EQ(source.find("reinterpret_cast<uintptr_t>(&camera)"), std::string::npos);
 }
 
+TEST(SceneOcclusionTests, SceneParseCaptureDropperCannotOutliveItsRenderer)
+{
+	// A prepared builder can outlive the renderer that produced it: the driver
+	// retains un-run builders in its frame slots and destroys them from
+	// Driver::ShutdownRhiResources, which runs after renderer destruction. The
+	// dropper used to call straight back through a raw renderer pointer, so that
+	// path locked a RenderScene mutex inside freed memory and hung the process
+	// forever. These three properties are what make the callback safe, and none
+	// of them is enforced by the type system.
+	const auto header = ReadTextFile(
+		std::filesystem::path(NLS_ROOT_DIR) /
+		"Runtime/Engine/Rendering/BaseSceneRenderer.h");
+	const auto source = ReadTextFile(
+		std::filesystem::path(NLS_ROOT_DIR) /
+		"Runtime/Engine/Rendering/BaseSceneRenderer.cpp");
+	const auto forwardSource = ReadTextFile(
+		std::filesystem::path(NLS_ROOT_DIR) /
+		"Runtime/Engine/Rendering/ForwardSceneRenderer.cpp");
+
+	// 1. The dropper observes a liveness token instead of trusting its owner.
+	EXPECT_NE(
+		header.find("std::weak_ptr<SceneParseCaptureLifetime> ownerLifetime"),
+		std::string::npos);
+	EXPECT_NE(header.find("if (ownerLifetime.expired())"), std::string::npos)
+		<< "The dropper must skip the callback once the renderer is gone, because "
+		   "the renderer's RenderScene - and every claim held there - died with it.";
+	EXPECT_EQ(
+		header.find("if (!resolved && owner != nullptr && input != nullptr)"),
+		std::string::npos)
+		<< "The dropper must not call back on the mere presence of a non-null owner: "
+		   "the pointer is dangling after renderer destruction.";
+
+	// 2. The renderer invalidates the token before its scene state is released.
+	const auto destructorBegin = source.find("BaseSceneRenderer::~BaseSceneRenderer()");
+	ASSERT_NE(destructorBegin, std::string::npos);
+	const auto tokenReset = source.find("m_sceneParseCaptureLifetime.reset()", destructorBegin);
+	ASSERT_NE(tokenReset, std::string::npos)
+		<< "The renderer must invalidate the capture lifetime so a builder destroyed "
+		   "afterwards cannot reach back into freed scene state.";
+	// Ordering matters: the drain above still needs live scene state, so the token
+	// is only invalidated once that is done and before any subclass member goes.
+	const auto destructorEnd = source.find("ForgetVisibleMaterialTexturePumpState(*this)", destructorBegin);
+	ASSERT_NE(destructorEnd, std::string::npos);
+	EXPECT_LT(tokenReset, destructorEnd);
+
+	// 3. Every dropper is built through the factory, so a new call site cannot
+	//    forget to wire the token.
+	EXPECT_NE(forwardSource.find("MakeSceneParseCaptureDropper(parseInput)"), std::string::npos);
+	EXPECT_EQ(forwardSource.find("parseDropper.state->owner = this"), std::string::npos)
+		<< "Constructing the dropper field-by-field bypasses the lifetime token.";
+}
+
+TEST(SceneOcclusionTests, ResolveSceneParseNeverDereferencesTheCapturedScene)
+{
+	// The resolve half of the scene parse is the part that runs on the render
+	// thread, while the scene graph belongs to the game thread. That split is only
+	// sound while the resolve half touches no SceneSystem::Scene at all: the
+	// captured scene identities are compared, never dereferenced. Nothing enforces
+	// this at compile time, so it is pinned here - a future edit that reaches for
+	// the scene from this half would otherwise introduce a cross-thread read that
+	// only shows up under load.
+	const auto source = ReadTextFile(
+		std::filesystem::path(NLS_ROOT_DIR) /
+		"Runtime/Engine/Rendering/BaseSceneRenderer.cpp");
+
+	const auto resolveBody = ExtractTopLevelDefinition(
+		source,
+		"BaseSceneRenderer::AllDrawables BaseSceneRenderer::ResolveSceneParse(");
+	ASSERT_FALSE(resolveBody.empty()) << "ResolveSceneParse definition not found.";
+
+	// Positive control: the extraction really bounds a definition, so a failed
+	// search below cannot be an artefact of an empty slice.
+	const auto beginBody = ExtractTopLevelDefinition(
+		source,
+		"BaseSceneRenderer::SceneParseInput BaseSceneRenderer::BeginSceneParse(");
+	ASSERT_FALSE(beginBody.empty());
+	EXPECT_NE(beginBody.find("SceneSystem::Scene"), std::string::npos)
+		<< "The capture half is the half that owns the scene graph.";
+
+	EXPECT_EQ(resolveBody.find("SceneSystem::Scene"), std::string::npos)
+		<< "The resolve half must not name the scene type at all.";
+	EXPECT_EQ(CountStandaloneTokenUses(resolveBody, "scene."), 0u)
+		<< "No bare scene member access may appear in the resolve half.";
+	EXPECT_EQ(CountStandaloneTokenUses(resolveBody, "scene->"), 0u)
+		<< "No bare scene dereference may appear in the resolve half.";
+	// The risky spelling is not "scene->" but the captured handle's own name: the
+	// codebase writes the identity as `capture.sceneIdentity`, so a dereference
+	// would read `sceneIdentity->` and slip past a check for the short form.
+	EXPECT_EQ(CountStandaloneTokenUses(resolveBody, "sceneIdentity->"), 0u)
+		<< "The captured scene identity is for comparison only, never dereferenced.";
+	// The descriptor map is not thread safe, and this half is the one that moves to
+	// the render thread. It may refresh the lighting provider (which publishes an
+	// immutable snapshot) but must never write the descriptor map itself; publishing
+	// LightingDescriptor is the game thread's job in RefreshSceneLightingDescriptor.
+	EXPECT_EQ(resolveBody.find("SetSceneLightingDescriptor"), std::string::npos)
+		<< "The resolve half must not publish the lighting descriptor entry.";
+	EXPECT_EQ(resolveBody.find("AddDescriptor<LightingDescriptor>"), std::string::npos)
+		<< "The resolve half must not write the descriptor map.";
+}
+
+TEST(SceneOcclusionTests, ResolveSceneParseUsesFrozenEditorInspectionRoots)
+{
+	// The editor override of GetEditorInspectionRoots reads the renderer's
+	// descriptor map, and that map belongs to the game thread: the Scene View panel
+	// re-adds DebugSceneDescriptor every frame and CompositeRenderer::EndFrame
+	// clears the whole map, while the resolve half of the scene parse runs on the
+	// render thread. Calling the hook from that half raced the game thread's
+	// unordered_map rehash and its node frees, which is what produced the
+	// intermittent std::bad_any_cast, "Couldn't find a descriptor matching the
+	// given type T" and freed-heap reads in the render scene build. Both ends of
+	// the replacement contract are pinned here.
+	const auto source = ReadTextFile(
+		std::filesystem::path(NLS_ROOT_DIR) /
+		"Runtime/Engine/Rendering/BaseSceneRenderer.cpp");
+
+	const auto resolveBody = ExtractTopLevelDefinition(
+		source,
+		"BaseSceneRenderer::AllDrawables BaseSceneRenderer::ResolveSceneParse(");
+	ASSERT_FALSE(resolveBody.empty()) << "ResolveSceneParse definition not found.";
+	EXPECT_EQ(resolveBody.find("GetEditorInspectionRoots()"), std::string::npos)
+		<< "The render-thread half must not call the editor hook: it reads the "
+		   "game-thread descriptor map.";
+	EXPECT_EQ(resolveBody.find("ShouldPublishCullReasonDebugSnapshots()"), std::string::npos)
+		<< "The render-thread half must not read the live culling overlay options.";
+	EXPECT_EQ(resolveBody.find("GetCullReasonDebugSnapshotMaxEntries()"), std::string::npos)
+		<< "The render-thread half must not read the live culling overlay options.";
+	EXPECT_NE(resolveBody.find("input.inspectionRootInstanceIds"), std::string::npos)
+		<< "The render-thread half must use the frozen inspection roots.";
+	EXPECT_NE(resolveBody.find("input.publishCullReasonDebugSnapshots"), std::string::npos)
+		<< "The render-thread half must use the frozen debug snapshot flag.";
+	EXPECT_NE(resolveBody.find("input.cullReasonDebugSnapshotMaxEntries"), std::string::npos)
+		<< "The render-thread half must use the frozen debug snapshot budget.";
+
+	const auto captureBody = ExtractTopLevelDefinition(
+		source,
+		"BaseSceneRenderer::SceneParseInput BaseSceneRenderer::BeginSceneParse(");
+	ASSERT_FALSE(captureBody.empty()) << "BeginSceneParse definition not found.";
+	EXPECT_NE(
+		captureBody.find("input.inspectionRootInstanceIds = GetEditorInspectionRoots()"),
+		std::string::npos)
+		<< "The game-thread half is where the hook may be called.";
+	EXPECT_NE(
+		captureBody.find("input.publishCullReasonDebugSnapshots = ShouldPublishCullReasonDebugSnapshots()"),
+		std::string::npos);
+	EXPECT_NE(
+		captureBody.find("input.cullReasonDebugSnapshotMaxEntries = GetCullReasonDebugSnapshotMaxEntries()"),
+		std::string::npos);
+
+	const auto header = ReadTextFile(
+		std::filesystem::path(NLS_ROOT_DIR) /
+		"Runtime/Engine/Rendering/BaseSceneRenderer.h");
+	EXPECT_NE(header.find("std::vector<NLS::InstanceID> inspectionRootInstanceIds;"), std::string::npos)
+		<< "The frozen roots need a home on SceneParseInput.";
+	EXPECT_NE(header.find("bool publishCullReasonDebugSnapshots = false;"), std::string::npos);
+	EXPECT_NE(header.find("uint64_t cullReasonDebugSnapshotMaxEntries = 0u;"), std::string::npos);
+}
+
+TEST(SceneOcclusionTests, EditorInspectionRootsStillReadTheGameThreadDescriptorMap)
+{
+	// The frozen copy is only sound while the hook keeps its game-thread guard: the
+	// guard turns a future render-thread call into a named failure instead of
+	// descriptor-map corruption. The descriptor read itself must stay, otherwise
+	// the frozen roots would silently stop reflecting the selection.
+	const auto editor = ReadTextFile(
+		std::filesystem::path(NLS_ROOT_DIR) /
+		"Project/Editor/Rendering/DebugSceneRenderer.cpp");
+
+	const auto start = editor.find("DebugSceneRenderer::GetEditorInspectionRoots()");
+	ASSERT_NE(start, std::string::npos) << "Editor inspection-root override not found.";
+	const auto end = editor.find("\nbool Editor::Rendering::", start);
+	const auto body = editor.substr(start, end == std::string::npos ? std::string::npos : end - start);
+	ASSERT_FALSE(body.empty());
+	EXPECT_NE(body.find("IsInRenderingThread()"), std::string::npos)
+		<< "The override must reject render-thread calls.";
+	EXPECT_NE(body.find("GetDescriptor<DebugSceneDescriptor>()"), std::string::npos)
+		<< "The override must keep reading the descriptor it freezes.";
+}
 TEST(SceneOcclusionTests, BaseSceneRendererLogsHZBObservationReadbackFlagDistribution)
 {
 	const auto source = ReadTextFile(

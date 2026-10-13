@@ -617,46 +617,54 @@ float3 NLSAccumulateClusteredLightingPBR(
     for (uint i = 0u; i < count; ++i)
     {
         const NLSLightGridLight light = NLSLoadLight(forwardLocalLightBuffer, culledLightDataGrid[offset + i]);
-        if (light.type == NLS_LIGHT_TYPE_AMBIENT_BOX || light.type == NLS_LIGHT_TYPE_AMBIENT_SPHERE)
-        {
-            lighting += safeAlbedo * light.color * max(light.intensity, 0.0f) * safeAo;
-            continue;
-        }
-
-        float3 lightDir = 0.0f.xxx;
-        float attenuation = 1.0f;
+        // Keep light directions and BRDF evaluation branch-local for AMD Vulkan loop code generation.
+        float3 contribution = 0.0f.xxx;
         if (light.type == NLS_LIGHT_TYPE_DIRECTIONAL)
         {
-            lightDir = NLSSafeLightingNormalize(-light.directionWS, float3(0.0f, 1.0f, 0.0f));
+            const float3 lightDir = NLSSafeLightingNormalize(-light.directionWS, float3(0.0f, 1.0f, 0.0f));
+            contribution = NLSEvaluateCookTorranceDirect(
+                safeGeometryNormalWS,
+                safeShadingNormalWS,
+                viewDir,
+                lightDir,
+                safeAlbedo,
+                safeMetallic,
+                filteredRoughness,
+                light.color,
+                light.intensity,
+                1.0f);
+        }
+        else if (NLSIsAmbientLight(light))
+        {
+            contribution = safeAlbedo * light.color * max(light.intensity, 0.0f) * safeAo;
         }
         else
         {
             const float3 toLight = light.positionWS - worldPosition;
             const float distanceToLight = length(toLight);
-            if (distanceToLight > max(light.range, 0.0001f))
-                continue;
-
-            lightDir = NLSSafeLightingNormalize(toLight, safeGeometryNormalWS);
-            attenuation = NLSComputePointAttenuation(light, distanceToLight);
+            const float3 lightDir = NLSSafeLightingNormalize(toLight, safeGeometryNormalWS);
+            float attenuation = NLSComputePointAttenuation(light, distanceToLight);
             if (light.type == NLS_LIGHT_TYPE_SPOT)
             {
                 const float spotCos = dot(NLSSafeLightingNormalize(-light.directionWS, lightDir), lightDir);
                 const float outerCutoffCos = cos(radians(light.outerCutoffDegrees));
                 attenuation *= saturate((spotCos - outerCutoffCos) / max(1.0f - outerCutoffCos, 1e-3f));
             }
+            attenuation *= distanceToLight <= max(light.range, 0.0001f) ? 1.0f : 0.0f;
+            contribution = NLSEvaluateCookTorranceDirect(
+                safeGeometryNormalWS,
+                safeShadingNormalWS,
+                viewDir,
+                lightDir,
+                safeAlbedo,
+                safeMetallic,
+                filteredRoughness,
+                light.color,
+                light.intensity,
+                attenuation);
         }
 
-        lighting += NLSEvaluateCookTorranceDirect(
-            safeGeometryNormalWS,
-            safeShadingNormalWS,
-            viewDir,
-            lightDir,
-            safeAlbedo,
-            safeMetallic,
-            filteredRoughness,
-            light.color,
-            light.intensity,
-            attenuation);
+        lighting += contribution;
     }
 
     return lighting;

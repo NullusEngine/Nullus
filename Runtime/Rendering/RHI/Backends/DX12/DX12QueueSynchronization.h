@@ -2,13 +2,33 @@
 
 #include <cstdint>
 #include <mutex>
+#include <span>
+#include <string>
 
 #include "RenderDef.h"
+#include "Rendering/RHI/Core/RHISwapchain.h"
 
 struct ID3D12CommandQueue;
+struct ID3D12CommandList;
+struct ID3D12Fence;
 
 namespace NLS::Render::RHI::DX12
 {
+    struct DX12QueueSubmissionResult
+    {
+        RHIQueueOperationResult operation;
+        std::int32_t nativeStatus = -1;
+        [[nodiscard]] bool Succeeded() const { return operation.Succeeded(); }
+    };
+
+    /** Raw uploads and profiler resolves use the same FIFO as frame submissions. */
+    NLS_RENDER_API DX12QueueSubmissionResult SubmitDX12CommandLists(
+        ID3D12CommandQueue* queue,
+        std::span<ID3D12CommandList* const> commandLists,
+        ID3D12Fence* fence,
+        std::uint64_t fenceValue,
+        std::string debugName);
+
     namespace Detail
     {
         NLS_RENDER_API std::mutex* ResolveQueueMutex(ID3D12CommandQueue* queue);

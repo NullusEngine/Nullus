@@ -423,8 +423,6 @@ EditorLegacyLaunchOptionValues EditorSettingsPersistence::ReadLegacyLaunchOption
 
     if (fields["verticalSynchronization"].is_bool())
         values.verticalSynchronization = fields["verticalSynchronization"].bool_value();
-    if (fields["enableThreadedRendering"].is_bool())
-        values.threadedRendering = fields["enableThreadedRendering"].bool_value();
     if (fields["renderDocStartupCaptureAfterFrames"].is_number())
         values.renderDocStartupCaptureFrames = static_cast<int>(fields["renderDocStartupCaptureAfterFrames"].number_value());
     return values;

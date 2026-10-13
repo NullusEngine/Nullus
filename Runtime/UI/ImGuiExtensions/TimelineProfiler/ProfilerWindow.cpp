@@ -206,6 +206,7 @@ struct TraceContext
 		StopWriterRequested = false;
 		WriterThread = std::thread([this]()
 		{
+            NLS_PROFILE_REGISTER_THREAD("Profiler Trace Writer");
 			for (;;)
 			{
 				TraceExportBatch batch;

@@ -30,7 +30,9 @@
 #include "Core/EditorProgressTargets.h"
 #include "Debug/FileHandler.h"
 #include "Platform/Process/Process.h"
+#include "Profiling/Profiler.h"
 #include "Rendering/BaseSceneRenderer.h"
+#include "Rendering/SceneRenderStoreRegistry.h"
 #include "Rendering/RHI/Core/RHIDevice.h"
 #include "Rendering/Settings/GraphicsBackendUtils.h"
 #include "Rendering/Tooling/RenderDocEnvironment.h"
@@ -516,6 +518,7 @@ public:
 #ifdef _WIN32
         m_thread = std::thread([this]
         {
+            NLS_PROFILE_REGISTER_THREAD("Editor Progress Dialog");
             RunDialogThread();
         });
 
@@ -1050,9 +1053,12 @@ Editor::Core::Context::Context(const std::string& p_projectPath, const std::stri
     Editor::Settings::EditorSettingsPersistence::Load(editorSettingsPath, editorSettingsRegistry);
     // Launch options are owned by the launcher startup panel and stored in the
     // project file, because they are consumed before the driver exists.
-    auto launchOptions = Engine::Settings::ReadProjectLaunchOptions(projectFilePath);
+    std::string launchOptionsError;
+    auto launchOptions = Engine::Settings::ReadProjectLaunchOptions(projectFilePath, &launchOptionsError);
+    if (!launchOptionsError.empty())
+        throw std::runtime_error("Editor: " + launchOptionsError);
     if (const auto legacy = Editor::Settings::EditorSettingsPersistence::ReadLegacyLaunchOptionValues(editorSettingsPath);
-        legacy.verticalSynchronization.has_value() || legacy.threadedRendering.has_value() ||
+        legacy.verticalSynchronization.has_value() ||
         legacy.renderDocStartupCaptureFrames.has_value())
     {
         // One-time migration: keep the values a previous editor build persisted
@@ -1061,11 +1067,6 @@ Editor::Core::Context::Context(const std::string& p_projectPath, const std::stri
         if (!launchOptions.hasVerticalSynchronization && legacy.verticalSynchronization.has_value())
         {
             launchOptions.verticalSynchronization = *legacy.verticalSynchronization;
-            needsWrite = true;
-        }
-        if (!launchOptions.hasThreadedRendering && legacy.threadedRendering.has_value())
-        {
-            launchOptions.threadedRendering = *legacy.threadedRendering;
             needsWrite = true;
         }
         if (!launchOptions.hasRenderDocStartupCaptureFrames && legacy.renderDocStartupCaptureFrames.has_value())
@@ -1129,10 +1130,10 @@ Editor::Core::Context::Context(const std::string& p_projectPath, const std::stri
         NLS_LOG_INFO(std::string("[Startup] DX12 debug layer=") +
             (driverSettings.debugMode ? "enabled" : "disabled"));
     }
-    driverSettings.enableThreadedRendering = launchOptions.threadedRendering;
+    driverSettings.rhiThreadMode = launchOptions.rhiThreadMode;
     driverSettings.enableLightGrid = Editor::Settings::EditorSettings::GetRenderingSettingsObject().enableLightGrid;
-    driverSettings.threadedFrameSlotCount = Editor::Core::ResolveEditorThreadedFrameSlotCount(driverSettings.framesInFlight);
-    driverSettings.threadedPublishRetirementWaitMs = Editor::Core::ResolveEditorThreadedPublishRetirementWaitMs();
+    driverSettings.cpuFrameLatencyLimit = driverSettings.framesInFlight + 1u;
+    driverSettings.framesInFlight = Editor::Core::ResolveEditorFrameResourceCount(driverSettings.framesInFlight);
     driverSettings.diagnostics = m_diagnosticsSettings;
 
     if (renderDocSettings.enabled || renderDocSettings.startupCaptureAfterFrames > 0)
@@ -1748,6 +1749,7 @@ void Editor::Core::Context::ShutdownThreadedRendering()
     if (driver != nullptr)
     {
         driver->SetSwapchainWillResizeCallback(nullptr);
+        NLS::Engine::Rendering::SceneRenderStoreRegistry::ReleaseAll();
         driver->ShutdownThreadedRendering();
     }
 }

@@ -1,4 +1,5 @@
 #include "Core/AssetFileWatcher.h"
+#include "Profiling/Profiler.h"
 
 #include <array>
 #include <chrono>
@@ -193,6 +194,7 @@ struct AssetFileWatcher::Impl
 
         worker = std::thread([this]
         {
+            NLS_PROFILE_REGISTER_THREAD("Asset File Watcher");
             std::array<char, 64 * 1024> buffer{};
             OVERLAPPED overlapped{};
             overlapped.hEvent = CreateEventW(nullptr, TRUE, FALSE, nullptr);
@@ -316,6 +318,7 @@ struct AssetFileWatcher::Impl
         ready = true;
         worker = std::thread([this]
         {
+            NLS_PROFILE_REGISTER_THREAD("Asset File Watcher");
             std::array<char, 64 * 1024> buffer{};
             while (running)
             {
@@ -369,6 +372,7 @@ struct AssetFileWatcher::Impl
     {
         worker = std::thread([this]
         {
+            NLS_PROFILE_REGISTER_THREAD("Asset File Watcher");
             CFStringRef path = CFStringCreateWithCString(nullptr, root.string().c_str(), kCFStringEncodingUTF8);
             CFArrayRef paths = CFArrayCreate(nullptr, reinterpret_cast<const void**>(&path), 1, nullptr);
             FSEventStreamContext context{};

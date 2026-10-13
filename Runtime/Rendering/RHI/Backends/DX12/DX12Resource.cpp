@@ -1,10 +1,12 @@
-#include "Rendering/RHI/Backends/DX12/DX12Resource.h"
+﻿#include "Rendering/RHI/Backends/DX12/DX12Resource.h"
 
 #include <algorithm>
 #include <chrono>
 #include <cstdint>
 #include <cstring>
 #include <deque>
+#include <map>
+#include <limits>
 #include <mutex>
 #include <string>
 #include <vector>
@@ -109,7 +111,13 @@ namespace NLS::Render::Backend
 				NLS_LOG_ERROR(context + ": invalid fence wait request");
 				return false;
 			}
-			if (fence->GetCompletedValue() >= fenceValue)
+			const auto completedValue = fence->GetCompletedValue();
+			if (completedValue == (std::numeric_limits<uint64_t>::max)())
+			{
+				NLS_LOG_ERROR(context + ": device lost while waiting for upload fence");
+				return false;
+			}
+			if (completedValue >= fenceValue)
 				return true;
 
 			HANDLE fenceEvent = CreateEvent(nullptr, FALSE, FALSE, nullptr);
@@ -147,11 +155,15 @@ namespace NLS::Render::Backend
 					std::to_string(fence->GetCompletedValue()));
 				return false;
 			}
-			return true;
+			const auto completedAfterWait = fence->GetCompletedValue();
+			return completedAfterWait != (std::numeric_limits<uint64_t>::max)() &&
+				completedAfterWait >= fenceValue;
 		}
 
 		struct DX12InitialUploadQuarantinedSubmission
 		{
+			Microsoft::WRL::ComPtr<ID3D12Device> device;
+			Microsoft::WRL::ComPtr<ID3D12Heap> heap;
 			Microsoft::WRL::ComPtr<ID3D12Resource> targetResource;
 			Microsoft::WRL::ComPtr<ID3D12Resource> uploadBuffer;
 			Microsoft::WRL::ComPtr<ID3D12CommandAllocator> commandAllocator;
@@ -164,14 +176,14 @@ namespace NLS::Render::Backend
 
 		std::mutex& DX12InitialUploadQuarantineMutex()
 		{
-			static std::mutex mutex;
-			return mutex;
+			static auto* mutex = new std::mutex;
+			return *mutex;
 		}
 
 		std::vector<DX12InitialUploadQuarantinedSubmission>& DX12InitialUploadQuarantine()
 		{
-			static std::vector<DX12InitialUploadQuarantinedSubmission> submissions;
-			return submissions;
+			static auto* submissions = new std::vector<DX12InitialUploadQuarantinedSubmission>;
+			return *submissions;
 		}
 
 			void QuarantineDX12InitialUploadSubmissionAfterExecute(
@@ -182,9 +194,12 @@ namespace NLS::Render::Backend
 			const Microsoft::WRL::ComPtr<ID3D12GraphicsCommandList>& commandList,
 			const Microsoft::WRL::ComPtr<ID3D12Fence>& fence,
 			HRESULT signalResult,
-			const std::string& debugName)
+			const std::string& debugName,
+			ID3D12Heap* heap = nullptr)
 		{
 			DX12InitialUploadQuarantinedSubmission submission;
+			submission.device = device;
+			submission.heap = heap;
 			if (targetResource != nullptr)
 			{
 				targetResource->AddRef();
@@ -223,6 +238,7 @@ namespace NLS::Render::Backend
 		// the main thread once per batch.
 		struct DX12PendingInitialUpload final
 		{
+			Microsoft::WRL::ComPtr<ID3D12Device> device;
 			Microsoft::WRL::ComPtr<ID3D12Heap> heap;
 			Microsoft::WRL::ComPtr<ID3D12CommandAllocator> allocator;
 			Microsoft::WRL::ComPtr<ID3D12GraphicsCommandList> commandList;
@@ -233,9 +249,55 @@ namespace NLS::Render::Backend
 			std::string debugName;
 		};
 
-		thread_local std::deque<DX12PendingInitialUpload> g_pendingInitialUploads;
-		thread_local size_t g_pendingInitialUploadStagingBytes = 0u;
-		thread_local size_t g_pendingInitialUploadFailureCount = 0u;
+		struct DX12PendingDeviceUploads
+		{
+			std::mutex mutex;
+			std::deque<DX12PendingInitialUpload> uploads;
+			size_t stagingBytes = 0u;
+			size_t failureCount = 0u;
+		};
+
+		struct DX12PendingUploadRegistry
+		{
+			std::mutex mutex;
+			std::map<ID3D12Device*, std::shared_ptr<DX12PendingDeviceUploads>> devices;
+		};
+
+		DX12PendingUploadRegistry& PendingUploadRegistry()
+		{
+			// Normal device shutdown drains these owners before backend teardown.
+			// Unconfirmed work must survive thread exit and process DLL detach.
+			static auto* registry = new DX12PendingUploadRegistry;
+			return *registry;
+		}
+
+		std::vector<std::shared_ptr<DX12PendingDeviceUploads>> FindPendingDeviceUploads(ID3D12Device* device)
+		{
+			auto& registry = PendingUploadRegistry();
+			std::lock_guard lock(registry.mutex);
+			std::vector<std::shared_ptr<DX12PendingDeviceUploads>> states;
+			for (const auto& [key, state] : registry.devices)
+			{
+				if (device == nullptr || key == device)
+					states.push_back(state);
+			}
+			return states;
+		}
+
+		void PrunePendingDeviceUploads()
+		{
+			auto& registry = PendingUploadRegistry();
+			std::lock_guard lock(registry.mutex);
+			for (auto it = registry.devices.begin(); it != registry.devices.end();)
+			{
+				const auto state = it->second;
+				std::lock_guard stateLock(state->mutex);
+				if (state->uploads.empty() && state->failureCount == 0u)
+					it = registry.devices.erase(it);
+				else
+					++it;
+			}
+		}
 
 		// Bound the staging memory a startup prewarm can keep alive. Exceeding
 		// the window drains the oldest submission, which restores the old
@@ -257,31 +319,43 @@ namespace NLS::Render::Backend
 			for (size_t index = 0u; index < pending.staging.size(); ++index)
 			{
 				QuarantineDX12InitialUploadSubmissionAfterExecute(
-					nullptr,
+					pending.device.Get(),
 					index < pending.targets.size() ? pending.targets[index].Get() : nullptr,
 					pending.staging[index],
 					pending.allocator,
 					pending.commandList,
 					pending.fence,
 					S_OK,
-					pending.debugName);
+					pending.debugName,
+					pending.heap.Get());
 			}
 			return false;
 		}
 
 		void QueuePendingInitialUpload(DX12PendingInitialUpload pending)
 		{
-			g_pendingInitialUploadStagingBytes += pending.stagingBytes;
-			g_pendingInitialUploads.push_back(std::move(pending));
-
-			while (!g_pendingInitialUploads.empty() &&
-				g_pendingInitialUploadStagingBytes > kMaxPendingInitialUploadStagingBytes)
+			std::shared_ptr<DX12PendingDeviceUploads> state;
+			std::unique_lock<std::mutex> stateLock;
 			{
-				auto oldest = std::move(g_pendingInitialUploads.front());
-				g_pendingInitialUploads.pop_front();
-				g_pendingInitialUploadStagingBytes -= oldest.stagingBytes;
+				auto& registry = PendingUploadRegistry();
+				std::lock_guard lock(registry.mutex);
+				auto& entry = registry.devices[pending.device.Get()];
+				if (entry == nullptr)
+					entry = std::make_shared<DX12PendingDeviceUploads>();
+				state = entry;
+				stateLock = std::unique_lock(state->mutex);
+			}
+			state->stagingBytes += pending.stagingBytes;
+			state->uploads.push_back(std::move(pending));
+
+			while (!state->uploads.empty() &&
+				state->stagingBytes > kMaxPendingInitialUploadStagingBytes)
+			{
+				auto oldest = std::move(state->uploads.front());
+				state->uploads.pop_front();
+				state->stagingBytes -= oldest.stagingBytes;
 				if (!WaitForPendingInitialUpload(std::move(oldest)))
-					++g_pendingInitialUploadFailureCount;
+					++state->failureCount;
 			}
 		}
 
@@ -364,6 +438,7 @@ namespace NLS::Render::Backend
 					const Microsoft::WRL::ComPtr<ID3D12Resource>& upload,
 					const std::vector<D3D12_PLACED_SUBRESOURCE_FOOTPRINT>& layouts,
 					const size_t uploadBytes,
+					const D3D12_RESOURCE_STATES beforeState,
 					const D3D12_RESOURCE_STATES finalState)
 				{
 					constexpr size_t kMaxTextures = 16u;
@@ -382,6 +457,16 @@ namespace NLS::Render::Backend
 					{
 						failed = true;
 						return false;
+					}
+					if (beforeState != D3D12_RESOURCE_STATE_COPY_DEST)
+					{
+						D3D12_RESOURCE_BARRIER barrier{};
+						barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+						barrier.Transition.pResource = target;
+						barrier.Transition.StateBefore = beforeState;
+						barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_DEST;
+						barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+						commandList->ResourceBarrier(1u, &barrier);
 					}
 					for (UINT subresource = 0u; subresource < layouts.size(); ++subresource)
 					{
@@ -459,6 +544,7 @@ namespace NLS::Render::Backend
 				const NLS::Render::RHI::RHITextureDesc& desc,
 				const NLS::Render::RHI::DX12::DX12InitialUploadRequest& uploadRequest,
 				const std::string& debugName,
+				NLS::Render::RHI::ResourceState beforeState,
 				NLS::Render::RHI::ResourceState& outFinalState) const;
 
 			bool UploadTextureRegion(
@@ -691,26 +777,30 @@ namespace NLS::Render::Backend
 		Microsoft::WRL::ComPtr<ID3D12Fence> fence;
 		if (FAILED(m_device->CreateFence(0u, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&fence))))
 			return false;
-		{
-			NLS::Render::RHI::DX12::ScopedDX12QueueLock queueLock(m_graphicsQueue);
 			ID3D12CommandList* commandLists[] = { commandList.Get() };
-			m_graphicsQueue->ExecuteCommandLists(1u, commandLists);
-			if (FAILED(m_graphicsQueue->Signal(fence.Get(), 1u)))
+			const auto submission = NLS::Render::RHI::DX12::SubmitDX12CommandLists(
+				m_graphicsQueue, commandLists, fence.Get(), 1u, "UploadTextureRegion " + debugName);
+			if (!submission.Succeeded())
+			{
+				if (submission.operation.mayHaveQueuedGpuWork)
+				{
+					QuarantineDX12InitialUploadSubmissionAfterExecute(
+						m_device, textureResource, uploadBuffer, commandAllocator,
+						commandList, fence, submission.nativeStatus, debugName);
+				}
+				DiscardReusableCommandObjects();
+				NLS_LOG_ERROR(submission.operation.message);
+				return false;
+		}
+			if (!WaitForDX12FenceValue(fence.Get(), 1u, "UploadTextureRegion \"" + debugName + "\""))
 			{
 				QuarantineDX12InitialUploadSubmissionAfterExecute(
-					m_device,
-					textureResource,
-					uploadBuffer,
-					commandAllocator,
-					commandList,
-					fence,
-					E_FAIL,
-					debugName);
+					m_device, textureResource, uploadBuffer, commandAllocator, commandList,
+					fence, S_OK, debugName);
 				DiscardReusableCommandObjects();
 				return false;
 			}
-		}
-		return WaitForDX12FenceValue(fence.Get(), 1u, "UploadTextureRegion \"" + debugName + "\"");
+			return true;
 	}
 
 		void DX12InitialUploadContext::DiscardReusableCommandObjects() const
@@ -789,6 +879,7 @@ namespace NLS::Render::Backend
 			const NLS::Render::RHI::RHITextureDesc& desc,
 			const NLS::Render::RHI::DX12::DX12InitialUploadRequest& uploadRequest,
 			const std::string& debugName,
+			const NLS::Render::RHI::ResourceState beforeState,
 			NLS::Render::RHI::ResourceState& outFinalState) const
 		{
 			if (m_device == nullptr ||
@@ -800,6 +891,7 @@ namespace NLS::Render::Backend
 				return false;
 			}
 
+			const auto beforeDxState = NativeDX12CommandBuffer::ToD3D12ResourceState(beforeState);
 			const auto& uploadPlan = uploadRequest.texturePlan;
 			if (uploadPlan.subresources.empty() || uploadPlan.totalBytes == 0)
 			{
@@ -957,7 +1049,7 @@ namespace NLS::Render::Backend
 						: NativeDX12CommandBuffer::ToD3D12ResourceState(outFinalState);
 					return g_initialTextureUploadBatch->Record(
 						textureResource, uploadBuffer, layouts,
-						static_cast<size_t>(uploadBufferSize), finalState);
+						static_cast<size_t>(uploadBufferSize), beforeDxState, finalState);
 				}
 
 					const auto commandSetupBegin = std::chrono::steady_clock::now();
@@ -970,6 +1062,16 @@ namespace NLS::Render::Backend
 					return false;
 				}
 
+			if (beforeDxState != D3D12_RESOURCE_STATE_COPY_DEST)
+			{
+				D3D12_RESOURCE_BARRIER barrier{};
+				barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+				barrier.Transition.pResource = textureResource;
+				barrier.Transition.StateBefore = beforeDxState;
+				barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_DEST;
+				barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+				commandList->ResourceBarrier(1u, &barrier);
+			}
 			for (UINT subresourceIndex = 0; subresourceIndex < subresourceCount; ++subresourceIndex)
 			{
 				D3D12_TEXTURE_COPY_LOCATION srcLocation{};
@@ -1026,13 +1128,16 @@ namespace NLS::Render::Backend
 
 			const auto submitBegin = std::chrono::steady_clock::now();
 			{
-				NLS::Render::RHI::DX12::ScopedDX12QueueLock queueLock(m_graphicsQueue);
 				ID3D12CommandList* commandLists[] = { commandList.Get() };
-				m_graphicsQueue->ExecuteCommandLists(1, commandLists);
-
-				hr = m_graphicsQueue->Signal(fence.Get(), fenceValue);
-				if (FAILED(hr))
+				const auto submission = NLS::Render::RHI::DX12::SubmitDX12CommandLists(
+					m_graphicsQueue, commandLists, fence.Get(), fenceValue, "UploadInitialTextureData " + debugName);
+				hr = submission.nativeStatus;
+				if (!submission.Succeeded())
 				{
+					DiscardReusableCommandObjects();
+					NLS_LOG_ERROR(submission.operation.message);
+					if (!submission.operation.mayHaveQueuedGpuWork)
+						return false;
 					QuarantineDX12InitialUploadSubmissionAfterExecute(
 						m_device,
 						textureResource,
@@ -1040,9 +1145,8 @@ namespace NLS::Render::Backend
 						commandAllocator,
 						commandList,
 						fence,
-								hr,
-								debugName);
-						DiscardReusableCommandObjects();
+						hr,
+						debugName);
 					const HRESULT deviceStatus = m_device->GetDeviceRemovedReason();
 					NLS_LOG_ERROR(
 						"UploadInitialTextureData: failed to signal fence for texture \"" +
@@ -1224,13 +1328,16 @@ namespace NLS::Render::Backend
 
 			const auto submitBegin = std::chrono::steady_clock::now();
 			{
-				NLS::Render::RHI::DX12::ScopedDX12QueueLock queueLock(m_graphicsQueue);
 				ID3D12CommandList* commandLists[] = { commandList.Get() };
-				m_graphicsQueue->ExecuteCommandLists(1, commandLists);
-
-				const HRESULT signalResult = m_graphicsQueue->Signal(fence.Get(), fenceValue);
-				if (FAILED(signalResult))
+				const auto submission = NLS::Render::RHI::DX12::SubmitDX12CommandLists(
+					m_graphicsQueue, commandLists, fence.Get(), fenceValue, "UploadInitialBufferData " + debugName);
+				const HRESULT signalResult = submission.nativeStatus;
+				if (!submission.Succeeded())
 				{
+					DiscardReusableCommandObjects();
+					NLS_LOG_ERROR(submission.operation.message);
+					if (!submission.operation.mayHaveQueuedGpuWork)
+						return false;
 					QuarantineDX12InitialUploadSubmissionAfterExecute(
 						m_device,
 						bufferResource,
@@ -1238,9 +1345,8 @@ namespace NLS::Render::Backend
 						commandAllocator,
 						commandList,
 						fence,
-								signalResult,
-								debugName);
-						DiscardReusableCommandObjects();
+						signalResult,
+						debugName);
 					const HRESULT deviceStatus = m_device->GetDeviceRemovedReason();
 					NLS_LOG_ERROR(
 						"UploadInitialBufferData: failed to signal upload fence for \"" +
@@ -1368,18 +1474,19 @@ namespace NLS::Render::Backend
 			{
 				QuarantineDX12InitialUploadSubmissionAfterExecute(
 					batch->device, batch->targets[i].Get(), batch->staging[i],
-					batch->allocator, batch->commandList, fence, signalResult, "StartupMeshBufferBatch");
+					batch->allocator, batch->commandList, fence, signalResult, "StartupMeshBufferBatch", batch->heap.Get());
 			}
 		};
 		const auto submitBegin = std::chrono::steady_clock::now();
 		{
-			NLS::Render::RHI::DX12::ScopedDX12QueueLock queueLock(batch->queue);
 			ID3D12CommandList* lists[] = {batch->commandList.Get()};
-			batch->queue->ExecuteCommandLists(1u, lists);
-			const HRESULT signal = batch->queue->Signal(fence.Get(), 1u);
-			if (FAILED(signal))
+			const auto submission = NLS::Render::RHI::DX12::SubmitDX12CommandLists(
+				batch->queue, lists, fence.Get(), 1u, "StartupMeshBufferBatch");
+			if (!submission.Succeeded())
 			{
-				quarantine(signal);
+				if (submission.operation.mayHaveQueuedGpuWork)
+					quarantine(submission.nativeStatus);
+				NLS_LOG_ERROR(submission.operation.message);
 				return false;
 			}
 		}
@@ -1387,6 +1494,7 @@ namespace NLS::Render::Backend
 			NLS::Core::Assets::ArtifactLoadTelemetryStage::GpuUploadSubmit,
 			submitBegin, batch->stagingBytes);
 		DX12PendingInitialUpload pending;
+		pending.device = batch->device;
 		pending.heap = std::move(batch->heap);
 		pending.allocator = std::move(batch->allocator);
 		pending.commandList = std::move(batch->commandList);
@@ -1434,13 +1542,14 @@ namespace NLS::Render::Backend
 		};
 		const auto submitBegin = std::chrono::steady_clock::now();
 		{
-			NLS::Render::RHI::DX12::ScopedDX12QueueLock queueLock(batch->queue);
 			ID3D12CommandList* lists[] = {batch->commandList.Get()};
-			batch->queue->ExecuteCommandLists(1u, lists);
-			const HRESULT signal = batch->queue->Signal(fence.Get(), 1u);
-			if (FAILED(signal))
+			const auto submission = NLS::Render::RHI::DX12::SubmitDX12CommandLists(
+				batch->queue, lists, fence.Get(), 1u, "StartupTextureBatch");
+			if (!submission.Succeeded())
 			{
-				quarantine(signal);
+				if (submission.operation.mayHaveQueuedGpuWork)
+					quarantine(submission.nativeStatus);
+				NLS_LOG_ERROR(submission.operation.message);
 				return false;
 			}
 		}
@@ -1448,6 +1557,7 @@ namespace NLS::Render::Backend
 			NLS::Core::Assets::ArtifactLoadTelemetryStage::GpuUploadSubmit,
 			submitBegin, batch->stagingBytes);
 		DX12PendingInitialUpload pending;
+		pending.device = batch->device;
 		pending.allocator = std::move(batch->allocator);
 		pending.commandList = std::move(batch->commandList);
 		pending.staging = std::move(batch->staging);
@@ -1459,29 +1569,46 @@ namespace NLS::Render::Backend
 		return true;
 	}
 
-	bool HasPendingDX12InitialUploads()
+	bool HasPendingDX12InitialUploads(ID3D12Device* device)
 	{
-		return !g_pendingInitialUploads.empty();
-	}
-
-	size_t GetPendingDX12InitialUploadStagingBytes()
-	{
-		return g_pendingInitialUploadStagingBytes;
-	}
-
-	size_t WaitForDX12InitialUploads()
-	{
-		while (!g_pendingInitialUploads.empty())
+		for (const auto& state : FindPendingDeviceUploads(device))
 		{
-			auto pending = std::move(g_pendingInitialUploads.front());
-			g_pendingInitialUploads.pop_front();
-			g_pendingInitialUploadStagingBytes -= pending.stagingBytes;
-			if (!WaitForPendingInitialUpload(std::move(pending)))
-				++g_pendingInitialUploadFailureCount;
+			std::lock_guard lock(state->mutex);
+			if (!state->uploads.empty())
+				return true;
 		}
+		return false;
+	}
 
-		const size_t failureCount = g_pendingInitialUploadFailureCount;
-		g_pendingInitialUploadFailureCount = 0u;
+	size_t GetPendingDX12InitialUploadStagingBytes(ID3D12Device* device)
+	{
+		size_t bytes = 0u;
+		for (const auto& state : FindPendingDeviceUploads(device))
+		{
+			std::lock_guard lock(state->mutex);
+			bytes += state->stagingBytes;
+		}
+		return bytes;
+	}
+
+	size_t WaitForDX12InitialUploads(ID3D12Device* device)
+	{
+		size_t failureCount = 0u;
+		for (const auto& state : FindPendingDeviceUploads(device))
+		{
+			std::lock_guard lock(state->mutex);
+			while (!state->uploads.empty())
+			{
+				auto pending = std::move(state->uploads.front());
+				state->uploads.pop_front();
+				state->stagingBytes -= pending.stagingBytes;
+				if (!WaitForPendingInitialUpload(std::move(pending)))
+					++state->failureCount;
+			}
+			failureCount += state->failureCount;
+			state->failureCount = 0u;
+		}
+		PrunePendingDeviceUploads();
 		return failureCount;
 	}
 #endif
@@ -1812,10 +1939,11 @@ namespace NLS::Render::Backend
 			1
 		};
 
-		const D3D12_RESOURCE_STATES initialState =
-			(uploadDesc.HasData() && !isDepthTexture)
-			? D3D12_RESOURCE_STATE_COPY_DEST
-			: D3D12_RESOURCE_STATE_COMMON;
+		// Textures are always created in COMMON and explicitly transitioned by the
+		// first upload or by the frame graph. Creating a resource directly in
+		// COPY_DEST leaves GPU-based validation validating later draws against the
+		// creation layout whenever a command list does not repeat the transition.
+		const D3D12_RESOURCE_STATES initialState = D3D12_RESOURCE_STATE_COMMON;
 
 		D3D12_CLEAR_VALUE clearValue{};
 		clearValue.Format = NLS::Render::RHI::DX12::ToDX12OptimizedClearFormat(desc.format, desc.colorSpace);
@@ -1846,9 +1974,7 @@ namespace NLS::Render::Backend
 		if (m_resource != nullptr)
 		{
 			SetDx12ObjectName(m_resource.Get(), NLS::Render::RHI::DX12::BuildDX12TextureDebugLabel(desc));
-			m_state = initialState == D3D12_RESOURCE_STATE_COPY_DEST
-				? NLS::Render::RHI::ResourceState::CopyDst
-				: NLS::Render::RHI::ResourceState::Unknown;
+			m_state = NLS::Render::RHI::ResourceState::Unknown;
 		}
 #endif
 	}
@@ -1997,10 +2123,9 @@ namespace NLS::Render::Backend
 		if (resource == nullptr)
 			return {};
 
-		Microsoft::WRL::ComPtr<ID3D12DescriptorHeap>* targetHeap = &m_readOnlyDepthStencilDsvHeap;
-		D3D12_CPU_DESCRIPTOR_HANDLE* targetHandle = &m_readOnlyDepthStencilDsvHandle;
-
-		if (*targetHeap == nullptr)
+		// Parallel Translate workers can first consume this view in different passes.
+		std::lock_guard lock(m_readOnlyDepthStencilDsvMutex);
+		if (m_readOnlyDepthStencilDsvHeap == nullptr)
 		{
 			const auto descriptors = NLS::Render::RHI::DX12::BuildDX12TextureViewDescriptorSet(
 				m_texture->GetDesc(),
@@ -2013,18 +2138,21 @@ namespace NLS::Render::Backend
 			dsvHeapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_DSV;
 			dsvHeapDesc.NumDescriptors = 1;
 			dsvHeapDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_NONE;
-			if (FAILED(m_device->CreateDescriptorHeap(&dsvHeapDesc, IID_PPV_ARGS(targetHeap->GetAddressOf()))))
+			Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> heap;
+			if (FAILED(m_device->CreateDescriptorHeap(&dsvHeapDesc, IID_PPV_ARGS(heap.GetAddressOf()))))
 				return {};
 
 			SetDx12ObjectName(
-				targetHeap->Get(),
+				heap.Get(),
 				NLS::Render::RHI::DX12::BuildDX12TextureViewDebugLabel(m_desc, m_texture->GetDebugName()) +
 					" ReadOnlyDSVHeap");
-			*targetHandle = (*targetHeap)->GetCPUDescriptorHandleForHeapStart();
-			m_device->CreateDepthStencilView(resource, &descriptors.dsvDesc, *targetHandle);
+			const auto handle = heap->GetCPUDescriptorHandleForHeapStart();
+			m_device->CreateDepthStencilView(resource, &descriptors.dsvDesc, handle);
+			m_readOnlyDepthStencilDsvHeap = std::move(heap);
+			m_readOnlyDepthStencilDsvHandle = handle;
 		}
-
-		return { NLS::Render::RHI::BackendType::DX12, reinterpret_cast<void*>(targetHandle->ptr) };
+		 
+		return { NLS::Render::RHI::BackendType::DX12, reinterpret_cast<void*>(m_readOnlyDepthStencilDsvHandle.ptr) };
 #else
 		(void)access;
 		return {};
@@ -2120,7 +2248,7 @@ namespace NLS::Render::Backend
 				device,
 				graphicsQueue,
 				initialUploadCommandObjects);
-			if (!uploadContext.UploadTexture(resource, desc, uploadRequest, textureName, finalState))
+			if (!uploadContext.UploadTexture(resource, desc, uploadRequest, textureName, texture->GetState(), finalState))
 			{
 				NLS_LOG_ERROR("CreateNativeDX12Texture: initial upload failed for \"" + textureName + "\"");
 				return nullptr;
@@ -2237,7 +2365,7 @@ namespace NLS::Render::Backend
 			device,
 			graphicsQueue,
 			initialUploadCommandObjects);
-		if (!uploadContext.UploadTexture(resource, textureDesc, uploadRequest, textureName, finalState))
+		if (!uploadContext.UploadTexture(resource, textureDesc, uploadRequest, textureName, nativeTexture->GetState(), finalState))
 		{
 			return {
 				NLS::Render::RHI::RHIUpdateStatusCode::BackendFailure,

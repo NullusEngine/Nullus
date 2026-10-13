@@ -109,7 +109,8 @@ namespace
     }
 
     std::vector<NLS::Engine::Assets::RuntimeAssetRef> BuildRuntimeDependencies(
-        const NLS::Core::Assets::ArtifactManifest& manifest)
+        const NLS::Core::Assets::ArtifactManifest& manifest,
+        const NLS::Core::Assets::ArtifactDatabaseRecord& record)
     {
         std::vector<NLS::Engine::Assets::RuntimeAssetRef> dependencies;
         for (const auto& dependency : manifest.dependencies)
@@ -119,6 +120,23 @@ namespace
                 std::find(dependencies.begin(), dependencies.end(), *reference) == dependencies.end())
             {
                 dependencies.push_back(*reference);
+            }
+        }
+        // Imported model roots own the embedded resources in the same manifest.
+        if (record.subAssetKey == manifest.primarySubAssetKey ||
+            record.artifactType == NLS::Core::Assets::ArtifactType::Prefab ||
+            record.artifactType == NLS::Core::Assets::ArtifactType::Model)
+        {
+            for (const auto& artifact : manifest.subAssets)
+            {
+                if (artifact.subAssetKey == record.subAssetKey)
+                    continue;
+                const NLS::Engine::Assets::RuntimeAssetRef reference {
+                    artifact.sourceAssetId.IsValid() ? artifact.sourceAssetId : manifest.sourceAssetId,
+                    artifact.subAssetKey
+                };
+                if (std::find(dependencies.begin(), dependencies.end(), reference) == dependencies.end())
+                    dependencies.push_back(reference);
             }
         }
         return dependencies;
@@ -260,7 +278,7 @@ std::optional<NLS::Engine::Assets::RuntimeAssetDatabase> LoadRuntimeAssetDatabas
         if (!sourceManifest.has_value())
             return std::nullopt;
 
-        manifest.entries.push_back(MakeRuntimeEntry(*record, BuildRuntimeDependencies(*sourceManifest)));
+        manifest.entries.push_back(MakeRuntimeEntry(*record, BuildRuntimeDependencies(*sourceManifest, *record)));
         if (record->primarySubAssetKey == record->subAssetKey)
         {
             AddUniqueReference(manifest.roots, {
@@ -304,7 +322,8 @@ size_t PrewarmRuntimeMaterialAssets(
         if (entry->artifactPath.empty() || !IsMaterialEntry(entry->artifactType, entry->loaderId))
             continue;
 
-        if (materialManager.LoadArtifactWithoutTextures(entry->artifactPath) != nullptr)
+        if (materialManager.LoadArtifactWithoutTextures(
+            entry->artifactPath, runtimeDatabase.GetManifest().targetPlatform) != nullptr)
             ++loadedCount;
     }
 

@@ -17,8 +17,9 @@
 #include <Rendering/Data/Frustum.h>
 #include <Rendering/Entities/Drawable.h>
 #include <Rendering/Context/RenderScenePackageBuilder.h>
-#include <Rendering/Context/ThreadedRenderingLifecycle.h>
+#include <Rendering/Context/RenderScenePackage.h>
 #include <Rendering/FrameGraph/SceneRenderGraphBuilder.h>
+#include <Rendering/FrameGraph/ExternalResourceBridge.h>
 #include <Math/Quaternion.h>
 #include <Vector3.h>
 #include "Rendering/LargeSceneSettings.h"
@@ -98,7 +99,6 @@ namespace NLS::Engine::Rendering
 					bool trustSceneRenderContentRevision = false;
 				};
 
-		using SnapshotRenderScenePackageBuildMode = Render::Context::SnapshotRenderScenePackageBuildMode;
 
 		explicit BaseSceneRenderer(Driver& p_driver);
 		~BaseSceneRenderer() override;
@@ -140,11 +140,56 @@ namespace NLS::Engine::Rendering
 			NLS::Render::FrameGraph::LightGridCompileContext BuildLightGridCompileContext(
 				bool hasSkyboxTexture,
 				bool suppressCompute) const;
+			/**
+			 * Thread-safe overload for work that outlives the game-thread frame.
+			 *
+			 * The live descriptor is rewritten by the game thread every BeginFrame
+			 * and its camera object is mutated by the game thread, so render-thread
+			 * work has to key off a frozen descriptor instead. The returned context
+			 * always points at the frozen camera, so a cache hit can never hand back
+			 * a camera the current frame does not own.
+			 */
+			NLS::Render::FrameGraph::LightGridCompileContext BuildLightGridCompileContext(
+				const NLS::Render::FrameGraph::FrozenFrameDescriptor& frozenFrame,
+				bool hasSkyboxTexture,
+				bool suppressCompute = false) const;
+			/**
+			 * Light-grid inputs captured on the game thread.
+			 *
+			 * The lighting descriptor and the descriptor map belong to the game
+			 * thread, which replaces both every BeginFrame. A context built later on
+			 * the render thread therefore has to be handed captured values, not read
+			 * them back out of the renderer.
+			 */
+			struct LightGridFrameCapture
+			{
+				bool hasSkyboxTexture = false;
+				std::optional<LightGridPrepass::PreparedFrameInputs> frameInputs;
+			};
+			LightGridFrameCapture CaptureLightGridFrameInputs(
+				bool hasSkyboxTexture = false) const;
+			/**
+			 * Render-thread overload: no descriptor or live-descriptor reads.
+			 */
+			NLS::Render::FrameGraph::LightGridCompileContext BuildLightGridCompileContext(
+				const NLS::Render::FrameGraph::FrozenFrameDescriptor& frozenFrame,
+				const LightGridFrameCapture& capture,
+				bool suppressCompute = false) const;
 		bool HasPendingLightGridFrameInputs() const { return false; }
-		const SceneOcclusionPrimitivePacketBuildResult& GetLastHZBOcclusionPrimitivePacketBuildResult() const;
+		/**
+		 * Published results of the last scene parse.
+		 *
+		 * ParseScene is the expensive half of the frame and is being made safe to
+		 * run off the game thread, so its results cannot be plain members that a
+		 * game-thread reader walks while a parse rewrites them. Each accessor
+		 * returns the current immutable publication; holding it keeps that parse's
+		 * data alive and unchanged even after the next parse publishes.
+		 */
+		[[nodiscard]] std::shared_ptr<const SceneOcclusionPrimitivePacketBuildResult>
+			GetLastHZBOcclusionPrimitivePacketBuildResult() const;
 		const SceneOcclusionHistory& GetHZBOcclusionHistoryForTesting() const;
 		[[nodiscard]] bool HasLastVisiblePickablePrimitiveDrawSources() const;
-		[[nodiscard]] const std::vector<ScenePickablePrimitiveDrawSource>&
+		[[nodiscard]] std::shared_ptr<const std::vector<ScenePickablePrimitiveDrawSource>>
 			GetLastVisiblePickablePrimitiveDrawSources() const;
 		[[nodiscard]] bool HasCompletedVisibleMaterialTexturePumpForReadback() const;
 		/**
@@ -162,12 +207,180 @@ namespace NLS::Engine::Rendering
 	protected:
 		void RefreshSceneLightingDescriptor(SceneSystem::Scene& scene);
 		void SetSceneLightingDescriptor();
-		AllDrawables ParseScene();
-		std::optional<NLS::Render::Context::FrameSnapshot> BuildFrameSnapshot(
-			const Render::Data::FrameDescriptor& frameDescriptor) const override;
-		static void RefreshFrameSnapshotVisibility(
-			NLS::Render::Context::FrameSnapshot& snapshot,
+		/**
+		 * Sizes the render scenes' outstanding-synchronization depth for this mode.
+		 *
+		 * In threaded rendering the game thread captures while the render thread
+		 * resolves, so the game thread legitimately runs ahead. At depth one the
+		 * next frame's capture would be refused and that frame silently dropped, so
+		 * the depth follows how many frames the pipeline can have in flight. The
+		 * inline path keeps depth one, where capture and resolve still alternate.
+		 */
+		void ConfigureRenderSceneSynchronizationDepth();
+		/**
+		 * Builds this frame's drawables.
+		 *
+		 * Takes a frozen descriptor rather than reading the live m_frameDescriptor:
+		 * the parse is the expensive part of the frame and must be independent of
+		 * the game thread rewriting frame inputs for a later frame.
+		 */
+		AllDrawables ParseScene(
+			const NLS::Render::FrameGraph::FrozenFrameDescriptor& frame);
+
+		/**
+		 * Game-thread half of a scene parse.
+		 *
+		 * Captures which scenes this frame renders and collects each one's proxy
+		 * update batch. This is the only half that dereferences SceneSystem::Scene,
+		 * because the scene graph belongs to the game thread. Scene identities are
+		 * kept as pointers for comparison only; the resolve half never dereferences
+		 * them.
+		 */
+		struct SceneSynchronizeCapture
+		{
+			struct SynchronizationResult
+			{
+				RenderSceneSyncStats stats;
+				bool completed = false;
+			};
+			// Identity of the source scene. Compared by the resolve half, never
+			// dereferenced, so a stale scene cannot be read from another thread.
+			SceneSystem::Scene* sceneIdentity = nullptr;
+			RenderScene* renderScene = nullptr;
+			std::shared_ptr<RenderScene> renderSceneOwner;
+			std::shared_ptr<SynchronizationResult> synchronizationResult;
+			RenderSceneSyncRequest syncRequest;
+			bool includeSkyboxes = true;
+			bool requireExplicitMaterialTextures = false;
+			bool allowDefaultMaterialForUnresolvedExplicitMaterials = false;
+			bool trustSceneRenderContentRevision = false;
+			bool isMainScene = false;
+		};
+
+		struct SceneParseInput
+		{
+			std::vector<SceneSynchronizeCapture> scenes;
+			// The additive scenes still referenced by the descriptor this frame.
+			std::vector<SceneSystem::Scene*> activeAdditiveSceneIdentities;
+			// Owned so the resolve half can point RenderSceneSyncOptions at stable
+			// storage instead of at a local that is gone by then.
+			LargeSceneSettings occlusionSettings;
+			/**
+			 * Frozen answers of the editor hooks the visibility gather needs.
+			 *
+			 * The resolve half runs on the render thread. The editor overrides of
+			 * GetEditorInspectionRoots read the renderer's descriptor map, which the
+			 * game thread rebuilds every frame (AddDescriptor in the panel's frame
+			 * init, ClearDescriptors in CompositeRenderer::EndFrame). Reading that map
+			 * from the render thread races the game thread's rehash and its node
+			 * frees, so the values are captured here instead.
+			 */
+			std::vector<NLS::InstanceID> inspectionRootInstanceIds;
+			bool publishCullReasonDebugSnapshots = false;
+			uint64_t cullReasonDebugSnapshotMaxEntries = 0u;
+			NLS::Render::Resources::Material* defaultMaterial = nullptr;
+			NLS::Render::Resources::Material* overrideMaterial = nullptr;
+			std::optional<Frustum> frustumOverride;
+			bool skipSceneDrawables = false;
+			bool suppressVisibleMaterialTextureRequests = false;
+			/**
+			 * True when at least one scene could not claim a synchronization slot
+			 * because the previous capture is still outstanding.
+			 *
+			 * The capture half is deliberately refused rather than queued, so the
+			 * rest of this input describes no scene at all: resolving it would
+			 * produce an empty draw list. Consumers must drop the frame instead of
+			 * rendering or publishing the void.
+			 */
+			bool captureRefused = false;
+		};
+
+		SceneParseInput BeginSceneParse(
+			const NLS::Render::FrameGraph::FrozenFrameDescriptor& frame);
+		AllDrawables ResolveSceneParse(
+			SceneParseInput& input,
+			const NLS::Render::FrameGraph::FrozenFrameDescriptor& frame);
+		/**
+		 * Releases every capture in `input` that is still claimed.
+		 *
+		 * The capture half claims a slot per scene; the resolve half releases it. Any
+		 * path that drops the input without resolving - a frame that never produced a
+		 * package, or a prepared builder that was discarded before it ran - would
+		 * otherwise leave those claims held forever, and once the outstanding limit is
+		 * reached every later capture is refused and the scene stops rendering.
+		 *
+		 * Only claims that are still outstanding are released, so a partially
+		 * resolved input is safe to pass here and nothing is applied twice.
+		 */
+		void ReleaseUnresolvedSceneParseCapture(SceneParseInput& input);
+
+		/**
+		 * Drops-without-resolving guard for a SceneParseInput.
+		 *
+		 * Held alongside the input and shared between copies, so the claim is released
+		 * exactly once whether the input is resolved normally, dropped because the
+		 * frame could not be published, or destroyed with a prepared builder that was
+		 * never invoked.
+		 */
+		/**
+		 * Liveness token for this renderer's scene-parse capture claims.
+		 *
+		 * A prepared builder can outlive its renderer: the driver retains un-run
+		 * builders in its frame slots and destroys them from
+		 * Driver::ShutdownRhiResources, which runs after the renderer is already
+		 * gone. A dropper that called back through a raw renderer pointer at that
+		 * point would lock a RenderScene mutex inside freed memory and hang the
+		 * process forever. The renderer owns this token and invalidates it before
+		 * its members are destroyed; the dropper holds a weak reference and skips
+		 * the callback once the token is gone.
+		 *
+		 * Skipping is safe: the claims live in RenderScene objects owned by the
+		 * destroyed renderer, so they were destroyed with it.
+		 */
+		struct SceneParseCaptureLifetime
+		{
+		};
+
+		struct SceneParseCaptureDropper
+		{
+			void MarkResolved() noexcept
+			{
+				if (state != nullptr)
+					state->resolved = true;
+			}
+
+			struct State
+			{
+				std::weak_ptr<SceneParseCaptureLifetime> ownerLifetime;
+				BaseSceneRenderer* owner = nullptr;
+				std::shared_ptr<SceneParseInput> input;
+				bool resolved = false;
+
+				~State()
+				{
+					if (resolved || owner == nullptr || input == nullptr)
+						return;
+
+					// The renderer is gone: its RenderScene - and every claim it
+					// held - was destroyed with it, and `owner` is a dangling
+					// pointer that must not be dereferenced.
+					if (ownerLifetime.expired())
+						return;
+
+					owner->ReleaseUnresolvedSceneParseCapture(*input);
+				}
+			};
+
+			std::shared_ptr<State> state;
+		};
+
+		/** Builds a dropper that cannot outlive this renderer's capture state. */
+		SceneParseCaptureDropper MakeSceneParseCaptureDropper(
+			std::shared_ptr<SceneParseInput> input);
+        static void RefreshSceneBuildVisibility(
+            NLS::Render::Context::RenderSceneBuildData& snapshot,
 			const AllDrawables& drawables);
+        void RefreshFrameBuildMetadata(NLS::Render::Context::RenderSceneBuildData& scene) const;
 		virtual bool ShouldPublishCullReasonDebugSnapshots() const;
 		virtual uint64_t GetCullReasonDebugSnapshotMaxEntries() const;
 		virtual std::vector<NLS::InstanceID> GetEditorInspectionRoots() const;
@@ -188,7 +401,27 @@ namespace NLS::Engine::Rendering
 			Render::Settings::EComparaisonAlgorithm depthCompareOverride,
 			std::string_view lightMode,
 			PreparedRecordedDraw& outDraw);
-		const SceneOcclusionFrameInput& GetLastHZBOcclusionFrameInput() const;
+		/**
+		 * Per-phase cost of one threaded draw capture, filled only when a caller asks
+		 * for it. Kept as an out-parameter so the capture path pays nothing when the
+		 * diagnostics switch is off.
+		 */
+		struct CaptureDrawPhaseTimings
+		{
+			uint64_t prepareDrawNs = 0u;
+			uint64_t prepareRecordedDrawNs = 0u;
+			uint64_t captureBindingSetsNs = 0u;
+		};
+		bool CaptureThreadedPreparedDraw(
+			const Drawable& drawable,
+			Material& effectiveMaterial,
+			Render::Resources::MaterialPipelineStateOverrides pipelineOverrides,
+			Render::Settings::EComparaisonAlgorithm depthCompareOverride,
+			std::string_view lightMode,
+			PreparedRecordedDraw& outDraw,
+			CaptureDrawPhaseTimings* outTimings);
+		// Small POD: returned by value so the caller owns a consistent copy.
+		[[nodiscard]] SceneOcclusionFrameInput GetLastHZBOcclusionFrameInput() const;
 		bool HasPendingHZBOcclusionObservationFrame() const;
 		void DiscardPendingHZBOcclusionObservationFrame();
 		void BeginHZBOcclusionObservationFrame(
@@ -196,11 +429,6 @@ namespace NLS::Engine::Rendering
 			std::span<const SceneOcclusionPrimitiveInput> primitiveInputs);
 		SceneOcclusionObservationStats CompleteHZBOcclusionObservationFrame(
 			std::span<const uint32_t> primitiveResultFlags);
-		static NLS::Render::Context::RenderScenePackage BuildSnapshotOwnedRenderScenePackage(
-			const NLS::Render::Context::FrameSnapshot& snapshot,
-			SnapshotRenderScenePackageBuildMode buildMode = SnapshotRenderScenePackageBuildMode::BuildDefaultPassInputs);
-		NLS::Render::Context::RenderScenePackage BuildRenderScenePackage(
-			const NLS::Render::Context::FrameSnapshot& snapshot) const;
 		std::optional<LightGridPrepass::PreparedFrameInputs> BuildLightGridFrameInputs(
 			bool hasSkyboxTexture = false) const;
 			const std::shared_ptr<LightGridPrepass>& GetLightGridPrepass() const;
@@ -229,6 +457,14 @@ namespace NLS::Engine::Rendering
 		{
 			bool valid = false;
 			bool hasSkyboxTexture = false;
+			/**
+			 * True when the key came from the view's live frame descriptor, whose
+			 * camera object is stable for the view's lifetime. A frozen frame owns
+			 * a camera per frame, so that path cannot compare camera addresses.
+			 */
+			bool keyedByLiveCamera = false;
+			// `camera` is compared but never dereferenced: a frozen key leaves this
+			// pointing at a camera the frame has already released.
 			NLS::Render::Data::FrameDescriptor frameDescriptor{};
 			Maths::Vector3 cameraPosition{};
 			Maths::Quaternion cameraRotation{};
@@ -239,27 +475,59 @@ namespace NLS::Engine::Rendering
 		void SetLastCullReasonDebugSnapshot(
 			const std::shared_ptr<const SceneCullReasonDebugSnapshot>& snapshot) const;
 		Material* ResolveDefaultSceneMaterial();
+		NLS::Render::FrameGraph::LightGridCompileContext BuildLightGridCompileContextFromFrame(
+			const Render::Data::FrameDescriptor& frameSnapshot,
+			const LightGridFrameCapture& capture,
+			bool suppressCompute,
+			bool keyedByLiveCamera) const;
 		bool IsLightGridCompileContextCacheHit(
 			const NLS::Render::Data::FrameDescriptor& frameDescriptor,
-			bool hasSkyboxTexture) const;
+			bool hasSkyboxTexture,
+			bool keyedByLiveCamera) const;
 		bool AreSameLightGridFrameInputs(
 			const LightGridCompileContextCache& cached,
-			const NLS::Render::Data::FrameDescriptor& current) const;
+			const NLS::Render::Data::FrameDescriptor& current,
+			bool requireSameCameraAddress) const;
 
 		std::shared_ptr<LightGridPrepass> m_lightGridPrepass;
+		// Owns the liveness token a scene-parse dropper weakly observes. Declared
+		// before the scene state so it is the last of the two to be destroyed and
+		// stays invalidated until every claim-holding member is gone.
+		std::shared_ptr<SceneParseCaptureLifetime> m_sceneParseCaptureLifetime =
+			std::make_shared<SceneParseCaptureLifetime>();
 		std::unique_ptr<SceneLightingProvider> m_sceneLightingProvider;
+		std::unique_ptr<SceneLightingProvider> m_renderSceneLightingProvider;
+			uint64_t m_renderSceneGameObjectCount = 0u;
 		std::unique_ptr<Material> m_sceneFallbackMaterial;
 		NLS::Render::Resources::Shader* m_sceneFallbackShader = nullptr;
 		uint64_t m_sceneFallbackShaderInstanceId = 0u;
 		uint64_t m_sceneFallbackShaderGeneration = 0u;
 		std::string m_sceneFallbackShaderResourcePath;
 		RenderScene m_renderScene;
-		std::unordered_map<SceneSystem::Scene*, RenderScene> m_additiveRenderScenes;
+		std::mutex m_additiveRenderScenesMutex;
+		std::unordered_map<SceneSystem::Scene*, std::shared_ptr<RenderScene>> m_additiveRenderScenes;
 		std::vector<ScenePickablePrimitiveDrawSource> m_lastVisiblePickablePrimitiveDrawSources;
-		uint64_t m_sceneRenderContentRevision = 0u;
+		// Read by the game thread for view-cache invalidation while the parse may
+		// write it from the render thread. It is a monotonic counter, so an atomic
+		// (rather than a locked publish) preserves the semantics: a stale read only
+		// means a cache invalidates one frame later, never a wrong value.
+		std::atomic<uint64_t> m_sceneRenderContentRevision { 0u };
 		// Stays valid until the next successful scene parse so editor picking
 		// keeps using the visible-source path on frames that reuse a cached frame.
 		bool m_hasLastVisiblePickablePrimitiveDrawSources = false;
+		// Published parse results. The accumulators above are written only by
+		// ParseScene; at the end of a parse they are moved into these immutable
+		// snapshots, which readers on any thread acquire under this mutex.
+		mutable std::mutex m_lastParseResultMutex;
+		std::shared_ptr<const std::vector<ScenePickablePrimitiveDrawSource>>
+			m_publishedVisiblePickablePrimitiveDrawSources;
+		std::shared_ptr<const std::vector<uint64_t>> m_publishedStreamingDependencyPins;
+		std::shared_ptr<const NLS::Render::Context::LargeSceneCullReasonDebugSnapshot>
+			m_publishedCullReasonDebugSnapshot;
+		std::shared_ptr<const SceneOcclusionPrimitivePacketBuildResult>
+			m_publishedHZBOcclusionPrimitivePacketBuildResult;
+		SceneOcclusionFrameInput m_publishedHZBOcclusionFrameInput;
+		bool m_publishedHasVisiblePickablePrimitiveDrawSources = false;
 			mutable std::mutex m_lightGridCompileContextCacheMutex;
 			mutable LightGridCompileContextCache m_lightGridCompileContextCache;
 			mutable NLS::Render::Context::LargeSceneCullReasonDebugSnapshot m_lastCullReasonDebugSnapshot;

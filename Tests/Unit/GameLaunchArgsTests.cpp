@@ -9,11 +9,13 @@
 #include "Assets/NativeArtifactContainer.h"
 #include "Core/ResourceManagement/MaterialManager.h"
 #include "Core/ResourceManagement/ShaderManager.h"
+#include "Core/ServiceLocator.h"
 #include "Guid.h"
 #include "Rendering/Assets/ShaderArtifact.h"
 
 #include <filesystem>
 #include <fstream>
+#include <memory>
 #include <optional>
 #include <string>
 #include <vector>
@@ -179,6 +181,22 @@ TEST_F(GameLaunchArgsTests, RejectsInvalidMaterialValidationFrameCount)
     });
 
     EXPECT_TRUE(parsed.hasError);
+}
+
+TEST_F(GameLaunchArgsTests, SwapchainEvidenceOptionPreservesSettingsInEitherArgumentOrder)
+{
+    for (const auto arguments : {
+        std::initializer_list<const char*> { "Game.exe", "--material-validation-swapchain", "--material-validation-output", "output.png" },
+        std::initializer_list<const char*> { "Game.exe", "--material-validation-output", "output.png", "--material-validation-swapchain" } })
+    {
+        const auto parsed = Parse(arguments);
+        ASSERT_FALSE(parsed.hasError);
+        ASSERT_TRUE(parsed.materialValidation.has_value());
+        EXPECT_TRUE(parsed.materialValidation->captureSwapchain);
+        EXPECT_EQ(parsed.materialValidation->outputPath, "output.png");
+    }
+    EXPECT_FALSE(Parse({ "Game.exe", "--material-validation-output", "output.png" })
+        .materialValidation->captureSwapchain);
 }
 
 TEST_F(GameLaunchArgsTests, LoadsRuntimeAssetDatabaseFromProjectArtifactDB)
@@ -451,7 +469,7 @@ TEST_F(GameLaunchArgsTests, RuntimeMaterialPrewarmLoadsMaterialEntriesOutsideRen
 {
     struct CountingMaterialManager final : NLS::Core::ResourceManagement::MaterialManager
     {
-        Material* LoadArtifactWithoutTextures(const std::string& path) override
+        Material* LoadArtifactWithoutTextures(const std::string& path, const std::string&) override
         {
             loadedPaths.push_back(path);
             return reinterpret_cast<Material*>(1);
@@ -494,6 +512,84 @@ TEST_F(GameLaunchArgsTests, RuntimeMaterialPrewarmLoadsMaterialEntriesOutsideRen
     EXPECT_EQ(
         materialManager.loadedPaths.front(),
         LibraryArtifactPath("47b24ab4b128645b99328e0a68370de1202b0ba370eafc30e8bb0b0b7cf8b5ae"));
+}
+
+TEST_F(GameLaunchArgsTests, RuntimeMaterialPrewarmSelectsRuntimeShaderPassInsteadOfEditorPass)
+{
+    using namespace NLS::Core::Assets;
+    using namespace NLS::Core::ResourceManagement;
+    const auto root = std::filesystem::temp_directory_path() /
+        ("nullus_runtime_material_target_" + NLS::Guid::New().ToString());
+    const auto cleanup = std::shared_ptr<void>(nullptr, [root](void*)
+    {
+        NLS::Core::ServiceLocator::Remove<ShaderManager>();
+        MaterialManager::ProvideAssetPaths({}, {});
+        std::filesystem::remove_all(root);
+    });
+    const std::string shaderSource = "Assets/Shaders/Runtime.shader";
+    const auto shaderId = AssetId(NLS::Guid::New());
+    const auto editorPath = LibraryArtifactPath(kHeroArtifactHash);
+    const auto runtimePath = LibraryArtifactPath(
+        "47b24ab4b128645b99328e0a68370de1202b0ba370eafc30e8bb0b0b7cf8b5ae");
+    ArtifactDatabase database;
+    for (const auto& target : {std::string("editor"), std::string("win64")})
+    {
+        ArtifactManifest shader;
+        shader.sourceAssetId = shaderId;
+        shader.importerId = "shader";
+        shader.targetPlatform = target;
+        shader.primarySubAssetKey = "shader:Runtime";
+        const auto& path = target == "editor" ? editorPath : runtimePath;
+        shader.subAssets.push_back({shaderId, shader.primarySubAssetKey, ArtifactType::Shader,
+            "shader", target, path, ContentHashForArtifactPath(path), "Runtime Forward"});
+        database.UpsertManifest(shader, shaderSource, ArtifactRecordStatus::UpToDate);
+    }
+
+    ArtifactWriteRequest material;
+    material.sourceAssetId = AssetId(NLS::Guid::New());
+    material.importerId = "material";
+    material.targetPlatform = "win64";
+    material.primarySubAssetKey = "material:Runtime";
+    const std::string payload = "shaderLabMaterialVersion=1\nshader=" + shaderSource + "\n";
+    material.artifacts.emplace_back(material.primarySubAssetKey, ArtifactType::Material,
+        "material", "Runtime", std::vector<uint8_t>(payload.begin(), payload.end()));
+    const auto written = ArtifactWriter(root / "Staging", root / "Library/Artifacts")
+        .WriteAndCommit(material, nullptr);
+    ASSERT_TRUE(written.committed);
+    ASSERT_EQ(written.manifest.subAssets.size(), 1u);
+    ASSERT_TRUE(database.Save(root / "Library/ArtifactDB"));
+
+    struct RecordingShaderManager final : ShaderManager
+    {
+        Shader* CreateResource(const std::string& path) override
+        {
+            loadedPaths.push_back(path);
+            auto* shader = Shader::CreateForTesting(path);
+            shader->SetImportedShaderLabPassForTesting(
+                "Assets/Shaders/Runtime.shader", "shader:Runtime", "Forward", {});
+            return shader;
+        }
+        std::vector<std::string> loadedPaths;
+    } shaders;
+    ShaderManager::ProvideAssetPaths((root / "Assets").string() + "/", {});
+    MaterialManager::ProvideAssetPaths((root / "Assets").string() + "/", {});
+    NLS::Core::ServiceLocator::Provide<ShaderManager>(shaders);
+    MaterialManager materials;
+
+    NLS::Engine::Assets::RuntimeAssetManifest runtime;
+    runtime.targetPlatform = "win64";
+    runtime.roots.push_back({material.sourceAssetId, material.primarySubAssetKey});
+    const auto& artifact = written.manifest.subAssets.front();
+    runtime.entries.push_back({material.sourceAssetId, material.primarySubAssetKey,
+        ArtifactType::Material, "material", artifact.artifactPath, artifact.contentHash, {}});
+    const NLS::Engine::Assets::RuntimeAssetDatabase runtimeDatabase(std::move(runtime));
+    EXPECT_EQ(NLS::Game::RuntimeAssets::PrewarmRuntimeMaterialAssets(runtimeDatabase, materials), 1u);
+    ASSERT_EQ(shaders.loadedPaths.size(), 1u);
+    const auto loadedShaderPath = std::filesystem::path(shaders.loadedPaths.front()).lexically_normal();
+    EXPECT_EQ(loadedShaderPath, (root / runtimePath).lexically_normal());
+    EXPECT_NE(loadedShaderPath, (root / editorPath).lexically_normal());
+    materials.UnloadResources();
+    shaders.UnloadResources();
 }
 
 TEST_F(GameLaunchArgsTests, RuntimeShaderManagerRejectsUnmanifestedContentArtifactPaths)
@@ -618,7 +714,7 @@ TEST_F(GameLaunchArgsTests, RuntimeMaterialPrewarmOnlyLoadsRootDependencyClosure
 {
     struct CountingMaterialManager final : NLS::Core::ResourceManagement::MaterialManager
     {
-        Material* LoadArtifactWithoutTextures(const std::string& path) override
+        Material* LoadArtifactWithoutTextures(const std::string& path, const std::string&) override
         {
             loadedPaths.push_back(path);
             return reinterpret_cast<Material*>(1);
@@ -724,7 +820,7 @@ TEST_F(GameLaunchArgsTests, RuntimeAssetDatabaseLoadedFromArtifactDbPreservesDep
 {
     struct CountingMaterialManager final : NLS::Core::ResourceManagement::MaterialManager
     {
-        Material* LoadArtifactWithoutTextures(const std::string& path) override
+        Material* LoadArtifactWithoutTextures(const std::string& path, const std::string&) override
         {
             loadedPaths.push_back(path);
             return reinterpret_cast<Material*>(1);
@@ -813,11 +909,65 @@ TEST_F(GameLaunchArgsTests, RuntimeAssetDatabaseLoadedFromArtifactDbPreservesDep
     std::filesystem::remove_all(root);
 }
 
+TEST_F(GameLaunchArgsTests, RuntimeArtifactDatabasePrewarmsEmbeddedMaterialsForSelectedPrefabRoot)
+{
+    using namespace NLS::Core::Assets;
+    struct CountingMaterialManager final : NLS::Core::ResourceManagement::MaterialManager
+    {
+        Material* LoadArtifactWithoutTextures(const std::string& path, const std::string& target) override
+        {
+            EXPECT_EQ(target, "win64");
+            loadedPaths.push_back(path);
+            return reinterpret_cast<Material*>(1);
+        }
+        std::vector<std::string> loadedPaths;
+    };
+    const auto root = std::filesystem::temp_directory_path() /
+        ("nullus_runtime_embedded_materials_" + NLS::Guid::New().ToString());
+    const auto cleanup = std::shared_ptr<void>(nullptr, [root](void*) { std::filesystem::remove_all(root); });
+    const auto modelId = AssetId(NLS::Guid::New());
+    const auto materialId = AssetId(NLS::Guid::New());
+    const auto unrelatedId = AssetId(NLS::Guid::New());
+    const auto materialPath = LibraryArtifactPath(
+        "47b24ab4b128645b99328e0a68370de1202b0ba370eafc30e8bb0b0b7cf8b5ae");
+    const auto prefabPath = LibraryArtifactPath(kHeroArtifactHash);
+    ArtifactManifest model;
+    model.sourceAssetId = modelId;
+    model.importerId = "model-scene";
+    model.targetPlatform = "win64";
+    model.primarySubAssetKey = "prefab:Model";
+    model.subAssets.push_back({modelId, model.primarySubAssetKey, ArtifactType::Prefab,
+        "prefab", "win64", prefabPath, ContentHashForArtifactPath(prefabPath), "Model"});
+    model.subAssets.push_back({modelId, "mesh:Body", ArtifactType::Mesh,
+        "mesh", "win64", prefabPath, ContentHashForArtifactPath(prefabPath), "Body"});
+    model.subAssets.push_back({materialId, "material:Body", ArtifactType::Material,
+        "material", "win64", materialPath, ContentHashForArtifactPath(materialPath), "Body"});
+    ArtifactDatabase database;
+    database.UpsertManifest(model, "Assets/Models/Model.gltf", ArtifactRecordStatus::UpToDate);
+    model.sourceAssetId = unrelatedId;
+    for (auto& artifact : model.subAssets)
+        artifact.sourceAssetId = unrelatedId;
+    database.UpsertManifest(model, "Assets/Models/Other.gltf", ArtifactRecordStatus::UpToDate);
+    ASSERT_TRUE(database.Save(root / "Library/ArtifactDB"));
+
+    const auto runtime = NLS::Game::RuntimeAssets::LoadRuntimeAssetDatabaseForProjectSettings(root / "Game.nullus");
+    ASSERT_TRUE(runtime.has_value());
+    const auto* prefab = runtime->Resolve({modelId, "prefab:Model"});
+    ASSERT_NE(prefab, nullptr);
+    EXPECT_EQ(prefab->dependencies.size(), 2u);
+    ASSERT_NE(runtime->Resolve({materialId, "material:Body"}), nullptr);
+    CountingMaterialManager materials;
+    NLS::Game::RuntimeAssets::RuntimeMaterialPrewarmOptions options;
+    options.roots.push_back({modelId, "prefab:Model"});
+    EXPECT_EQ(NLS::Game::RuntimeAssets::PrewarmRuntimeMaterialAssets(*runtime, materials, options), 1u);
+    EXPECT_EQ(materials.loadedPaths, std::vector<std::string>({materialPath}));
+}
+
 TEST_F(GameLaunchArgsTests, RuntimeMaterialPrewarmCombinesExplicitRootsWithSelectedPacks)
 {
     struct CountingMaterialManager final : NLS::Core::ResourceManagement::MaterialManager
     {
-        Material* LoadArtifactWithoutTextures(const std::string& path) override
+        Material* LoadArtifactWithoutTextures(const std::string& path, const std::string&) override
         {
             loadedPaths.push_back(path);
             return reinterpret_cast<Material*>(1);

@@ -1,6 +1,7 @@
 #include "Rendering/RHI/Backends/DX12/DX12Queue.h"
 
 #include "Profiling/Profiler.h"
+#include "Rendering/Context/RhiCommandListExecutor.h"
 #include "Rendering/RHI/Backends/DX12/DX12PresentPolicy.h"
 #include "Rendering/RHI/Backends/DX12/DX12QueueSynchronization.h"
 #include "Rendering/RHI/Backends/DX12/DX12Synchronization.h"
@@ -359,6 +360,13 @@ namespace NLS::Render::Backend
 	NLS::Render::RHI::RHIQueueOperationResult NativeDX12Queue::SubmitChecked(
 		const NLS::Render::RHI::RHISubmitDesc& submitDesc)
 	{
+		return NLS::Render::Context::RhiCommandListExecutor::Get().RunBackendOperation(
+			"NativeDX12Queue::Submit", [this, &submitDesc] { return SubmitOnSubmitLane(submitDesc); });
+	}
+
+	NLS::Render::RHI::RHIQueueOperationResult NativeDX12Queue::SubmitOnSubmitLane(
+		const NLS::Render::RHI::RHISubmitDesc& submitDesc)
+	{
 		NLS_PROFILE_SCOPE();
 #if defined(_WIN32)
 		if (m_queue == nullptr)
@@ -399,8 +407,16 @@ namespace NLS::Render::Backend
 				auto* nativeCommandList = nativeCommandBuffer.backend == NLS::Render::RHI::BackendType::DX12
 					? static_cast<ID3D12CommandList*>(nativeCommandBuffer.handle)
 					: nullptr;
-				if (nativeCommandList != nullptr)
-					commandLists.push_back(nativeCommandList);
+                if (nativeCommandList != nullptr)
+                {
+                    if (nativeCommandList->GetType() != m_queue->GetDesc().Type)
+                        return {
+                            NLS::Render::RHI::RHIQueueOperationStatusCode::InvalidArgument,
+                            "NativeDX12Queue::Submit: command list type does not match queue: " +
+                                std::string(cmdBuffer->GetDebugName())
+                        };
+                    commandLists.push_back(nativeCommandList);
+                }
 			}
 		}
 
@@ -606,6 +622,13 @@ namespace NLS::Render::Backend
 	}
 
 	NLS::Render::RHI::RHIQueueOperationResult NativeDX12Queue::PresentChecked(
+		const NLS::Render::RHI::RHIPresentDesc& presentDesc)
+	{
+		return NLS::Render::Context::RhiCommandListExecutor::Get().RunBackendOperation(
+			"NativeDX12Queue::Present", [this, &presentDesc] { return PresentOnSubmitLane(presentDesc); }, true);
+	}
+
+	NLS::Render::RHI::RHIQueueOperationResult NativeDX12Queue::PresentOnSubmitLane(
 		const NLS::Render::RHI::RHIPresentDesc& presentDesc)
 	{
 		NLS_PROFILE_SCOPE();

@@ -7,7 +7,7 @@
 #include "SceneSystem/Scene.h"
 #include "Rendering/BaseSceneRenderer.h"
 #include "Rendering/DebugSceneRenderer.h"
-#include "Rendering/Context/ThreadedRenderingLifecycle.h"
+#include "Rendering/Context/RenderScenePackage.h"
 #include "Rendering/GridRenderPass.h"
 #include "Rendering/RHI/Core/RHIBinding.h"
 #include "Rendering/EditorHelperLifecycle.h"
@@ -46,9 +46,28 @@ namespace
 
     struct SceneSnapshotVisibilityHarness : NLS::Engine::Rendering::BaseSceneRenderer
     {
-        using NLS::Engine::Rendering::BaseSceneRenderer::RefreshFrameSnapshotVisibility;
+        using NLS::Engine::Rendering::BaseSceneRenderer::RefreshSceneBuildVisibility;
     };
 
+}
+
+TEST(DebugSceneLifecycleTests, PersistentHelperCacheRejectsFrameSlotObjectBindings)
+{
+    using NLS::Editor::Rendering::CanCacheEditorDrawCommands;
+    std::vector<NLS::Render::Context::RecordedDrawCommandInput> commands(2u);
+    EXPECT_FALSE(CanCacheEditorDrawCommands({}));
+    EXPECT_TRUE(CanCacheEditorDrawCommands(commands));
+
+    commands.back().objectBindingSet = std::make_shared<TestBindingSet>("FrameSlotObjectBinding");
+    EXPECT_FALSE(CanCacheEditorDrawCommands(commands));
+    commands.back().objectBindingImmutable = true;
+    EXPECT_TRUE(CanCacheEditorDrawCommands(commands));
+
+    commands.front().usesObjectIndex = true;
+    EXPECT_FALSE(CanCacheEditorDrawCommands(commands));
+    commands.front().usesObjectIndex = false;
+    commands.front().objectBindingSet = std::make_shared<TestBindingSet>("AnotherFrameSlotBinding");
+    EXPECT_FALSE(CanCacheEditorDrawCommands(commands));
 }
 
 TEST(DebugSceneLifecycleTests, CountsActiveEditorHelpersForThreadedSnapshotPlanning)
@@ -94,14 +113,14 @@ TEST(DebugSceneLifecycleTests, SkipsEditorHelpersWhosePassesAreDisabledForThread
 
 TEST(DebugSceneLifecycleTests, SceneVisibilityRefreshPreservesEditorHelperDrawCount)
 {
-    NLS::Render::Context::FrameSnapshot snapshot;
+    NLS::Render::Context::RenderSceneBuildData snapshot;
     snapshot.visibleHelperDrawCount = 3u;
 
     NLS::Engine::Rendering::BaseSceneRenderer::AllDrawables drawables;
     NLS::Render::Entities::Drawable opaqueDrawable;
     drawables.opaques.emplace_back(0.0f, opaqueDrawable);
 
-    SceneSnapshotVisibilityHarness::RefreshFrameSnapshotVisibility(snapshot, drawables);
+    SceneSnapshotVisibilityHarness::RefreshSceneBuildVisibility(snapshot, drawables);
 
     EXPECT_EQ(snapshot.visibleOpaqueDrawCount, 1u);
     EXPECT_EQ(snapshot.visibleHelperDrawCount, 3u);
@@ -111,9 +130,9 @@ TEST(DebugSceneLifecycleTests, DeferredSceneRendererBuildsAggregateHelperInputOn
 {
     const auto source = ReadTextFile(
         std::filesystem::path(NLS_ROOT_DIR) / "Runtime/Engine/Rendering/DeferredSceneRenderer.cpp");
-    const auto builderStart = source.find("DeferredSceneRenderer::BuildDeferredPreparedRenderSceneBuilder");
+    const auto builderStart = source.find("DeferredSceneRenderer::BuildDeferredRenderSceneCommand");
     ASSERT_NE(builderStart, std::string::npos);
-    const auto builderEnd = source.find("const bool suppressLightGridCompute", builderStart);
+    const auto builderEnd = source.find("DeferredSceneRenderer::BuildRenderSceneCommand", builderStart);
     ASSERT_NE(builderEnd, std::string::npos);
 
     const auto builderBody = source.substr(builderStart, builderEnd - builderStart);
@@ -123,9 +142,9 @@ TEST(DebugSceneLifecycleTests, DeferredSceneRendererBuildsAggregateHelperInputOn
         << "The no-scene path must materialize snapshot-owned helper draws before frame-graph compilation.";
 }
 
-TEST(DebugSceneLifecycleTests, CullingOverlayItemsAreBuiltFromFrameSnapshotOnlyWhenEnabled)
+TEST(DebugSceneLifecycleTests, CullingOverlayItemsAreBuiltFromSceneBuildDataOnlyWhenEnabled)
 {
-    NLS::Render::Context::FrameSnapshot snapshot;
+    NLS::Render::Context::RenderSceneBuildData snapshot;
     snapshot.largeSceneCullReasonSnapshot.entries.push_back({
         0x90u,
         7u,

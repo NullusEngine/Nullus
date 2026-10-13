@@ -69,13 +69,12 @@ class DebugSceneRenderer : public Engine::Rendering::DeferredSceneRenderer
 		void SetCullingOverlayOptions(const CullingOverlayOptions& options);
 		const CullingOverlayOptions& GetCullingOverlayOptions() const;
 		std::vector<CullingOverlayItem> BuildCullingOverlayItems(
-			const NLS::Render::Context::FrameSnapshot& snapshot) const;
+			const NLS::Render::Context::RenderSceneBuildData& scene) const;
 
 	protected:
-	    std::optional<NLS::Render::Context::FrameSnapshot> BuildFrameSnapshot(
-			const NLS::Render::Data::FrameDescriptor& frameDescriptor) const override;
-	    NLS::Render::Context::PreparedRenderSceneBuilder BuildPreparedRenderSceneBuilder(
-	        const NLS::Render::Context::FrameSnapshot& snapshot) override;
+	    uint64_t CountEditorHelperDraws() const;
+	    NLS::Render::Context::RenderSceneBuildCommand BuildRenderSceneCommand(
+	        const NLS::Render::Context::RenderFramePacket& packet) override;
 	    bool ShouldPublishCullReasonDebugSnapshots() const override;
 	    uint64_t GetCullReasonDebugSnapshotMaxEntries() const override;
 	    std::vector<NLS::InstanceID> GetEditorInspectionRoots() const override;
@@ -87,7 +86,7 @@ class DebugSceneRenderer : public Engine::Rendering::DeferredSceneRenderer
 	};
 
 	std::vector<DebugSceneRenderer::CullingOverlayItem> BuildDebugSceneCullingOverlayItems(
-		const NLS::Render::Context::FrameSnapshot& snapshot,
+		const NLS::Render::Context::RenderSceneBuildData& scene,
 		const DebugSceneRenderer::CullingOverlayOptions& options);
     uint32_t SubmitPrefabDragProxyDebugPrimitives(
         NLS::Render::Debug::DebugDrawService& debugDrawService,

@@ -1,4 +1,4 @@
-﻿#pragma once
+#pragma once
 
 #include <cstdint>
 #include <functional>
@@ -35,9 +35,9 @@ namespace NLS::Render::Resources
 namespace NLS::Render::Context
 {
 class DriverImpl;
+class ScopedFrameResourceContext;
 struct RenderThreadCoordinator;
-struct RhiThreadCoordinator;
-class ThreadedRenderingLifecycle;
+class RhiCommandListExecutor;
 enum class RhiSubmissionAttribution : uint8_t;
 struct DriverRendererAccess;
 struct DriverTestAccess;
@@ -64,6 +64,12 @@ public:
     Settings::RuntimeBackendReadinessDecision EvaluateGameMainRuntimeReadiness(Settings::EGraphicsBackend requestedBackend) const;
     std::optional<std::string> GetEditorPickingReadbackWarning() const;
     Settings::EGraphicsBackend GetActiveGraphicsBackend() const;
+    /**
+     * Resolved RHI thread mode and the reason for the decision, including a
+     * rejection when a forced mode is unsupported by the backend. Empty until the
+     * threaded rendering workers have been started.
+     */
+    std::string GetRhiThreadModeSummary() const;
     ::NLS::Render::RHI::NativeRenderDeviceInfo GetNativeDeviceInfo() const;
 	bool CreatePlatformSwapchain(
 		void* platformWindow,
@@ -75,19 +81,19 @@ public:
 	void ResizePlatformSwapchain(uint32_t width, uint32_t height);
     void ShutdownThreadedRendering();
 
-    // Set a callback to be invoked before swapchain resize.
-    // This allows the application layer (e.g., Editor) to notify UI about impending resize
-    // without requiring Driver to directly depend on UIManager.
+    // Invoked on the render thread before resize. Clearing joins any active callback,
+    // so captured application objects may be destroyed after this call returns.
     using SwapchainWillResizeCallback = std::function<void()>;
     void SetSwapchainWillResizeCallback(SwapchainWillResizeCallback callback);
 
 private:
+    friend class ScopedFrameResourceContext;
     friend struct DriverRendererAccess;
     friend struct DriverTestAccess;
     friend struct DriverUIAccess;
     friend struct DriverResourceAccess;
     friend struct RenderThreadCoordinator;
-    friend struct RhiThreadCoordinator;
+    friend class RhiCommandListExecutor;
 
 	bool CreateSwapchain(const ::NLS::Render::RHI::SwapchainDesc& desc);
 	void DestroySwapchain();

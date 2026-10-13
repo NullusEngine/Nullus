@@ -5,6 +5,8 @@
 
 #include "Debug/Logger.h"
 #include "ImGui/backends/imgui_impl_metal.h"
+#include "Rendering/Context/DriverAccess.h"
+#include "Rendering/Context/RhiCommandListExecutor.h"
 #include "Rendering/RHI/Core/RHIResource.h"
 
 namespace NLS::Render::RHI
@@ -65,12 +67,46 @@ namespace NLS::Render::RHI
                     return;
 
                 id<MTLCommandBuffer> commandBuffer = [m_queue commandBuffer];
+                if (commandBuffer == nil)
+                    return;
                 id<MTLRenderCommandEncoder> encoder =
                     [commandBuffer renderCommandEncoderWithDescriptor:m_renderPassDescriptor];
                 ImGui_ImplMetal_RenderDrawData(drawData, commandBuffer, encoder);
                 [encoder endEncoding];
                 [commandBuffer presentDrawable:m_drawable];
-                [commandBuffer commit];
+                [commandBuffer retain];
+                const auto committed = Context::RhiCommandListExecutor::Get().RunOnSubmitLane(
+                    "MetalUIBridge::CommitAndPresent", [commandBuffer]
+                    {
+                        @autoreleasepool
+                        {
+                            RHIQueueOperationResult result;
+                            result.mayHaveQueuedGpuWork = true;
+                            @try
+                            {
+                                [commandBuffer commit];
+                                if (commandBuffer.status == MTLCommandBufferStatusError)
+                                {
+                                    result.code = RHIQueueOperationStatusCode::BackendFailure;
+                                    result.message = "Metal UI command buffer commit failed";
+                                }
+                            }
+                            @catch (NSException* exception)
+                            {
+                                result.code = RHIQueueOperationStatusCode::BackendFailure;
+                                const char* reason = exception.reason.UTF8String;
+                                result.message = reason != nullptr ? reason : "Metal UI commit threw an exception";
+                            }
+                            return result;
+                        }
+                    }, true);
+                [commandBuffer release];
+                if (!committed.Succeeded())
+                {
+                    NLS_LOG_ERROR("MetalUIBridge: " + committed.message);
+                    if (committed.mayHaveQueuedGpuWork)
+                        Context::MarkLocatedDriverUnsafeGpuWorkQuarantined(committed.message);
+                }
 
                 m_renderPassDescriptor.colorAttachments[0].texture = nil;
                 ReleaseDrawable();
@@ -97,7 +133,7 @@ namespace NLS::Render::RHI
             uint64_t GetUISignalValue() const override { return 0u; }
             void SubmitCommandBuffer(uint32_t) override
             {
-                // RenderDrawData commits the Metal command buffer immediately because this path owns presentation.
+                // RenderDrawData has already ordered commit and present on the submit lane.
             }
 
         private:

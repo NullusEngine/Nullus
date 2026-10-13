@@ -70,60 +70,63 @@ namespace NLS::Render::Backend
 		UINT BuildDx12FactoryFlags(const bool debugMode, const bool gpuBasedValidation)
 		{
 			UINT factoryFlags = 0;
-#if defined(_DEBUG)
-			if (debugMode)
+			// GPU-based validation is process-wide debug state, not per-device: a
+			// device created without the debug layer still inherits whatever the
+			// previous one left behind. Sync the flag to the requested mode on
+			// every creation so the process cannot drift from the configuration.
+			Microsoft::WRL::ComPtr<ID3D12Debug5> debugController5;
+			const HRESULT debug5Hr = D3D12GetDebugInterface(IID_PPV_ARGS(&debugController5));
+			if (SUCCEEDED(debug5Hr) && debugController5 != nullptr)
 			{
-				Microsoft::WRL::ComPtr<ID3D12Debug5> debugController5;
-				const HRESULT debug5Hr = D3D12GetDebugInterface(IID_PPV_ARGS(&debugController5));
-				if (SUCCEEDED(debug5Hr) && debugController5 != nullptr)
+				debugController5->SetEnableGPUBasedValidation(gpuBasedValidation ? TRUE : FALSE);
+				if (debugMode)
 				{
 					debugController5->EnableDebugLayer();
-					if (gpuBasedValidation)
-						debugController5->SetEnableGPUBasedValidation(TRUE);
 					debugController5->SetEnableAutoName(TRUE);
 					NLS_LOG_INFO(
 						"CreateDX12RhiDevice: enabled DX12 debug layer and auto names via ID3D12Debug5; "
 						"GPU-based validation=" + std::string(gpuBasedValidation ? "enabled" : "disabled"));
 					factoryFlags |= DXGI_CREATE_FACTORY_DEBUG;
 				}
+				return factoryFlags;
+			}
+
+			Microsoft::WRL::ComPtr<ID3D12Debug3> debugController3;
+			const HRESULT debug3Hr = D3D12GetDebugInterface(IID_PPV_ARGS(&debugController3));
+			if (SUCCEEDED(debug3Hr) && debugController3 != nullptr)
+			{
+				debugController3->SetEnableGPUBasedValidation(gpuBasedValidation ? TRUE : FALSE);
+				debugController3->SetEnableSynchronizedCommandQueueValidation(
+					gpuBasedValidation ? TRUE : FALSE);
+				if (debugMode)
+				{
+					debugController3->EnableDebugLayer();
+					NLS_LOG_INFO(
+						"CreateDX12RhiDevice: enabled DX12 debug layer via ID3D12Debug3; "
+						"GPU-based validation=" + std::string(gpuBasedValidation ? "enabled" : "disabled"));
+					factoryFlags |= DXGI_CREATE_FACTORY_DEBUG;
+				}
+				return factoryFlags;
+			}
+
+			if (debugMode)
+			{
+				Microsoft::WRL::ComPtr<ID3D12Debug> debugController;
+				const HRESULT debugHr = D3D12GetDebugInterface(IID_PPV_ARGS(&debugController));
+				if (SUCCEEDED(debugHr) && debugController != nullptr)
+				{
+					debugController->EnableDebugLayer();
+					NLS_LOG_INFO("CreateDX12RhiDevice: enabled DX12 debug layer via ID3D12Debug");
+					factoryFlags |= DXGI_CREATE_FACTORY_DEBUG;
+				}
 				else
 				{
-					Microsoft::WRL::ComPtr<ID3D12Debug3> debugController3;
-					const HRESULT debug3Hr = D3D12GetDebugInterface(IID_PPV_ARGS(&debugController3));
-					if (SUCCEEDED(debug3Hr) && debugController3 != nullptr)
-					{
-						debugController3->EnableDebugLayer();
-						if (gpuBasedValidation)
-						{
-							debugController3->SetEnableGPUBasedValidation(TRUE);
-							debugController3->SetEnableSynchronizedCommandQueueValidation(TRUE);
-						}
-						NLS_LOG_INFO(
-							"CreateDX12RhiDevice: enabled DX12 debug layer via ID3D12Debug3; "
-							"GPU-based validation=" + std::string(gpuBasedValidation ? "enabled" : "disabled"));
-						factoryFlags |= DXGI_CREATE_FACTORY_DEBUG;
-					}
-					else
-					{
-						Microsoft::WRL::ComPtr<ID3D12Debug> debugController;
-						const HRESULT debugHr = D3D12GetDebugInterface(IID_PPV_ARGS(&debugController));
-						if (SUCCEEDED(debugHr) && debugController != nullptr)
-						{
-							debugController->EnableDebugLayer();
-							NLS_LOG_INFO("CreateDX12RhiDevice: enabled DX12 debug layer via ID3D12Debug");
-							factoryFlags |= DXGI_CREATE_FACTORY_DEBUG;
-						}
-						else
-						{
-							NLS_LOG_WARNING(
-								"CreateDX12RhiDevice: failed to acquire DX12 debug controller hr=" + std::to_string(debugHr) +
-								", debug3 hr=" + std::to_string(debug3Hr) +
-								", debug5 hr=" + std::to_string(debug5Hr));
-						}
-					}
+					NLS_LOG_WARNING(
+						"CreateDX12RhiDevice: failed to acquire DX12 debug controller hr=" + std::to_string(debugHr) +
+						", debug3 hr=" + std::to_string(debug3Hr) +
+						", debug5 hr=" + std::to_string(debug5Hr));
 				}
 			}
-#endif
 			return factoryFlags;
 		}
 
@@ -412,6 +415,10 @@ namespace NLS::Render::Backend
 				RHIDeviceFeature::UIOverlayFrameGraph,
 				true,
 				"DX12 UI overlay FrameGraph is runtime-selectable after US1/US2/US3 scene overlay, UI-only routing, texture/font retention, and legacy direct-submit exclusion validation");
+			capabilities.SetFeature(
+				RHIDeviceFeature::RhiTasksMode,
+				true,
+				"DX12 supports the logical RHI lane on TaskGraph workers: allocators are per worker/slot/queue and ExecuteCommandLists is serialized by the queue lock");
 			capabilities.maxTextureDimension2D = D3D12_REQ_TEXTURE2D_U_OR_V_DIMENSION;
 			capabilities.maxColorAttachments = D3D12_SIMULTANEOUS_RENDER_TARGET_COUNT;
 			capabilities.limits.maxTextureDimension2D = capabilities.maxTextureDimension2D;
@@ -430,11 +437,13 @@ namespace NLS::Render::Backend
 #if defined(_WIN32)
 		const bool gpuBasedValidation =
 			NLS::Render::Settings::IsEnvironmentFlagEnabled("NLS_DX12_GPU_VALIDATION");
-		const auto dredConfiguration = ConfigureDx12Dred(debugMode);
+			const bool diagnosticsEnabled = debugMode || gpuBasedValidation ||
+				NLS::Render::Settings::IsEnvironmentFlagEnabled("NLS_DX12_DEBUG_LAYER");
+			const auto dredConfiguration = ConfigureDx12Dred(diagnosticsEnabled);
 		resources.dredDiagnosticsEnabled = dredConfiguration.diagnosticsEnabled;
 		resources.dredAutoBreadcrumbsEnabled = dredConfiguration.autoBreadcrumbsEnabled;
 
-		const UINT factoryFlags = BuildDx12FactoryFlags(debugMode, gpuBasedValidation);
+			const UINT factoryFlags = BuildDx12FactoryFlags(diagnosticsEnabled, gpuBasedValidation);
 		if (FAILED(CreateDXGIFactory2(factoryFlags, IID_PPV_ARGS(&resources.factory))))
 		{
 			resources.creationDiagnostics = "failed to create DXGI factory";

@@ -2,6 +2,13 @@
 
 #include <limits>
 
+#if defined(_WIN32)
+#include <array>
+#include <barrier>
+#include <thread>
+#include <vector>
+#endif
+
 #include "Rendering/RHI/Backends/DX12/DX12ExplicitDeviceFactory.h"
 #include "Rendering/RHI/Backends/DX12/DX12FormatUtils.h"
 #include "Rendering/RHI/Backends/DX12/DX12Resource.h"
@@ -377,6 +384,64 @@ TEST(DX12TextureViewUtilsTests, UsesTypelessDepthResourceWithDsvClearFormat)
     EXPECT_EQ(
         NLS::Render::RHI::DX12::ToDX12OptimizedClearFormat(NLS::Render::RHI::TextureFormat::Depth24Stencil8),
         DXGI_FORMAT_D24_UNORM_S8_UINT);
+}
+
+TEST(DX12TextureViewUtilsTests, ConcurrentFirstReadOnlyDepthStencilAccessPublishesOneStableDescriptor)
+{
+    const auto device = NLS::Render::Backend::CreateDX12RhiDevice(false);
+    if (device == nullptr || !device->IsBackendReady())
+        GTEST_SKIP() << "DX12 device is not available in this environment";
+
+    constexpr size_t workerCount = 8u;
+    for (const auto format : { NLS::Render::RHI::TextureFormat::Depth24Stencil8,
+                              NLS::Render::RHI::TextureFormat::Depth32F })
+    {
+        NLS::Render::RHI::RHITextureDesc textureDesc;
+        textureDesc.extent = { 32u, 32u, 1u };
+        textureDesc.format = format;
+        textureDesc.usage = NLS::Render::RHI::TextureUsageFlags::DepthStencilAttachment;
+        const auto texture = device->CreateTexture(textureDesc);
+        ASSERT_NE(texture, nullptr);
+
+        for (size_t iteration = 0u; iteration < 32u; ++iteration)
+        {
+            NLS::Render::RHI::RHITextureViewDesc viewDesc;
+            viewDesc.format = format;
+            const auto view = device->CreateTextureView(texture, viewDesc);
+            ASSERT_NE(view, nullptr);
+            std::array<NLS::Render::RHI::NativeHandle, workerCount> handles{};
+            std::array<bool, workerCount> stable{};
+            std::barrier start(static_cast<ptrdiff_t>(workerCount));
+            std::vector<std::jthread> workers;
+            for (size_t worker = 0u; worker < workerCount; ++worker)
+            {
+                workers.emplace_back([&, worker]
+                {
+                    start.arrive_and_wait();
+                    handles[worker] = view->GetNativeDepthStencilView(
+                        NLS::Render::RHI::RHIDepthStencilViewAccess::ReadOnlyDepthStencil);
+                    stable[worker] = true;
+                    for (size_t sample = 0u; sample < 64u; ++sample)
+                    {
+                        stable[worker] = stable[worker] && handles[worker].handle ==
+                            view->GetNativeDepthStencilView(
+                                NLS::Render::RHI::RHIDepthStencilViewAccess::ReadOnlyDepthStencil).handle;
+                    }
+                });
+            }
+            workers.clear();
+            const auto readWrite = view->GetNativeDepthStencilView();
+            ASSERT_NE(readWrite.handle, nullptr);
+            for (size_t worker = 0u; worker < workerCount; ++worker)
+            {
+                EXPECT_EQ(handles[worker].backend, NLS::Render::RHI::BackendType::DX12);
+                EXPECT_NE(handles[worker].handle, nullptr);
+                EXPECT_NE(handles[worker].handle, readWrite.handle);
+                EXPECT_EQ(handles[worker].handle, handles[0].handle);
+                EXPECT_TRUE(stable[worker]);
+            }
+        }
+    }
 }
 
 TEST(DX12TextureViewUtilsTests, RejectsZeroSizedTextures)

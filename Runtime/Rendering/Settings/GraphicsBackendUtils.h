@@ -421,47 +421,45 @@ namespace NLS::Render::Settings
 
 	inline bool SupportsEditorMainRuntime(const NLS::Render::RHI::RHIDeviceCapabilities& capabilities)
 	{
-		auto synced = capabilities;
-		synced.SynchronizeLegacyFields();
-		return synced.GetFeature(NLS::Render::RHI::RHIDeviceFeature::BackendReady).supported &&
-			synced.GetFeature(NLS::Render::RHI::RHIDeviceFeature::CurrentSceneRenderer).supported &&
-			synced.GetFeature(NLS::Render::RHI::RHIDeviceFeature::OffscreenFramebuffers).supported &&
-			synced.GetFeature(NLS::Render::RHI::RHIDeviceFeature::UITextureHandles).supported &&
-			synced.GetFeature(NLS::Render::RHI::RHIDeviceFeature::DepthBlit).supported &&
-			synced.GetFeature(NLS::Render::RHI::RHIDeviceFeature::Cubemaps).supported;
+		// Query the set directly: each SupportsFeature call derives the one flag it
+		// needs, so no copy of the whole capability set is materialised here.
+		using NLS::Render::RHI::RHIDeviceFeature;
+		return capabilities.SupportsFeature(RHIDeviceFeature::BackendReady) &&
+			capabilities.SupportsFeature(RHIDeviceFeature::CurrentSceneRenderer) &&
+			capabilities.SupportsFeature(RHIDeviceFeature::OffscreenFramebuffers) &&
+			capabilities.SupportsFeature(RHIDeviceFeature::UITextureHandles) &&
+			capabilities.SupportsFeature(RHIDeviceFeature::DepthBlit) &&
+			capabilities.SupportsFeature(RHIDeviceFeature::Cubemaps);
 	}
 
 	inline bool SupportsGameMainRuntime(const NLS::Render::RHI::RHIDeviceCapabilities& capabilities)
 	{
-		auto synced = capabilities;
-		synced.SynchronizeLegacyFields();
-		return synced.GetFeature(NLS::Render::RHI::RHIDeviceFeature::BackendReady).supported &&
-			synced.GetFeature(NLS::Render::RHI::RHIDeviceFeature::CurrentSceneRenderer).supported &&
-			synced.GetFeature(NLS::Render::RHI::RHIDeviceFeature::Swapchain).supported;
+		using NLS::Render::RHI::RHIDeviceFeature;
+		return capabilities.SupportsFeature(RHIDeviceFeature::BackendReady) &&
+			capabilities.SupportsFeature(RHIDeviceFeature::CurrentSceneRenderer) &&
+			capabilities.SupportsFeature(RHIDeviceFeature::Swapchain);
 	}
 
 	inline bool SupportsTierARenderFoundation(const NLS::Render::RHI::RHIDeviceCapabilities& capabilities)
 	{
-		auto synced = capabilities;
-		synced.SynchronizeLegacyFields();
-		return synced.GetFeature(NLS::Render::RHI::RHIDeviceFeature::BackendReady).supported &&
-			synced.GetFeature(NLS::Render::RHI::RHIDeviceFeature::Graphics).supported &&
-			synced.GetFeature(NLS::Render::RHI::RHIDeviceFeature::Compute).supported &&
-			synced.GetFeature(NLS::Render::RHI::RHIDeviceFeature::Swapchain).supported &&
-			synced.GetFeature(NLS::Render::RHI::RHIDeviceFeature::CurrentSceneRenderer).supported &&
-			synced.GetFeature(NLS::Render::RHI::RHIDeviceFeature::OffscreenFramebuffers).supported &&
-			synced.GetFeature(NLS::Render::RHI::RHIDeviceFeature::MultiRenderTargets).supported &&
-			synced.GetFeature(NLS::Render::RHI::RHIDeviceFeature::ExplicitBarriers).supported &&
-			synced.GetFeature(NLS::Render::RHI::RHIDeviceFeature::CentralizedDescriptorManagement).supported &&
-			synced.GetFeature(NLS::Render::RHI::RHIDeviceFeature::PipelineStateCache).supported;
+		using NLS::Render::RHI::RHIDeviceFeature;
+		return capabilities.SupportsFeature(RHIDeviceFeature::BackendReady) &&
+			capabilities.SupportsFeature(RHIDeviceFeature::Graphics) &&
+			capabilities.SupportsFeature(RHIDeviceFeature::Compute) &&
+			capabilities.SupportsFeature(RHIDeviceFeature::Swapchain) &&
+			capabilities.SupportsFeature(RHIDeviceFeature::CurrentSceneRenderer) &&
+			capabilities.SupportsFeature(RHIDeviceFeature::OffscreenFramebuffers) &&
+			capabilities.SupportsFeature(RHIDeviceFeature::MultiRenderTargets) &&
+			capabilities.SupportsFeature(RHIDeviceFeature::ExplicitBarriers) &&
+			capabilities.SupportsFeature(RHIDeviceFeature::CentralizedDescriptorManagement) &&
+			capabilities.SupportsFeature(RHIDeviceFeature::PipelineStateCache);
 	}
 
 	inline bool SupportsRenderGraphTransientResources(const NLS::Render::RHI::RHIDeviceCapabilities& capabilities)
 	{
-		auto synced = capabilities;
-		synced.SynchronizeLegacyFields();
-		return SupportsTierARenderFoundation(synced) &&
-			synced.GetFeature(NLS::Render::RHI::RHIDeviceFeature::TransientResourceAllocator).supported;
+		return SupportsTierARenderFoundation(capabilities) &&
+			capabilities.SupportsFeature(
+				NLS::Render::RHI::RHIDeviceFeature::TransientResourceAllocator);
 	}
 
 	// Thread-local diagnostics settings - set when Driver is created, read by subsystems without driver access.

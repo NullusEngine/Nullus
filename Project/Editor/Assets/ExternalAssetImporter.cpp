@@ -92,8 +92,9 @@ void ParallelForModelImportItems(const size_t itemCount, Function&& function)
     workers.reserve(workerCount);
     for (size_t workerIndex = 0u; workerIndex < workerCount; ++workerIndex)
     {
-        workers.emplace_back([&]()
+        workers.emplace_back([&, workerIndex]()
         {
+            NLS_PROFILE_REGISTER_THREAD("Model Import Worker " + std::to_string(workerIndex));
             while (true)
             {
                 const auto itemIndex = nextItemIndex.fetch_add(1u, std::memory_order_relaxed);

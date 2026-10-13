@@ -3,7 +3,7 @@
 #include <optional>
 
 #include <Rendering/Entities/Camera.h>
-#include <Rendering/Context/ThreadedRenderingLifecycle.h>
+#include <Rendering/Context/RenderScenePackage.h>
 
 #include <GameObject.h>
 #include <SceneSystem/SceneManager.h>

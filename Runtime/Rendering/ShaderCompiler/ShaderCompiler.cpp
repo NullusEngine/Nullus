@@ -1,6 +1,7 @@
 #include "Rendering/ShaderCompiler/ShaderCompiler.h"
 
 #include "Rendering/ShaderCompiler/ShaderCacheDatabase.h"
+#include "Profiling/Profiler.h"
 
 #include <algorithm>
 #include <cctype>
@@ -1611,6 +1612,7 @@ namespace NLS::Render::ShaderCompiler
 		readPipe = nullptr;
 		std::thread outputReader([outputReadPipe, &processOutput]()
 		{
+                NLS_PROFILE_REGISTER_THREAD("Shader Compiler Output");
 			char buffer[4096];
 			DWORD bytesRead = 0;
 			while (ReadFile(outputReadPipe, buffer, static_cast<DWORD>(sizeof(buffer) - 1), &bytesRead, nullptr) && bytesRead > 0)
@@ -2028,8 +2030,9 @@ namespace NLS::Render::ShaderCompiler
 		{
 			futures.push_back(std::async(
 				std::launch::async,
-				[this, input]()
+                    [this, input, workerIndex = futures.size()]()
 				{
+                        NLS_PROFILE_REGISTER_THREAD("Shader Compile Worker " + std::to_string(workerIndex));
 					return m_backend->Compile(input);
 				}));
 		}
@@ -2093,8 +2096,9 @@ namespace NLS::Render::ShaderCompiler
 		{
 			futures.push_back(std::async(
 				std::launch::async,
-				[this, input]()
+                    [this, input, workerIndex = futures.size()]()
 				{
+                        NLS_PROFILE_REGISTER_THREAD("Shader Reflect Worker " + std::to_string(workerIndex));
 					return m_backend->Reflect(input.input, input.compiledOutput);
 				}));
 		}

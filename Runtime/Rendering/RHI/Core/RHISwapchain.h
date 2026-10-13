@@ -36,7 +36,15 @@ namespace NLS::Render::RHI
         Success,
         InvalidArgument,
         BackendFailure,
-        DeviceLost
+        DeviceLost,
+        /**
+         * The queue accepted (or may have accepted) the present request, but the
+         * surface no longer matches the swapchain - Vulkan reports this as
+         * VK_ERROR_OUT_OF_DATE_KHR. It is a routine race against a window resize,
+         * not a device failure: the submission stays valid and the swapchain has to
+         * be rebuilt at its current size before the next present.
+         */
+        SwapchainOutOfDate
     };
 
     struct NLS_RENDER_API RHIQueueOperationResult
@@ -51,6 +59,15 @@ namespace NLS::Render::RHI
         bool frameFenceSignalQueued = false;
 
         bool Succeeded() const { return code == RHIQueueOperationStatusCode::Success; }
+
+        /**
+         * True when the operation itself did not fail but the swapchain must be
+         * rebuilt before the next present.
+         */
+        bool RequiresSwapchainRecreation() const
+        {
+            return code == RHIQueueOperationStatusCode::SwapchainOutOfDate;
+        }
     };
 
     struct NLS_RENDER_API RHIAcquiredImage
@@ -119,6 +136,11 @@ namespace NLS::Render::RHI
         std::shared_ptr<RHITextureView> swapchainBackbufferView; // View for swapchain backbuffer, used when outputBuffer is nullptr
         std::shared_ptr<RHITexture> swapchainDepthStencilTexture;
         std::shared_ptr<RHITextureView> swapchainDepthStencilView;
+        std::shared_ptr<RHITexture> sceneColorTexture;
+        std::shared_ptr<RHITextureView> sceneColorView;
+        std::shared_ptr<RHITexture> sceneDepthStencilTexture;
+        std::shared_ptr<RHITextureView> sceneDepthStencilView;
+        std::shared_ptr<RHIBindingSet> sceneOutputBindingSet;
         std::shared_ptr<RHITexture> explicitReadbackTexture;
         uint64_t explicitReadbackTextureGeneration = 0u;
     };

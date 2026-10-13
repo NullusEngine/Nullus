@@ -14,16 +14,32 @@
 #include "Rendering/BaseSceneRenderer.h"
 #include "Rendering/Context/DriverAccess.h"
 #include "Rendering/Context/Driver.h"
-#include "Rendering/Context/ThreadedRenderingLifecycle.h"
+#include "Rendering/Context/RenderScenePackage.h"
 #include "Rendering/Data/LightingDescriptor.h"
 #include "Rendering/Entities/Light.h"
 #include "Rendering/LightGridPrepass.h"
 #include "Rendering/SceneLightingProvider.h"
+#include "Rendering/SceneRenderStore.h"
+#include "Tests/RenderingThreadTestHelpers.h"
 #include "Rendering/Settings/DriverSettings.h"
 #include "SceneSystem/Scene.h"
 
 namespace
 {
+    class ScopedDriverService final
+    {
+    public:
+        explicit ScopedDriverService(NLS::Render::Context::Driver& driver)
+        {
+            NLS::Core::ServiceLocator::Provide(driver);
+        }
+
+        ~ScopedDriverService()
+        {
+            NLS::Core::ServiceLocator::Remove<NLS::Render::Context::Driver>();
+        }
+    };
+
     class LightingProviderTestSceneRenderer final : public NLS::Engine::Rendering::BaseSceneRenderer
     {
     public:
@@ -37,10 +53,23 @@ namespace
             RefreshSceneLightingDescriptor(scene);
         }
 
+        NLS::Render::Context::RenderSceneBuildData CaptureSceneMetadataForTesting() const
+        {
+            NLS::Render::Context::RenderSceneBuildData scene;
+            RefreshFrameBuildMetadata(scene);
+            return scene;
+        }
+
+        std::optional<NLS::Engine::Rendering::LightGridPrepass::PreparedFrameInputs> CaptureLightingForTesting() const
+        {
+            return BuildLightGridFrameInputs();
+        }
+
         NLS::Render::Context::RenderScenePackage CaptureRenderScenePackage(
-            const NLS::Render::Context::FrameSnapshot& snapshot) const
+            const NLS::Render::Context::RenderFramePacket& packet,
+            const NLS::Render::Context::RenderSceneBuildData& scene) const
 	        {
-	            return BuildRenderScenePackage(snapshot);
+            return NLS::Render::Context::BuildRenderScenePackage(packet, scene);
 	        }
 	    };
 
@@ -93,14 +122,53 @@ TEST(LightingDataProviderTests, SceneLightingProviderCollectsOnlyActiveLightsAnd
     EXPECT_TRUE(provider.GetLightingDescriptor().lights.empty());
 }
 
+TEST(LightingDataProviderTests, PublishedLightingSnapshotIsIndependentOfTheLiveDescriptor)
+{
+    NLS::Engine::SceneSystem::Scene scene;
+
+    auto& lightActor = scene.CreateGameObject("SnapshotLight");
+    auto* light = lightActor.AddComponent<NLS::Engine::Components::LightComponent>();
+    ASSERT_NE(light, nullptr);
+    light->SetIntensity(2.0f);
+
+    NLS::Engine::Rendering::SceneLightingProvider provider;
+    EXPECT_EQ(provider.ReadPublishedLightingDescriptor(), nullptr)
+        << "Nothing has been published before the first collection.";
+
+    provider.Collect(scene);
+    const auto first = provider.ReadPublishedLightingDescriptor();
+    ASSERT_NE(first, nullptr);
+    ASSERT_EQ(first->lights.size(), 1u);
+    EXPECT_FLOAT_EQ(first->lights.front().get().intensity, 2.0f);
+
+    // Removing the light exercises the property that matters: collection rewrites
+    // the live set in place, so a reader holding the live descriptor would watch it
+    // empty out underneath them. A held snapshot keeps the set it was published
+    // with, which is what lets a game-thread reader survive a render-thread
+    // collection.
+    lightActor.SetActive(false);
+    provider.Collect(scene);
+
+    EXPECT_TRUE(provider.GetLightingDescriptor().lights.empty())
+        << "The live descriptor is rewritten in place by the next collection.";
+    ASSERT_EQ(first->lights.size(), 1u)
+        << "A held snapshot must not be mutated by a later collection.";
+    EXPECT_FLOAT_EQ(first->lights.front().get().intensity, 2.0f);
+
+    const auto second = provider.ReadPublishedLightingDescriptor();
+    ASSERT_NE(second, nullptr);
+    EXPECT_TRUE(second->lights.empty());
+    EXPECT_NE(first.get(), second.get());
+}
+
 TEST(LightingDataProviderTests, BaseSceneRendererPublishesSharedLightingDescriptorThroughSharedProviderPath)
 {
     NLS::Render::Settings::DriverSettings settings;
     settings.graphicsBackend = NLS::Render::Settings::EGraphicsBackend::NONE;
     settings.enableExplicitRHI = false;
 
-    static auto driver = std::make_unique<NLS::Render::Context::Driver>(settings);
-    NLS::Core::ServiceLocator::Provide(*driver);
+    auto driver = std::make_unique<NLS::Render::Context::Driver>(settings);
+    const ScopedDriverService driverService(*driver);
 
     LightingProviderTestSceneRenderer renderer(*driver);
 
@@ -121,7 +189,7 @@ TEST(LightingDataProviderTests, BaseSceneRendererPublishesSharedLightingDescript
     EXPECT_EQ(&providerDescriptor.lights.front().get(), &lightingDescriptor.lights.front().get());
 }
 
-TEST(LightingDataProviderTests, RenderScenePackageCarriesLightingReadinessFromSnapshot)
+TEST(LightingDataProviderTests, RenderScenePackageCarriesLightingReadinessFromSceneBuildData)
 {
     NLS::Render::Settings::DriverSettings settings;
     settings.graphicsBackend = NLS::Render::Settings::EGraphicsBackend::NONE;
@@ -131,12 +199,12 @@ TEST(LightingDataProviderTests, RenderScenePackageCarriesLightingReadinessFromSn
     NLS::Core::ServiceLocator::Provide(driver);
     LightingProviderTestSceneRenderer renderer(driver);
 
-    NLS::Render::Context::FrameSnapshot snapshot;
-    snapshot.frameId = 42u;
-    snapshot.hasSceneInput = true;
-    snapshot.sceneLightCount = 2u;
+    NLS::Render::Context::RenderFramePacket packet;
+    packet.frameId = 42u;
+    NLS::Render::Context::RenderSceneBuildData scene;
+    scene.sceneLightCount = 2u;
 
-    const auto package = renderer.CaptureRenderScenePackage(snapshot);
+    const auto package = renderer.CaptureRenderScenePackage(packet, scene);
 
     EXPECT_EQ(package.frameId, 42u);
     EXPECT_TRUE(package.hasLightingData);
@@ -148,12 +216,11 @@ TEST(LightingDataProviderTests, RenderScenePackageCarriesLightingReadinessFromSn
     EXPECT_TRUE(package.passCommandInputs.empty());
 }
 
-TEST(LightingDataProviderTests, SceneLightingProviderPreparesPackageLightingFromSnapshotOnly)
+TEST(LightingDataProviderTests, SceneLightingProviderPreparesPackageLightingFromSceneBuildData)
 {
     NLS::Engine::Rendering::SceneLightingProvider provider;
 
-    NLS::Render::Context::FrameSnapshot snapshot;
-    snapshot.hasSceneInput = true;
+    NLS::Render::Context::RenderSceneBuildData snapshot;
     snapshot.sceneLightCount = 2u;
 
     NLS::Render::Context::RenderScenePackage package;
@@ -569,4 +636,182 @@ TEST(LightingDataProviderTests, LightGridCpuBuildSkipsZeroRangePointLight)
     EXPECT_TRUE(grid.lightIndices.empty());
     for (const auto& record : grid.records)
         EXPECT_EQ(record.count, 0u);
+}
+
+namespace
+{
+    constexpr uint64_t kLightingStoreSceneId = 77u;
+
+    NLS::Engine::Rendering::SceneProxyHandle MakeStoreLightHandle(const uint32_t index = 0u)
+    {
+        NLS::Engine::Rendering::SceneProxyHandle handle;
+        handle.sceneId = kLightingStoreSceneId;
+        handle.index = index;
+        handle.generation = 1u;
+        return handle;
+    }
+
+    /** Adds one Light proxy to the store at `index` with the given intensity. */
+    void ApplyStoreLight(
+        NLS::Engine::Rendering::SceneRenderStore& store,
+        const uint32_t index,
+        const float intensity,
+        const NLS::Maths::Vector3& position)
+    {
+        NLS::Engine::Rendering::SceneProxyUpdateBatch batch;
+        batch.sceneId = kLightingStoreSceneId;
+        batch.frameId = index + 1u;
+        NLS::Engine::Rendering::SceneProxyCommand command;
+        command.kind = NLS::Engine::Rendering::SceneProxyCommandKind::Add;
+        command.handle = MakeStoreLightHandle(index);
+        command.payload.kind = NLS::Engine::Rendering::SceneProxyKind::Light;
+        command.payload.light = NLS::Engine::Rendering::SceneProxyLightData {
+            NLS::Render::Settings::ELightType::POINT,
+            { 0.5f, 0.25f, 0.125f },
+            intensity,
+            30.0f,
+            10.0f,
+            20.0f
+        };
+        command.transform.worldPosition = position;
+        batch.commands.push_back(std::move(command));
+        (void)store.Apply(batch);
+    }
+
+    void ApplyStoreLightRemove(
+        NLS::Engine::Rendering::SceneRenderStore& store,
+        const uint32_t index)
+    {
+        NLS::Engine::Rendering::SceneProxyUpdateBatch batch;
+        batch.sceneId = kLightingStoreSceneId;
+        batch.frameId = index + 2u;
+        NLS::Engine::Rendering::SceneProxyCommand command;
+        command.kind = NLS::Engine::Rendering::SceneProxyCommandKind::Remove;
+        command.handle = MakeStoreLightHandle(index);
+        batch.commands.push_back(std::move(command));
+        (void)store.Apply(batch);
+    }
+}
+
+TEST(LightingDataProviderTests, PublishedStoreLightOutlivesItsStoreSlot)
+{
+    NLS::Tests::RunOnRenderThread([]
+    {
+    NLS::Engine::Rendering::SceneRenderStore store(kLightingStoreSceneId);
+    ApplyStoreLight(store, 0u, 6.5f, { 1.0f, 2.0f, 3.0f });
+    ASSERT_EQ(store.GetProxyCount(), 1u);
+
+    NLS::Engine::Rendering::SceneLightingProvider provider;
+    provider.CollectFromStore(store);
+
+    const auto& published = provider.GetLightingDescriptor().lights;
+    ASSERT_EQ(published.size(), 1u);
+    const auto* publishedLight = &published.front().get();
+
+    // Deterministic contract check: the store path must publish its own snapshot,
+    // not a reference into a store slot. Reading the values below after the slot is
+    // destroyed would otherwise only pass by luck, because freed memory often still
+    // holds the previous bytes.
+    const NLS::Render::Entities::Light* storeLight = nullptr;
+    store.ForEachLight(
+        [&storeLight](const NLS::Render::Entities::Light& light)
+        {
+            storeLight = &light;
+        });
+    ASSERT_NE(storeLight, nullptr);
+    EXPECT_NE(publishedLight, storeLight)
+        << "CollectFromStore must snapshot; a store slot destroys its light on Remove.";
+
+    // The published set must be readable while the store light exists.
+    EXPECT_FLOAT_EQ(publishedLight->intensity, 6.5f);
+
+    // Removing the proxy destroys the store's own Light and Transform. The
+    // published set must not dangle: the store is the source, not the owner.
+    ApplyStoreLightRemove(store, 0u);
+    ASSERT_EQ(store.GetProxyCount(), 0u);
+
+    EXPECT_FLOAT_EQ(publishedLight->intensity, 6.5f);
+    EXPECT_FLOAT_EQ(publishedLight->color.y, 0.25f);
+    ASSERT_NE(publishedLight->transform, nullptr);
+    EXPECT_FLOAT_EQ(publishedLight->transform->GetWorldPosition().x, 1.0f);
+    EXPECT_FLOAT_EQ(publishedLight->transform->GetWorldPosition().y, 2.0f);
+    EXPECT_FLOAT_EQ(publishedLight->transform->GetWorldPosition().z, 3.0f);
+
+    // The downstream capture must still succeed after the store light is gone.
+    const auto capturedInputs =
+        NLS::Engine::Rendering::LightGridPrepass::CaptureFrameInputs(
+            provider.GetLightingDescriptor(),
+            false);
+    ASSERT_EQ(capturedInputs.lights.size(), 1u);
+    EXPECT_FLOAT_EQ(capturedInputs.lights.front().intensity, 6.5f);
+    EXPECT_FLOAT_EQ(capturedInputs.lights.front().position.x, 1.0f);
+
+    // A fresh collection now reflects the store: the light is gone.
+    provider.CollectFromStore(store);
+    EXPECT_TRUE(provider.GetLightingDescriptor().lights.empty());
+    });
+}
+
+TEST(LightingDataProviderTests, StoreLightSnapshotsRefreshAcrossCollections)
+{
+    NLS::Tests::RunOnRenderThread([]
+    {
+    NLS::Engine::Rendering::SceneRenderStore store(kLightingStoreSceneId);
+    ApplyStoreLight(store, 0u, 2.0f, { 0.0f, 0.0f, 0.0f });
+
+    NLS::Engine::Rendering::SceneLightingProvider provider;
+    provider.CollectFromStore(store);
+    const auto& first = provider.GetLightingDescriptor().lights;
+    ASSERT_EQ(first.size(), 1u);
+    EXPECT_FLOAT_EQ(first.front().get().intensity, 2.0f);
+
+    // Re-adding with new values must be observed on the next collection, and the
+    // reused snapshot pool must not pin the previous values.
+    ApplyStoreLight(store, 0u, 9.0f, { 4.0f, 5.0f, 6.0f });
+    provider.CollectFromStore(store);
+    const auto& second = provider.GetLightingDescriptor().lights;
+    ASSERT_EQ(second.size(), 1u);
+    EXPECT_FLOAT_EQ(second.front().get().intensity, 9.0f);
+    ASSERT_NE(second.front().get().transform, nullptr);
+    EXPECT_FLOAT_EQ(second.front().get().transform->GetWorldPosition().x, 4.0f);
+    });
+}
+
+TEST(LightingDataProviderTests, RenderFrameLightingSurvivesNextGameThreadCollection)
+{
+    NLS::Render::Settings::DriverSettings settings;
+    settings.graphicsBackend = NLS::Render::Settings::EGraphicsBackend::NONE;
+    settings.enableExplicitRHI = false;
+    NLS::Render::Context::Driver driver(settings);
+    const ScopedDriverService driverService(driver);
+    LightingProviderTestSceneRenderer renderer(driver);
+    EXPECT_THROW(renderer.CaptureSceneMetadataForTesting(), std::logic_error);
+    NLS::Engine::SceneSystem::Scene gameScene;
+    auto& gameActor = gameScene.CreateGameObject("NextFrameLight");
+    auto* gameLight = gameActor.AddComponent<NLS::Engine::Components::LightComponent>();
+    ASSERT_NE(gameLight, nullptr);
+    gameLight->SetIntensity(2.0f);
+    renderer.PublishLightingForScene(gameScene);
+
+    NLS::Tests::RunOnRenderThread([&]
+    {
+        NLS::Engine::Rendering::SceneRenderStore store(kLightingStoreSceneId);
+        ApplyStoreLight(store, 0u, 6.5f, { 1.0f, 2.0f, 3.0f });
+        renderer.GetSceneLightingProvider().CollectFromStore(store);
+    });
+
+    gameActor.SetActive(false);
+    renderer.PublishLightingForScene(gameScene);
+    EXPECT_TRUE(renderer.GetSceneLightingProvider().GetLightingDescriptor().lights.empty());
+
+    NLS::Tests::RunOnRenderThread([&]
+    {
+        const auto scene = renderer.CaptureSceneMetadataForTesting();
+        EXPECT_EQ(scene.sceneLightCount, 1u);
+        const auto lighting = renderer.CaptureLightingForTesting();
+        ASSERT_TRUE(lighting.has_value());
+        ASSERT_EQ(lighting->lights.size(), 1u);
+        EXPECT_FLOAT_EQ(lighting->lights.front().intensity, 6.5f);
+        EXPECT_FLOAT_EQ(lighting->lights.front().position.x, 1.0f);
+    });
 }

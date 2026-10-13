@@ -1,11 +1,13 @@
 #include <gtest/gtest.h>
 
+#include "Rendering/Context/Driver.h"
 #include "Rendering/Context/RenderScenePackageBuilder.h"
-#include "Rendering/Context/ThreadedRenderingLifecycle.h"
 #include "Rendering/Entities/Camera.h"
 #include "Rendering/FrameGraph/FrameGraphExecutionPlan.h"
 #include "Rendering/FrameGraph/SceneRenderGraphBuilder.h"
+#include "Rendering/Settings/DriverSettings.h"
 #include "Rendering/Settings/GraphicsBackendUtils.h"
+#include "Tests/RenderingThreadTestHelpers.h"
 
 TEST(UE5RenderArchitectureContractTests, PlatformBackendGateKeepsOnlyPlatformRuntimeEnabled)
 {
@@ -106,66 +108,61 @@ TEST(UE5RenderArchitectureContractTests, OrderedParallelSubmissionAcceptsDX12Met
         capabilities));
 }
 
-TEST(UE5RenderArchitectureContractTests, OwnershipStagesFlowFromRenderFrameInputToRenderFrameBuild)
+TEST(UE5RenderArchitectureContractTests, OwnershipFlowsFromFramePacketToRenderScenePackage)
 {
-    NLS::Render::Context::ThreadedRenderingLifecycle lifecycle(1u);
+    using namespace NLS::Render::Context;
+    NLS::Render::Settings::DriverSettings settings;
+    settings.graphicsBackend = NLS::Render::Settings::EGraphicsBackend::NONE;
+    settings.enableExplicitRHI = false;
+    settings.framesInFlight = 1u;
+    Driver driver(settings);
+    DriverTestAccess::PauseThreadedRenderingWorkers(driver);
+    auto preparedScene = NLS::Tests::ObserveNextRenderSceneForTest(driver);
 
-    NLS::Render::Context::FrameSnapshot snapshot;
-    snapshot.frameId = 91u;
-    snapshot.sceneRevision = 5u;
-    snapshot.renderWidth = 1280u;
-    snapshot.renderHeight = 720u;
-    snapshot.targetsSwapchain = true;
-    snapshot.hasSceneInput = true;
-    snapshot.sceneGameObjectCount = 4u;
-    snapshot.visibleOpaqueDrawCount = 2u;
-    ASSERT_TRUE(lifecycle.TryPublishFrameSnapshot(snapshot));
-
-    size_t renderSlotIndex = 0u;
-    NLS::Render::Context::RenderFrameInput renderFrameInput;
-    ASSERT_TRUE(lifecycle.TryBeginNextRenderFrameBuild(&renderSlotIndex, &renderFrameInput));
-    EXPECT_TRUE(renderFrameInput.immutable);
-    EXPECT_EQ(renderFrameInput.frameId, snapshot.frameId);
-    EXPECT_EQ(renderFrameInput.sceneRevision, snapshot.sceneRevision);
-    EXPECT_EQ(renderFrameInput.visibleDrawCount, 2u);
-
-    NLS::Render::Context::RenderScenePackage package;
-    package.frameId = renderFrameInput.frameId;
-    package.targetsSwapchain = true;
-    package.hasVisibleDraws = true;
-    package.frameDataReady = true;
-    package.objectDataReady = true;
-    package.visibleDrawCount = 2u;
-    package.passPlanCount = 1u;
-    package.drawCommandCount = 2u;
-    ASSERT_TRUE(lifecycle.CompleteRenderScene(renderSlotIndex, package));
-
-    size_t rhiSlotIndex = 0u;
-    NLS::Render::Context::RenderFrameBuild renderFrameBuild;
-    ASSERT_TRUE(lifecycle.TryBeginNextRhiFrameExecution(&rhiSlotIndex, &renderFrameBuild));
-    EXPECT_EQ(rhiSlotIndex, renderSlotIndex);
-    EXPECT_TRUE(renderFrameBuild.renderThreadOwned);
-    EXPECT_EQ(renderFrameBuild.frameId, package.frameId);
-    EXPECT_TRUE(renderFrameBuild.hasVisibleDraws);
-    EXPECT_EQ(renderFrameBuild.drawCommandCount, package.drawCommandCount);
+    RenderFramePacket packet;
+    packet.frameId = 91u;
+    packet.renderWidth = 1280u;
+    packet.renderHeight = 720u;
+    packet.targetsSwapchain = false;
+    RenderSceneBuildData scene;
+    scene.sceneGameObjectCount = 4u;
+    scene.visibleOpaqueDrawCount = 2u;
+    scene.recordedDrawCommands.resize(2u);
+    ASSERT_TRUE(DriverRendererAccess::TryEnqueueRenderFrame(driver, packet,
+        [packet, scene = std::move(scene)](size_t) mutable
+        {
+            EXPECT_TRUE(RenderingThreadSystem::IsInRenderingThread());
+            return BuildRenderScenePackage(packet, std::move(scene));
+        }));
+    EXPECT_EQ(preparedScene.wait_for(std::chrono::seconds(0)), std::future_status::timeout);
+    ASSERT_TRUE(DriverTestAccess::TryDrainThreadedRendering(driver));
+    ASSERT_EQ(preparedScene.wait_for(std::chrono::seconds(0)), std::future_status::ready);
+    const auto renderPackage = preparedScene.get();
+    EXPECT_EQ(renderPackage.frameId, packet.frameId);
+    EXPECT_EQ(renderPackage.renderWidth, 1280u);
+    EXPECT_EQ(renderPackage.renderHeight, 720u);
+    EXPECT_EQ(renderPackage.sceneGameObjectCount, 4u);
+    EXPECT_TRUE(renderPackage.hasVisibleDraws);
+    EXPECT_EQ(renderPackage.drawCommandCount, 2u);
+    EXPECT_EQ(renderPackage.recordedDrawCommands.size(), 2u);
 }
 
 TEST(UE5RenderArchitectureContractTests, PreparedBuilderPackagesDoNotCarryRendererLocalPassScheduling)
 {
-    NLS::Render::Context::FrameSnapshot snapshot;
-    snapshot.frameId = 12u;
-    snapshot.renderWidth = 1280u;
-    snapshot.renderHeight = 720u;
-    snapshot.targetsSwapchain = false;
-    snapshot.hasSceneInput = true;
-    snapshot.visibleOpaqueDrawCount = 1u;
-    snapshot.visibleSkyboxDrawCount = 1u;
-    snapshot.visibleTransparentDrawCount = 1u;
-    snapshot.recordedDrawCommands.resize(3u);
+    NLS::Render::Context::RenderFramePacket packet;
+    packet.frameId = 12u;
+    packet.renderWidth = 1280u;
+    packet.renderHeight = 720u;
+    packet.targetsSwapchain = false;
+    NLS::Render::Context::RenderSceneBuildData scene;
+    scene.visibleOpaqueDrawCount = 1u;
+    scene.visibleSkyboxDrawCount = 1u;
+    scene.visibleTransparentDrawCount = 1u;
+    scene.recordedDrawCommands.resize(3u);
 
-    const auto package = NLS::Render::Context::BuildSnapshotOwnedRenderScenePackage(
-        snapshot,
-        NLS::Render::Context::SnapshotRenderScenePackageBuildMode::SkipDefaultPassInputs);
+    const auto package = NLS::Render::Context::BuildRenderScenePackage(
+        packet, std::move(scene),
+        NLS::Render::Context::RenderScenePackageBuildMode::SkipDefaultPassInputs);
 
     EXPECT_EQ(package.opaqueDrawCount, 1u);
     EXPECT_EQ(package.skyboxDrawCount, 1u);
@@ -178,43 +175,48 @@ TEST(UE5RenderArchitectureContractTests, PreparedBuilderPackagesDoNotCarryRender
     EXPECT_TRUE(package.parallelCommandWorkUnits.empty());
 }
 
-TEST(UE5RenderArchitectureContractTests, MovedFrameSnapshotTransfersRecordedDrawCommands)
+TEST(UE5RenderArchitectureContractTests, RenderSceneBuildDataTransfersDrawCommandsWithoutChangingFramePacket)
 {
-    NLS::Render::Context::FrameSnapshot snapshot;
-    snapshot.frameId = 13u;
-    snapshot.renderWidth = 1280u;
-    snapshot.renderHeight = 720u;
-    snapshot.hasSceneInput = true;
-    snapshot.visibleOpaqueDrawCount = 2u;
-    snapshot.recordedDrawCommands.resize(2u);
-    snapshot.recordedDrawCommands[0].instanceCount = 7u;
-    snapshot.recordedDrawCommands[1].vertexStart = 11u;
+    NLS::Render::Context::RenderFramePacket packet;
+    packet.frameId = 13u;
+    packet.renderWidth = 1280u;
+    packet.renderHeight = 720u;
+    NLS::Render::Context::RenderSceneBuildData scene;
+    scene.visibleOpaqueDrawCount = 2u;
+    scene.recordedDrawCommands.resize(2u);
+    scene.recordedDrawCommands[0].instanceCount = 7u;
+    scene.recordedDrawCommands[1].vertexStart = 11u;
+    const auto* drawStorage = scene.recordedDrawCommands.data();
 
-    auto package = NLS::Render::Context::BuildSnapshotOwnedRenderScenePackage(
-        std::move(snapshot),
-        NLS::Render::Context::SnapshotRenderScenePackageBuildMode::SkipDefaultPassInputs);
+    auto package = NLS::Render::Context::BuildRenderScenePackage(
+        packet, std::move(scene),
+        NLS::Render::Context::RenderScenePackageBuildMode::SkipDefaultPassInputs);
 
     ASSERT_EQ(package.recordedDrawCommands.size(), 2u);
     EXPECT_EQ(package.recordedDrawCommands[0].instanceCount, 7u);
     EXPECT_EQ(package.recordedDrawCommands[1].vertexStart, 11u);
-    EXPECT_TRUE(snapshot.recordedDrawCommands.empty());
+    EXPECT_TRUE(scene.recordedDrawCommands.empty());
+    EXPECT_EQ(package.recordedDrawCommands.data(), drawStorage);
+    EXPECT_EQ(packet.frameId, 13u);
+    EXPECT_EQ(packet.renderWidth, 1280u);
+    EXPECT_EQ(packet.renderHeight, 720u);
 }
 
 TEST(UE5RenderArchitectureContractTests, RuntimeCompilationRebuildsPreparedPassPlanFromForwardSceneMetadata)
 {
-    NLS::Render::Context::FrameSnapshot snapshot;
+    NLS::Render::Context::RenderFramePacket snapshot;
     snapshot.frameId = 33u;
     snapshot.renderWidth = 1280u;
     snapshot.renderHeight = 720u;
-    snapshot.hasSceneInput = true;
-    snapshot.visibleOpaqueDrawCount = 2u;
-    snapshot.visibleSkyboxDrawCount = 1u;
-    snapshot.visibleTransparentDrawCount = 1u;
-    snapshot.recordedDrawCommands.resize(4u);
+    NLS::Render::Context::RenderSceneBuildData scene;
+    scene.visibleOpaqueDrawCount = 2u;
+    scene.visibleSkyboxDrawCount = 1u;
+    scene.visibleTransparentDrawCount = 1u;
+    scene.recordedDrawCommands.resize(4u);
 
-    auto package = NLS::Render::Context::BuildSnapshotOwnedRenderScenePackage(
-        snapshot,
-        NLS::Render::Context::SnapshotRenderScenePackageBuildMode::SkipDefaultPassInputs);
+    auto package = NLS::Render::Context::BuildRenderScenePackage(
+        snapshot, std::move(scene),
+        NLS::Render::Context::RenderScenePackageBuildMode::SkipDefaultPassInputs);
     ASSERT_TRUE(package.passCommandInputs.empty());
 
     NLS::Render::Entities::Camera camera;
@@ -282,23 +284,30 @@ TEST(UE5RenderArchitectureContractTests, RuntimeCompilationRebuildsPreparedPassP
     EXPECT_EQ(package.parallelCommandWorkUnitCount, 3u);
 }
 
-TEST(UE5RenderArchitectureContractTests, PreparedBuilderResolutionIgnoresSnapshotHarnessPackageBuilders)
+TEST(UE5RenderArchitectureContractTests, PreparedBuilderProducesItsOwnRenderScenePackage)
 {
-    NLS::Render::Context::ThreadedRenderingLifecycle lifecycle(1u);
+    using namespace NLS::Render::Context;
+    NLS::Render::Settings::DriverSettings settings;
+    settings.graphicsBackend = NLS::Render::Settings::EGraphicsBackend::NONE;
+    settings.enableExplicitRHI = false;
+    settings.framesInFlight = 1u;
+    Driver driver(settings);
+    DriverTestAccess::PauseThreadedRenderingWorkers(driver);
+    auto preparedScene = NLS::Tests::ObserveNextRenderSceneForTest(driver);
 
-    NLS::Render::Context::FrameSnapshot snapshot;
-    snapshot.frameId = 44u;
-    snapshot.renderWidth = 640u;
-    snapshot.renderHeight = 360u;
-    snapshot.hasSceneInput = true;
-    snapshot.visibleOpaqueDrawCount = 1u;
-
-    ASSERT_TRUE(lifecycle.TryPublishPreparedFrameBuilder(
-        snapshot,
-        []()
+    RenderFramePacket packet;
+    packet.frameId = 44u;
+    packet.renderWidth = 640u;
+    packet.renderHeight = 360u;
+    packet.targetsSwapchain = false;
+    ASSERT_TRUE(DriverRendererAccess::TryEnqueueRenderFrame(
+        driver, packet,
+        [](const size_t)
         {
+            EXPECT_TRUE(RenderingThreadSystem::IsInRenderingThread());
             NLS::Render::Context::RenderScenePackage package;
-            package.frameId = 44u;
+            package.frameId = 999u;
+            package.targetsSwapchain = false;
             package.hasVisibleDraws = true;
             package.visibleDrawCount = 1u;
             package.frameDataReady = true;
@@ -306,28 +315,13 @@ TEST(UE5RenderArchitectureContractTests, PreparedBuilderResolutionIgnoresSnapsho
             return package;
         }));
 
-    size_t slotIndex = 99u;
-    ASSERT_TRUE(lifecycle.TryBeginNextRenderScene(&slotIndex, nullptr));
-
-    NLS::Render::Context::RenderScenePreparingResolutionDesc desc;
-    desc.buildSnapshotHarnessRenderScenePackage = [](const NLS::Render::Context::FrameSnapshot&)
-    {
-        NLS::Render::Context::RenderScenePackage package;
-        package.frameId = 900u;
-        package.hasVisibleDraws = true;
-        package.visibleDrawCount = 99u;
-        package.frameDataReady = true;
-        package.objectDataReady = true;
-        return package;
-    };
-
-    ASSERT_TRUE(lifecycle.ResolveRenderScenePreparing(slotIndex, desc));
-
-    const auto* slot = lifecycle.PeekSlot(slotIndex);
-    ASSERT_NE(slot, nullptr);
-    ASSERT_TRUE(slot->renderScenePackage.has_value());
-    EXPECT_EQ(slot->publishOrigin, NLS::Render::Context::ThreadedFramePublishOrigin::PreparedBuilder);
-    EXPECT_EQ(slot->renderSceneAttribution, NLS::Render::Context::RenderSceneAttribution::RendererPrepared);
-    EXPECT_EQ(slot->renderScenePackage->frameId, 44u);
-    EXPECT_EQ(slot->renderScenePackage->visibleDrawCount, 1u);
+    EXPECT_EQ(preparedScene.wait_for(std::chrono::seconds(0)), std::future_status::timeout);
+    ASSERT_TRUE(DriverTestAccess::TryDrainThreadedRendering(driver));
+    ASSERT_EQ(preparedScene.wait_for(std::chrono::seconds(0)), std::future_status::ready);
+    const auto package = preparedScene.get();
+    EXPECT_EQ(package.frameId, 44u);
+    EXPECT_EQ(package.visibleDrawCount, 1u);
+    const auto telemetry = DriverRendererAccess::GetThreadedFrameTelemetry(driver);
+    EXPECT_EQ(telemetry.publishOrigin, ThreadedFramePublishOrigin::PreparedBuilder);
+    EXPECT_EQ(telemetry.renderSceneAttribution, RenderSceneAttribution::RendererPrepared);
 }

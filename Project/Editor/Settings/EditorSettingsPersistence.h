@@ -13,7 +13,6 @@ namespace NLS::Editor::Settings
 struct EditorLegacyLaunchOptionValues
 {
     std::optional<bool> verticalSynchronization;
-    std::optional<bool> threadedRendering;
     std::optional<int> renderDocStartupCaptureFrames;
 };
 

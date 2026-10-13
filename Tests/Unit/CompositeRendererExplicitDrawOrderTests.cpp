@@ -1,6 +1,9 @@
 #include <gtest/gtest.h>
 
+#include <Rendering/Context/RenderScenePackageBuilder.h>
+
 #include <memory>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -184,16 +187,16 @@ namespace
         }
 
     protected:
-        std::optional<NLS::Render::Context::FrameSnapshot> BuildFrameSnapshot(
-            const NLS::Render::Data::FrameDescriptor& frameDescriptor) const override
+        NLS::Render::Context::RenderSceneBuildCommand BuildRenderSceneCommand(
+            const NLS::Render::Context::RenderFramePacket& packet) override
         {
-            auto snapshot = NLS::Render::Core::ABaseRenderer::BuildFrameSnapshot(frameDescriptor);
-            if (!snapshot.has_value())
-                return snapshot;
-
-            snapshot->hasSceneInput = true;
-            snapshot->visibleOpaqueDrawCount = static_cast<uint64_t>(snapshot->recordedDrawCommands.size());
-            return snapshot;
+            return [packet, commands = std::move(m_threadedRecordedDrawCommands)](const size_t) mutable
+            {
+                NLS::Render::Context::RenderSceneBuildData scene;
+                scene.visibleOpaqueDrawCount = static_cast<uint64_t>(commands.size());
+                scene.recordedDrawCommands = std::move(commands);
+                return NLS::Render::Context::BuildRenderScenePackage(packet, std::move(scene));
+            };
         }
 
         bool PrepareRecordedDraw(
@@ -256,8 +259,7 @@ namespace
         NLS::Render::Settings::DriverSettings settings;
         settings.graphicsBackend = NLS::Render::Settings::EGraphicsBackend::NONE;
         settings.enableExplicitRHI = false;
-        settings.enableThreadedRendering = true;
-        settings.threadedFrameSlotCount = 1u;
+        settings.framesInFlight = 1u;
         return settings;
     }
 }
@@ -316,8 +318,7 @@ TEST(CompositeRendererExplicitDrawOrderTests, CompositeRendererFinalizesThreaded
     NLS::Render::Settings::DriverSettings settings;
     settings.graphicsBackend = NLS::Render::Settings::EGraphicsBackend::NONE;
     settings.enableExplicitRHI = false;
-    settings.enableThreadedRendering = true;
-    settings.threadedFrameSlotCount = 1u;
+    settings.framesInFlight = 1u;
 
     static auto driver = std::make_unique<NLS::Render::Context::Driver>(settings);
     NLS::Core::ServiceLocator::Provide(*driver);
@@ -341,19 +342,21 @@ TEST(CompositeRendererExplicitDrawOrderTests, CompositeRendererFinalizesThreaded
     EXPECT_EQ(frameInfo.publishState, NLS::Render::Data::FramePublishState::Open);
 }
 
-TEST(CompositeRendererExplicitDrawOrderTests, ThreadedCompositeRendererPublishesSnapshotAndDefersPassSchedulingToPreparedBuilder)
+TEST(CompositeRendererExplicitDrawOrderTests, RenderCommandBuildsCompositePassesAfterPublication)
 {
     NLS::Render::Settings::DriverSettings settings;
     settings.graphicsBackend = NLS::Render::Settings::EGraphicsBackend::NONE;
     settings.enableExplicitRHI = false;
-    settings.enableThreadedRendering = true;
-    settings.threadedFrameSlotCount = 1u;
+    settings.framesInFlight = 1u;
 
     NLS::Render::Context::Driver driver(settings);
     NLS::Core::ServiceLocator::Provide(driver);
     NLS::Render::Context::DriverTestAccess::PauseThreadedRenderingWorkers(driver);
 
     ThreadedRecordingRenderer renderer(driver);
+    const auto capturedPackage = std::make_shared<std::optional<NLS::Render::Context::RenderScenePackage>>();
+    NLS::Render::Context::DriverTestAccess::SetRenderSceneObserver(driver,
+        [capturedPackage](const auto&, const auto& package) { *capturedPackage = package; });
 
     NLS::Render::Entities::Camera camera;
     NLS::Render::Data::FrameDescriptor frameDescriptor;
@@ -368,16 +371,12 @@ TEST(CompositeRendererExplicitDrawOrderTests, ThreadedCompositeRendererPublishes
     renderer.DrawEntity(pipelineState, drawable);
     renderer.EndFrame();
 
-    const auto* lifecycle = NLS::Render::Context::DriverTestAccess::GetThreadedRenderingLifecycle(driver);
-    ASSERT_NE(lifecycle, nullptr);
-    const auto* slot = lifecycle->PeekSlot(0u);
-    ASSERT_NE(slot, nullptr);
-    EXPECT_EQ(slot->publishOrigin, NLS::Render::Context::ThreadedFramePublishOrigin::PreparedBuilder);
-    ASSERT_TRUE(slot->snapshot.has_value());
-    EXPECT_EQ(slot->snapshot->recordedDrawCommands.size(), 1u);
-    EXPECT_EQ(slot->snapshot->visibleOpaqueDrawCount, 1u);
-    EXPECT_TRUE(slot->preparedRenderSceneBuilder.has_value());
-    EXPECT_FALSE(slot->renderScenePackage.has_value());
+    EXPECT_FALSE(capturedPackage->has_value());
+    ASSERT_TRUE(NLS::Render::Context::DriverTestAccess::TryDrainThreadedRendering(driver));
+    NLS::Render::Context::DriverTestAccess::SetRenderSceneObserver(driver, {});
+    ASSERT_TRUE(capturedPackage->has_value());
+    EXPECT_EQ(capturedPackage->value().recordedDrawCommands.size(), 1u);
+    EXPECT_EQ(capturedPackage->value().opaqueDrawCount, 1u);
 }
 
 TEST(CompositeRendererExplicitDrawOrderTests, ExplicitSwapchainPassDoesNotDrawWhenBackbufferViewIsMissing)
@@ -392,7 +391,7 @@ TEST(CompositeRendererExplicitDrawOrderTests, ExplicitSwapchainPassDoesNotDrawWh
 
     auto& frameContext = NLS::Render::Context::DriverTestAccess::EnsureFrameContext(driver, 0u);
     frameContext.commandBuffer = std::make_shared<TestCommandBuffer>();
-    NLS::Render::Context::DriverTestAccess::SetExplicitFrameActive(driver, true);
+    std::optional<NLS::Render::Context::ScopedFrameResourceContext> explicitFrameResources(std::in_place, driver, 0u);
 
     NLS::Render::Core::CompositeRenderer renderer(driver);
     CountingRenderPass pass(renderer);
@@ -407,6 +406,6 @@ TEST(CompositeRendererExplicitDrawOrderTests, ExplicitSwapchainPassDoesNotDrawWh
     renderer.ExecutePass(pass);
     renderer.EndFrame();
 
-    NLS::Render::Context::DriverTestAccess::SetExplicitFrameActive(driver, false);
+    explicitFrameResources.reset();
     EXPECT_EQ(pass.drawCalls, 0u);
 }

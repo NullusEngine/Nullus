@@ -3704,7 +3704,19 @@ public:
             return false;
         const auto threadedTelemetry =
             NLS::Render::Context::DriverRendererAccess::TryGetThreadedFrameTelemetry(m_driver);
-        if (threadedTelemetry.has_value() && threadedTelemetry->inFlightFrameCount != 0u)
+        // The quiescence gate belongs to the synchronous frame model, where the
+        // driver rests between frames and a busy frame means the preview must not
+        // reuse the scene yet. The threaded pipeline keeps frames in flight by
+        // design - waiting for `inFlightFrameCount == 0` there never succeeds and
+        // wedges the startup warmup gate - and the reuse safety it stood for is
+        // provided by the preview renderer's own pending-render keep-alive plus
+        // the global background-preview frame arbitration, which refuses the
+        // preview for this frame and retries on the next one instead of blocking.
+        const bool threadedRendering =
+            NLS::Render::Context::DriverRendererAccess::IsThreadedRenderingEnabled(m_driver);
+        if (!threadedRendering &&
+            threadedTelemetry.has_value() &&
+            threadedTelemetry->inFlightFrameCount != 0u)
             return false;
         if (!EDITOR_CONTEXT(editorResources))
             return false;

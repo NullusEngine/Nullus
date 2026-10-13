@@ -524,8 +524,7 @@ TEST(DeferredSceneRendererMaterialCacheTests, ThreadedDrawCountEstimateCountsCap
 {
     NLS::Render::Settings::DriverSettings settings;
     settings.graphicsBackend = NLS::Render::Settings::EGraphicsBackend::NONE;
-    settings.enableThreadedRendering = true;
-    settings.threadedFrameSlotCount = 1u;
+    settings.framesInFlight = 1u;
 
     NLS::Render::Context::Driver driver(settings);
     NLS::Core::ServiceLocator::Provide(driver);
@@ -584,8 +583,7 @@ TEST(DeferredSceneRendererMaterialCacheTests, HZBOcclusionObservationCanBeDiscar
 {
     NLS::Render::Settings::DriverSettings settings;
     settings.graphicsBackend = NLS::Render::Settings::EGraphicsBackend::NONE;
-    settings.enableThreadedRendering = true;
-    settings.threadedFrameSlotCount = 1u;
+    settings.framesInFlight = 1u;
 
     NLS::Render::Context::Driver driver(settings);
     NLS::Core::ServiceLocator::Provide(driver);
@@ -636,8 +634,7 @@ TEST(DeferredSceneRendererMaterialCacheTests, HZBOcclusionPrimitiveBuffersReuseS
 {
     NLS::Render::Settings::DriverSettings settings;
     settings.graphicsBackend = NLS::Render::Settings::EGraphicsBackend::NONE;
-    settings.enableThreadedRendering = true;
-    settings.threadedFrameSlotCount = 1u;
+    settings.framesInFlight = 1u;
 
     NLS::Render::Context::Driver driver(settings);
     NLS::Core::ServiceLocator::Provide(driver);
@@ -690,8 +687,7 @@ TEST(DeferredSceneRendererMaterialCacheTests, HZBOcclusionPrimitiveBuffersReuseC
 {
     NLS::Render::Settings::DriverSettings settings;
     settings.graphicsBackend = NLS::Render::Settings::EGraphicsBackend::NONE;
-    settings.enableThreadedRendering = true;
-    settings.threadedFrameSlotCount = 1u;
+    settings.framesInFlight = 1u;
 
     NLS::Render::Context::Driver driver(settings);
     NLS::Core::ServiceLocator::Provide(driver);
@@ -782,8 +778,8 @@ TEST(DeferredSceneRendererMaterialCacheTests, HZBThreadedPreparedBuilderDoesNotM
         std::istreambuf_iterator<char>()
     };
 
-    const auto builderStart = source.find("DeferredSceneRenderer::BuildDeferredPreparedRenderSceneBuilder");
-    const auto nextFunction = source.find("DeferredSceneRenderer::BuildPreparedRenderSceneBuilder", builderStart);
+    const auto builderStart = source.find("DeferredSceneRenderer::BuildDeferredRenderSceneCommand");
+    const auto nextFunction = source.find("DeferredSceneRenderer::BuildRenderSceneCommand", builderStart);
     ASSERT_NE(builderStart, std::string::npos);
     ASSERT_NE(nextFunction, std::string::npos);
     const auto builderBody = source.substr(builderStart, nextFunction - builderStart);
@@ -809,8 +805,8 @@ TEST(DeferredSceneRendererMaterialCacheTests, DebugSceneRendererForwardsThreaded
         std::istreambuf_iterator<char>()
     };
 
-    const auto builderStart = source.find("DebugSceneRenderer::BuildPreparedRenderSceneBuilder");
-    const auto builderCall = source.find("BuildDeferredPreparedRenderSceneBuilder", builderStart);
+    const auto builderStart = source.find("DebugSceneRenderer::BuildRenderSceneCommand");
+    const auto builderCall = source.find("BuildDeferredRenderSceneCommand", builderStart);
     ASSERT_NE(builderStart, std::string::npos);
     ASSERT_NE(builderCall, std::string::npos);
     const auto builderBody = source.substr(builderStart, builderCall + 512u - builderStart);
@@ -872,7 +868,7 @@ TEST(DeferredSceneRendererMaterialCacheTests, HZBTransientBusyReadbackKeepsObser
     EXPECT_NE(beginBody.find("ClearHZBPendingResultReadback(false)"), std::string::npos);
 }
 
-TEST(DeferredSceneRendererMaterialCacheTests, HZBPublishFailureClearsUnpublishedObservationWithoutReadbackState)
+TEST(DeferredSceneRendererMaterialCacheTests, HZBPublishFailureCancelsCaptureForRenderThreadObservationCleanup)
 {
     const auto sourcePath =
         std::filesystem::path(NLS_ROOT_DIR) / "Runtime/Engine/Rendering/DeferredSceneRenderer.cpp";
@@ -889,7 +885,15 @@ TEST(DeferredSceneRendererMaterialCacheTests, HZBPublishFailureClearsUnpublished
     const auto publishBody = source.substr(publishStart, failedStart - publishStart);
 
     EXPECT_NE(publishBody.find("CancelCurrentThreadedHZBReadbackHandoff()"), std::string::npos);
-    EXPECT_NE(publishBody.find("DiscardHZBObservationIfNoReadbackWasPublished()"), std::string::npos);
+    EXPECT_EQ(publishBody.find("DiscardHZBObservationIfNoReadbackWasPublished()"), std::string::npos);
+    const auto consumeStart = source.find("void DeferredSceneRenderer::ConsumeThreadedHZBReadbackHandoffs()");
+    const auto cancelStart = source.find("void DeferredSceneRenderer::CancelCurrentThreadedHZBReadbackHandoff()", consumeStart);
+    ASSERT_NE(consumeStart, std::string::npos);
+    ASSERT_NE(cancelStart, std::string::npos);
+    const auto consumeBody = source.substr(consumeStart, cancelStart - consumeStart);
+    EXPECT_NE(consumeBody.find("handoff->cancelled || !handoff->request.has_value()"), std::string::npos);
+    EXPECT_NE(consumeBody.find("discardObservation = handoff->observationStarted"), std::string::npos);
+    EXPECT_NE(consumeBody.find("DiscardPendingHZBOcclusionObservationFrame()"), std::string::npos);
     EXPECT_EQ(publishBody.find("m_threadedHZBPostSubmitReadback"), std::string::npos);
 }
 
@@ -911,12 +915,12 @@ TEST(DeferredSceneRendererMaterialCacheTests, HZBPublishFailureKeepsAdoptedReadb
     const auto failedBody = source.substr(failedStart, nextFunction - failedStart);
 
     EXPECT_NE(failedBody.find("CancelCurrentThreadedHZBReadbackHandoff()"), std::string::npos);
-    EXPECT_NE(failedBody.find("DiscardHZBObservationIfNoReadbackWasPublished()"), std::string::npos);
+    EXPECT_EQ(failedBody.find("DiscardHZBObservationIfNoReadbackWasPublished()"), std::string::npos);
     EXPECT_EQ(failedBody.find("discardReadback = !readbackState->beginAttempted"), std::string::npos);
     EXPECT_EQ(failedBody.find("ClearHZBPendingResultReadback()"), std::string::npos);
 }
 
-TEST(DeferredSceneRendererMaterialCacheTests, HZBSkippedThreadedPreparationClearsObservationWhenNoReadbackWasPublished)
+TEST(DeferredSceneRendererMaterialCacheTests, HZBObservationPreparationFollowsRenderThreadSceneResolution)
 {
     const auto sourcePath =
         std::filesystem::path(NLS_ROOT_DIR) / "Runtime/Engine/Rendering/DeferredSceneRenderer.cpp";
@@ -932,18 +936,30 @@ TEST(DeferredSceneRendererMaterialCacheTests, HZBSkippedThreadedPreparationClear
     ASSERT_NE(drawFrameStart, std::string::npos);
     const auto beginFrameBody = source.substr(beginFrameStart, drawFrameStart - beginFrameStart);
 
-    const auto preparedUnavailable = beginFrameBody.find("preparedFrameResourcesAvailable");
-    ASSERT_NE(preparedUnavailable, std::string::npos);
-    EXPECT_EQ(beginFrameBody.find("!HasDeferredThreadedPipelineResources()"), std::string::npos);
-    EXPECT_NE(beginFrameBody.find("DiscardHZBObservationIfNoReadbackWasPublished()", preparedUnavailable), std::string::npos);
+    EXPECT_NE(beginFrameBody.find("BeginSceneParse(*snapshot->view)"), std::string::npos);
+    EXPECT_EQ(beginFrameBody.find("ParseScene("), std::string::npos);
+    EXPECT_EQ(beginFrameBody.find("EstimateThreadedDeferredDrawCounts("), std::string::npos);
+    EXPECT_EQ(beginFrameBody.find("PollHZBOcclusionResultReadback()"), std::string::npos);
+    EXPECT_EQ(beginFrameBody.find("BeginHZBOcclusionObservationFrame("), std::string::npos);
+    const auto resolveStart = source.find("bool DeferredSceneRenderer::ResolveThreadedSceneCapture(");
+    const auto consumeStart = source.find("void DeferredSceneRenderer::ConsumeThreadedHZBReadbackHandoffs()", resolveStart);
+    ASSERT_NE(resolveStart, std::string::npos);
+    ASSERT_NE(consumeStart, std::string::npos);
+    const auto resolveBody = source.substr(resolveStart, consumeStart - resolveStart);
+    const auto parse = resolveBody.find("ResolveSceneParse(");
+    const auto observe = resolveBody.find("BeginHZBOcclusionObservationFrame(");
+    ASSERT_NE(parse, std::string::npos);
+    ASSERT_NE(observe, std::string::npos);
+    EXPECT_LT(parse, observe);
+    EXPECT_NE(resolveBody.find("!HasPendingHZBOcclusionObservationFrame()"), std::string::npos);
+    EXPECT_NE(resolveBody.find("m_hzbOcclusionResultReadbackState == nullptr"), std::string::npos);
 }
 
 TEST(DeferredSceneRendererMaterialCacheTests, HZBTargetsAllocateMipChainForHierarchicalOcclusion)
 {
     NLS::Render::Settings::DriverSettings settings;
     settings.graphicsBackend = NLS::Render::Settings::EGraphicsBackend::NONE;
-    settings.enableThreadedRendering = true;
-    settings.threadedFrameSlotCount = 1u;
+    settings.framesInFlight = 1u;
 
     NLS::Render::Context::Driver driver(settings);
     NLS::Core::ServiceLocator::Provide(driver);
@@ -989,8 +1005,7 @@ TEST(DeferredSceneRendererMaterialCacheTests, ReusesWrappedGBufferTargetsUntilSi
 {
     NLS::Render::Settings::DriverSettings settings;
     settings.graphicsBackend = NLS::Render::Settings::EGraphicsBackend::NONE;
-    settings.enableThreadedRendering = true;
-    settings.threadedFrameSlotCount = 1u;
+    settings.framesInFlight = 1u;
 
     NLS::Render::Context::Driver driver(settings);
     NLS::Core::ServiceLocator::Provide(driver);
@@ -1047,8 +1062,7 @@ TEST(DeferredSceneRendererMaterialCacheTests, ClearsWrappedGBufferTargetsWhenRes
 {
     NLS::Render::Settings::DriverSettings settings;
     settings.graphicsBackend = NLS::Render::Settings::EGraphicsBackend::NONE;
-    settings.enableThreadedRendering = true;
-    settings.threadedFrameSlotCount = 1u;
+    settings.framesInFlight = 1u;
 
     NLS::Render::Context::Driver driver(settings);
     NLS::Core::ServiceLocator::Provide(driver);
@@ -1102,8 +1116,7 @@ TEST(DeferredSceneRendererMaterialCacheTests, ReusesGBufferMaterialForStableMate
 {
     NLS::Render::Settings::DriverSettings settings;
     settings.graphicsBackend = NLS::Render::Settings::EGraphicsBackend::NONE;
-    settings.enableThreadedRendering = true;
-    settings.threadedFrameSlotCount = 1u;
+    settings.framesInFlight = 1u;
 
     NLS::Render::Context::Driver driver(settings);
     NLS::Core::ServiceLocator::Provide(driver);
@@ -1132,8 +1145,7 @@ TEST(DeferredSceneRendererMaterialCacheTests, StableMaterialAssetPathDoesNotShar
 {
     NLS::Render::Settings::DriverSettings settings;
     settings.graphicsBackend = NLS::Render::Settings::EGraphicsBackend::NONE;
-    settings.enableThreadedRendering = true;
-    settings.threadedFrameSlotCount = 1u;
+    settings.framesInFlight = 1u;
 
     NLS::Render::Context::Driver driver(settings);
     NLS::Core::ServiceLocator::Provide(driver);
@@ -1181,8 +1193,7 @@ TEST(DeferredSceneRendererMaterialCacheTests, ProvidesVisibleDeferredGBufferFall
 {
     NLS::Render::Settings::DriverSettings settings;
     settings.graphicsBackend = NLS::Render::Settings::EGraphicsBackend::NONE;
-    settings.enableThreadedRendering = true;
-    settings.threadedFrameSlotCount = 1u;
+    settings.framesInFlight = 1u;
 
     NLS::Render::Context::Driver driver(settings);
     NLS::Core::ServiceLocator::Provide(driver);
@@ -1269,8 +1280,7 @@ TEST(DeferredSceneRendererMaterialCacheTests, MapsShaderLabStandardPBRParameters
 {
     NLS::Render::Settings::DriverSettings settings;
     settings.graphicsBackend = NLS::Render::Settings::EGraphicsBackend::NONE;
-    settings.enableThreadedRendering = true;
-    settings.threadedFrameSlotCount = 1u;
+    settings.framesInFlight = 1u;
 
     NLS::Render::Context::Driver driver(settings);
     NLS::Core::ServiceLocator::Provide(driver);
@@ -1398,8 +1408,7 @@ TEST(DeferredSceneRendererMaterialCacheTests, EnablesDeferredNormalMappingAfterN
 {
     NLS::Render::Settings::DriverSettings settings;
     settings.graphicsBackend = NLS::Render::Settings::EGraphicsBackend::NONE;
-    settings.enableThreadedRendering = true;
-    settings.threadedFrameSlotCount = 1u;
+    settings.framesInFlight = 1u;
 
     NLS::Render::Context::Driver driver(settings);
     NLS::Core::ServiceLocator::Provide(driver);
@@ -1458,8 +1467,7 @@ TEST(DeferredSceneRendererMaterialCacheTests, SkipsGBufferMaterialSyncUntilSourc
 {
     NLS::Render::Settings::DriverSettings settings;
     settings.graphicsBackend = NLS::Render::Settings::EGraphicsBackend::NONE;
-    settings.enableThreadedRendering = true;
-    settings.threadedFrameSlotCount = 1u;
+    settings.framesInFlight = 1u;
 
     NLS::Render::Context::Driver driver(settings);
     NLS::Core::ServiceLocator::Provide(driver);
@@ -1510,8 +1518,7 @@ TEST(DeferredSceneRendererMaterialCacheTests, ReusesFrameLocalGBufferMaterialRes
 {
     NLS::Render::Settings::DriverSettings settings;
     settings.graphicsBackend = NLS::Render::Settings::EGraphicsBackend::NONE;
-    settings.enableThreadedRendering = true;
-    settings.threadedFrameSlotCount = 1u;
+    settings.framesInFlight = 1u;
 
     NLS::Render::Context::Driver driver(settings);
     NLS::Core::ServiceLocator::Provide(driver);
@@ -1647,8 +1654,7 @@ TEST(DeferredSceneRendererMaterialCacheTests, GBufferDrawableUsesSourceMaterialW
 {
     NLS::Render::Settings::DriverSettings settings;
     settings.graphicsBackend = NLS::Render::Settings::EGraphicsBackend::NONE;
-    settings.enableThreadedRendering = true;
-    settings.threadedFrameSlotCount = 1u;
+    settings.framesInFlight = 1u;
 
     NLS::Render::Context::Driver driver(settings);
     NLS::Core::ServiceLocator::Provide(driver);
@@ -1700,8 +1706,7 @@ TEST(DeferredSceneRendererMaterialCacheTests, ResyncsSharedRuntimeVariantWhenSou
 {
     NLS::Render::Settings::DriverSettings settings;
     settings.graphicsBackend = NLS::Render::Settings::EGraphicsBackend::NONE;
-    settings.enableThreadedRendering = true;
-    settings.threadedFrameSlotCount = 1u;
+    settings.framesInFlight = 1u;
 
     NLS::Render::Context::Driver driver(settings);
     NLS::Core::ServiceLocator::Provide(driver);

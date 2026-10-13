@@ -4,6 +4,7 @@
 
 #include <filesystem>
 #include <string>
+#include "Rendering/Settings/RhiThreadMode.h"
 
 namespace NLS::Engine::Settings
 {
@@ -15,20 +16,21 @@ namespace ProjectLaunchOptionKeys
 // Shared with the game runtime, which reads the same key for its swapchain.
 constexpr const char* VerticalSynchronization = "vsync";
 // Shared with the game runtime, which reads the same key for its driver.
-constexpr const char* ThreadedRendering = "enable_threaded_rendering";
+constexpr const char* RhiThreadMode = "rhi_thread_mode";
 constexpr const char* RenderDocStartupCaptureFrames = "renderdoc_startup_capture_frames";
 }
 
 struct ProjectLaunchOptions
 {
     bool verticalSynchronization = true;
-    bool threadedRendering = true;
+    Render::Settings::RhiThreadModePreference rhiThreadMode =
+        Render::Settings::RhiThreadModePreference::BackendDefault;
     int renderDocStartupCaptureFrames = 0;
 
     // False when the project file does not carry the key yet, so callers can
     // distinguish an explicit value from a default and migrate legacy settings.
     bool hasVerticalSynchronization = false;
-    bool hasThreadedRendering = false;
+    bool hasRhiThreadMode = false;
     bool hasRenderDocStartupCaptureFrames = false;
 };
 

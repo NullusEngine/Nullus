@@ -1,17 +1,12 @@
 #include "Rendering/SceneRenderStore.h"
 
 #include <algorithm>
+#include <stdexcept>
+#include <Rendering/Context/RenderingThreadSystem.h>
+#include <Rendering/Context/RhiCommandListExecutor.h>
 
 namespace NLS::Engine::Rendering
 {
-    namespace
-    {
-        // Local adaptation for the shared SceneRenderStore: keep removed proxy
-        // resources alive until the frames that could still reference them have
-        // been retired by the delayed command path.
-        constexpr uint64_t kRetiredResourceFrameDelay = 4u;
-    }
-
     SceneRenderStore::SceneRenderStore(
         const uint64_t sceneId,
         const size_t changeJournalCapacity)
@@ -20,16 +15,40 @@ namespace NLS::Engine::Rendering
     {
     }
 
-    SceneRenderStore::~SceneRenderStore() = default;
+    SceneRenderStore::~SceneRenderStore()
+    {
+        // Last-owner destruction also occurs when a failed pipe drops closures.
+        // No caller can access this object now; the thread-safe executor retains
+        // its bindings even when GPU completion cannot be proved.
+        ClearInternal();
+    }
+
+    void SceneRenderStore::RequireRenderThread()
+    {
+        if (!NLS::Render::Context::RenderingThreadSystem::IsInRenderingThread())
+            throw std::logic_error("SceneRenderStore contents require the render thread");
+    }
+
+    void SceneRenderStore::RequireMutation() const
+    {
+        RequireRenderThread();
+        if (m_readViewCount != 0u)
+            throw std::logic_error("SceneRenderStore mutation cannot invalidate an active read view");
+    }
+
+    void SceneRenderStore::PublishMetadata() noexcept
+    {
+        m_publishedProxyCount.store(m_liveProxyCount, std::memory_order_release);
+        m_publishedChangeSerial.store(m_changeSerial, std::memory_order_release);
+    }
 
     void SceneRenderStore::QueueRetiredResources(
-        const uint64_t frameId,
         const SceneProxyResourceBinding& resources)
     {
         if (resources.meshHandle == nullptr && resources.materialHandle == nullptr)
             return;
 
-        m_retiredResources.push_back({ frameId, resources });
+        m_retiredResources.push_back({ resources, std::nullopt });
     }
 
     void SceneRenderStore::RecordChange(
@@ -62,7 +81,7 @@ namespace NLS::Engine::Rendering
         }
     }
 
-    SceneRenderStoreChangeSet SceneRenderStore::GetChangesSince(
+    SceneRenderStoreChangeSet SceneRenderStore::GetChangesSinceInternal(
         const uint64_t changeSerial) const
     {
         SceneRenderStoreChangeSet result;
@@ -90,28 +109,68 @@ namespace NLS::Engine::Rendering
         return result;
     }
 
-    void SceneRenderStore::RetireResourcesThrough(const uint64_t frameId)
+    void SceneRenderStore::RetireResources()
+    {
+        RequireMutation();
+        RetireResourcesInternal();
+    }
+
+    void SceneRenderStore::RetireResourcesInternal()
     {
         if (m_retiredResources.empty())
             return;
 
+        std::vector<std::shared_ptr<void>> owners;
+        for (const auto& retired : m_retiredResources)
+        {
+            if (retired.gpuFence.has_value())
+                continue;
+            if (retired.resources.meshHandle != nullptr)
+                owners.push_back(retired.resources.meshHandle);
+            if (retired.resources.materialHandle != nullptr)
+                owners.push_back(retired.resources.materialHandle);
+        }
+        if (!owners.empty())
+        {
+            const auto gpuFence = NLS::Render::Context::RhiCommandListExecutor::Get().DeferRelease(std::move(owners));
+            for (auto& retired : m_retiredResources)
+            {
+                if (retired.gpuFence.has_value())
+                    continue;
+                retired.gpuFence = gpuFence;
+                retired.resources = {};
+            }
+        }
         const auto releasedEnd = std::remove_if(
             m_retiredResources.begin(),
             m_retiredResources.end(),
-            [frameId](const RetiredResources& retired)
+            [](const RetiredResources& retired)
             {
-                return retired.frameId + kRetiredResourceFrameDelay <= frameId;
+                return retired.gpuFence.has_value() && retired.gpuFence->Succeeded();
             });
         m_retiredResources.erase(releasedEnd, m_retiredResources.end());
     }
 
+    size_t SceneRenderStore::GetPendingResourceRetireCount() const
+    {
+        RequireRenderThread();
+        return static_cast<size_t>(std::count_if(m_retiredResources.begin(), m_retiredResources.end(),
+            [](const auto& retired) { return !retired.gpuFence.has_value() || !retired.gpuFence->Succeeded(); }));
+    }
+
     void SceneRenderStore::Clear()
+    {
+        RequireMutation();
+        ClearInternal();
+    }
+
+    void SceneRenderStore::ClearInternal()
     {
         for (auto& slot : m_slots)
         {
             if (!slot.occupied)
                 continue;
-            QueueRetiredResources(m_lastAppliedFrameId, slot.payload.resources);
+            QueueRetiredResources(slot.payload.resources);
             slot.occupied = false;
             ++slot.handle.generation;
             if (slot.handle.generation == 0u)
@@ -129,6 +188,8 @@ namespace NLS::Engine::Rendering
         m_changeJournal.clear();
         m_minAvailableChangeSerial = m_changeSerial;
         m_lastInvalidatingChangeSerial = m_changeSerial;
+        PublishMetadata();
+        RetireResourcesInternal();
     }
 
     bool SceneRenderStore::ValidateHandle(const SceneProxyHandle handle) const noexcept
@@ -155,11 +216,11 @@ namespace NLS::Engine::Rendering
 
     SceneRenderStoreApplyStats SceneRenderStore::Apply(const SceneProxyUpdateBatch& batch)
     {
+        RequireMutation();
+
         SceneRenderStoreApplyStats stats;
         if (batch.sceneId != 0u && batch.sceneId != m_sceneId)
             return stats;
-
-        m_lastAppliedFrameId = std::max(m_lastAppliedFrameId, batch.frameId);
 
         for (const auto& command : batch.commands)
         {
@@ -179,7 +240,7 @@ namespace NLS::Engine::Rendering
                 const auto replacedHandle = slot.handle;
                 if (replacingOccupiedSlot)
                 {
-                    QueueRetiredResources(batch.frameId, slot.payload.resources);
+                    QueueRetiredResources(slot.payload.resources);
                     m_objectDataTable.Release(slot.handle);
                     if (!(replacedHandle == command.handle))
                         RecordChange(replacedHandle, true);
@@ -194,7 +255,10 @@ namespace NLS::Engine::Rendering
                         slot.lightTransform = std::make_unique<NLS::Maths::Transform>();
                     if (slot.light == nullptr)
                         slot.light = std::make_unique<NLS::Render::Entities::Light>(slot.lightTransform.get());
-                    slot.lightTransform->SetWorldPosition(command.transform.worldPosition);
+                    slot.lightTransform->GenerateMatricesWorld(
+                        command.transform.worldPosition,
+                        command.transform.worldRotation,
+                        command.transform.worldScale);
                     if (slot.payload.light.has_value())
                     {
                         slot.light->type = slot.payload.light->type;
@@ -203,6 +267,7 @@ namespace NLS::Engine::Rendering
                         slot.light->range = slot.payload.light->range;
                         slot.light->cutoff = slot.payload.light->cutoff;
                         slot.light->outerCutoff = slot.payload.light->outerCutoff;
+                        slot.light->size = slot.payload.light->size;
                     }
                 }
                 if (slot.payload.kind != SceneProxyKind::Light)
@@ -233,7 +298,7 @@ namespace NLS::Engine::Rendering
             switch (command.kind)
             {
             case SceneProxyCommandKind::Remove:
-                QueueRetiredResources(batch.frameId, slot->payload.resources);
+                QueueRetiredResources(slot->payload.resources);
                 RecordChange(command.handle, true);
                 slot->occupied = false;
                 ++slot->handle.generation;
@@ -250,7 +315,10 @@ namespace NLS::Engine::Rendering
             case SceneProxyCommandKind::UpdateTransform:
                 slot->transform = command.transform;
                 if (slot->lightTransform != nullptr)
-                    slot->lightTransform->SetWorldPosition(command.transform.worldPosition);
+                    slot->lightTransform->GenerateMatricesWorld(
+                        command.transform.worldPosition,
+                        command.transform.worldRotation,
+                        command.transform.worldScale);
                 if (slot->payload.kind != SceneProxyKind::Light)
                 {
                     (void)m_objectDataTable.Update(
@@ -263,7 +331,7 @@ namespace NLS::Engine::Rendering
                 break;
             case SceneProxyCommandKind::UpdatePayload:
             case SceneProxyCommandKind::Recreate:
-                QueueRetiredResources(batch.frameId, slot->payload.resources);
+                QueueRetiredResources(slot->payload.resources);
                 slot->payload = command.payload;
                 slot->transform = command.transform;
                 if (slot->payload.kind == SceneProxyKind::Light)
@@ -272,7 +340,10 @@ namespace NLS::Engine::Rendering
                         slot->lightTransform = std::make_unique<NLS::Maths::Transform>();
                     if (slot->light == nullptr)
                         slot->light = std::make_unique<NLS::Render::Entities::Light>(slot->lightTransform.get());
-                    slot->lightTransform->SetWorldPosition(command.transform.worldPosition);
+                    slot->lightTransform->GenerateMatricesWorld(
+                        command.transform.worldPosition,
+                        command.transform.worldRotation,
+                        command.transform.worldScale);
                     if (slot->payload.light.has_value())
                     {
                         slot->light->type = slot->payload.light->type;
@@ -281,6 +352,7 @@ namespace NLS::Engine::Rendering
                         slot->light->range = slot->payload.light->range;
                         slot->light->cutoff = slot->payload.light->cutoff;
                         slot->light->outerCutoff = slot->payload.light->outerCutoff;
+                        slot->light->size = slot->payload.light->size;
                     }
                 }
                 else
@@ -313,10 +385,12 @@ namespace NLS::Engine::Rendering
             }
         }
 
+        PublishMetadata();
+        RetireResources();
         return stats;
     }
 
-    bool SceneRenderStore::TryGetProxy(
+    bool SceneRenderStore::TryGetProxyInternal(
         const SceneProxyHandle handle,
         const SceneProxyPayload*& outPayload,
         const SceneProxyTransformState*& outTransform) const noexcept
@@ -334,7 +408,7 @@ namespace NLS::Engine::Rendering
         return true;
     }
 
-    void SceneRenderStore::ForEachProxy(
+    void SceneRenderStore::ForEachProxyInternal(
         const std::function<void(
             const SceneProxyHandle&,
             const SceneProxyPayload&,
@@ -350,7 +424,7 @@ namespace NLS::Engine::Rendering
         }
     }
 
-    void SceneRenderStore::ForEachLight(
+    void SceneRenderStore::ForEachLightInternal(
         const std::function<void(const NLS::Render::Entities::Light&)>& visitor) const
     {
         if (!visitor)
@@ -362,7 +436,7 @@ namespace NLS::Engine::Rendering
         }
     }
 
-    void SceneRenderStore::ForEachSkyBox(
+    void SceneRenderStore::ForEachSkyBoxInternal(
         const std::function<void(
             const SceneProxyHandle&,
             const SceneProxyPayload&,
@@ -375,5 +449,141 @@ namespace NLS::Engine::Rendering
             if (slot.occupied && slot.payload.kind == SceneProxyKind::SkyBox)
                 visitor(slot.handle, slot.payload, slot.transform);
         }
+    }
+
+    size_t SceneRenderStore::GetProxyCount() const noexcept
+    {
+        return m_publishedProxyCount.load(std::memory_order_acquire);
+    }
+
+    uint64_t SceneRenderStore::GetChangeSerial() const noexcept
+    {
+        return m_publishedChangeSerial.load(std::memory_order_acquire);
+    }
+
+    SceneRenderStoreChangeSet SceneRenderStore::GetChangesSince(const uint64_t changeSerial) const
+    {
+        RequireRenderThread();
+        return GetChangesSinceInternal(changeSerial);
+    }
+
+    bool SceneRenderStore::TryGetProxy(
+        const SceneProxyHandle handle,
+        const SceneProxyPayload*& outPayload,
+        const SceneProxyTransformState*& outTransform) const
+    {
+        RequireRenderThread();
+        return TryGetProxyInternal(handle, outPayload, outTransform);
+    }
+
+    void SceneRenderStore::ForEachProxy(
+        const std::function<void(
+            const SceneProxyHandle&,
+            const SceneProxyPayload&,
+            const SceneProxyTransformState&)>& visitor) const
+    {
+        const auto view = Read();
+        view.ForEachProxy(visitor);
+    }
+
+    void SceneRenderStore::ForEachLight(
+        const std::function<void(const NLS::Render::Entities::Light&)>& visitor) const
+    {
+        const auto view = Read();
+        view.ForEachLight(visitor);
+    }
+
+    void SceneRenderStore::ForEachSkyBox(
+        const std::function<void(
+            const SceneProxyHandle&,
+            const SceneProxyPayload&,
+            const SceneProxyTransformState&)>& visitor) const
+    {
+        const auto view = Read();
+        view.ForEachSkyBox(visitor);
+    }
+
+    const PersistentObjectDataTable& SceneRenderStore::GetObjectDataTable() const
+    {
+        RequireRenderThread();
+        return m_objectDataTable;
+    }
+
+    SceneRenderStore::ReadView SceneRenderStore::Read() const
+    {
+        return ReadView(*this);
+    }
+
+    SceneRenderStore::ReadView::ReadView(const SceneRenderStore& store)
+        : m_store(store)
+    {
+        RequireRenderThread();
+        ++m_store.m_readViewCount;
+    }
+
+    SceneRenderStore::ReadView::~ReadView()
+    {
+        --m_store.m_readViewCount;
+    }
+
+    size_t SceneRenderStore::ReadView::GetProxyCount() const
+    {
+        RequireRenderThread();
+        return m_store.m_liveProxyCount;
+    }
+
+    uint64_t SceneRenderStore::ReadView::GetChangeSerial() const
+    {
+        RequireRenderThread();
+        return m_store.m_changeSerial;
+    }
+
+    SceneRenderStoreChangeSet SceneRenderStore::ReadView::GetChangesSince(
+        const uint64_t changeSerial) const
+    {
+        RequireRenderThread();
+        return m_store.GetChangesSinceInternal(changeSerial);
+    }
+
+    bool SceneRenderStore::ReadView::TryGetProxy(
+        const SceneProxyHandle handle,
+        const SceneProxyPayload*& outPayload,
+        const SceneProxyTransformState*& outTransform) const
+    {
+        RequireRenderThread();
+        return m_store.TryGetProxyInternal(handle, outPayload, outTransform);
+    }
+
+    void SceneRenderStore::ReadView::ForEachProxy(
+        const std::function<void(
+            const SceneProxyHandle&,
+            const SceneProxyPayload&,
+            const SceneProxyTransformState&)>& visitor) const
+    {
+        RequireRenderThread();
+        m_store.ForEachProxyInternal(visitor);
+    }
+
+    void SceneRenderStore::ReadView::ForEachLight(
+        const std::function<void(const NLS::Render::Entities::Light&)>& visitor) const
+    {
+        RequireRenderThread();
+        m_store.ForEachLightInternal(visitor);
+    }
+
+    void SceneRenderStore::ReadView::ForEachSkyBox(
+        const std::function<void(
+            const SceneProxyHandle&,
+            const SceneProxyPayload&,
+            const SceneProxyTransformState&)>& visitor) const
+    {
+        RequireRenderThread();
+        m_store.ForEachSkyBoxInternal(visitor);
+    }
+
+    const PersistentObjectDataTable& SceneRenderStore::ReadView::GetObjectDataTable() const
+    {
+        RequireRenderThread();
+        return m_store.m_objectDataTable;
     }
 }

@@ -483,6 +483,8 @@ private:
 	};
 
 	bool ShutdownUnlocked();
+	void InitializeOnSubmitLane(ID3D12Device* pDevice, Span<ID3D12CommandQueue*> queues, uint32 frameLatency);
+	void TickOnSubmitLane();
 	bool HasPendingCommandListQueriesUnlocked();
 	void DrainCompletedReadbackFramesUnlocked();
 	bool HasUnfencedSubmittedWorkUnlocked() const;

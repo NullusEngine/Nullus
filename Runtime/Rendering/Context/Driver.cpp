@@ -11,6 +11,7 @@
 #include <filesystem>
 #include <limits>
 #include <mutex>
+#include <stdexcept>
 #include <string_view>
 #include <thread>
 #include <unordered_map>
@@ -40,8 +41,10 @@
 #include "Rendering/Context/DriverInternal.h"
 #include "Rendering/Context/RenderScenePackageBuilder.h"
 #include "Rendering/Context/RenderThreadCoordinator.h"
-#include "Rendering/Context/RhiThreadCoordinator.h"
-#include "Rendering/Context/ThreadedRenderingLifecycle.h"
+#include "Rendering/Context/RenderCommandPipe.h"
+#include "Rendering/Context/RenderCommandFence.h"
+#include "Rendering/Context/RenderingThreadSystem.h"
+#include "Rendering/Context/RhiCommandListExecutor.h"
 #include "Rendering/Context/SwapchainResizePolicy.h"
 #include "Rendering/Resources/Mesh.h"
 #include "Rendering/Settings/GraphicsBackendUtils.h"
@@ -132,16 +135,23 @@ namespace
             keepAlive.push_back(impl.explicitSwapchain);
         if (impl.pipelineCache != nullptr)
             keepAlive.push_back(impl.pipelineCache);
-        for (auto& retainedFrameResources : impl.retainedThreadedSubmitResourceKeepAliveByFrameContext)
         {
-            for (auto& resource : retainedFrameResources)
+            std::lock_guard retirementLock(impl.frameResourceRetirementMutex);
+            for (const auto& resource : impl.unfencedReadbackResources)
+                keepAlive.push_back(resource);
+            if (impl.frameResourceSlots != nullptr)
             {
-                if (resource != nullptr)
-                    keepAlive.push_back(resource);
+                for (size_t slotIndex = 0u; slotIndex < impl.frameResourceSlots->GetSlotCount(); ++slotIndex)
+                {
+                    for (const auto& resource : impl.frameResourceSlots->PeekSlot(slotIndex)->ownedResources)
+                        if (resource != nullptr)
+                            keepAlive.push_back(resource);
+                }
             }
         }
-        for (const auto& frameContext : impl.frameContexts)
+        for (size_t frameContextIndex = 0u; frameContextIndex < impl.GetFrameContextCount(); ++frameContextIndex)
         {
+            const auto& frameContext = impl.GetFrameContext(frameContextIndex);
             if (frameContext.commandPool != nullptr)
                 keepAlive.push_back(frameContext.commandPool);
             if (frameContext.commandBuffer != nullptr)
@@ -186,13 +196,14 @@ namespace
                 keepAlive.push_back(frameContext.swapchainDepthStencilView);
             if (frameContext.swapchainDepthStencilTexture != nullptr)
                 keepAlive.push_back(frameContext.swapchainDepthStencilTexture);
+            if (frameContext.sceneColorView != nullptr)
+                keepAlive.push_back(frameContext.sceneColorView);
+            if (frameContext.sceneDepthStencilView != nullptr)
+                keepAlive.push_back(frameContext.sceneDepthStencilView);
+            if (frameContext.sceneOutputBindingSet != nullptr)
+                keepAlive.push_back(frameContext.sceneOutputBindingSet);
             if (frameContext.explicitReadbackTexture != nullptr)
                 keepAlive.push_back(frameContext.explicitReadbackTexture);
-        }
-        if (impl.threadedLifecycle != nullptr)
-        {
-            for (auto slot : impl.threadedLifecycle->CopySlots())
-                keepAlive.push_back(std::make_shared<InFlightFrameSlot>(std::move(slot)));
         }
     }
 
@@ -747,13 +758,8 @@ namespace
 
             if (!attachmentBarriers.textureBarriers.empty())
             {
-                FrameGraph::FrameGraphExecutionContext executionContext{
-                    Context::RequireLocatedDriver("BeginPassCommandPlan"),
-                    nullptr,
-                    &commandBuffer,
-                    frameContext
-                };
-                executionContext.RecordResourceBarriers(attachmentBarriers);
+                FrameGraph::FrameGraphExecutionContext::RecordResourceBarriers(
+                    commandBuffer, *frameContext, attachmentBarriers);
             }
         }
 
@@ -818,13 +824,8 @@ namespace
         }
         if (!attachmentBarriers.textureBarriers.empty())
         {
-            FrameGraph::FrameGraphExecutionContext executionContext{
-                Context::RequireLocatedDriver("EndPassCommandPlan"),
-                nullptr,
-                &commandBuffer,
-                frameContext
-            };
-            executionContext.RecordResourceBarriers(attachmentBarriers);
+            FrameGraph::FrameGraphExecutionContext::RecordResourceBarriers(
+                commandBuffer, *frameContext, attachmentBarriers);
         }
     }
 
@@ -1249,13 +1250,8 @@ namespace
 
         if (useResourceStateTracker)
         {
-            FrameGraph::FrameGraphExecutionContext executionContext{
-                Context::RequireLocatedDriver("RecordResourceVisibilityTransitions"),
-                nullptr,
-                &commandBuffer,
-                frameContext
-            };
-            return executionContext.RecordResourceBarriers(barriers).Succeeded();
+            return FrameGraph::FrameGraphExecutionContext::RecordResourceBarriers(
+                commandBuffer, *frameContext, barriers).Succeeded();
         }
 
         return commandBuffer.BarrierChecked(barriers).Succeeded();
@@ -1359,6 +1355,19 @@ namespace
 
         if (commandBuffer == nullptr)
             return input.recordedDrawCommands.empty() ? input.drawCount : 0u;
+
+        if (input.kind == RenderPassCommandKind::SwapchainOutput)
+        {
+            if (input.drawCount == 0u)
+                return 0u;
+            if (input.outputPipeline == nullptr || input.outputBindingSet == nullptr)
+                return 0u;
+            commandBuffer->BindGraphicsPipeline(input.outputPipeline);
+            commandBuffer->BindBindingSet(0u, input.outputBindingSet);
+            commandBuffer->SetScissor({ 0, 0, input.renderWidth, input.renderHeight });
+            commandBuffer->Draw(3u, 1u, 0u, 0u);
+            return 1u;
+        }
 
         if (input.recordedDrawCommands.empty())
             return input.drawCount;
@@ -1721,15 +1730,6 @@ namespace
         return Render::Settings::GetThreadDiagnosticsSettings().logRenderDrawPath;
     }
 
-    bool ShouldBlockThreadedSnapshotPublishForPendingResize(
-        const DriverImpl& impl,
-        const FrameSnapshot& snapshot)
-    {
-        return impl.threadedLifecycle != nullptr &&
-            impl.hasPendingSwapchainResize &&
-            snapshot.targetsSwapchain;
-    }
-
     bool SupportsThreadedFoundationExecution(const DriverImpl& impl)
     {
         if (impl.explicitDevice == nullptr)
@@ -1741,21 +1741,24 @@ namespace
             impl.explicitDevice->GetCapabilities());
     }
 
-    bool AllowsThreadedHarnessPublish(const DriverImpl& impl)
+    struct PendingUiSnapshotConsumer final
     {
-        switch (impl.requestedGraphicsBackend)
+        explicit PendingUiSnapshotConsumer(DriverImpl& owner)
+            : impl(owner), lifetime(owner.renderCommandFlushLifetime)
         {
-        case Render::Settings::EGraphicsBackend::NONE:
-            return true;
-        case Render::Settings::EGraphicsBackend::DX12:
-        case Render::Settings::EGraphicsBackend::VULKAN:
-        case Render::Settings::EGraphicsBackend::OPENGL:
-        case Render::Settings::EGraphicsBackend::DX11:
-        case Render::Settings::EGraphicsBackend::METAL:
-        default:
-            return false;
+            ++impl.pendingUiSnapshotConsumerCommands;
         }
-    }
+
+        ~PendingUiSnapshotConsumer()
+        {
+            if (!lifetime.expired())
+                --impl.pendingUiSnapshotConsumerCommands;
+        }
+
+        DriverImpl& impl;
+        std::weak_ptr<DriverImpl::RenderCommandFlushLifetime> lifetime;
+    };
+
 
     void AdvanceUiOverlayPresentationInvalidationLocked(DriverImpl& impl)
     {
@@ -1775,44 +1778,102 @@ namespace
             observedPresentationInvalidationGeneration;
     }
 
-    constexpr uint64_t kDriverGpuDrainTimeoutNanoseconds = 5'000'000'000ull;
-    constexpr auto kThreadedLifecycleDrainWatchdog = std::chrono::seconds(5);
-
+    void NotifyThreadedWorkers(DriverImpl& impl);
     bool WaitForThreadedWorkerWake(
         DriverImpl& impl,
         uint64_t observedGeneration,
         std::chrono::milliseconds timeout = kThreadedWorkerWakeTimeout);
 
-    bool DrainThreadedLifecycleSynchronously(
+    void ExecuteDriverRenderCommand(DriverImpl& impl, std::function<void()> command)
+    {
+        if (!RenderingThreadSystem::IsInRhiThread() &&
+            (!impl.renderingThreads.IsInitialized() || impl.renderingThreads.IsSuspended() ||
+             !RenderingThreadSystem::HasActiveRenderThread() || RenderingThreadSystem::IsInRenderingThread()))
+        {
+            command();
+            return;
+        }
+
+        const std::weak_ptr<DriverImpl::RenderCommandFlushLifetime> lifetime = impl.renderCommandFlushLifetime;
+        const auto executed = std::make_shared<std::atomic_bool>(false);
+        const auto completion = EnqueueRenderCommand<struct DriverOrderedCommand>(
+            [lifetime, executed, command = std::move(command)]
+            {
+                if (lifetime.expired())
+                    return;
+                command();
+                executed->store(true, std::memory_order_release);
+            });
+        NotifyThreadedWorkers(impl);
+
+        // A submit callback cannot wait for render work that flushes its own lane.
+        if (RenderingThreadSystem::IsInRhiThread())
+            return;
+        if (!completion.WaitFor(impl.renderDrainTimeout))
+        {
+            ReportRenderFatalError("Driver: timed out waiting for an ordered render command");
+            throw std::runtime_error("Driver: timed out waiting for an ordered render command");
+        }
+        if (!completion.Succeeded())
+            throw std::runtime_error("Driver: ordered render command failed: " + completion.GetDiagnostic());
+        if (!executed->load(std::memory_order_acquire))
+            throw std::runtime_error("Driver: ordered render command was abandoned: " + GetRenderFatalError());
+    }
+
+    bool DrainRenderFrameCommands(
         DriverImpl& impl,
         Driver* driver = nullptr,
-        const bool applyPendingSwapchainResize = true)
+        const bool applyPendingSwapchainResize = true,
+        const std::optional<std::chrono::steady_clock::time_point> deadline = std::nullopt)
     {
         NLS_PROFILE_SCOPE();
-        if (impl.threadedLifecycle == nullptr || driver == nullptr)
+        if (driver == nullptr)
             return true;
 
-        const auto drainStartTime = std::chrono::steady_clock::now();
-        while (impl.threadedLifecycle->GetInFlightDepth() > 0u)
+        const auto drainDeadline = deadline.value_or(
+            std::chrono::steady_clock::now() + impl.renderDrainTimeout);
+        while (Detail::GetPendingCpuFrameCount(impl) > 0u)
         {
             const uint64_t observedWakeGeneration =
                 impl.threadedWorkerWake.Generation();
             bool progressed = false;
 
+            if (impl.renderingThreads.IsInitialized() && !impl.renderingThreads.IsSuspended() &&
+                !RenderingThreadSystem::IsInRenderingThread())
             {
-                NLS_PROFILE_NAMED_SCOPE("Driver::DrainRenderFrameBuilds");
-                if (RenderThreadCoordinator::DrainPendingRenderFrameBuildsSynchronously(*driver))
+                if (impl.renderingThreads.IsStopRequested())
+                    return false;
+                if (std::chrono::steady_clock::now() >= drainDeadline)
                 {
-                    progressed = true;
+                    NLS_LOG_ERROR("Driver: timed out waiting for the render thread to drain frames");
+                    return false;
                 }
+                NotifyThreadedWorkers(impl);
+                WaitForThreadedWorkerWake(impl, observedWakeGeneration, kThreadedDrainWakeTimeout);
+                continue;
+            }
+
+            // The watchdog bounds the whole drain, not just the no-progress branch.
+            // A worker that keeps reporting progress without retiring a frame would
+            // otherwise spin here forever, because "reported progress" is not the
+            // same as "will finish".
+            if (std::chrono::steady_clock::now() >= drainDeadline)
+            {
+                NLS_LOG_ERROR(
+                    "Driver: timed out waiting for CPU frame work count=" +
+                    std::to_string(Detail::GetPendingCpuFrameCount(impl)));
+                return false;
+            }
+
+            {
+                NLS_PROFILE_NAMED_SCOPE("Driver::DrainRenderFrames");
+                progressed = RenderCommandDispatcher::Dispatch() > 0u;
             }
 
             {
                 NLS_PROFILE_NAMED_SCOPE("Driver::DrainRhiSubmissions");
-                if (RhiThreadCoordinator::DrainPendingThreadedSubmissions(
-                    *driver,
-                    RhiSubmissionAttribution::SynchronousDrain,
-                    applyPendingSwapchainResize))
+                if (RhiCommandListExecutor::FinalizeThreadedSubmissionProduction(
+                    *driver, applyPendingSwapchainResize))
                 {
                     progressed = true;
                 }
@@ -1823,16 +1884,9 @@ namespace
                 // A worker can retire the final slot after the loop condition or a
                 // failed ownership attempt. Avoid turning that completion into a
                 // full drain-wake timeout.
-                if (impl.threadedLifecycle->GetInFlightDepth() == 0u)
+                if (Detail::GetPendingCpuFrameCount(impl) == 0u)
                     continue;
 
-                if (std::chrono::steady_clock::now() - drainStartTime >= kThreadedLifecycleDrainWatchdog)
-                {
-                    NLS_LOG_ERROR(
-                        "DrainThreadedLifecycleSynchronously: timed out waiting for threaded lifecycle depth=" +
-                        std::to_string(impl.threadedLifecycle->GetInFlightDepth()));
-                    return false;
-                }
                 // Another worker may currently own a RenderScenePreparing/RhiSubmitting slot.
                 // UI composition and shutdown are synchronization points, so wait for ownership
                 // to return instead of presenting stale backbuffers or exposing unfinished readback.
@@ -1870,56 +1924,64 @@ namespace
     }
 
     bool DrainFrameFenceForResize(
-        Render::RHI::RHIFrameContext& frameContext,
-        const DriverImpl* impl,
-        const size_t frameContextIndex = std::numeric_limits<size_t>::max())
+        DriverImpl& impl,
+        const size_t frameContextIndex)
     {
-        if (frameContext.frameFence == nullptr || frameContext.frameFence->IsSignaled())
+        std::shared_ptr<Render::RHI::RHIFence> retirementFence;
+        {
+            std::lock_guard retirementLock(impl.frameResourceRetirementMutex);
+            if (impl.frameResourceSlots == nullptr)
+                return true;
+            const auto* slot = impl.frameResourceSlots->PeekSlot(frameContextIndex);
+            if (slot == nullptr)
+                return true;
+            if (slot->quarantined)
+                return false;
+            retirementFence = slot->gpuFence;
+        }
+        if (retirementFence == nullptr || retirementFence->IsSignaled())
             return true;
 
-        if (impl != nullptr && impl->deviceLostDetected.load(std::memory_order_acquire))
+        if (impl.deviceLostDetected.load(std::memory_order_acquire))
         {
             NLS_LOG_ERROR(
                 "Driver: abandoned submitted GPU work fence wait after device loss fence=" +
-                std::string(frameContext.frameFence->GetDebugName()) +
-                (frameContextIndex != std::numeric_limits<size_t>::max()
-                    ? " frameContextIndex=" + std::to_string(frameContextIndex)
-                    : std::string()));
+                std::string(retirementFence->GetDebugName()) +
+                " frameContextIndex=" + std::to_string(frameContextIndex));
             return false;
         }
 
-        if (frameContext.frameFence->Wait(kDriverGpuDrainTimeoutNanoseconds))
+        const auto gpuDrainTimeout = std::chrono::duration_cast<std::chrono::nanoseconds>(impl.renderDrainTimeout);
+        if (retirementFence->Wait(static_cast<uint64_t>(gpuDrainTimeout.count())))
             return true;
 
         NLS_LOG_ERROR(
             "Driver: timed out waiting for submitted GPU work frame fence=" +
-            std::string(frameContext.frameFence->GetDebugName()) +
-            (frameContextIndex != std::numeric_limits<size_t>::max()
-                ? " frameContextIndex=" + std::to_string(frameContextIndex)
-                : std::string()));
+            std::string(retirementFence->GetDebugName()) +
+            " frameContextIndex=" + std::to_string(frameContextIndex));
         return false;
     }
 
     bool DrainFrameFencesForResize(
-        std::vector<Render::RHI::RHIFrameContext>& frameContexts,
-        const DriverImpl* impl)
+        DriverImpl& impl)
     {
-        for (size_t frameContextIndex = 0u; frameContextIndex < frameContexts.size(); ++frameContextIndex)
+        for (size_t frameContextIndex = 0u; frameContextIndex < impl.GetFrameContextCount(); ++frameContextIndex)
         {
-            if (!DrainFrameFenceForResize(frameContexts[frameContextIndex], impl, frameContextIndex))
+            if (!DrainFrameFenceForResize(impl, frameContextIndex))
                 return false;
         }
         return true;
     }
 
     bool ReleaseFrameContextResources(
-        Render::RHI::RHIFrameContext& frameContext,
-        const DriverImpl* impl,
+        DriverImpl& impl,
+        const size_t frameContextIndex,
         const bool abandonFenceWait = false)
     {
-        if (!abandonFenceWait && !DrainFrameFenceForResize(frameContext, impl))
+        if (!abandonFenceWait && !DrainFrameFenceForResize(impl, frameContextIndex))
             return false;
 
+        auto& frameContext = impl.GetFrameContext(frameContextIndex);
         if (frameContext.commandBuffer != nullptr && frameContext.commandBuffer->IsRecording())
             frameContext.commandBuffer->End();
 
@@ -1954,18 +2016,8 @@ namespace
         return true;
     }
 
-    uint32_t ResolveThreadedLifecycleSlotCount(const Render::Settings::DriverSettings& settings)
-    {
-        return settings.threadedFrameSlotCount != 0u
-            ? settings.threadedFrameSlotCount
-            : std::max<uint32_t>(1u, settings.framesInFlight);
-    }
-
     uint32_t ResolveExplicitFrameContextCount(const Render::Settings::DriverSettings& settings)
     {
-        if (settings.enableThreadedRendering)
-            return ResolveThreadedLifecycleSlotCount(settings);
-
         return std::max<uint32_t>(1u, settings.framesInFlight);
     }
 
@@ -1973,23 +2025,24 @@ namespace
         DriverImpl& impl,
         const uint32_t frameCount)
     {
-        if (!DrainFrameFencesForResize(impl.frameContexts, &impl))
+        if (!DrainFrameFencesForResize(impl))
             return;
         Detail::ReleaseDeferredThreadedFrameScopedResourcesAfterFence(impl);
-        for (auto& frameContext : impl.frameContexts)
-            (void)ReleaseFrameContextResources(frameContext, &impl);
-        impl.retainedThreadedSubmitResourceKeepAliveByFrameContext.clear();
-        impl.deferredThreadedFrameScopedRetirementFrameContexts.clear();
-        impl.deferredUiTextureRetirementFrameIdsByFrameContext.clear();
-        impl.frameContexts.clear();
+        for (size_t frameContextIndex = 0u; frameContextIndex < impl.GetFrameContextCount(); ++frameContextIndex)
+            (void)ReleaseFrameContextResources(impl, frameContextIndex);
+        {
+            std::lock_guard lock(impl.frameResourceRetirementMutex);
+            impl.frameResourceSlots.reset();
+            impl.reservedFrameResourceLease.reset();
+        }
 
         if (impl.explicitDevice == nullptr)
             return;
 
-        impl.frameContexts.reserve(frameCount);
+        impl.EnsureFrameContexts(frameCount);
         for (uint32_t frameIndex = 0; frameIndex < frameCount; ++frameIndex)
         {
-            Render::RHI::RHIFrameContext frameContext;
+            auto& frameContext = impl.GetFrameContext(frameIndex);
             frameContext.frameIndex = frameIndex;
             frameContext.commandPool = impl.explicitDevice->CreateCommandPool(
                 Render::RHI::QueueType::Graphics,
@@ -2014,9 +2067,10 @@ namespace
                 65536u,
                 impl.descriptorAllocationFailureCount);
             frameContext.uploadContext = Render::Backend::CreateUploadContextForRhiDevice(impl.explicitDevice);
-            impl.frameContexts.push_back(std::move(frameContext));
         }
-        impl.retainedThreadedSubmitResourceKeepAliveByFrameContext.resize(impl.frameContexts.size());
+        // Resource capacity does not determine the permitted CPU queue depth.
+        impl.frameLatency = std::make_unique<FrameLatencyController>(
+            impl.cpuFrameLatencyLimit == 0u ? frameCount : (std::min)(frameCount, impl.cpuFrameLatencyLimit));
     }
 
     bool ReleaseExplicitDeviceResourcesForReplacement(DriverImpl& impl, Driver* driver)
@@ -2030,12 +2084,11 @@ namespace
             return false;
         }
 
-        impl.explicitFrameActive = false;
-        impl.uiStandaloneFrameActive = false;
-        impl.uiStandaloneFramePending.store(false, std::memory_order_release);
-        impl.uiStandaloneFramePendingUntilTickNs.store(0u, std::memory_order_release);
-        impl.uiRenderFinishedSemaphore = {};
-        impl.uiRenderFinishedValue = 0u;
+        {
+            std::lock_guard lock(impl.uiCompositionSignalMutex);
+            impl.uiRenderFinishedSemaphore = {};
+            impl.uiRenderFinishedValue = 0u;
+        }
         {
             std::lock_guard lock(impl.sceneToUiWaitMutex);
             impl.sceneToUiWaitSemaphore = {};
@@ -2047,14 +2100,12 @@ namespace
             impl.submittedReadbackTextureGenerations.clear();
             impl.completedReadbackTextureHistory.clear();
         }
-        if (impl.uiStandaloneFrameSubmissionLock.owns_lock())
-            impl.uiStandaloneFrameSubmissionLock.unlock();
         impl.hasPendingSwapchainResize = false;
 
         std::unique_lock<std::timed_mutex> threadedSubmissionLock;
-        if (impl.threadedLifecycle != nullptr)
+        if (impl.frameResourceSlots != nullptr)
         {
-            if (driver == nullptr || !DrainThreadedLifecycleSynchronously(impl, driver))
+            if (driver == nullptr || !DrainRenderFrameCommands(impl, driver))
             {
                 NLS_LOG_ERROR("DriverTestAccess::SetExplicitDevice: timed out draining threaded rendering before replacing explicit device");
                 return false;
@@ -2063,31 +2114,30 @@ namespace
             threadedSubmissionLock = std::unique_lock<std::timed_mutex>(
                 impl.threadedRhiSubmissionMutex,
                 std::defer_lock);
-            if (!threadedSubmissionLock.try_lock_for(kThreadedLifecycleDrainWatchdog))
+            if (!threadedSubmissionLock.try_lock_for(impl.renderDrainTimeout))
             {
                 NLS_LOG_ERROR("DriverTestAccess::SetExplicitDevice: timed out waiting for threaded RHI submission before replacing explicit device");
                 return false;
             }
-            if (impl.threadedLifecycle->GetInFlightDepth() > 0u)
+            if (Detail::GetPendingCpuFrameCount(impl) > 0u)
             {
                 NLS_LOG_ERROR("DriverTestAccess::SetExplicitDevice: threaded rendering became active while replacing explicit device");
                 return false;
             }
 
-            impl.threadedLifecycle->ReleaseRetainedFrameResources();
         }
 
         const bool abandonFenceWait = impl.deviceLostDetected.load(std::memory_order_acquire);
         const bool drainedFrameFences =
             abandonFenceWait ||
-            DrainFrameFencesForResize(impl.frameContexts, &impl);
+            DrainFrameFencesForResize(impl);
         if (drainedFrameFences && !abandonFenceWait)
             Detail::ReleaseDeferredThreadedFrameScopedResourcesAfterFence(impl);
         bool releasedAllFrameContexts = drainedFrameFences;
-        for (auto& frameContext : impl.frameContexts)
+        for (size_t frameContextIndex = 0u; frameContextIndex < impl.GetFrameContextCount(); ++frameContextIndex)
         {
             releasedAllFrameContexts =
-                ReleaseFrameContextResources(frameContext, &impl, abandonFenceWait) &&
+                ReleaseFrameContextResources(impl, frameContextIndex, abandonFenceWait) &&
                 releasedAllFrameContexts;
         }
         if (!releasedAllFrameContexts)
@@ -2130,10 +2180,11 @@ namespace
             impl.uiRgba8TextureAtlasPages.clear();
         }
 
-        impl.retainedThreadedSubmitResourceKeepAliveByFrameContext.clear();
-        impl.deferredThreadedFrameScopedRetirementFrameContexts.clear();
-        impl.deferredUiTextureRetirementFrameIdsByFrameContext.clear();
-        impl.frameContexts.clear();
+        {
+            std::lock_guard lock(impl.frameResourceRetirementMutex);
+            impl.frameResourceSlots.reset();
+            impl.reservedFrameResourceLease.reset();
+        }
         impl.explicitSwapchain.reset();
         return true;
     }
@@ -2250,10 +2301,6 @@ bool Detail::SupportsThreadedFoundationExecution(const DriverImpl& impl)
     return NLS::Render::Context::SupportsThreadedFoundationExecution(impl);
 }
 
-bool Detail::AllowsThreadedHarnessPublish(const DriverImpl& impl)
-{
-    return NLS::Render::Context::AllowsThreadedHarnessPublish(impl);
-}
 
 void Detail::NotifyThreadedWorkers(DriverImpl& impl)
 {
@@ -2330,18 +2377,46 @@ std::shared_ptr<Render::RHI::RHIDevice> DriverRendererAccess::GetExplicitDevice(
 	return driver.m_impl->explicitDevice;
 }
 
-bool DriverRendererAccess::TryPublishPreparedFrameBuilder(
+void DriverRendererAccess::PrepareSwapchainSceneOutput(Driver& driver, RenderScenePackage& package)
+{
+    if (!package.targetsSwapchain || !HasExplicitRHI(driver) || driver.m_impl->explicitSwapchain == nullptr)
+        return;
+    if (!RenderingThreadSystem::IsInRenderingThread())
+        throw std::logic_error("Swapchain scene output must be prepared on the render thread");
+    const auto slotIndex = GetActiveFrameContextSlotIndex(driver);
+    if (!slotIndex.has_value())
+        throw std::logic_error("Swapchain scene output requires a frame resource lease");
+    {
+        std::lock_guard lock(driver.m_impl->frameResourceRetirementMutex);
+        const auto* slot = driver.m_impl->frameResourceSlots->PeekSlot(*slotIndex);
+        if (slot == nullptr || !slot->inFlight || slot->gpuFence != nullptr || slot->quarantined)
+            throw std::logic_error("Swapchain scene output cannot mutate a GPU-owned resource slot");
+    }
+    driver.m_impl->swapchainSceneOutput.Prepare(driver, driver.m_impl->GetFrameContext(*slotIndex), package,
+        driver.m_impl->explicitSwapchain->GetDesc().backbufferFormat);
+}
+
+bool DriverRendererAccess::TryEnqueueRenderFrame(
     Driver& driver,
-    const FrameSnapshot& snapshot,
-    PreparedRenderSceneBuilder renderSceneBuilder,
+    const RenderFramePacket& snapshot,
+    RenderSceneBuildCommand renderSceneBuilder,
     size_t* publishedSlotIndex,
     uint64_t* publishedFrameId,
     const bool backgroundPreview)
 {
+    if (!renderSceneBuilder)
+    {
+        if (publishedFrameId != nullptr)
+            *publishedFrameId = 0u;
+        return false;
+    }
     if (driver.m_impl != nullptr)
     {
+        auto pendingUiConsumer = snapshot.targetsSwapchain
+            ? std::make_shared<PendingUiSnapshotConsumer>(*driver.m_impl) : nullptr;
         auto originalRenderSceneBuilder = std::move(renderSceneBuilder);
-        renderSceneBuilder = [&driver, originalRenderSceneBuilder = std::move(originalRenderSceneBuilder)](
+        renderSceneBuilder = [&driver, originalRenderSceneBuilder = std::move(originalRenderSceneBuilder),
+                                 pendingUiConsumer = std::move(pendingUiConsumer)](
                                  const size_t lifecycleSlotIndex) mutable
         {
             auto package = originalRenderSceneBuilder(lifecycleSlotIndex);
@@ -2372,11 +2447,12 @@ bool DriverRendererAccess::TryPublishPreparedFrameBuilder(
                     }
                 }
             }
+            pendingUiConsumer.reset();
             return package;
         };
     }
 
-    return RenderThreadCoordinator::TryPublishPreparedFrameBuilder(
+    return RenderThreadCoordinator::TryEnqueueRenderFrame(
         driver,
         snapshot,
         std::move(renderSceneBuilder),
@@ -2392,33 +2468,81 @@ void DriverRendererAccess::CancelBackgroundPreviewPublicationRequest(Driver& dri
         driver.m_impl->backgroundPreviewPublicationRequested.store(false, std::memory_order_release);
 }
 
-bool DriverRendererAccess::QueueStandalonePostSubmitBufferReadback(
+bool DriverRendererAccess::TryDrainThreadedRendering(
     Driver& driver,
-    PostSubmitBufferReadbackRequest request)
-{
-    if (driver.m_impl == nullptr ||
-        !driver.m_impl->explicitFrameActive ||
-        request.state == nullptr)
-    {
-        return false;
-    }
-
-    driver.m_impl->standalonePostSubmitBufferReadbacks.push_back(std::move(request));
-    return true;
-}
-
-bool DriverRendererAccess::TryDrainThreadedRendering(Driver& driver, const bool applyPendingSwapchainResize)
+    const bool applyPendingSwapchainResize,
+    const std::optional<std::chrono::milliseconds> timeout)
 {
     if (driver.m_impl == nullptr)
         return true;
 
-    const bool drained = DrainThreadedLifecycleSynchronously(
+    const auto drainDeadline = std::chrono::steady_clock::now() +
+        std::max(std::chrono::milliseconds::zero(), timeout.value_or(driver.m_impl->renderDrainTimeout));
+    const bool drained = DrainRenderFrameCommands(
         *driver.m_impl,
         &driver,
-        applyPendingSwapchainResize);
-    if (drained && applyPendingSwapchainResize)
-        driver.ApplyPendingSwapchainResize();
+        applyPendingSwapchainResize,
+        drainDeadline);
+    if (drained)
+    {
+        auto& impl = *driver.m_impl;
+        if (impl.renderingThreads.IsInitialized() && !impl.renderingThreads.IsSuspended() &&
+            !RenderingThreadSystem::IsInRenderingThread())
+        {
+            // Slot retirement can precede the producer's final handoff and resize.
+            // Join that work on its owning render thread before returning to callers.
+            const std::weak_ptr<DriverImpl::RenderCommandFlushLifetime> lifetime =
+                impl.renderCommandFlushLifetime;
+            const auto applied = std::make_shared<std::atomic_bool>(false);
+            RenderCommandEvent completion;
+            EnqueueRenderCommand<struct DriverDrainRenderingCommand>(
+                [lifetime, applied, driverPtr = &driver, applyPendingSwapchainResize]
+                {
+                    if (lifetime.expired())
+                        return;
+                    RhiCommandListExecutor::DrainProducerOwnedThreadedSubmission(*driverPtr);
+                    if (applyPendingSwapchainResize)
+                        driverPtr->ApplyPendingSwapchainResize();
+                    applied->store(true, std::memory_order_release);
+                }, completion);
+            NotifyThreadedWorkers(impl);
+            const auto remaining = std::max(std::chrono::steady_clock::duration::zero(),
+                drainDeadline - std::chrono::steady_clock::now());
+            if (!completion.WaitFor(std::chrono::ceil<std::chrono::milliseconds>(remaining)))
+            {
+                NLS_LOG_ERROR("Driver: timed out joining render-thread submission finalization and resize");
+                return false;
+            }
+            if (!completion.Succeeded())
+            {
+                NLS_LOG_ERROR("Driver: render-thread finalization failed: " + completion.GetDiagnostic());
+                return false;
+            }
+            return applied->load(std::memory_order_acquire);
+        }
+        (void)RenderCommandDispatcher::Dispatch();
+        RhiCommandListExecutor::DrainProducerOwnedThreadedSubmission(driver);
+        if (applyPendingSwapchainResize)
+            driver.ApplyPendingSwapchainResize();
+    }
     return drained;
+}
+
+DriverRendererAccess::FrameLatencyDebugStats DriverRendererAccess::GetFrameLatencyDebugStats(
+    const Driver& driver)
+{
+    FrameLatencyDebugStats stats;
+    if (driver.m_impl == nullptr || driver.m_impl->frameLatency == nullptr)
+        return stats;
+
+    const auto& latency = *driver.m_impl->frameLatency;
+    stats.openFrameCount = latency.GetInFlightFrameCount();
+    stats.openedFrameCount = latency.GetOpenedFrameCount();
+    stats.retiredFrameCount = latency.GetRetiredFrameCount();
+    stats.stalledFrameCount = latency.GetStalledFrameCount();
+    stats.stallTimeoutCount = latency.GetStallTimeoutCount();
+    stats.totalStallTimeNanoseconds = latency.GetTotalStallTimeNanoseconds();
+    return stats;
 }
 
 bool DriverRendererAccess::TryWaitForSubmittedGpuWork(Driver& driver)
@@ -2427,7 +2551,10 @@ bool DriverRendererAccess::TryWaitForSubmittedGpuWork(Driver& driver)
         return true;
     if (!TryDrainThreadedRendering(driver, false))
         return false;
-    return DrainFrameFencesForResize(driver.m_impl->frameContexts, driver.m_impl.get());
+    const bool drained = DrainFrameFencesForResize(*driver.m_impl);
+    if (drained)
+        (void)RhiCommandListExecutor::Get().ReleaseRetiredBatches();
+    return drained;
 }
 
 void DriverRendererAccess::DrainThreadedRendering(Driver& driver)
@@ -2455,23 +2582,23 @@ std::optional<ThreadedFrameTelemetry> DriverRendererAccess::TryGetThreadedFrameT
 
 void DriverRendererAccess::ResetThreadedReservedSlotWaitMeasurementWindowMaxNs(Driver& driver)
 {
-    if (driver.m_impl != nullptr && driver.m_impl->threadedLifecycle != nullptr)
-        driver.m_impl->threadedLifecycle->ResetReservedSlotWaitMeasurementWindowMaxNs();
+    if (driver.m_impl != nullptr)
+        driver.m_impl->frameResourceReservationWaitMaxNs.store(0u, std::memory_order_release);
 }
 
 uint64_t DriverRendererAccess::GetThreadedReservedSlotWaitMeasurementWindowMaxNs(const Driver& driver)
 {
-    return driver.m_impl != nullptr && driver.m_impl->threadedLifecycle != nullptr
-        ? driver.m_impl->threadedLifecycle->GetReservedSlotWaitMeasurementWindowMaxNs()
-        : 0u;
+    const uint64_t resourceWait = driver.m_impl != nullptr
+        ? driver.m_impl->frameResourceReservationWaitMaxNs.load(std::memory_order_acquire) : 0u;
+    return resourceWait;
 }
 
 std::vector<uint64_t> DriverRendererAccess::CollectStreamingDependencyPins(const Driver& driver)
 {
-    if (driver.m_impl == nullptr || driver.m_impl->threadedLifecycle == nullptr)
+    if (driver.m_impl == nullptr)
         return {};
 
-    return driver.m_impl->threadedLifecycle->CollectStreamingDependencyPins();
+    return Detail::CollectPendingStreamingDependencyPins(*driver.m_impl);
 }
 
 void DriverRendererAccess::SetViewport(
@@ -2508,15 +2635,40 @@ Render::FrameGraph::FrameGraphExecutionContext DriverRendererAccess::CreateFrame
 	};
 }
 
+const ScopedFrameResourceContext*& ScopedFrameResourceContext::Current()
+{
+    static thread_local const ScopedFrameResourceContext* current = nullptr;
+    return current;
+}
+
+ScopedFrameResourceContext::ScopedFrameResourceContext(const Driver& driver, const size_t slotIndex)
+    : m_driver(driver.m_impl.get()), m_slotIndex(slotIndex), m_previous(Current())
+{
+    if (m_driver == nullptr || slotIndex >= m_driver->GetFrameContextCount())
+        throw std::out_of_range("Frame resource context has no resource slot");
+    Current() = this;
+}
+
+ScopedFrameResourceContext::~ScopedFrameResourceContext()
+{
+    Current() = m_previous;
+}
+
+std::optional<size_t> ScopedFrameResourceContext::GetSlotIndex(const DriverImpl& driver)
+{
+    for (const auto* context = Current(); context != nullptr; context = context->m_previous)
+        if (context->m_driver == &driver)
+            return context->m_slotIndex;
+    return std::nullopt;
+}
+
 std::optional<size_t> DriverRendererAccess::GetActiveFrameContextSlotIndex(const Driver& driver)
 {
-    if (driver.m_impl == nullptr || driver.m_impl->frameContexts.empty())
+    if (driver.m_impl == nullptr || driver.m_impl->GetFrameContextCount() == 0u)
         return std::nullopt;
 
-    if (Detail::GetActiveFrameContext(*driver.m_impl) == nullptr)
-        return std::nullopt;
-
-    return driver.m_impl->currentFrameIndex % driver.m_impl->frameContexts.size();
+    const auto bound = ScopedFrameResourceContext::GetSlotIndex(*driver.m_impl);
+    return bound.has_value() && *bound < driver.m_impl->GetFrameContextCount() ? bound : std::nullopt;
 }
 
 size_t DriverRendererAccess::GetFrameContextSlotCount(const Driver& driver)
@@ -2524,34 +2676,33 @@ size_t DriverRendererAccess::GetFrameContextSlotCount(const Driver& driver)
     if (driver.m_impl == nullptr)
         return 0u;
 
-    if (!driver.m_impl->frameContexts.empty())
-        return driver.m_impl->frameContexts.size();
+    if (driver.m_impl->GetFrameContextCount() != 0u)
+        return driver.m_impl->GetFrameContextCount();
 
     return 0u;
 }
 
-size_t DriverRendererAccess::GetLifecycleFrameSlotCount(const Driver& driver)
+size_t DriverRendererAccess::GetFrameResourceSlotCount(const Driver& driver)
 {
     if (driver.m_impl == nullptr)
         return 0u;
 
-    const auto* threadedLifecycle = driver.m_impl->threadedLifecycle.get();
-    if (threadedLifecycle != nullptr)
-        return threadedLifecycle->GetSlotCount();
+    if (driver.m_impl->frameResourceSlots != nullptr)
+        return driver.m_impl->frameResourceSlots->GetSlotCount();
 
     return GetFrameContextSlotCount(driver);
 }
 
 namespace
 {
-    std::chrono::steady_clock::time_point ResolveThreadedPublishRetirementDeadline(
+    std::chrono::steady_clock::time_point ResolveFrameAdmissionDeadline(
         const DriverImpl& impl,
         const bool waitForRetirement)
     {
-        const auto wait = waitForRetirement
-            ? std::chrono::milliseconds(impl.threadedPublishRetirementWaitMs)
-            : std::chrono::milliseconds::zero();
-        return std::chrono::steady_clock::now() + wait;
+        if (waitForRetirement && impl.threadedWorkersRunning && !impl.renderingThreads.IsSuspended())
+            return std::chrono::steady_clock::time_point::max();
+        // A stopped consumer cannot free capacity. Its caller must drain explicitly.
+        return std::chrono::steady_clock::now();
     }
 
     uint64_t ResolveRemainingWaitNanoseconds(
@@ -2568,92 +2719,157 @@ namespace
         DriverImpl& impl,
         const bool waitForDeferredFrameFence,
         const bool waitForRetirement,
-        const std::chrono::steady_clock::time_point retirementDeadline)
+        const std::chrono::steady_clock::time_point retirementDeadline,
+        const bool targetsSwapchain = false)
     {
-        auto* threadedLifecycle = impl.threadedLifecycle.get();
-        if (threadedLifecycle != nullptr)
+        const auto admissionCancelled = [&impl]
         {
-            if (impl.deviceLostDetected.load(std::memory_order_acquire) ||
-                impl.unsafeGpuWorkQuarantined.load(std::memory_order_acquire))
+            if (impl.frameLatency != nullptr)
             {
+                // CPU fence failures must be observed even while GPU slots remain busy.
+                (void)impl.frameLatency->PollCompletedFrames();
+                if (!impl.frameLatency->GetFailureDiagnostic().empty())
+                    return true;
+            }
+            return impl.threadedStopRequested.load(std::memory_order_acquire) ||
+                impl.deviceLostDetected.load(std::memory_order_acquire) ||
+                impl.unsafeGpuWorkQuarantined.load(std::memory_order_acquire) ||
+                HasRenderFatalError();
+        };
+        if (admissionCancelled() || impl.frameResourceSlots == nullptr)
+            return std::nullopt;
+
+        {
+            std::lock_guard retirementLock(impl.frameResourceRetirementMutex);
+            if (impl.reservedFrameResourceLease.has_value())
+                return impl.reservedFrameResourceLease->slotIndex;
+        }
+        if (impl.explicitDevice != nullptr && impl.GetFrameContextCount() == 0u &&
+            impl.explicitDevice->GetQueue(Render::RHI::QueueType::Graphics) != nullptr)
+            RebuildExplicitFrameContextRing(impl,
+                static_cast<uint32_t>(impl.frameResourceSlots->GetSlotCount()));
+
+        struct ReservationWaitMeasurement final
+        {
+            DriverImpl& impl;
+            std::chrono::steady_clock::time_point start = std::chrono::steady_clock::now();
+            ~ReservationWaitMeasurement()
+            {
+                const auto duration = static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(
+                    std::chrono::steady_clock::now() - start).count());
+                auto previous = impl.frameResourceReservationWaitMaxNs.load(std::memory_order_relaxed);
+                while (previous < duration && !impl.frameResourceReservationWaitMaxNs.compare_exchange_weak(
+                    previous, duration, std::memory_order_release, std::memory_order_relaxed)) {}
+            }
+        } waitMeasurement { impl };
+
+        struct FrameBudgetGuard final
+        {
+            FrameLatencyController* controller = nullptr;
+            uint64_t frameId = 0u;
+            bool committed = false;
+            ~FrameBudgetGuard()
+            {
+                if (!committed && controller != nullptr)
+                    (void)controller->CancelFrame(frameId);
+            }
+        };
+        const bool reservePresentationSlot = impl.frameResourceSlots->GetSlotCount() > 1u &&
+            impl.explicitSwapchain != nullptr && impl.explicitDevice != nullptr &&
+            RHI::GetUIOverlayFrameGraphFeature(impl.explicitDevice.get()).supported;
+
+        for (;;)
+        {
+            if (admissionCancelled())
+                return std::nullopt;
+            const auto wakeGeneration = impl.threadedWorkerWake.Generation();
+            std::optional<size_t> candidate;
+            std::shared_ptr<Render::RHI::RHIFence> retirementFence;
+            {
+                std::lock_guard retirementLock(impl.frameResourceRetirementMutex);
+                const size_t presentationSlot = impl.frameResourceSlots->GetSlotCount() - 1u;
+                // Scene producers must leave capacity for the UI frame that presents their output.
+                candidate = targetsSwapchain && reservePresentationSlot &&
+                        impl.frameResourceSlots->IsSlotAvailable(presentationSlot)
+                    ? std::optional<size_t>(presentationSlot)
+                    : impl.frameResourceSlots->FindAvailableSlotIndex(
+                        reservePresentationSlot && !targetsSwapchain ? 1u : 0u);
+                if (!candidate.has_value())
+                    for (size_t index = 0u; index < impl.frameResourceSlots->GetSlotCount() -
+                            (reservePresentationSlot && !targetsSwapchain ? 1u : 0u); ++index)
+                    {
+                        const auto* slot = impl.frameResourceSlots->PeekSlot(index);
+                        if (slot->gpuFence != nullptr && !slot->quarantined)
+                        {
+                            retirementFence = slot->gpuFence;
+                            break;
+                        }
+                    }
+            }
+
+            if (candidate.has_value())
+            {
+                // Do not hold a CPU frame budget while waiting for a physical scene slot.
+                FrameBudgetGuard budget;
+                if (impl.frameLatency != nullptr)
+                {
+                    const auto wait = !waitForRetirement ? std::chrono::nanoseconds::zero()
+                        : retirementDeadline == std::chrono::steady_clock::time_point::max()
+                            ? std::chrono::nanoseconds::max()
+                            : std::chrono::nanoseconds(ResolveRemainingWaitNanoseconds(retirementDeadline));
+                    const uint32_t presentationBudget = reservePresentationSlot && !targetsSwapchain &&
+                            impl.frameLatency->GetMaxFramesInFlight() > 1u
+                        ? 1u : 0u;
+                    const auto frameId = impl.frameLatency->ReserveFrame(wait, presentationBudget);
+                    if (!frameId.has_value())
+                    {
+                        NLS_PROFILE_NAMED_SCOPE("FrameAdmission::CpuBudgetUnavailable");
+                        return std::nullopt;
+                    }
+                    budget.controller = impl.frameLatency.get();
+                    budget.frameId = *frameId;
+                }
+                if (*candidate < impl.GetFrameContextCount())
+                    (void)Detail::ReleaseDeferredThreadedFrameScopedResourcesAfterFence(
+                        impl, impl.GetFrameContext(*candidate), *candidate);
+                if (admissionCancelled())
+                    return std::nullopt;
+                std::lock_guard retirementLock(impl.frameResourceRetirementMutex);
+                const auto* slot = impl.frameResourceSlots->AcquireSlot(*candidate);
+                if (slot == nullptr)
+                    continue;
+                impl.reservedFrameResourceLease = DriverImpl::ReservedFrameResourceLease {
+                    *candidate, slot->leaseGeneration, budget.frameId };
+                budget.committed = true;
+                return candidate;
+            }
+
+            if (!waitForRetirement || std::chrono::steady_clock::now() >= retirementDeadline)
+            {
+                NLS_PROFILE_NAMED_SCOPE("FrameAdmission::GpuSlotUnavailable");
                 return std::nullopt;
             }
-
-            if (impl.explicitDevice != nullptr && impl.frameContexts.empty())
+            (void)RenderingThreadSystem::PumpGameThreadTasks();
+            const auto wait = std::chrono::nanoseconds((std::min)(uint64_t { 1'000'000u },
+                ResolveRemainingWaitNanoseconds(retirementDeadline)));
+            if (waitForDeferredFrameFence && retirementFence != nullptr)
             {
-                RebuildExplicitFrameContextRing(
-                    impl,
-                    static_cast<uint32_t>(threadedLifecycle->GetSlotCount()));
+                const auto sliceDeadline = std::chrono::steady_clock::now() + wait;
+                (void)retirementFence->Wait(static_cast<uint64_t>(
+                    std::chrono::duration_cast<std::chrono::nanoseconds>(wait).count()));
+                if (!retirementFence->IsSignaled())
+                    (void)WaitForThreadedWorkerWake(impl, wakeGeneration,
+                        std::chrono::duration_cast<std::chrono::milliseconds>(
+                            (std::max)(std::chrono::nanoseconds::zero(),
+                                std::chrono::duration_cast<std::chrono::nanoseconds>(
+                                    sliceDeadline - std::chrono::steady_clock::now()))));
             }
-
-            std::vector<size_t> skippedUnsafeSlots;
-            while (skippedUnsafeSlots.size() < threadedLifecycle->GetSlotCount())
-            {
-                const auto reservedSlotIndex = waitForRetirement
-                    ? threadedLifecycle->ReserveReusableSlotIndexExcludingUntil(
-                        skippedUnsafeSlots,
-                        retirementDeadline)
-                    : threadedLifecycle->ReserveReusableSlotIndexExcluding(
-                        skippedUnsafeSlots,
-                        std::chrono::nanoseconds::zero());
-                if (!reservedSlotIndex.has_value())
-                    return std::nullopt;
-
-                if (reservedSlotIndex.value() >= impl.frameContexts.size())
-                {
-                    if (impl.explicitDevice == nullptr)
-                        return reservedSlotIndex;
-
-                    (void)threadedLifecycle->ReleaseReservedReusableSlotIndex(reservedSlotIndex.value());
-                    skippedUnsafeSlots.push_back(reservedSlotIndex.value());
-                    continue;
-                }
-
-                const auto reservedSlotState = threadedLifecycle->CopySlot(reservedSlotIndex.value());
-                auto& frameContext = impl.frameContexts[reservedSlotIndex.value()];
-                const bool retiredDeferredSlot =
-                    reservedSlotState.has_value() &&
-                    reservedSlotState->stage == ThreadedFrameStage::Retired &&
-                    reservedSlotState->submissionFrame.has_value() &&
-                    reservedSlotState->submissionFrame->deferredFrameScopedRetirement &&
-                    frameContext.frameFence != nullptr;
-                bool deferredFenceComplete =
-                    !retiredDeferredSlot ||
-                    frameContext.frameFence->IsSignaled();
-                const bool exhaustedOtherLifecycleSlots =
-                    skippedUnsafeSlots.size() + 1u >= threadedLifecycle->GetSlotCount();
-                if (!deferredFenceComplete &&
-                    waitForDeferredFrameFence &&
-                    exhaustedOtherLifecycleSlots)
-                {
-                    const uint64_t waitTimeoutNs = ResolveRemainingWaitNanoseconds(retirementDeadline);
-                    if (waitTimeoutNs > 0u)
-                        deferredFenceComplete = frameContext.frameFence->Wait(waitTimeoutNs);
-                }
-                if (!deferredFenceComplete)
-                {
-                    (void)threadedLifecycle->ReleaseReservedReusableSlotIndex(reservedSlotIndex.value());
-                    skippedUnsafeSlots.push_back(reservedSlotIndex.value());
-                    continue;
-                }
-
-                if (frameContext.frameFence != nullptr)
-                {
-                    (void)Detail::ReleaseDeferredThreadedFrameScopedResourcesAfterFence(
-                        impl,
-                        frameContext,
-                        reservedSlotIndex.value());
-                }
-                return reservedSlotIndex;
-            }
-
-            return std::nullopt;
+            else if (RenderingThreadSystem::HasActiveRenderThread())
+                (void)WaitForThreadedWorkerWake(impl, wakeGeneration,
+                    std::chrono::duration_cast<std::chrono::milliseconds>(wait));
+            else
+                std::this_thread::yield();
         }
-
-        if (!impl.frameContexts.empty())
-            return impl.currentFrameIndex % impl.frameContexts.size();
-
-        return 0u;
     }
 }
 
@@ -2666,26 +2882,29 @@ std::optional<size_t> DriverRendererAccess::ReserveReusableFrameContextSlotIndex
         *driver.m_impl,
         false,
         true,
-        ResolveThreadedPublishRetirementDeadline(*driver.m_impl, true));
+        ResolveFrameAdmissionDeadline(*driver.m_impl, true));
 }
 
 std::optional<size_t> DriverRendererAccess::ReserveReusableFrameContextSlotIndexForPreparedPublication(
     Driver& driver,
-    const bool waitForRetirement)
+    const bool waitForRetirement,
+    const bool targetsSwapchain)
 {
     if (driver.m_impl == nullptr)
         return std::nullopt;
 
     return ReserveReusableFrameContextSlotIndexForPreparedPublication(
         driver,
-        ResolveThreadedPublishRetirementDeadline(*driver.m_impl, waitForRetirement),
-        waitForRetirement);
+        ResolveFrameAdmissionDeadline(*driver.m_impl, waitForRetirement),
+        waitForRetirement,
+        targetsSwapchain);
 }
 
 std::optional<size_t> DriverRendererAccess::ReserveReusableFrameContextSlotIndexForPreparedPublication(
     Driver& driver,
     const std::chrono::steady_clock::time_point retirementDeadline,
-    const bool waitForRetirement)
+    const bool waitForRetirement,
+    const bool targetsSwapchain)
 {
     if (driver.m_impl == nullptr)
         return std::nullopt;
@@ -2694,26 +2913,36 @@ std::optional<size_t> DriverRendererAccess::ReserveReusableFrameContextSlotIndex
         *driver.m_impl,
         waitForRetirement,
         waitForRetirement,
-        retirementDeadline);
-}
-
-std::chrono::nanoseconds DriverRendererAccess::GetThreadedPublishRetirementWait(const Driver& driver)
-{
-    if (driver.m_impl == nullptr)
-        return std::chrono::nanoseconds::zero();
-    return std::chrono::milliseconds(driver.m_impl->threadedPublishRetirementWaitMs);
+        retirementDeadline,
+        targetsSwapchain);
 }
 
 bool DriverRendererAccess::ReleaseReservedFrameContextSlotIndex(Driver& driver, const size_t slotIndex)
 {
     if (driver.m_impl == nullptr)
         return false;
-
-    auto* threadedLifecycle = driver.m_impl->threadedLifecycle.get();
-    if (threadedLifecycle != nullptr)
-        return threadedLifecycle->ReleaseReservedReusableSlotIndex(slotIndex);
-
-    return true;
+    uint64_t latencyFrameId = 0u;
+    bool released = false;
+    {
+        std::lock_guard retirementLock(driver.m_impl->frameResourceRetirementMutex);
+        const auto& lease = driver.m_impl->reservedFrameResourceLease;
+        if (lease.has_value() && lease->slotIndex == slotIndex)
+        {
+            latencyFrameId = lease->latencyFrameId;
+            if (driver.m_impl->frameResourceSlots != nullptr)
+            {
+                const auto* slot = driver.m_impl->frameResourceSlots->PeekSlot(slotIndex);
+                if (slot != nullptr && slot->inFlight && !slot->quarantined &&
+                    slot->gpuFence == nullptr && slot->leaseGeneration == lease->generation)
+                    driver.m_impl->frameResourceSlots->RetireSlot(slotIndex, nullptr);
+            }
+            driver.m_impl->reservedFrameResourceLease.reset();
+            released = true;
+        }
+    }
+    if (released && latencyFrameId != 0u && driver.m_impl->frameLatency != nullptr)
+        (void)driver.m_impl->frameLatency->CancelFrame(latencyFrameId);
+    return released;
 }
 
 std::optional<size_t> DriverRendererAccess::GetReservedFrameContextSlotIndex(const Driver& driver)
@@ -2721,11 +2950,9 @@ std::optional<size_t> DriverRendererAccess::GetReservedFrameContextSlotIndex(con
     if (driver.m_impl == nullptr)
         return std::nullopt;
 
-    const auto* threadedLifecycle = driver.m_impl->threadedLifecycle.get();
-    if (threadedLifecycle == nullptr)
-        return std::nullopt;
-
-    return threadedLifecycle->GetReservedReusableSlotIndex();
+    std::lock_guard retirementLock(driver.m_impl->frameResourceRetirementMutex);
+    const auto& lease = driver.m_impl->reservedFrameResourceLease;
+    return lease.has_value() ? std::optional<size_t>(lease->slotIndex) : std::nullopt;
 }
 
 std::shared_ptr<Render::RHI::RHICommandBuffer> DriverRendererAccess::GetActiveExplicitCommandBuffer(const Driver& driver)
@@ -2848,26 +3075,12 @@ std::shared_ptr<Render::RHI::PipelineCache> DriverRendererAccess::GetPipelineCac
 
 std::shared_ptr<Render::RHI::DescriptorAllocator> DriverRendererAccess::GetActiveDescriptorAllocator(const Driver& driver)
 {
-    const auto* frameContext = Detail::GetActiveFrameContext(*driver.m_impl);
-    if (frameContext == nullptr)
-    {
-        const auto reservedSlotIndex = GetReservedFrameContextSlotIndex(driver);
-        if (reservedSlotIndex.has_value() &&
-            reservedSlotIndex.value() < driver.m_impl->frameContexts.size())
-        {
-            frameContext = &driver.m_impl->frameContexts[reservedSlotIndex.value()];
-        }
-    }
-
-    if (frameContext == nullptr &&
-        driver.m_impl->threadedLifecycle != nullptr &&
-        !driver.m_impl->frameContexts.empty())
-    {
-        frameContext =
-            &driver.m_impl->frameContexts[driver.m_impl->currentFrameIndex % driver.m_impl->frameContexts.size()];
-    }
-
-    return frameContext != nullptr ? frameContext->descriptorAllocator : nullptr;
+    auto slotIndex = GetActiveFrameContextSlotIndex(driver);
+    if (!slotIndex.has_value() && RenderingThreadSystem::IsInGameThread())
+        slotIndex = GetReservedFrameContextSlotIndex(driver);
+    if (!slotIndex.has_value() || *slotIndex >= driver.m_impl->GetFrameContextCount())
+        return nullptr;
+    return driver.m_impl->GetFrameContext(*slotIndex).descriptorAllocator;
 }
 
 std::shared_ptr<Render::RHI::RHIBindingLayout> DriverRendererAccess::CreateExplicitBindingLayout(
@@ -2885,19 +3098,15 @@ std::shared_ptr<Render::RHI::RHIBindingSet> DriverRendererAccess::CreateExplicit
     const auto descriptorAllocator = GetActiveDescriptorAllocator(driver);
     uint64_t frameIndex = 0u;
     if (const auto activeSlotIndex = GetActiveFrameContextSlotIndex(driver);
-        activeSlotIndex.has_value() && activeSlotIndex.value() < driver.m_impl->frameContexts.size())
+        activeSlotIndex.has_value() && activeSlotIndex.value() < driver.m_impl->GetFrameContextCount())
     {
-        frameIndex = driver.m_impl->frameContexts[activeSlotIndex.value()].frameIndex;
+        frameIndex = driver.m_impl->GetFrameContext(activeSlotIndex.value()).frameIndex;
     }
-    else if (const auto reservedSlotIndex = GetReservedFrameContextSlotIndex(driver);
-        reservedSlotIndex.has_value() && reservedSlotIndex.value() < driver.m_impl->frameContexts.size())
+    else if (const auto reservedSlotIndex = RenderingThreadSystem::IsInGameThread()
+        ? GetReservedFrameContextSlotIndex(driver) : std::nullopt;
+        reservedSlotIndex.has_value() && reservedSlotIndex.value() < driver.m_impl->GetFrameContextCount())
     {
-        frameIndex = driver.m_impl->frameContexts[reservedSlotIndex.value()].frameIndex;
-    }
-    else if (!driver.m_impl->frameContexts.empty())
-    {
-        frameIndex = driver.m_impl->frameContexts[
-            driver.m_impl->currentFrameIndex % driver.m_impl->frameContexts.size()].frameIndex;
+        frameIndex = driver.m_impl->GetFrameContext(reservedSlotIndex.value()).frameIndex;
     }
 	return CreateTrackedBindingSet(
         driver.m_impl->explicitDevice,
@@ -2965,7 +3174,7 @@ Render::RHI::RHIReadbackResult DriverRendererAccess::ReadPixelsChecked(
     const Settings::EPixelDataType type,
     void* data)
 {
-    return RhiThreadCoordinator::ReadPixelsChecked(
+    return RhiCommandListExecutor::ReadPixelsChecked(
         driver,
         x,
         y,
@@ -2987,7 +3196,7 @@ Render::RHI::RHIReadbackResult DriverRendererAccess::ReadPixelsChecked(
     const Settings::EPixelDataType type,
     void* data)
 {
-    return RhiThreadCoordinator::ReadPixelsChecked(
+    return RhiCommandListExecutor::ReadPixelsChecked(
         driver,
         texture,
         x,
@@ -3009,7 +3218,7 @@ Render::RHI::RHIReadbackResult DriverRendererAccess::BeginReadPixels(
     const Settings::EPixelDataType type,
     void* data)
 {
-    return RhiThreadCoordinator::BeginReadPixels(
+    return RhiCommandListExecutor::BeginReadPixels(
         driver,
         x,
         y,
@@ -3031,7 +3240,7 @@ Render::RHI::RHIReadbackResult DriverRendererAccess::BeginReadPixels(
     const Settings::EPixelDataType type,
     void* data)
 {
-    return RhiThreadCoordinator::BeginReadPixels(
+    return RhiCommandListExecutor::BeginReadPixels(
         driver,
         texture,
         x,
@@ -3047,7 +3256,7 @@ Render::RHI::RHIReadbackResult DriverRendererAccess::PollReadbackCompletion(
     const Driver& driver,
     const Render::RHI::RHIReadbackResult& readback)
 {
-    return RhiThreadCoordinator::PollReadbackCompletion(driver, readback);
+    return RhiCommandListExecutor::PollReadbackCompletion(driver, readback);
 }
 
 
@@ -3099,6 +3308,8 @@ void DriverUIAccess::MarkUnsafeGpuWorkQuarantined(Driver& driver, const std::str
         driver.m_impl->lastQueueOperationFailure = message;
         driver.m_impl->currentFrameLastQueueOperationFailure = message;
     }
+    if (driver.m_impl->frameLatency != nullptr)
+        driver.m_impl->frameLatency->Stop();
 }
 
 void DriverUIAccess::MarkDeviceLost(Driver& driver, const std::string& reason)
@@ -3118,11 +3329,8 @@ void DriverUIAccess::MarkDeviceLost(Driver& driver, const std::string& reason)
         driver.m_impl->lastQueueOperationFailure = message;
         driver.m_impl->currentFrameLastQueueOperationFailure = message;
     }
-}
-
-bool DriverUIAccess::PrepareUIRender(Driver& driver)
-{
-	return RhiThreadCoordinator::PrepareUIRender(driver);
+    if (driver.m_impl->frameLatency != nullptr)
+        driver.m_impl->frameLatency->Stop();
 }
 
 void DriverUIAccess::ReleaseUITextureHandles(Driver& driver)
@@ -3137,7 +3345,7 @@ void DriverUIAccess::ReleaseUITextureHandles(Driver& driver)
 
 void DriverUIAccess::PresentSwapchain(Driver& driver)
 {
-	RhiThreadCoordinator::PresentSwapchain(driver);
+	RhiCommandListExecutor::PresentSwapchain(driver);
 }
 
 void DriverUIAccess::SetPolygonMode(Driver& driver, const Settings::ERasterizationMode mode)
@@ -3262,7 +3470,7 @@ bool DriverUIAccess::PublishUiOnlyFrame(
     if (driver.m_impl == nullptr ||
         driver.m_impl->explicitDevice == nullptr ||
         driver.m_impl->explicitSwapchain == nullptr ||
-        driver.m_impl->threadedLifecycle == nullptr ||
+        driver.m_impl->frameResourceSlots == nullptr ||
         renderWidth == 0u ||
         renderHeight == 0u)
     {
@@ -3276,6 +3484,7 @@ bool DriverUIAccess::PublishUiOnlyFrame(
 
     std::shared_ptr<const UI::UiDrawDataSnapshot> snapshot;
     uint64_t observedPresentationInvalidationGeneration = 0u;
+    uint64_t contentSignature = 0u;
     {
         std::lock_guard lock(driver.m_impl->pendingUiOverlaySnapshotMutex);
         snapshot = driver.m_impl->pendingUiOverlaySnapshot;
@@ -3283,25 +3492,32 @@ bool DriverUIAccess::PublishUiOnlyFrame(
             driver.m_impl->uiOverlayPresentationInvalidationGeneration;
         if (snapshot != nullptr && snapshot->hasVisibleDraws)
         {
-            const uint64_t contentSignature =
-                UI::ResolveUiDrawDataContentSignature(*snapshot);
-            if (contentSignature ==
+            contentSignature = UI::ResolveUiDrawDataContentSignature(*snapshot);
+            const bool alreadyPresented = contentSignature ==
                     driver.m_impl->lastPublishedSwapchainUiContentSignature &&
                 observedPresentationInvalidationGeneration ==
-                    driver.m_impl->lastPublishedSwapchainUiInvalidationGeneration)
+                    driver.m_impl->lastPublishedSwapchainUiInvalidationGeneration;
+            const bool hasQueuedUi = Detail::HasPendingSwapchainFrame(*driver.m_impl) &&
+                driver.m_impl->lastQueuedSwapchainUiInvalidationGeneration != 0u;
+            const bool alreadyQueued = contentSignature ==
+                    driver.m_impl->lastQueuedSwapchainUiContentSignature &&
+                observedPresentationInvalidationGeneration ==
+                    driver.m_impl->lastQueuedSwapchainUiInvalidationGeneration;
+            if (hasQueuedUi ? alreadyQueued : alreadyPresented)
             {
+                NLS_PROFILE_NAMED_SCOPE("UIOnlyFrame::Unchanged");
                 ++driver.m_impl->skippedUnchangedUiOnlyFrameCount;
                 return false;
             }
         }
     }
-    if (snapshot == nullptr || !snapshot->hasVisibleDraws)
+    if (snapshot == nullptr || !snapshot->hasVisibleDraws || CountVisibleUiDrawCommands(*snapshot) == 0u)
         return false;
 
     const auto referencedTextureIdentities =
         driver.m_impl->uiTextureRegistry.CollectReferencedTextureIdentities(*snapshot);
 
-    FrameSnapshot frameSnapshot;
+    RenderFramePacket frameSnapshot;
     frameSnapshot.frameId = snapshot->frameId != 0u
         ? snapshot->frameId
         : driver.m_impl->nextThreadedFrameId++;
@@ -3312,20 +3528,19 @@ bool DriverUIAccess::PublishUiOnlyFrame(
     frameSnapshot.clearDepthBuffer = false;
     frameSnapshot.clearStencilBuffer = false;
 
-    auto package = BuildSnapshotOwnedRenderScenePackage(
-        frameSnapshot,
-        SnapshotRenderScenePackageBuildMode::SkipDefaultPassInputs);
-    if (!AttachUiOverlaySnapshotToRenderScenePackage(package, snapshot))
-        return false;
-    package.uiReferencedTextureIdentities = referencedTextureIdentities;
-    package.uiOverlayPresentationInvalidationGeneration =
-        observedPresentationInvalidationGeneration;
-
-    const bool published = RenderThreadCoordinator::TryPublishPreparedFrameBuilder(
+    const bool published = RenderThreadCoordinator::TryEnqueueRenderFrame(
         driver,
         frameSnapshot,
-        [package = std::move(package)]() mutable
+        [frameSnapshot, snapshot, referencedTextureIdentities, observedPresentationInvalidationGeneration](const size_t)
         {
+            auto package = BuildRenderFramePackage(frameSnapshot);
+            if (!AttachUiOverlaySnapshotToRenderScenePackage(package, snapshot))
+                throw std::runtime_error("UI-only Render Command could not attach its captured overlay");
+            package.frameDataReady = true;
+            package.objectDataReady = true;
+            package.lightingDataReady = true;
+            package.uiReferencedTextureIdentities = referencedTextureIdentities;
+            package.uiOverlayPresentationInvalidationGeneration = observedPresentationInvalidationGeneration;
             return package;
         },
         false,
@@ -3334,10 +3549,15 @@ bool DriverUIAccess::PublishUiOnlyFrame(
         false,
         waitForRetirement);
     if (!published)
+    {
+        NLS_PROFILE_NAMED_SCOPE("UIOnlyFrame::AdmissionUnavailable");
         return false;
+    }
 
     {
         std::lock_guard lock(driver.m_impl->pendingUiOverlaySnapshotMutex);
+        driver.m_impl->lastQueuedSwapchainUiContentSignature = contentSignature;
+        driver.m_impl->lastQueuedSwapchainUiInvalidationGeneration = observedPresentationInvalidationGeneration;
         if (driver.m_impl->pendingUiOverlaySnapshot == snapshot)
         {
             driver.m_impl->pendingUiOverlaySnapshot.reset();
@@ -3853,6 +4073,7 @@ DriverUIAccess::UICompositionSyncBoundary DriverUIAccess::BuildUICompositionSync
 {
 	UICompositionSyncBoundary boundary;
 	boundary.sceneToUiWaitSemaphore = GetRenderFinishedSemaphore(driver);
+	std::lock_guard lock(driver.m_impl->uiCompositionSignalMutex);
 	boundary.uiToPresentSignalSemaphore = driver.m_impl->uiRenderFinishedSemaphore;
 	boundary.uiToPresentSignalValue = driver.m_impl->uiRenderFinishedValue;
 	return boundary;
@@ -3863,6 +4084,7 @@ void DriverUIAccess::SetUICompositionSignal(
 	Render::RHI::NativeHandle semaphore,
 	const uint64_t value)
 {
+	std::lock_guard lock(driver.m_impl->uiCompositionSignalMutex);
 	if (!semaphore.IsValid() || value == 0u)
 	{
 		driver.m_impl->uiRenderFinishedSemaphore = {};
@@ -3882,6 +4104,7 @@ void DriverUIAccess::SetUISignalSemaphore(
 	SetUICompositionSignal(driver, semaphore, value);
 }
 
+#if defined(NLS_ENABLE_TEST_HOOKS)
 void DriverTestAccess::SetExplicitDevice(Driver& driver, std::shared_ptr<Render::RHI::RHIDevice> explicitDevice)
 {
     if (driver.m_impl == nullptr)
@@ -3897,17 +4120,36 @@ void DriverTestAccess::SetExplicitDevice(Driver& driver, std::shared_ptr<Render:
         return;
     }
 
+    if ((replacingDevice || clearingDevice) && driver.m_impl->explicitDevice != nullptr)
+        Resources::Material::ReleaseDefaultTexturesForDevice(driver.m_impl->explicitDevice->GetCacheIdentity());
+
 	driver.m_impl->explicitDevice = std::move(explicitDevice);
+    if (!driver.m_impl->threadedWorkersRunning || driver.m_impl->renderingThreads.IsSuspended())
+    {
+        // Synchronous device fixtures still use the executor's ordered FIFO;
+        // there is no dedicated lane to service them while the harness is paused.
+        RhiCommandListExecutor::Get().Initialize(RhiThreadMode::None,
+            RhiCommandListExecutor::CreateDeviceTargets(driver.m_impl->explicitDevice), driver.m_impl->taskGraph, &driver);
+    }
+    else if (RhiCommandListExecutor::Get().GetOwner() == &driver)
+        RhiCommandListExecutor::Get().SetTargets(RhiCommandListExecutor::CreateDeviceTargets(driver.m_impl->explicitDevice));
     if (driver.m_impl->explicitDevice != nullptr)
     {
         if (driver.m_impl->pipelineCache == nullptr || replacingDevice)
             driver.m_impl->pipelineCache = Render::RHI::CreateDefaultPipelineCache();
-        const auto threadedFrameContextCount = driver.m_impl->threadedLifecycle != nullptr
-            ? static_cast<uint32_t>(driver.m_impl->threadedLifecycle->GetSlotCount())
+        const auto threadedFrameContextCount = driver.m_impl->frameResourceSlots != nullptr
+            ? static_cast<uint32_t>(driver.m_impl->frameResourceSlots->GetSlotCount())
             : 0u;
+        // Partial fixture devices can implement only the resource creation surface
+        // they test. Without a Graphics queue they cannot own a frame context ring,
+        // so do not force one and assert on a command pool they never intended to
+        // provide.
+        const bool supportsFrameContexts =
+            driver.m_impl->explicitDevice->GetQueue(Render::RHI::QueueType::Graphics) != nullptr;
         if (!replacingDevice &&
-            driver.m_impl->frameContexts.empty() &&
-            threadedFrameContextCount > 0u)
+            driver.m_impl->GetFrameContextCount() == 0u &&
+            threadedFrameContextCount > 0u &&
+            supportsFrameContexts)
         {
             RebuildExplicitFrameContextRing(
                 *driver.m_impl,
@@ -3937,9 +4179,9 @@ void DriverTestAccess::SetExplicitSwapchain(Driver& driver, std::shared_ptr<Rend
 
 Render::RHI::RHIFrameContext& DriverTestAccess::EnsureFrameContext(Driver& driver, const size_t index)
 {
-	if (driver.m_impl->frameContexts.size() <= index)
-		driver.m_impl->frameContexts.resize(index + 1u);
-	return driver.m_impl->frameContexts[index];
+    std::lock_guard lock(driver.m_impl->frameResourceRetirementMutex);
+    driver.m_impl->EnsureFrameContexts(index + 1u);
+	return driver.m_impl->GetFrameContext(index);
 }
 
 void DriverTestAccess::SetFrameContextDescriptorAllocator(
@@ -3957,7 +4199,7 @@ void DriverTestAccess::SetFrameContextDescriptorAllocator(
 
 const Render::RHI::RHIFrameContext* DriverTestAccess::PeekFrameContext(const Driver& driver, const size_t index)
 {
-	return index < driver.m_impl->frameContexts.size() ? &driver.m_impl->frameContexts[index] : nullptr;
+	return index < driver.m_impl->GetFrameContextCount() ? &driver.m_impl->GetFrameContext(index) : nullptr;
 }
 
 void DriverTestAccess::SetCompletedReadbackTexture(
@@ -3980,10 +4222,9 @@ size_t DriverTestAccess::GetRetainedThreadedSubmitResourceCount(const Driver& dr
     if (driver.m_impl == nullptr)
         return 0u;
 
-    size_t retainedResourceCount = 0u;
-    for (const auto& keepAlive : driver.m_impl->retainedThreadedSubmitResourceKeepAliveByFrameContext)
-        retainedResourceCount += keepAlive.size();
-    return retainedResourceCount;
+    std::lock_guard lock(driver.m_impl->frameResourceRetirementMutex);
+    return driver.m_impl->frameResourceSlots != nullptr
+        ? driver.m_impl->frameResourceSlots->GetOwnedResourceCount() : 0u;
 }
 
 #if defined(NLS_ENABLE_TEST_HOOKS)
@@ -4006,16 +4247,14 @@ size_t DriverTestAccess::GetPendingMeshRuntimeUploadCount(const Driver& driver)
 }
 #endif
 
-void DriverTestAccess::SetExplicitFrameActive(Driver& driver, const bool active)
-{
-    driver.m_impl->explicitFrameActive = active;
-}
-
 void DriverTestAccess::AgePendingSwapchainResize(
     Driver& driver,
     const std::chrono::steady_clock::duration age)
 {
-    driver.m_impl->lastSwapchainResizeRequestTime = std::chrono::steady_clock::now() - age;
+    ExecuteDriverRenderCommand(*driver.m_impl, [&driver, age]
+    {
+        driver.m_impl->lastSwapchainResizeRequestTime = std::chrono::steady_clock::now() - age;
+    });
 }
 
 bool DriverTestAccess::TryLockThreadedRhiSubmission(Driver& driver)
@@ -4036,33 +4275,6 @@ void DriverTestAccess::LockThreadedRhiSubmission(Driver& driver)
         driver.m_impl->threadedRhiSubmissionMutex.lock();
 }
 
-void DriverTestAccess::SetUiStandaloneFramePending(Driver& driver, const bool pending)
-{
-    if (driver.m_impl == nullptr)
-        return;
-
-    driver.m_impl->uiStandaloneFramePending.store(pending, std::memory_order_release);
-    driver.m_impl->uiStandaloneFramePendingUntilTickNs.store(
-        pending ? std::numeric_limits<uint64_t>::max() : 0u,
-        std::memory_order_release);
-    NotifyThreadedWorkers(*driver.m_impl);
-}
-
-#if defined(NLS_ENABLE_TEST_HOOKS)
-void DriverTestAccess::ExpireUiStandaloneFramePendingLease(Driver& driver)
-{
-    if (driver.m_impl == nullptr)
-        return;
-
-    const auto expiredAt = std::chrono::steady_clock::now() - std::chrono::nanoseconds(1);
-    driver.m_impl->uiStandaloneFramePendingUntilTickNs.store(
-        static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(
-            expiredAt.time_since_epoch()).count()),
-        std::memory_order_release);
-    driver.m_impl->uiStandaloneFramePending.store(true, std::memory_order_release);
-    NotifyThreadedWorkers(*driver.m_impl);
-}
-#endif
 
 bool DriverTestAccess::TryLockDriverTelemetry(Driver& driver)
 {
@@ -4076,54 +4288,59 @@ void DriverTestAccess::UnlockDriverTelemetry(Driver& driver)
         driver.m_impl->driverTelemetryMutex.unlock();
 }
 
-const ThreadedRenderingLifecycle* DriverTestAccess::GetThreadedRenderingLifecycle(const Driver& driver)
+bool DriverTestAccess::TryLockFrameTelemetry(Driver& driver)
 {
-    return driver.m_impl->threadedLifecycle.get();
+    return driver.m_impl != nullptr && driver.m_impl->frameTelemetryMutex.try_lock();
 }
 
-ThreadedRenderingLifecycle* DriverTestAccess::GetThreadedRenderingLifecycle(Driver& driver)
+void DriverTestAccess::UnlockFrameTelemetry(Driver& driver)
 {
-    return driver.m_impl->threadedLifecycle.get();
+    if (driver.m_impl != nullptr)
+        driver.m_impl->frameTelemetryMutex.unlock();
 }
 
-bool DriverTestAccess::CanBeginStandaloneExplicitFrame(const Driver& driver)
+void DriverTestAccess::SetRenderSceneObserver(
+    Driver& driver,
+    std::function<void(const RenderFramePacket&, const RenderScenePackage&)> observer)
 {
-    return RhiThreadCoordinator::CanBeginStandaloneExplicitFrame(driver);
+    ExecuteDriverRenderCommand(*driver.m_impl,
+        [impl = driver.m_impl.get(), observer = std::move(observer)]() mutable
+        {
+            impl->renderSceneObserver = std::move(observer);
+        });
 }
 
-bool DriverTestAccess::BeginStandaloneExplicitFrame(Driver& driver, const bool acquireSwapchainImage)
+void DriverTestAccess::SetRhiFrameObserver(
+    Driver& driver,
+    std::function<void(const RhiSubmissionFrame&)> observer)
 {
-    return RhiThreadCoordinator::BeginStandaloneExplicitFrame(driver, acquireSwapchainImage);
+    ExecuteDriverRenderCommand(*driver.m_impl,
+        [impl = driver.m_impl.get(), observer = std::move(observer)]() mutable
+        {
+            impl->rhiFrameObserver = std::move(observer);
+        });
 }
 
-void DriverTestAccess::EndStandaloneExplicitFrame(Driver& driver, const bool presentSwapchain)
-{
-    RhiThreadCoordinator::EndStandaloneExplicitFrame(driver, presentSwapchain);
-}
+
 
 void DriverTestAccess::PauseThreadedRenderingWorkers(Driver& driver)
 {
     driver.m_impl->threadedStopRequested.store(true);
     NotifyThreadedWorkers(*driver.m_impl);
-    if (driver.m_impl->renderSceneWorker.joinable())
-        driver.m_impl->renderSceneWorker.join();
-    if (driver.m_impl->rhiWorker.joinable())
-        driver.m_impl->rhiWorker.join();
+    // Suspends the threads owned by the rendering thread system while keeping its
+    // configuration, so a later ResumeRenderingThreads recreates them unchanged.
+    driver.m_impl->renderingThreads.SuspendRenderingThreads();
     driver.m_impl->threadedStopRequested.store(false);
+    RhiCommandListExecutor::Get().Initialize(RhiThreadMode::None,
+        RhiCommandListExecutor::CreateDeviceTargets(driver.m_impl->explicitDevice), driver.m_impl->taskGraph, &driver);
 }
 
 bool DriverTestAccess::TryDrainThreadedRendering(Driver& driver, const bool applyPendingSwapchainResize)
 {
-    if (driver.m_impl == nullptr)
-        return true;
-
-    const bool drained = DrainThreadedLifecycleSynchronously(
-        *driver.m_impl,
-        &driver,
-        applyPendingSwapchainResize);
-    if (drained && applyPendingSwapchainResize)
-        driver.ApplyPendingSwapchainResize();
-    return drained;
+    std::unique_ptr<ScopedRenderThreadForTesting> joinedLane;
+    if (!RenderingThreadSystem::HasActiveRenderThread() && !RenderingThreadSystem::IsInRenderingThread())
+        joinedLane = std::make_unique<ScopedRenderThreadForTesting>();
+    return DriverRendererAccess::TryDrainThreadedRendering(driver, applyPendingSwapchainResize);
 }
 
 void DriverTestAccess::DrainThreadedRendering(Driver& driver)
@@ -4131,48 +4348,17 @@ void DriverTestAccess::DrainThreadedRendering(Driver& driver)
     (void)TryDrainThreadedRendering(driver);
 }
 
-bool DriverTestAccess::TryPublishHarnessFrameSnapshot(
-    Driver& driver,
-    const FrameSnapshot& snapshot,
-    size_t* publishedSlotIndex)
-{
-    return RenderThreadCoordinator::TryPublishHarnessFrameSnapshot(
-        driver,
-        snapshot,
-        publishedSlotIndex);
-}
 
-bool DriverTestAccess::TryPublishHarnessPreparedFrame(
-    Driver& driver,
-    const FrameSnapshot& snapshot,
-    const RenderScenePackage& renderScenePackage,
-    size_t* publishedSlotIndex)
-{
-    return RenderThreadCoordinator::TryPublishHarnessPreparedFrame(
-        driver,
-        snapshot,
-        renderScenePackage,
-        publishedSlotIndex);
-}
 
-bool DriverTestAccess::ResolveAndCompleteThreadedRenderScene(
-    Driver& driver,
-    const size_t slotIndex)
-{
-    if (driver.m_impl == nullptr || driver.m_impl->threadedLifecycle == nullptr)
-        return false;
-
-    const auto resolutionDesc = Detail::BuildRenderScenePreparingResolutionDesc();
-    return driver.m_impl->threadedLifecycle->ResolveRenderScenePreparing(
-        slotIndex,
-        resolutionDesc);
-}
+#endif
 
 Driver::Driver(const Render::Settings::DriverSettings& p_driverSettings)
     : m_impl(std::make_unique<DriverImpl>())
 {
     m_impl->requestedGraphicsBackend = p_driverSettings.graphicsBackend;
+    m_impl->cpuFrameLatencyLimit = p_driverSettings.cpuFrameLatencyLimit;
     m_impl->lightGridEnabled = p_driverSettings.enableLightGrid;
+    m_impl->requestedRhiThreadMode = p_driverSettings.rhiThreadMode;
     if (m_impl->requestedGraphicsBackend != Render::Settings::EGraphicsBackend::NONE &&
         !Render::Settings::IsBackendSelectableForPhase1(m_impl->requestedGraphicsBackend))
     {
@@ -4187,9 +4373,25 @@ Driver::Driver(const Render::Settings::DriverSettings& p_driverSettings)
     }
 	m_impl->renderDocCaptureController = std::make_unique<Render::Tooling::RenderDocCaptureController>(p_driverSettings.renderDoc);
 
+    // Device initialization uploads precede the worker lanes but still use the
+    // executor FIFO. Thread startup later binds this same executor to its mode.
+    if (m_impl->requestedGraphicsBackend != Render::Settings::EGraphicsBackend::NONE &&
+        RhiCommandListExecutor::Get().GetOwner() == nullptr)
+    {
+        RhiCommandListExecutor::Get().Initialize(RhiThreadMode::None, {}, nullptr, this);
+    }
+
 	// All backends use CreateRhiDevice for direct Tier A device creation
 	// This creates the Formal RHI device without any IRenderDevice dependency
 	m_impl->explicitDevice = Render::Backend::CreateRhiDevice(p_driverSettings);
+        // GPU validation patches shaders at first use and can spend minutes on
+        // cold PSOs. Capture its bounded drain budget before starting the lanes.
+        if (m_impl->explicitDevice != nullptr &&
+            p_driverSettings.graphicsBackend == Render::Settings::EGraphicsBackend::DX12 &&
+            Render::Settings::IsEnvironmentFlagEnabled("NLS_DX12_GPU_VALIDATION"))
+        {
+            m_impl->renderDrainTimeout = std::chrono::minutes(5);
+        }
 	if (m_impl->explicitDevice == nullptr)
 	{
 		const auto phaseGateReport = Render::Settings::EvaluateBackendPhaseGate(
@@ -4230,21 +4432,23 @@ Driver::Driver(const Render::Settings::DriverSettings& p_driverSettings)
     m_impl->diagnostics = p_driverSettings.diagnostics;
     Render::Settings::SetThreadDiagnosticsSettings(p_driverSettings.diagnostics);
 
-    if (p_driverSettings.enableThreadedRendering)
-    {
-        const auto slotCount = ResolveThreadedLifecycleSlotCount(p_driverSettings);
-        m_impl->threadedLifecycle = std::make_unique<ThreadedRenderingLifecycle>(slotCount);
-        m_impl->threadedPublishRetirementWaitMs = p_driverSettings.threadedPublishRetirementWaitMs;
-        StartThreadedRenderingWorkers();
-    }
+    const auto slotCount = ResolveExplicitFrameContextCount(p_driverSettings);
+    if (m_impl->frameResourceSlots == nullptr)
+        m_impl->frameResourceSlots = std::make_unique<FrameResourceRing>(slotCount);
+    if (m_impl->frameLatency == nullptr)
+        m_impl->frameLatency = std::make_unique<FrameLatencyController>(
+            m_impl->cpuFrameLatencyLimit == 0u ? slotCount : (std::min)(slotCount, m_impl->cpuFrameLatencyLimit));
+    StartThreadedRenderingWorkers();
 }
 
 Driver::~Driver()
 {
     if (m_impl != nullptr)
-        m_impl->swapchainWillResizeCallback = nullptr;
+        SetSwapchainWillResizeCallback(nullptr);
     ShutdownThreadedRendering();
     ShutdownRhiResources();
+    if (TryGetLocatedDriver() == this)
+        NLS::Core::ServiceLocator::Remove<Driver>();
 }
 
 void Driver::ShutdownThreadedRendering()
@@ -4263,18 +4467,15 @@ void Driver::ShutdownRhiResources()
         PreserveUnsafeGpuWorkQuarantineResources(*m_impl);
         NLS_LOG_ERROR(
             "Driver::ShutdownRhiResources: preserving RHI resources because GPU work is quarantined without a reliable retirement fence");
-        m_impl->explicitFrameActive = false;
-        m_impl->uiStandaloneFrameActive = false;
-        m_impl->uiStandaloneFramePending.store(false, std::memory_order_release);
-        m_impl->uiStandaloneFramePendingUntilTickNs.store(0u, std::memory_order_release);
-        if (m_impl->uiStandaloneFrameSubmissionLock.owns_lock())
-            m_impl->uiStandaloneFrameSubmissionLock.unlock();
         return;
     }
 
-    m_impl->swapchainWillResizeCallback = nullptr;
-    m_impl->uiRenderFinishedSemaphore = {};
-    m_impl->uiRenderFinishedValue = 0u;
+    SetSwapchainWillResizeCallback(nullptr);
+    {
+        std::lock_guard lock(m_impl->uiCompositionSignalMutex);
+        m_impl->uiRenderFinishedSemaphore = {};
+        m_impl->uiRenderFinishedValue = 0u;
+    }
     {
         std::lock_guard lock(m_impl->sceneToUiWaitMutex);
         m_impl->sceneToUiWaitSemaphore = {};
@@ -4286,28 +4487,20 @@ void Driver::ShutdownRhiResources()
         m_impl->submittedReadbackTextureGenerations.clear();
         m_impl->completedReadbackTextureHistory.clear();
     }
-    m_impl->explicitFrameActive = false;
-    m_impl->uiStandaloneFrameActive = false;
-    m_impl->uiStandaloneFramePending.store(false, std::memory_order_release);
-    m_impl->uiStandaloneFramePendingUntilTickNs.store(0u, std::memory_order_release);
-    if (m_impl->uiStandaloneFrameSubmissionLock.owns_lock())
-        m_impl->uiStandaloneFrameSubmissionLock.unlock();
     m_impl->hasPendingSwapchainResize = false;
 
-    if (m_impl->threadedLifecycle != nullptr)
-        m_impl->threadedLifecycle->ReleaseRetainedFrameResources();
 
     const bool abandonFenceWait = m_impl->deviceLostDetected.load(std::memory_order_acquire);
     const bool drainedFrameFences =
         abandonFenceWait ||
-        DrainFrameFencesForResize(m_impl->frameContexts, m_impl.get());
+        DrainFrameFencesForResize(*m_impl);
     if (drainedFrameFences && !abandonFenceWait)
         Detail::ReleaseDeferredThreadedFrameScopedResourcesAfterFence(*m_impl);
     bool releasedAllFrameContexts = drainedFrameFences;
-    for (auto& frameContext : m_impl->frameContexts)
+    for (size_t frameContextIndex = 0u; frameContextIndex < m_impl->GetFrameContextCount(); ++frameContextIndex)
     {
         releasedAllFrameContexts =
-            ReleaseFrameContextResources(frameContext, m_impl.get(), abandonFenceWait) &&
+            ReleaseFrameContextResources(*m_impl, frameContextIndex, abandonFenceWait) &&
             releasedAllFrameContexts;
     }
     if (!releasedAllFrameContexts)
@@ -4315,14 +4508,18 @@ void Driver::ShutdownRhiResources()
         NLS_LOG_ERROR("Driver::ShutdownRhiResources: timed out before releasing frame-context resources");
         return;
     }
-    m_impl->retainedThreadedSubmitResourceKeepAliveByFrameContext.clear();
-    m_impl->deferredThreadedFrameScopedRetirementFrameContexts.clear();
-    m_impl->deferredUiTextureRetirementFrameIdsByFrameContext.clear();
-    m_impl->frameContexts.clear();
+    {
+        std::lock_guard lock(m_impl->frameResourceRetirementMutex);
+        m_impl->frameResourceSlots.reset();
+        m_impl->reservedFrameResourceLease.reset();
+        m_impl->unfencedReadbackResources.clear();
+    }
 
     m_impl->pipelineCache.reset();
     m_impl->explicitSwapchain.reset();
     m_impl->renderDocCaptureController.reset();
+    if (m_impl->explicitDevice != nullptr)
+        Resources::Material::ReleaseDefaultTexturesForDevice(m_impl->explicitDevice->GetCacheIdentity());
     m_impl->explicitDevice.reset();
 }
 
@@ -4399,17 +4596,17 @@ void Driver::ResizePlatformSwapchain(const uint32_t width, const uint32_t height
 {
 	if (width == 0u || height == 0u)
 		return;
-	ResizeSwapchain(width, height);
-
-	// Interactive window-edge resizing should update the swapchain before the next
-	// frame is rendered. Otherwise DXGI can stretch the previous backbuffer to the
-	// new client rect for one frame, which shows up as UI stretching/ghosting.
-	if (!m_impl->explicitFrameActive)
-		ApplyPendingSwapchainResize();
+    ExecuteDriverRenderCommand(*m_impl, [this, width, height]
+    {
+        ResizeSwapchain(width, height);
+        if (!ScopedFrameResourceContext::GetSlotIndex(*m_impl).has_value())
+            ApplyPendingSwapchainResize();
+    });
 }
 
 void Driver::SetSwapchainWillResizeCallback(SwapchainWillResizeCallback callback)
 {
+	std::lock_guard lock(m_impl->swapchainResizeCallbackMutex);
 	m_impl->swapchainWillResizeCallback = std::move(callback);
 }
 
@@ -4453,13 +4650,18 @@ void Driver::ResizeSwapchain(uint32_t width, uint32_t height)
 
 	m_impl->pendingSwapchainWidth = width;
 	m_impl->pendingSwapchainHeight = height;
+	// An explicit resize request is authoritative. A rebuild-at-current-size request
+	// published earlier by the submit lane (an out-of-date present) must not survive
+	// it: the client supplied a new size, and honoring the older flag would rebuild
+	// the swapchain at the size the user just moved away from.
+	m_impl->pendingSwapchainResizeKeepsCurrentSize.store(false, std::memory_order_release);
 	m_impl->hasPendingSwapchainResize = true;
 	m_impl->lastSwapchainResizeRequestTime = std::chrono::steady_clock::now();
 }
 
 void Driver::PresentSwapchain()
 {
-	RhiThreadCoordinator::PresentSwapchain(*this);
+	RhiCommandListExecutor::PresentSwapchain(*this);
 }
 
 void Driver::ApplyPendingSwapchainResize()
@@ -4467,15 +4669,27 @@ void Driver::ApplyPendingSwapchainResize()
 	if (!m_impl->hasPendingSwapchainResize)
 		return;
 
+    if (m_impl->deviceLostDetected.load(std::memory_order_acquire) ||
+        m_impl->unsafeGpuWorkQuarantined.load(std::memory_order_acquire))
+        return;
+
+    if (RenderingThreadSystem::IsInRhiThread() ||
+        (m_impl->renderingThreads.IsInitialized() && !m_impl->renderingThreads.IsSuspended() &&
+         RenderingThreadSystem::HasActiveRenderThread() && !RenderingThreadSystem::IsInRenderingThread()))
+    {
+        ExecuteDriverRenderCommand(*m_impl, [this] { ApplyPendingSwapchainResize(); });
+        return;
+    }
+
 	if (!ShouldApplyPendingSwapchainResize(
 		std::chrono::steady_clock::now() - m_impl->lastSwapchainResizeRequestTime))
 		return;
 
-    if (m_impl->threadedLifecycle != nullptr && m_impl->threadedLifecycle->GetInFlightDepth() > 0u)
+    if (Detail::GetPendingCpuFrameCount(*m_impl) > 0u)
         return;
 
     std::unique_lock<std::timed_mutex> threadedSubmissionLock;
-    if (m_impl->threadedLifecycle != nullptr)
+    if (m_impl->frameResourceSlots != nullptr)
     {
         threadedSubmissionLock = std::unique_lock<std::timed_mutex>(
             m_impl->threadedRhiSubmissionMutex,
@@ -4484,31 +4698,56 @@ void Driver::ApplyPendingSwapchainResize()
             return;
     }
 
-    if (m_impl->threadedLifecycle != nullptr && m_impl->threadedLifecycle->GetInFlightDepth() > 0u)
+    if (Detail::GetPendingCpuFrameCount(*m_impl) > 0u)
         return;
 
-    if (!m_impl->deferredThreadedFrameScopedRetirementFrameContexts.empty())
+    // A present that reported the surface as out of date recreates the swapchain at
+    // the size it already has: there is no new client size to apply, only a stale
+    // surface association. The flag is published by the submit lane, so read it here
+    // on the render thread together with the size.
+    const bool keepsCurrentSize =
+        m_impl->pendingSwapchainResizeKeepsCurrentSize.load(std::memory_order_acquire);
+	const uint32_t width = keepsCurrentSize && m_impl->explicitSwapchain != nullptr
+        ? m_impl->explicitSwapchain->GetDesc().width
+        : m_impl->pendingSwapchainWidth;
+	const uint32_t height = keepsCurrentSize && m_impl->explicitSwapchain != nullptr
+        ? m_impl->explicitSwapchain->GetDesc().height
+        : m_impl->pendingSwapchainHeight;
+
+    auto& executor = RhiCommandListExecutor::Get();
+    if (executor.GetOwner() == this && executor.IsInitialized() &&
+        !executor.Flush(RhiFlushFlags::Swapchain))
     {
-        Detail::ReleaseDeferredThreadedFrameScopedResourcesAfterFence(*m_impl);
-        if (!m_impl->deferredThreadedFrameScopedRetirementFrameContexts.empty())
-            return;
+        DriverUIAccess::MarkUnsafeGpuWorkQuarantined(*this, "Swapchain resize could not flush RHI Present: " +
+            executor.GetFailureDiagnostic());
+        throw std::runtime_error("Driver: swapchain resize could not flush RHI Present: " +
+            executor.GetFailureDiagnostic());
     }
 
-	const uint32_t width = m_impl->pendingSwapchainWidth;
-	const uint32_t height = m_impl->pendingSwapchainHeight;
-
-    if (!DrainFrameFencesForResize(m_impl->frameContexts, m_impl.get()))
+    if (!DrainFrameFencesForResize(*m_impl))
     {
         m_impl->lastSwapchainResizeRequestTime = std::chrono::steady_clock::now();
         return;
     }
+    (void)RhiCommandListExecutor::Get().ReleaseRetiredBatches();
     Detail::ReleaseDeferredThreadedFrameScopedResourcesAfterFence(*m_impl);
+    {
+        std::lock_guard lock(m_impl->frameResourceRetirementMutex);
+        if (m_impl->frameResourceSlots != nullptr && m_impl->frameResourceSlots->HasPendingRetirements())
+            return;
+    }
 
-	if (m_impl->swapchainWillResizeCallback)
-		m_impl->swapchainWillResizeCallback();
+    {
+        std::lock_guard lock(m_impl->swapchainResizeCallbackMutex);
+        // The callback may clear itself; keep its callable alive until it returns.
+        const auto callback = m_impl->swapchainWillResizeCallback;
+        if (callback)
+            callback();
+    }
 
-	for (auto& frameContext : m_impl->frameContexts)
+	for (size_t frameContextIndex = 0u; frameContextIndex < m_impl->GetFrameContextCount(); ++frameContextIndex)
 	{
+		auto& frameContext = m_impl->GetFrameContext(frameContextIndex);
 		if (frameContext.commandBuffer != nullptr)
 			frameContext.commandBuffer->Reset();
 		if (frameContext.commandPool != nullptr)
@@ -4544,8 +4783,9 @@ void Driver::ApplyPendingSwapchainResize()
         m_impl->submittedReadbackTextureGenerations.clear();
         m_impl->completedReadbackTextureHistory.clear();
     }
-	for (auto& frameContext : m_impl->frameContexts)
+	for (size_t frameContextIndex = 0u; frameContextIndex < m_impl->GetFrameContextCount(); ++frameContextIndex)
 	{
+		auto& frameContext = m_impl->GetFrameContext(frameContextIndex);
 		frameContext.hasAcquiredSwapchainImage = false;
 		frameContext.swapchainImageIndex = 0u;
 		frameContext.swapchainBackbufferView = nullptr;
@@ -4569,6 +4809,7 @@ void Driver::ApplyPendingSwapchainResize()
 	}
 
 	m_impl->hasPendingSwapchainResize = false;
+	m_impl->pendingSwapchainResizeKeepsCurrentSize.store(false, std::memory_order_release);
 }
 
 void Driver::SetPolygonMode(Settings::ERasterizationMode mode)
@@ -4576,18 +4817,146 @@ void Driver::SetPolygonMode(Settings::ERasterizationMode mode)
 	m_impl->defaultPipelineState.rasterizationMode = mode;
 }
 
+    /**
+     * Render/RHI thread bodies.
+     *
+     * These were previously inlined as raw std::thread lambdas inside
+     * StartThreadedRenderingWorkers. They now implement IRenderingThreadTick so
+     * RenderingThreadSystem owns the threads, their TaskGraph attachment and their
+     * shutdown, while the driver keeps sole ownership of the device-facing work.
+     */
+    class DriverRenderingTick final : public IRenderingThreadTick
+    {
+    public:
+        DriverRenderingTick(Driver& driver, DriverImpl& impl)
+            : m_driver(driver)
+            , m_impl(impl)
+        {
+        }
+
+        bool TickRenderThread() override
+        {
+            SyncStopRequest();
+            ApplyThreadDiagnostics(m_renderThreadId);
+            NLS_PROFILE_NAMED_SCOPE("Render Thread Tick");
+            const uint64_t observedWakeGeneration = m_impl.threadedWorkerWake.Generation();
+
+            // Bound each FIFO slice so a busy producer cannot postpone retirement,
+            // resource collection and uploads until the pipe becomes empty.
+            constexpr size_t renderCommandsPerTick = 8u;
+            const bool drainedRenderCommands = RenderCommandDispatcher::Dispatch(renderCommandsPerTick) > 0u;
+
+            // Render owns ordered frame preparation; native queue work is executed
+            // by the RHI executor and translation uses independent worker lists.
+            const bool retiredCpuFrames =
+                RhiCommandListExecutor::FinalizeThreadedSubmissionProduction(m_driver, true);
+            if (m_impl.frameLatency != nullptr)
+                (void)m_impl.frameLatency->PollCompletedFrames();
+            const bool retiredGpuResources = RhiCommandListExecutor::Get().ReleaseRetiredBatches() > 0u;
+            const bool scheduledUploads = RhiCommandListExecutor::TryScheduleIdleMeshRuntimeUploads(m_driver);
+            if (drainedRenderCommands || retiredCpuFrames || retiredGpuResources || scheduledUploads)
+            {
+                return true;
+            }
+
+            {
+                NLS_PROFILE_NAMED_SCOPE("RenderThread::WaitForWake");
+                WaitForThreadedWorkerWake(m_impl, observedWakeGeneration);
+            }
+            return false;
+        }
+
+        bool TickRhiLane() override
+        {
+            SyncStopRequest();
+            ApplyThreadDiagnostics(m_rhiThreadId);
+            NLS_PROFILE_NAMED_SCOPE("RHI Thread Tick");
+
+            // RenderingThreadSystem pumps the executor's serial submit queue before
+            // this tick. Wait for more lane work without spinning.
+            if (m_impl.taskGraph == nullptr)
+                return false;
+
+            const bool worked = m_impl.taskGraph->WaitForWork(
+                NLS::Base::TaskGraph::NamedThread::Rhi,
+                kThreadedWorkerWakeTimeout);
+            return worked;
+        }
+
+        void OnRenderThreadStopping() override
+        {
+            // Never leave the producer lane locked by an exiting thread.
+            RhiCommandListExecutor::DrainProducerOwnedThreadedSubmission(m_driver);
+        }
+
+    private:
+        /** Mirrors the thread system's stop/fatal state into the driver's flag. */
+        void SyncStopRequest()
+        {
+            if (m_impl.renderingThreads.IsStopRequested())
+                m_impl.threadedStopRequested.store(true, std::memory_order_release);
+            if (m_impl.renderingThreads.HasFatalError() && m_impl.frameLatency != nullptr)
+                m_impl.frameLatency->Stop();
+        }
+
+        /**
+         * Applies the per-thread diagnostics settings once per thread instance.
+         * Comparing thread ids keeps this correct when the system is resumed and
+         * creates fresh threads.
+         */
+        void ApplyThreadDiagnostics(std::thread::id& observedThreadId)
+        {
+            const auto current = std::this_thread::get_id();
+            if (observedThreadId == current)
+                return;
+            observedThreadId = current;
+            Render::Settings::SetThreadDiagnosticsSettings(m_impl.diagnostics);
+        }
+
+        Driver& m_driver;
+        DriverImpl& m_impl;
+        std::thread::id m_renderThreadId {};
+        std::thread::id m_rhiThreadId {};
+    };
+
 void Driver::StartThreadedRenderingWorkers()
 {
     NLS_PROFILE_SCOPE();
-    if (m_impl->threadedLifecycle == nullptr || m_impl->threadedWorkersRunning)
+    if (m_impl->frameResourceSlots == nullptr || m_impl->threadedWorkersRunning)
         return;
 
     if (!Detail::SupportsThreadedFoundationExecution(*m_impl))
         return;
 
+    // Resolve the RHI lane mode before starting threads so an unsupported forced
+    // mode fails loudly instead of silently degrading to another scheduler.
+    const auto capabilities = m_impl->explicitDevice != nullptr
+        ? m_impl->explicitDevice->GetCapabilities()
+        : Render::RHI::RHIDeviceCapabilities {};
+    const auto backendType = m_impl->explicitDevice != nullptr
+        ? m_impl->explicitDevice->GetAdapter()->GetBackendType()
+        : Render::RHI::NativeBackendType::None;
+    const auto requestedMode = m_impl->requestedRhiThreadMode;
+    const auto modeResolution = Render::Settings::ResolveRhiThreadMode(
+        backendType,
+        capabilities,
+        requestedMode);
+    m_impl->rhiThreadModeSummary = modeResolution.summary;
+    if (!modeResolution.accepted)
+    {
+        throw std::runtime_error("Driver: rejecting RHI thread mode request: " + modeResolution.summary);
+    }
+    m_impl->rhiThreadMode = modeResolution.mode;
+
     NLS::Base::TaskGraph::TaskGraphConfig taskGraphConfig;
+    // Tasks and None modes run the logical RHI lane on the pool, so the dedicated
+    // RHI lane must not be reserved out of the worker budget.
+    const bool reserveDedicatedRhiLane =
+        modeResolution.mode == Render::Settings::RhiThreadMode::DedicatedThread;
     const auto threadBudget = NLS::Base::Threading::ResolveExecutionPoolBudget(
-        std::thread::hardware_concurrency());
+        std::thread::hardware_concurrency(),
+        0u,
+        reserveDedicatedRhiLane);
     taskGraphConfig.workerCount = threadBudget.taskGraphWorkerCount;
     taskGraphConfig.enableDiagnostics = true;
     if (!NLS::Base::TaskGraph::InitializeGlobalTaskGraph(taskGraphConfig))
@@ -4596,6 +4965,9 @@ void Driver::StartThreadedRenderingWorkers()
         return;
     }
     m_impl->taskGraph = &NLS::Base::TaskGraph::GetGlobalTaskGraph();
+    // Bind the pool that the async render command pipe executes on so resource
+    // preparation overlaps the serial main pipe instead of running inline.
+    RenderCommandDispatcher::SetTaskGraph(m_impl->taskGraph);
     NLS_LOG_INFO(
         "Driver: rendering TaskGraph workers=" +
         std::to_string(m_impl->taskGraph->GetWorkerCount()) +
@@ -4605,91 +4977,88 @@ void Driver::StartThreadedRenderingWorkers()
         std::to_string(threadBudget.jobsBackgroundWorkerCount) +
         " hardwareConcurrency=" +
         std::to_string(std::thread::hardware_concurrency()));
+    NLS_LOG_INFO("Driver: RHI thread mode " + m_impl->rhiThreadModeSummary);
 
     m_impl->threadedStopRequested.store(false);
     m_impl->threadedWorkersRunning = true;
-    m_impl->renderSceneWorker = std::thread([this]()
+    m_impl->reportedMissingThreadedPipeline = false;
+
+    // The render command fence can only observe submission sequences when
+    // something publishes them. Until the RHI executor owns submission, the
+    // driver installs its own drain as the flush hook so that asking for a deeper
+    // flush depth performs a real wait instead of returning immediately.
     {
-        NLS_PROFILE_REGISTER_THREAD("Render Thread");
-        Render::Settings::SetThreadDiagnosticsSettings(m_impl->diagnostics);
-        const bool registered = m_impl->taskGraph->RegisterCurrentThread(
-            NLS::Base::TaskGraph::NamedThread::Render);
-        if (!registered)
-            NLS_LOG_ERROR("Driver: Render Thread could not register with the rendering TaskGraph");
-        while (!m_impl->threadedStopRequested.load())
-        {
-            NLS_PROFILE_NAMED_SCOPE("Render Thread Tick");
-            (void)m_impl->taskGraph->PumpCurrentThread();
-
-            // RHI production belongs to the render thread: retire the previous stage
-            // graph, then take the next published frame and schedule its graph without
-            // executing any RHI stage on this thread.
-            RhiThreadCoordinator::FinalizeThreadedSubmissionProduction(*this, true);
-            if (RhiThreadCoordinator::TryScheduleNextThreadedSubmission(
-                    *this,
-                    RhiSubmissionAttribution::Worker) ||
-                RhiThreadCoordinator::TryScheduleIdleMeshRuntimeUploads(*this))
+        std::weak_ptr<DriverImpl::RenderCommandFlushLifetime> lifetime =
+            m_impl->renderCommandFlushLifetime;
+        Driver* const flushDriver = this;
+        SetRenderCommandFlushHook(
+            [lifetime = std::move(lifetime), flushDriver](const RhiFlushFlags flags)
             {
-                continue;
-            }
+                // A hook left behind by a destroyed driver must not touch it.
+                if (lifetime.expired())
+                    return;
 
-            const uint64_t observedWakeGeneration =
-                m_impl->threadedWorkerWake.Generation();
-            size_t slotIndex = 0u;
-            if (m_impl->threadedLifecycle->TryBeginNextRenderFrameBuild(
-                &slotIndex,
-                nullptr))
-            {
-                const auto resolutionDesc = Detail::BuildRenderScenePreparingResolutionDesc();
+                // The Render depth was already satisfied by the serial pipe draining
+                // its marker, so only the deeper stages need driving here.
+                const bool needsReachableDepth =
+                    HasFlag(flags, RhiFlushFlags::Dispatch) ||
+                    HasFlag(flags, RhiFlushFlags::Translate) ||
+                    HasFlag(flags, RhiFlushFlags::Submit) ||
+                    HasFlag(flags, RhiFlushFlags::Swapchain);
+                const bool needsGpuDepth =
+                    HasFlag(flags, RhiFlushFlags::Gpu);
+                const bool releasesResources = HasFlag(flags, RhiFlushFlags::ReleaseResources);
+
+                if (needsGpuDepth)
                 {
-                    NLS_PROFILE_NAMED_SCOPE("RenderThread::ResolveRenderScenePreparing");
-                    m_impl->threadedLifecycle->ResolveRenderScenePreparing(
-                        slotIndex,
-                        resolutionDesc);
+                    // Drains the CPU stages and then the frame fences, which is the
+                    // only honest GPU wait this path can offer.
+                    if (!DriverRendererAccess::TryWaitForSubmittedGpuWork(*flushDriver))
+                        throw std::runtime_error("FlushRenderingCommands could not retire GPU work");
                 }
+                else if (needsReachableDepth || releasesResources)
                 {
-                    NLS_PROFILE_NAMED_SCOPE("RenderThread::NotifyThreadedWorkers");
-                    NotifyThreadedWorkers(*m_impl);
+                    if (!DriverRendererAccess::TryDrainThreadedRendering(*flushDriver, false))
+                        throw std::runtime_error("FlushRenderingCommands could not drain CPU frame work");
                 }
-                continue;
-            }
+                if (releasesResources)
+                {
+                    (void)RhiCommandListExecutor::Get().ReleaseRetiredBatches();
+                    Detail::ReleaseDeferredThreadedFrameScopedResourcesAfterFence(*flushDriver->m_impl);
+                }
+                auto& executor = RhiCommandListExecutor::Get();
+                if (executor.IsInitialized() && !executor.Flush(flags))
+                    throw std::runtime_error("FlushRenderingCommands failed: " + executor.GetFailureDiagnostic());
+            });
+    }
 
-            {
-                NLS_PROFILE_NAMED_SCOPE("RenderThread::WaitForWake");
-                WaitForThreadedWorkerWake(*m_impl, observedWakeGeneration);
-            }
-        }
-        (void)m_impl->taskGraph->PumpCurrentThread();
-        // Never leave the producer lane locked by an exiting thread.
-        RhiThreadCoordinator::DrainProducerOwnedThreadedSubmission(*this);
-        m_impl->taskGraph->UnregisterCurrentThread(NLS::Base::TaskGraph::NamedThread::Render);
-    });
-    m_impl->rhiWorker = std::thread([this]()
+    m_impl->renderingTick = std::make_shared<DriverRenderingTick>(*this, *m_impl);
+    RenderingThreadInitParams threadParams;
+    threadParams.tick = m_impl->renderingTick.get();
+    threadParams.taskGraph = m_impl->taskGraph;
+    threadParams.rhiThreadMode = modeResolution.mode;
+    // The tick bodies already block on their own wake event, so the wrapper's
+    // post-tick idle must stay short: anything longer would add that delay to
+    // every frame published right after a tick timeout.
+    threadParams.idleWait = std::chrono::milliseconds(1);
+    threadParams.registerGameThread = true;
+    // Bring the RHI submit lane up before the render/RHI threads start. From this
+    // point on every queue submit and present funnels through
+    // RhiCommandListExecutor, so no backend queue can be reached from an
+    // arbitrary worker or from the render thread directly.
+    RhiCommandListExecutor::Get().Initialize(
+        modeResolution.mode,
+        RhiCommandListExecutor::CreateDeviceTargets(m_impl->explicitDevice),
+        m_impl->taskGraph,
+        this,
+        (std::max)(m_impl->renderDrainTimeout, std::chrono::milliseconds(std::chrono::seconds(10))));
+    if (!m_impl->renderingThreads.InitRenderingThreads(threadParams))
     {
-        NLS_PROFILE_REGISTER_THREAD("RHI Thread");
-        Render::Settings::SetThreadDiagnosticsSettings(m_impl->diagnostics);
-        const bool registered = m_impl->taskGraph->RegisterCurrentThread(
-            NLS::Base::TaskGraph::NamedThread::Rhi);
-        if (!registered)
-            NLS_LOG_ERROR("Driver: RHI Thread could not register with the rendering TaskGraph");
-        while (!m_impl->threadedStopRequested.load())
-        {
-            NLS_PROFILE_NAMED_SCOPE("RHI Thread Tick");
-            (void)m_impl->taskGraph->PumpCurrentThread();
-            if (m_impl->taskGraph->GetNamedThreadQueueDepth(NLS::Base::TaskGraph::NamedThread::Rhi) != 0u)
-                continue;
-
-            // The RHI thread owns no submission state machine: producers schedule the
-            // stage graph, and this thread only pumps the RHI named queue above. Wait
-            // on graph work targeted at this lane, with a bounded timeout so
-            // driver-level wakeups (UI-only lease expiry, resize) still progress.
-            (void)m_impl->taskGraph->WaitForWork(
-                NLS::Base::TaskGraph::NamedThread::Rhi,
-                kThreadedWorkerWakeTimeout);
-        }
-        (void)m_impl->taskGraph->PumpCurrentThread();
-        m_impl->taskGraph->UnregisterCurrentThread(NLS::Base::TaskGraph::NamedThread::Rhi);
-    });
+        NLS_LOG_ERROR("Driver: failed to start the rendering threads");
+        m_impl->renderingTick.reset();
+        m_impl->threadedWorkersRunning = false;
+        return;
+    }
 }
 
 void Driver::StopThreadedRenderingWorkers()
@@ -4697,24 +5066,70 @@ void Driver::StopThreadedRenderingWorkers()
     NLS_PROFILE_SCOPE();
     if (m_impl == nullptr)
         return;
+    if (m_impl->frameLatency != nullptr)
+        m_impl->frameLatency->Stop();
+    (void)DrainRenderFrameCommands(*m_impl, this, false);
+    // Scene/resource release commands are not counted as frames. Join their FIFO
+    // marker before the final GPU flush, including commands beyond one tick's slice.
+    if (RenderingThreadSystem::HasActiveRenderThread() &&
+        !RenderingThreadSystem::IsInRenderingThread() && !HasRenderFatalError())
+    {
+        try
+        {
+            ExecuteDriverRenderCommand(*m_impl, [] {});
+        }
+        catch (const std::exception& exception)
+        {
+            NLS_LOG_ERROR(std::string("Driver: render command shutdown drain failed: ") + exception.what());
+        }
+    }
+    // Dedicated RHI work must reach the queues while its named lane is alive.
+    // Fresh resource-retirement fences also cover native uploads and readbacks.
+    if (m_impl->explicitDevice != nullptr && RhiCommandListExecutor::Get().GetOwner() == this &&
+        RhiCommandListExecutor::Get().IsInitialized())
+    {
+        if (!RhiCommandListExecutor::Get().Flush(RhiFlushFlags::Gpu | RhiFlushFlags::ReleaseResources))
+            NLS_LOG_ERROR("Driver: GPU resource retirement could not complete during shutdown");
+        // Profiler query queues need the submit lane to release their GPU resources.
+        const auto nativeDevice = m_impl->explicitDevice->GetNativeDeviceInfo().device;
+        if (nativeDevice != nullptr)
+            NLS::Base::Profiling::Profiler::ClearGpuContext(nativeDevice);
+    }
     m_impl->threadedStopRequested.store(true);
     NotifyThreadedWorkers(*m_impl);
-    if (m_impl->renderSceneWorker.joinable())
-        m_impl->renderSceneWorker.join();
-    if (m_impl->rhiWorker.joinable())
-        m_impl->rhiWorker.join();
-    const bool drained = DrainThreadedLifecycleSynchronously(*m_impl, this);
-    if (drained && m_impl->swapchainWillResizeCallback != nullptr)
+    // Joins the render/RHI threads; the tick's stop hook releases the producer lane
+    // before the threads unregister from the TaskGraph.
+    m_impl->renderingThreads.ShutdownRenderingThreads();
+    // Tear the submit lane down only after the render/RHI threads are joined:
+    // outstanding queue operations drain, and later submissions are rejected
+    // instead of touching a device that is about to go away.
+    RhiCommandListExecutor::Get().Shutdown(RhiFlushFlags::Gpu | RhiFlushFlags::ReleaseResources, this);
+    m_impl->renderingTick.reset();
+    // The pool is about to stop being usable: unbind it so later async commands
+    // fall back to inline execution instead of being rejected.
+    RenderCommandDispatcher::SetTaskGraph(nullptr);
+    const bool drained = DrainRenderFrameCommands(*m_impl, this);
+    if (drained)
         ApplyPendingSwapchainResize();
     m_impl->threadedWorkersRunning = false;
+
+    // No frame will retire from here on, so release every waiter that is still
+    // holding a latency budget or it would block the game thread forever.
+    if (m_impl->frameLatency != nullptr)
+        m_impl->frameLatency->Stop();
 }
 
 bool Driver::IsThreadedRenderingEnabled() const
 {
-    if (m_impl->threadedLifecycle == nullptr || !m_impl->threadedWorkersRunning)
+    if (!m_impl->threadedWorkersRunning)
         return false;
 
     return Detail::SupportsThreadedFoundationExecution(*m_impl);
+}
+
+std::string Driver::GetRhiThreadModeSummary() const
+{
+    return m_impl != nullptr ? m_impl->rhiThreadModeSummary : std::string {};
 }
 
 }

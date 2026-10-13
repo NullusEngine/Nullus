@@ -1,4 +1,5 @@
 #include "EditorDebugEndpoint.h"
+#include "Profiling/Profiler.h"
 
 #include <algorithm>
 #include <chrono>
@@ -612,6 +613,7 @@ EditorDebugEndpoint::Json EditorDebugEndpoint::ReadEvents(const Json& request)
 
 void EditorDebugEndpoint::Serve()
 {
+    NLS_PROFILE_REGISTER_THREAD("Editor Debug Endpoint");
 #ifdef _WIN32
     const auto pipe = static_cast<HANDLE>(m_serverHandle);
     const auto disconnectClient = [pipe]

@@ -30,12 +30,16 @@ namespace NLS::Engine::Rendering
         {
             Maths::Matrix4 worldMatrix = Maths::Matrix4::Identity;
             Maths::Vector3 worldPosition {};
+            Maths::Quaternion worldRotation = Maths::Quaternion::Identity;
+            Maths::Vector3 worldScale {1.0f, 1.0f, 1.0f};
             uint64_t transformRevision = 0u;
 
             [[nodiscard]] bool HasSameWorldTransform(const TransformStamp& other) const noexcept
             {
                 return ValueEquals(worldMatrix, other.worldMatrix) &&
-                    ValueEquals(worldPosition, other.worldPosition);
+                    ValueEquals(worldPosition, other.worldPosition) &&
+                    ValueEquals(worldRotation, other.worldRotation) &&
+                    ValueEquals(worldScale, other.worldScale);
             }
 
             [[nodiscard]] bool operator==(const TransformStamp& other) const noexcept
@@ -107,6 +111,7 @@ namespace NLS::Engine::Rendering
             float range = 0.0f;
             float cutoff = 0.0f;
             float outerCutoff = 0.0f;
+            Maths::Vector3 size {1.0f, 1.0f, 1.0f};
             bool ownerAlive = false;
             bool ownerActive = false;
 
@@ -116,7 +121,8 @@ namespace NLS::Engine::Rendering
                     parentInstanceId == other.parentInstanceId &&
                     type == other.type && ValueEquals(color, other.color) && intensity == other.intensity &&
                     range == other.range && cutoff == other.cutoff &&
-                    outerCutoff == other.outerCutoff && ownerAlive == other.ownerAlive &&
+                    outerCutoff == other.outerCutoff && ValueEquals(size, other.size) &&
+                    ownerAlive == other.ownerAlive &&
                     ownerActive == other.ownerActive;
             }
         };
@@ -152,6 +158,8 @@ namespace NLS::Engine::Rendering
             {
                 stamp.worldMatrix = transform->GetWorldMatrix();
                 stamp.worldPosition = transform->GetWorldPosition();
+                stamp.worldRotation = transform->GetWorldRotation();
+                stamp.worldScale = transform->GetWorldScale();
                 stamp.transformRevision = transform->GetRenderRevision();
                 if (previous != nullptr)
                 {
@@ -172,6 +180,8 @@ namespace NLS::Engine::Rendering
             SceneProxyTransformState transform;
             transform.worldMatrix = stamp.worldMatrix;
             transform.worldPosition = stamp.worldPosition;
+            transform.worldRotation = stamp.worldRotation;
+            transform.worldScale = stamp.worldScale;
             transform.transformRevision = stamp.transformRevision;
             return transform;
         }
@@ -594,6 +604,7 @@ namespace NLS::Engine::Rendering
             stamp.range = light->GetRange();
             stamp.cutoff = light->GetCutoff();
             stamp.outerCutoff = light->GetOuterCutoff();
+            stamp.size = light->GetSize();
             stamp.ownerAlive = owner->IsAlive();
             stamp.ownerActive = owner->IsActive();
 
@@ -613,7 +624,8 @@ namespace NLS::Engine::Rendering
                     stamp.intensity,
                     stamp.range,
                     stamp.cutoff,
-                    stamp.outerCutoff };
+                    stamp.outerCutoff,
+                    stamp.size };
                 const auto transform = BuildTransformStamp(*owner);
                 batch.commands.push_back({ SceneProxyCommandKind::Add, handle, std::move(payload), ToProxyTransform(transform) });
                 m_impl->lights.emplace(light, Impl::LightEntry { handle, transform, stamp });
@@ -643,7 +655,8 @@ namespace NLS::Engine::Rendering
                 stamp.intensity,
                 stamp.range,
                 stamp.cutoff,
-                stamp.outerCutoff };
+                stamp.outerCutoff,
+                stamp.size };
             batch.commands.push_back({ SceneProxyCommandKind::UpdatePayload, found->second.handle, std::move(payload), ToProxyTransform(transform) });
             found->second.stamp = stamp;
             found->second.transform = transform;

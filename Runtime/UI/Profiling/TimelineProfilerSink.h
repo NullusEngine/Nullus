@@ -1,5 +1,6 @@
 #pragma once
 
+#include <atomic>
 #include <filesystem>
 #include <fstream>
 
@@ -28,6 +29,7 @@ public:
     void BeginGpuScope(const ProfilerGpuScopeEvent& event) override;
     void EndGpuScope(const ProfilerGpuScopeEvent& event) override;
     void InitializeGpuContext(const ProfilerGpuContextEvent& event) override;
+    void ClearGpuContext(void* nativeDevice) override;
     void SubmitGpuCommandLists(const ProfilerGpuCommandListSubmitEvent& event) override;
     ProfilerDestinationState GetState() const override;
 
@@ -63,12 +65,12 @@ private:
         uint32_t exportedFrameCount = 0u;
     };
 
-    bool m_recordingEnabled = false;
+    std::atomic_bool m_recordingEnabled = false;
     bool m_frameStarted = false;
     bool m_gpuInitialized = false;
-    bool m_gpuScopesAvailable = false;
+    std::atomic_bool m_gpuScopesAvailable = false;
     size_t m_tickFrameCount = 0u;
-    size_t m_skippedScopeCount = 0u;
+    std::atomic_size_t m_skippedScopeCount = 0u;
     TraceExportState m_traceExport;
 #endif
 };

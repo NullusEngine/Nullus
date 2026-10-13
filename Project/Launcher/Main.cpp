@@ -9,6 +9,7 @@
 
 #include <Platform/Process/Process.h>
 #include <Rendering/Settings/GraphicsBackendUtils.h>
+#include <Rendering/Context/RenderingThreadSystem.h>
 #include <Utils/PathParser.h>
 
 using namespace NLS;
@@ -82,6 +83,7 @@ static void LaunchEditor(const std::string& projectPath, const std::string& pref
 
 int main(int argc, char** argv)
 {
+    const Render::Context::ScopedGameThread gameThread;
     std::filesystem::current_path(std::filesystem::path(argv[0]).parent_path());
 
     // Parse command-line arguments (same flags as Editor, minus project_path)

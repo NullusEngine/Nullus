@@ -4,10 +4,11 @@
 #include <fg/FrameGraph.hpp>
 
 #include <initializer_list>
+#include <memory>
 #include <optional>
 #include <vector>
 
-#include "Rendering/Context/ThreadedRenderingLifecycle.h"
+#include "Rendering/Context/RenderScenePackage.h"
 #include "Rendering/Data/FrameDescriptor.h"
 #include "Rendering/FrameGraph/FrameGraphTexture.h"
 #include "Rendering/RHI/Core/RHISwapchain.h"
@@ -45,6 +46,32 @@ namespace NLS::Render::FrameGraph
         NLS::Render::Data::FrameDescriptor& frame,
         NLS::Render::Buffers::Framebuffer* framebuffer);
     NLS_RENDER_API NLS::Render::Data::FrameDescriptor CaptureExternalSceneOutputSnapshot(
+        const NLS::Render::Data::FrameDescriptor& frame);
+
+    /**
+     * A frame descriptor whose per-frame camera is owned by the snapshot.
+     *
+     * The live Data::FrameDescriptor holds a raw camera pointer that the game
+     * thread rewrites every frame, so it must not be read by work that runs on
+     * another thread or after the next BeginFrame. FrozenFrameDescriptor is the
+     * supported input for that work.
+     */
+    struct NLS_RENDER_API FrozenFrameDescriptor
+    {
+        NLS::Render::Data::FrameDescriptor descriptor{};
+        std::shared_ptr<NLS::Maths::Transform> cameraTransform;
+        std::shared_ptr<NLS::Render::Entities::Camera> camera;
+    };
+
+    /**
+     * Copies every render-relevant frame input, including an owned camera.
+     *
+     * The camera copy carries position, rotation, projection settings, clear
+     * flags, frustum-culling flags and the visible layer mask, and has its
+     * matrices cached for the frozen resolution. Output textures/views keep their
+     * shared ownership, so they outlive the source descriptor as well.
+     */
+    NLS_RENDER_API FrozenFrameDescriptor FreezeFrameDescriptor(
         const NLS::Render::Data::FrameDescriptor& frame);
 
     NLS_RENDER_API void ImportSceneRenderTargets(

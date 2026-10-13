@@ -107,7 +107,11 @@ std::string_view LauncherTextKeyName(LauncherTextKey key)
     case LauncherTextKey::LaunchOptions: return "launch_options.title";
     case LauncherTextKey::LaunchOptionsDescription: return "launch_options.description";
     case LauncherTextKey::VerticalSynchronization: return "launch_options.vsync";
-    case LauncherTextKey::ThreadedRendering: return "launch_options.threaded_rendering";
+    case LauncherTextKey::RhiThreadMode: return "launch_options.rhi_thread_mode";
+    case LauncherTextKey::RhiBackendDefault: return "launch_options.rhi_backend_default";
+    case LauncherTextKey::RhiNone: return "launch_options.rhi_none";
+    case LauncherTextKey::RhiDedicatedThread: return "launch_options.rhi_dedicated_thread";
+    case LauncherTextKey::RhiTasks: return "launch_options.rhi_tasks";
     case LauncherTextKey::RenderDocCaptureFrames: return "launch_options.renderdoc_capture_frames";
     case LauncherTextKey::Save: return "launch_options.save";
     case LauncherTextKey::SaveFailed: return "launch_options.save_failed";

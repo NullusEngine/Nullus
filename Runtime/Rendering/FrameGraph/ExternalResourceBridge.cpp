@@ -293,6 +293,42 @@ namespace NLS::Render::FrameGraph
         return snapshot;
     }
 
+    FrozenFrameDescriptor FreezeFrameDescriptor(
+        const NLS::Render::Data::FrameDescriptor& frame)
+    {
+        FrozenFrameDescriptor frozen;
+        frozen.descriptor = CaptureExternalSceneOutputSnapshot(frame);
+
+        if (frame.camera == nullptr)
+            return frozen;
+
+        frozen.cameraTransform = std::make_shared<NLS::Maths::Transform>();
+        frozen.camera = std::make_shared<NLS::Render::Entities::Camera>(
+            frozen.cameraTransform.get());
+
+        frozen.cameraTransform->SetWorldPosition(frame.camera->GetPosition());
+        frozen.cameraTransform->SetWorldRotation(frame.camera->GetRotation());
+        frozen.camera->SetProjectionMode(frame.camera->GetProjectionMode());
+        frozen.camera->SetFov(frame.camera->GetFov());
+        frozen.camera->SetSize(frame.camera->GetSize());
+        frozen.camera->SetNear(frame.camera->GetNear());
+        frozen.camera->SetFar(frame.camera->GetFar());
+        frozen.camera->SetClearColor(frame.camera->GetClearColor());
+        frozen.camera->SetClearColorBuffer(frame.camera->GetClearColorBuffer());
+        frozen.camera->SetClearDepthBuffer(frame.camera->GetClearDepthBuffer());
+        frozen.camera->SetClearStencilBuffer(frame.camera->GetClearStencilBuffer());
+        frozen.camera->SetFrustumGeometryCulling(frame.camera->HasFrustumGeometryCulling());
+        frozen.camera->SetFrustumLightCulling(frame.camera->HasFrustumLightCulling());
+        // Layer filtering is part of the frame's visibility result, so a frozen
+        // camera that dropped it would silently render layers the view excluded.
+        frozen.camera->SetVisibleLayerMask(frame.camera->GetVisibleLayerMask());
+        frozen.camera->CacheMatrices(frame.renderWidth, frame.renderHeight);
+
+        // Point at the owned camera so nothing downstream can reach the live one.
+        frozen.descriptor.camera = frozen.camera.get();
+        return frozen;
+    }
+
     void ImportSceneRenderTargets(
         ::FrameGraph& frameGraph,
         FrameGraphBlackboard& blackboard,

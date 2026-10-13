@@ -254,6 +254,9 @@ namespace NLS::Render::RHI
     {
         std::vector<RHIBufferBarrier> bufferBarriers;
         std::vector<RHITextureBarrier> textureBarriers;
+        // Ordered preparation resolved these states; translation must not consult
+        // or modify the device's shared logical resource state.
+        bool statesAreExplicit = false;
     };
 
     enum class NLS_RENDER_API RHICommandRecordingStatusCode : uint8_t
@@ -322,6 +325,12 @@ namespace NLS::Render::RHI
         {
             return barrier;
         }
+        // States unavailable on this queue must first transition on Graphics.
+        virtual RHIBarrierDesc BuildQueueReleaseBarriers(const RHIBarrierDesc& barrier) const
+        {
+            return {};
+        }
+        virtual void CommitResourceStates(const RHIBarrierDesc& barrier) {}
         virtual bool IsClosedForSubmission() const { return true; }
         virtual RHICommandRecordingResult BarrierChecked(const RHIBarrierDesc& barrier)
         {

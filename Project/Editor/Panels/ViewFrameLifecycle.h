@@ -8,7 +8,7 @@
 
 #include "Math/Quaternion.h"
 #include "Vector3.h"
-#include "Rendering/Context/ThreadedRenderingLifecycle.h"
+#include "Rendering/Context/FrameSubmissionTelemetry.h"
 
 namespace NLS::Editor::Panels
 {
@@ -33,10 +33,10 @@ namespace NLS::Editor::Panels
     inline bool ShouldDeferRetirementAwareViewResize(
         const std::pair<uint16_t, uint16_t>& requestedSize,
         const std::pair<uint16_t, uint16_t>& activeSize,
-        const bool requiresRetiredFrameConsumption,
+        const bool requiresImmediateReadback,
         const Render::Context::ThreadedFrameTelemetry& telemetry)
     {
-        return requiresRetiredFrameConsumption &&
+        return requiresImmediateReadback &&
             requestedSize != activeSize &&
             telemetry.inFlightFrameCount > 0u;
     }
@@ -44,23 +44,23 @@ namespace NLS::Editor::Panels
     inline bool ShouldDrainBeforeRetirementAwareViewResize(
         const std::pair<uint16_t, uint16_t>& requestedSize,
         const std::pair<uint16_t, uint16_t>& activeSize,
-        const bool requiresRetiredFrameConsumption,
+        const bool requiresImmediateReadback,
         const Render::Context::ThreadedFrameTelemetry& telemetry)
     {
         return ShouldDeferRetirementAwareViewResize(
             requestedSize,
             activeSize,
-            requiresRetiredFrameConsumption,
+            requiresImmediateReadback,
             telemetry);
     }
 
     inline bool ShouldDeferRetirementAwareViewResizeUntilTelemetryAvailable(
         const std::pair<uint16_t, uint16_t>& requestedSize,
         const std::pair<uint16_t, uint16_t>& activeSize,
-        const bool requiresRetiredFrameConsumption,
+        const bool requiresImmediateReadback,
         const bool threadedTelemetryAvailable)
     {
-        return requiresRetiredFrameConsumption &&
+        return requiresImmediateReadback &&
             !threadedTelemetryAvailable &&
             requestedSize != activeSize;
     }
@@ -72,10 +72,11 @@ namespace NLS::Editor::Panels
         const bool requiresSynchronizedPresentation = false,
         const bool hadInFlightFrameBeforeRender = true)
     {
+        // Captured target snapshots retain the previous size through GPU retirement.
+        (void)resizedViewThisFrame;
+        (void)hadInFlightFrameBeforeRender;
         return requiresRetiredFrameConsumption &&
-            (requiresImmediateReadback ||
-                requiresSynchronizedPresentation ||
-                (resizedViewThisFrame && hadInFlightFrameBeforeRender));
+            (requiresImmediateReadback || requiresSynchronizedPresentation);
     }
 
     inline bool DidThreadedFramePublishAdvance(

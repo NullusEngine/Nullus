@@ -1,4 +1,5 @@
 #include <gtest/gtest.h>
+#include "Tests/RenderingThreadTestHelpers.h"
 
 #include <cstdint>
 #include <memory>
@@ -46,7 +47,10 @@ NLS::Render::Context::Driver& EnsureRenderSceneTestDriver()
         settings.enableExplicitRHI = false;
         return settings;
     }());
-    NLS::Core::ServiceLocator::Provide(*driver);
+    // No render thread: this suite does not exercise threaded frame ownership, so its
+    // fixture driver must not keep a process-wide render thread alive for another suite.
+    driver->ShutdownThreadedRendering();
+NLS::Core::ServiceLocator::Provide(*driver);
     return *driver;
 }
 
@@ -175,8 +179,8 @@ TEST(RenderScenePerformanceTests, StableLargeSceneAvoidsFullPrimitiveSynchroniza
     NLS::Engine::Rendering::RenderSceneSyncOptions options;
     options.defaultMaterial = &fixture.material;
 
-    const auto first = renderScene.Synchronize(fixture.scene, options);
-    const auto second = renderScene.Synchronize(fixture.scene, options);
+    const auto first = NLS::Tests::SynchronizeSceneForTest(renderScene, fixture.scene, options);
+    const auto second = NLS::Tests::SynchronizeSceneForTest(renderScene, fixture.scene, options);
 
     EXPECT_EQ(first.syncTouchedPrimitiveCount, kPrimitiveCount);
     EXPECT_EQ(first.rebuiltCachedCommandCount, kPrimitiveCount);
@@ -203,10 +207,10 @@ TEST(RenderScenePerformanceTests, DynamicInstancingReducesOneThousandCompatibleO
     NLS::Engine::Rendering::RenderSceneSyncOptions syncOptions;
     syncOptions.defaultMaterial = &fixture.opaqueMaterialA;
 
-    const auto firstSync = renderScene.Synchronize(fixture.scene, syncOptions);
+    const auto firstSync = NLS::Tests::SynchronizeSceneForTest(renderScene, fixture.scene, syncOptions);
     const auto firstVisible = renderScene.GatherVisibleCommands({ nullptr, {} });
     const auto firstOptimizationStats = renderScene.GetLastDrawCallOptimizationStatsForTesting();
-    const auto secondSync = renderScene.Synchronize(fixture.scene, syncOptions);
+    const auto secondSync = NLS::Tests::SynchronizeSceneForTest(renderScene, fixture.scene, syncOptions);
     const auto secondVisible = renderScene.GatherVisibleCommands({ nullptr, {} });
     const auto secondOptimizationStats = renderScene.GetLastDrawCallOptimizationStatsForTesting();
 
@@ -243,7 +247,7 @@ TEST(RenderScenePerformanceTests, DynamicInstancingReducesTraceScaleCompatibleOb
     NLS::Engine::Rendering::RenderSceneSyncOptions syncOptions;
     syncOptions.defaultMaterial = &fixture.opaqueMaterialA;
 
-    ASSERT_EQ(renderScene.Synchronize(fixture.scene, syncOptions).rebuiltCachedCommandCount, kTraceScaleDrawCount);
+    ASSERT_EQ(NLS::Tests::SynchronizeSceneForTest(renderScene, fixture.scene, syncOptions).rebuiltCachedCommandCount, kTraceScaleDrawCount);
     const auto visible = renderScene.GatherVisibleCommands({ nullptr, {} });
     const auto optimizationStats = renderScene.GetLastDrawCallOptimizationStatsForTesting();
 

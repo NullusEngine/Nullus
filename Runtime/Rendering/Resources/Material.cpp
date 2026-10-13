@@ -15,6 +15,7 @@
 
 #include "Base/Image.h"
 #include "Debug/Logger.h"
+#include "Profiling/Profiler.h"
 #include "Math/Vector2.h"
 #include "Math/Vector3.h"
 #include "Math/Vector4.h"
@@ -269,29 +270,44 @@ namespace
 		return created;
 	}
 
+	template<typename TextureType>
+	struct DefaultMaterialTextureCache
+	{
+		TextureType* texture = nullptr;
+		uint64_t deviceIdentity = 0u;
+		NLS::Render::RHI::NativeBackendType backend = NLS::Render::RHI::NativeBackendType::None;
+	};
+
+	template<typename TextureType>
+	DefaultMaterialTextureCache<TextureType>& GetDefaultMaterialTextureCache()
+	{
+		// GPU-unsafe shutdown must preserve these resources instead of destroying
+		// them during static teardown. The driver releases them after fence drain.
+		static DefaultMaterialTextureCache<TextureType> cache;
+		return cache;
+	}
+
 	NLS::Render::Resources::Texture2D* GetDefaultWhiteTexture2D()
 	{
-		static NLS::Render::Resources::Texture2D* texture = nullptr;
-		static uint64_t textureDeviceIdentity = 0u;
-		static NLS::Render::RHI::NativeBackendType textureBackend = NLS::Render::RHI::NativeBackendType::None;
+		auto& cache = GetDefaultMaterialTextureCache<NLS::Render::Resources::Texture2D>();
 
 		const auto device = TryGetLocatedExplicitDevice();
 		const auto deviceIdentity = device != nullptr ? device->GetCacheIdentity() : 0u;
 		const auto backend = ResolveDeviceBackend(device);
 		const bool needsRefresh =
-			texture == nullptr ||
-			textureDeviceIdentity != deviceIdentity ||
-			textureBackend != backend ||
-			(device != nullptr && texture->GetTextureHandle() == nullptr) ||
-			(device == nullptr && texture->GetTextureHandle() != nullptr);
+			cache.texture == nullptr ||
+			cache.deviceIdentity != deviceIdentity ||
+			cache.backend != backend ||
+			(device != nullptr && cache.texture->GetTextureHandle() == nullptr) ||
+			(device == nullptr && cache.texture->GetTextureHandle() != nullptr);
 		if (needsRefresh)
 		{
-			NLS::Render::Resources::Loaders::TextureLoader::Destroy(texture);
-			texture = CreateDefaultWhiteTexture2D();
-			textureDeviceIdentity = texture != nullptr ? deviceIdentity : 0u;
-			textureBackend = texture != nullptr ? backend : NLS::Render::RHI::NativeBackendType::None;
+			NLS::Render::Resources::Loaders::TextureLoader::Destroy(cache.texture);
+			cache.texture = CreateDefaultWhiteTexture2D();
+			cache.deviceIdentity = cache.texture != nullptr ? deviceIdentity : 0u;
+			cache.backend = cache.texture != nullptr ? backend : NLS::Render::RHI::NativeBackendType::None;
 		}
-		return texture;
+		return cache.texture;
 	}
 
 	NLS::Render::Resources::TextureCube* CreateDefaultWhiteTextureCube()
@@ -319,27 +335,25 @@ namespace
 
 	NLS::Render::Resources::TextureCube* GetDefaultWhiteTextureCube()
 	{
-		static NLS::Render::Resources::TextureCube* texture = nullptr;
-		static uint64_t textureDeviceIdentity = 0u;
-		static NLS::Render::RHI::NativeBackendType textureBackend = NLS::Render::RHI::NativeBackendType::None;
+		auto& cache = GetDefaultMaterialTextureCache<NLS::Render::Resources::TextureCube>();
 
 		const auto device = TryGetLocatedExplicitDevice();
 		const auto deviceIdentity = device != nullptr ? device->GetCacheIdentity() : 0u;
 		const auto backend = ResolveDeviceBackend(device);
 		const bool needsRefresh =
-			texture == nullptr ||
-			textureDeviceIdentity != deviceIdentity ||
-			textureBackend != backend ||
-			(device != nullptr && texture->GetTextureHandle() == nullptr) ||
-			(device == nullptr && texture->GetTextureHandle() != nullptr);
+			cache.texture == nullptr ||
+			cache.deviceIdentity != deviceIdentity ||
+			cache.backend != backend ||
+			(device != nullptr && cache.texture->GetTextureHandle() == nullptr) ||
+			(device == nullptr && cache.texture->GetTextureHandle() != nullptr);
 		if (needsRefresh)
 		{
-			delete texture;
-			texture = CreateDefaultWhiteTextureCube();
-			textureDeviceIdentity = texture != nullptr ? deviceIdentity : 0u;
-			textureBackend = texture != nullptr ? backend : NLS::Render::RHI::NativeBackendType::None;
+			delete cache.texture;
+			cache.texture = CreateDefaultWhiteTextureCube();
+			cache.deviceIdentity = cache.texture != nullptr ? deviceIdentity : 0u;
+			cache.backend = cache.texture != nullptr ? backend : NLS::Render::RHI::NativeBackendType::None;
 		}
-		return texture;
+		return cache.texture;
 	}
 
 	std::any CreateDefaultMaterialValue(UniformType type)
@@ -1064,9 +1078,18 @@ namespace NLS::Render::Resources
 
 	Material::MaterialRuntimeState& Material::GetRuntimeState() const
 	{
-		if (!m_runtimeState)
-			m_runtimeState = std::make_unique<MaterialRuntimeState>();
-		return *m_runtimeState;
+		// Create-once: a second creator must not replace (and destroy) the state
+		// another thread is already holding a reference into.
+		auto* state = m_runtimeState.load(std::memory_order_acquire);
+		if (state != nullptr)
+			return *state;
+
+		auto created = std::make_unique<MaterialRuntimeState>();
+		auto* expected = static_cast<MaterialRuntimeState*>(nullptr);
+		if (!m_runtimeState.compare_exchange_strong(
+				expected, created.get(), std::memory_order_acq_rel, std::memory_order_acquire))
+			return *expected;
+		return *created.release();
 	}
 
 	void Material::ResetRuntimeState() const
@@ -1099,6 +1122,25 @@ namespace NLS::Render::Resources
 		state.shaderGeneration = m_shader != nullptr ? m_shader->GetGeneration() : 0u;
 		state.explicitBindingLayoutDirty = true;
 		state.explicitBindingSetDirty = true;
+	}
+
+	void Material::ReleaseDefaultTexturesForDevice(const uint64_t deviceIdentity)
+	{
+		if (deviceIdentity == 0u)
+			return;
+
+		auto& texture2D = GetDefaultMaterialTextureCache<Texture2D>();
+		if (texture2D.deviceIdentity == deviceIdentity)
+		{
+			Loaders::TextureLoader::Destroy(texture2D.texture);
+			texture2D = {};
+		}
+		auto& textureCube = GetDefaultMaterialTextureCache<TextureCube>();
+		if (textureCube.deviceIdentity == deviceIdentity)
+		{
+			delete textureCube.texture;
+			textureCube = {};
+		}
 	}
 
 	void Material::EnsureShaderGenerationCacheCurrent() const
@@ -1163,6 +1205,7 @@ namespace NLS::Render::Resources
 			state.explicitBindingSetShaderGeneration = 0u;
 			state.explicitBindingSetDirty = true;
 		}
+
 		if (state.explicitPipelineLayoutShaderInstanceId == shaderInstanceId &&
 			state.explicitPipelineLayoutShaderGeneration != shaderGeneration)
 		{
@@ -1206,20 +1249,14 @@ namespace NLS::Render::Resources
 		auto& state = GetRuntimeState();
 		++m_bindingRevision;
 		TouchMaterialMutationEpoch(const_cast<Material*>(this));
+			// Parameter values change resources, not the shader's descriptor or root layout.
 		state.explicitBindingSet.reset();
-		state.explicitPipelineLayout.reset();
 		state.explicitBindingSetsByShaderKey.clear();
-		state.explicitPipelineLayoutsByShaderKey.clear();
-		state.explicitBindingDiagnostics.clear();
-		state.indexedObjectDataBindingDiagnosticSources.clear();
+			ClearNonIndexedObjectDataBindingDiagnostics(state.explicitBindingDiagnostics);
         state.explicitBindingSetDeviceIdentity = 0u;
-        state.explicitPipelineLayoutDeviceIdentity = 0u;
 		state.explicitBindingSetBackend = RHI::NativeBackendType::None;
-		state.explicitPipelineLayoutBackend = RHI::NativeBackendType::None;
 		state.explicitBindingSetShaderInstanceId = 0u;
 		state.explicitBindingSetShaderGeneration = 0u;
-		state.explicitPipelineLayoutShaderInstanceId = 0u;
-		state.explicitPipelineLayoutShaderGeneration = 0u;
 		state.explicitBindingSetDirty = true;
 	}
 
@@ -1227,13 +1264,15 @@ namespace NLS::Render::Resources
 		: m_surfaceMode(MaterialSurfaceMode::Opaque)
 		, m_instanceId(NextMaterialInstanceId())
 	{
-		m_runtimeState = std::make_unique<MaterialRuntimeState>();
+		m_runtimeState.store(new MaterialRuntimeState(), std::memory_order_release);
 		RegisterLiveMaterial(this);
 		SetShader(p_shader);
 	}
 
 	Material::~Material()
 	{
+		delete m_runtimeState.load(std::memory_order_acquire);
+		m_runtimeState.store(nullptr, std::memory_order_release);
 		UnregisterLiveMaterial(this);
 		TouchMaterialMutationEpoch(this);
 	}
@@ -2097,7 +2136,8 @@ namespace NLS::Render::Resources
 			return state.explicitBindingSet;
 		}
 
-		RebuildBindingSet(shader);
+			NLS_PROFILE_NAMED_SCOPE("Material::BuildExplicitBindingSet");
+			RebuildBindingSet(shader);
 
 		const auto& explicitLayout = GetExplicitBindingLayout(device, shader);
 		state.explicitBindingSet.reset();
@@ -2171,8 +2211,10 @@ namespace NLS::Render::Resources
 					continue;
 				}
 
-				bindingEntry.buffer = bufferState->second.buffer->CreateExplicitSnapshotBuffer(entry.name + "Snapshot");
-				if (bindingEntry.buffer != nullptr)
+					const auto snapshot = bufferState->second.buffer->CreateExplicitSnapshot(entry.name + "Snapshot");
+					bindingEntry.buffer = snapshot.buffer;
+					bindingEntry.bufferOffset = snapshot.offset;
+					if (snapshot.createdBuffer)
 					++state.explicitSnapshotBufferCreationCount;
 				if (bindingEntry.buffer == nullptr)
 				bindingEntry.buffer = bufferState->second.buffer->GetBufferHandle();

@@ -62,6 +62,8 @@ namespace NLS::Render::Data
         uint64_t transformRevision = 0u;
         uint64_t groupIdentity = kInvalidStaticDrawGroupIdentity;
         bool allowsSingleObjectDataReuse = false;
+        // Cached helper draws need constants that survive frame-slot reuse.
+        bool requiresImmutableObjectBinding = false;
 
         [[nodiscard]] bool HasCompleteTrustedSingleObjectDataRevision() const
         {

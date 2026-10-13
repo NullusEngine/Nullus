@@ -6,13 +6,14 @@
 #include <cstddef>
 #include <cstdint>
 #include <chrono>
+#include <functional>
 #include <memory>
 #include <optional>
 #include <string>
 #include <string_view>
 #include <vector>
 
-#include "Rendering/Context/ThreadedRenderingLifecycle.h"
+#include "Rendering/Context/FrameSubmissionTelemetry.h"
 #include "Rendering/RHI/Core/RHIEnums.h"
 #include "Rendering/RHI/Utils/DescriptorAllocator/DescriptorAllocator.h"
 #include "Rendering/UI/UiDrawDataSnapshot.h"
@@ -81,8 +82,7 @@ namespace NLS::Render::Context
 {
     class Driver;
     class DriverImpl;
-    class ThreadedRenderingLifecycle;
-    struct FrameSnapshot;
+    struct RenderFramePacket;
     struct RenderScenePackage;
     struct ThreadedFrameTelemetry;
 
@@ -92,24 +92,55 @@ namespace NLS::Render::Context
     NLS_RENDER_API void MarkLocatedDriverUnsafeGpuWorkQuarantined(const std::string& reason);
     NLS_RENDER_API void MarkLocatedDriverDeviceLost(const std::string& reason);
 
+    // Binds frame resources to this execution context, including migrating workers.
+    class NLS_RENDER_API ScopedFrameResourceContext final
+    {
+    public:
+        ScopedFrameResourceContext(const Driver& driver, size_t slotIndex);
+        ~ScopedFrameResourceContext();
+        ScopedFrameResourceContext(const ScopedFrameResourceContext&) = delete;
+        ScopedFrameResourceContext& operator=(const ScopedFrameResourceContext&) = delete;
+
+        static std::optional<size_t> GetSlotIndex(const DriverImpl& driver);
+
+    private:
+        static const ScopedFrameResourceContext*& Current();
+        const DriverImpl* m_driver;
+        size_t m_slotIndex;
+        const ScopedFrameResourceContext* m_previous;
+    };
+
     struct NLS_RENDER_API DriverRendererAccess final
     {
         static bool HasExplicitRHI(const Driver& driver);
         static bool IsThreadedRenderingEnabled(const Driver& driver);
         static bool IsLightGridEnabled(const Driver& driver);
         static std::shared_ptr<RHI::RHIDevice> GetExplicitDevice(const Driver& driver);
-        static bool TryPublishPreparedFrameBuilder(
+        static void PrepareSwapchainSceneOutput(Driver& driver, RenderScenePackage& package);
+        static bool TryEnqueueRenderFrame(
             Driver& driver,
-            const FrameSnapshot& snapshot,
-            PreparedRenderSceneBuilder renderSceneBuilder,
+            const RenderFramePacket& packet,
+            RenderSceneBuildCommand renderSceneBuilder,
             size_t* publishedSlotIndex = nullptr,
             uint64_t* publishedFrameId = nullptr,
             bool backgroundPreview = false);
         static void CancelBackgroundPreviewPublicationRequest(Driver& driver);
-        static bool QueueStandalonePostSubmitBufferReadback(
+        static bool TryDrainThreadedRendering(
             Driver& driver,
-            PostSubmitBufferReadbackRequest request);
-        static bool TryDrainThreadedRendering(Driver& driver, bool applyPendingSwapchainResize = true);
+            bool applyPendingSwapchainResize = true,
+            std::optional<std::chrono::milliseconds> timeout = std::nullopt);
+
+        struct FrameLatencyDebugStats
+        {
+            uint32_t openFrameCount = 0u;
+            uint64_t openedFrameCount = 0u;
+            uint64_t retiredFrameCount = 0u;
+            uint64_t stalledFrameCount = 0u;
+            uint64_t stallTimeoutCount = 0u;
+            uint64_t totalStallTimeNanoseconds = 0u;
+        };
+
+        static FrameLatencyDebugStats GetFrameLatencyDebugStats(const Driver& driver);
         static bool TryWaitForSubmittedGpuWork(Driver& driver);
         static void DrainThreadedRendering(Driver& driver);
         static ThreadedFrameTelemetry GetThreadedFrameTelemetry(const Driver& driver);
@@ -129,16 +160,17 @@ namespace NLS::Render::Context
         static FrameGraph::FrameGraphExecutionContext CreateFrameGraphExecutionContext(const Driver& driver);
         static std::optional<size_t> GetActiveFrameContextSlotIndex(const Driver& driver);
         static size_t GetFrameContextSlotCount(const Driver& driver);
-        static size_t GetLifecycleFrameSlotCount(const Driver& driver);
+        static size_t GetFrameResourceSlotCount(const Driver& driver);
         static std::optional<size_t> ReserveReusableFrameContextSlotIndex(Driver& driver);
         static std::optional<size_t> ReserveReusableFrameContextSlotIndexForPreparedPublication(
             Driver& driver,
-            bool waitForRetirement = true);
+            bool waitForRetirement = true,
+            bool targetsSwapchain = false);
         static std::optional<size_t> ReserveReusableFrameContextSlotIndexForPreparedPublication(
             Driver& driver,
             std::chrono::steady_clock::time_point retirementDeadline,
-            bool waitForRetirement = true);
-        static std::chrono::nanoseconds GetThreadedPublishRetirementWait(const Driver& driver);
+            bool waitForRetirement = true,
+            bool targetsSwapchain = false);
         static bool ReleaseReservedFrameContextSlotIndex(Driver& driver, size_t slotIndex);
         static std::optional<size_t> GetReservedFrameContextSlotIndex(const Driver& driver);
         static std::shared_ptr<RHI::RHICommandBuffer> GetActiveExplicitCommandBuffer(const Driver& driver);
@@ -292,7 +324,6 @@ namespace NLS::Render::Context
         static RHI::NativeRenderDeviceInfo GetNativeDeviceInfo(const Driver& driver);
         static void MarkUnsafeGpuWorkQuarantined(Driver& driver, const std::string& reason);
         static void MarkDeviceLost(Driver& driver, const std::string& reason);
-        static bool PrepareUIRender(Driver& driver);
         static void ReleaseUITextureHandles(Driver& driver);
         static void PresentSwapchain(Driver& driver);
         static void SetPolygonMode(Driver& driver, Settings::ERasterizationMode mode);
@@ -425,6 +456,7 @@ namespace NLS::Render::Context
             const Driver& driver);
     };
 
+#if defined(NLS_ENABLE_TEST_HOOKS)
     struct NLS_RENDER_API DriverTestAccess final
     {
         static void SetExplicitDevice(Driver& driver, std::shared_ptr<RHI::RHIDevice> explicitDevice);
@@ -449,38 +481,25 @@ namespace NLS::Render::Context
         static void ShutdownRhiResourcesForTesting(Driver& driver);
         static size_t GetPendingMeshRuntimeUploadCount(const Driver& driver);
 #endif
-        static void SetExplicitFrameActive(Driver& driver, bool active);
         static void AgePendingSwapchainResize(
             Driver& driver,
             std::chrono::steady_clock::duration age);
         static bool TryLockThreadedRhiSubmission(Driver& driver);
         static void UnlockThreadedRhiSubmission(Driver& driver);
         static void LockThreadedRhiSubmission(Driver& driver);
-        static void SetUiStandaloneFramePending(Driver& driver, bool pending);
-#if defined(NLS_ENABLE_TEST_HOOKS)
-        static void ExpireUiStandaloneFramePendingLease(Driver& driver);
-#endif
         static bool TryLockDriverTelemetry(Driver& driver);
         static void UnlockDriverTelemetry(Driver& driver);
-        static ThreadedRenderingLifecycle* GetThreadedRenderingLifecycle(Driver& driver);
-        static const ThreadedRenderingLifecycle* GetThreadedRenderingLifecycle(const Driver& driver);
-        static bool CanBeginStandaloneExplicitFrame(const Driver& driver);
-        static bool BeginStandaloneExplicitFrame(Driver& driver, bool acquireSwapchainImage = true);
-        static void EndStandaloneExplicitFrame(Driver& driver, bool presentSwapchain = true);
+        static bool TryLockFrameTelemetry(Driver& driver);
+        static void UnlockFrameTelemetry(Driver& driver);
+        static void SetRenderSceneObserver(
+            Driver& driver,
+            std::function<void(const RenderFramePacket&, const RenderScenePackage&)> observer);
+        static void SetRhiFrameObserver(
+            Driver& driver,
+            std::function<void(const RhiSubmissionFrame&)> observer);
         static void PauseThreadedRenderingWorkers(Driver& driver);
         static bool TryDrainThreadedRendering(Driver& driver, bool applyPendingSwapchainResize = true);
         static void DrainThreadedRendering(Driver& driver);
-        static bool TryPublishHarnessFrameSnapshot(
-            Driver& driver,
-            const FrameSnapshot& snapshot,
-            size_t* publishedSlotIndex = nullptr);
-        static bool TryPublishHarnessPreparedFrame(
-            Driver& driver,
-            const FrameSnapshot& snapshot,
-            const RenderScenePackage& renderScenePackage,
-            size_t* publishedSlotIndex = nullptr);
-        static bool ResolveAndCompleteThreadedRenderScene(
-            Driver& driver,
-            size_t slotIndex);
     };
+#endif
 }

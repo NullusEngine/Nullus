@@ -157,11 +157,10 @@ TEST(RHIUiOverlaySourceGuardTests, EditorDoesNotSpecialCaseMetalOutOfThreadedRen
     const auto contextConstructor = ExtractFunctionBody(
         contextSource,
         "Editor::Core::Context::Context(");
-    EXPECT_NE(
-        contextConstructor.find(
-            "driverSettings.enableThreadedRendering = runtimeSettings.enableThreadedRendering"),
+    EXPECT_EQ(
+        contextConstructor.find("enableThreadedRendering"),
         std::string::npos)
-        << "Metal and DX12 must use the same configured threaded rendering lifecycle.";
+        << "Editor startup must not expose a render-thread compatibility switch.";
     EXPECT_EQ(
         contextConstructor.find(
             "graphicsBackend != Render::Settings::EGraphicsBackend::METAL"),
@@ -188,7 +187,7 @@ TEST(RHIUiOverlaySourceGuardTests, MetalSwapchainPresentCompletionRetainsSignalF
         RepoPath("Runtime/Rendering/RHI/Backends/Metal/MetalExplicitDeviceFactory.mm"));
     const auto presentBody = ExtractFunctionBody(
         source,
-        "bool Present(");
+        "RHIQueueOperationResult Present(");
 
     EXPECT_NE(
         presentBody.find("const auto completionFence = std::move(signalFence)"),
@@ -208,7 +207,7 @@ TEST(RHIUiOverlaySourceGuardTests, MetalSwapchainUsesDrawableCountAndValidatedLo
         "MetalSwapchain(id<MTLDevice> device");
     const auto acquireBody = ExtractFunctionBody(source, "AcquireNextImage(");
     const auto getBackbufferBody = ExtractFunctionBody(source, "GetBackbufferView(uint32_t index)");
-    const auto presentBody = ExtractFunctionBody(source, "bool Present(");
+    const auto presentBody = ExtractFunctionBody(source, "RHIQueueOperationResult Present(");
 
     EXPECT_NE(constructorBody.find("ResolveMetalSwapchainImageCount"), std::string::npos);
     EXPECT_NE(constructorBody.find("m_layer.maximumDrawableCount = m_imageCount"), std::string::npos);
@@ -225,7 +224,7 @@ TEST(RHIUiOverlaySourceGuardTests, MetalPixelReadbackUsesAnAsynchronousCompletio
     const auto beginBody = ExtractFunctionBody(source, "RHIReadbackResult BeginReadPixels(");
 
     EXPECT_NE(beginBody.find("MetalPixelReadbackCompletionToken"), std::string::npos);
-    EXPECT_NE(beginBody.find("[readbackCommands commit]"), std::string::npos);
+    EXPECT_NE(beginBody.find("CommitMetalCommandBuffer(readbackCommands"), std::string::npos);
     EXPECT_EQ(beginBody.find("waitUntilCompleted"), std::string::npos)
         << "BeginReadPixels must return without synchronously waiting for the GPU.";
     EXPECT_NE(source.find("GetMetalReadbackBytesPerPixel"), std::string::npos);
@@ -409,10 +408,10 @@ TEST(RHIUiOverlaySourceGuardTests, MetalUsesNativeGpuQueueSynchronization)
         RepoPath("Runtime/Rendering/RHI/Backends/Metal/MetalExplicitDeviceFactory.mm"));
     const auto submitBody = ExtractFunctionBody(
         source,
-        "NLS::Render::RHI::RHIQueueOperationResult SubmitChecked(");
+        "NLS::Render::RHI::RHIQueueOperationResult SubmitOnSubmitLane(");
     const auto presentBody = ExtractFunctionBody(
         source,
-        "NLS::Render::RHI::RHIQueueOperationResult PresentChecked(");
+        "NLS::Render::RHI::RHIQueueOperationResult PresentOnSubmitLane(");
     const auto readBufferBody = ExtractFunctionBody(source, "BeginReadBuffer(");
 
     EXPECT_NE(source.find("[device newSharedEvent]"), std::string::npos);
@@ -1400,11 +1399,10 @@ TEST(RHIUiOverlaySourceGuardTests, LauncherAlwaysEnablesThreadedLifecycleForUiOn
     const auto launcherSource = ReadSourceText(RepoPath("Project/Launcher/Core/Launcher.cpp"));
     const auto setupContextBody = ExtractFunctionBody(launcherSource, "void Launcher::SetupContext(");
 
-    EXPECT_NE(
-        setupContextBody.find("driverSettings.enableThreadedRendering = true"),
+    EXPECT_EQ(
+        setupContextBody.find("enableThreadedRendering"),
         std::string::npos)
-        << "Launcher has no scene renderer, so its migrated UI-only frame must always create the "
-           "threaded lifecycle used by PublishUiOnlyFrame.";
+        << "Launcher must use the driver's always-on render thread for UI-only frames.";
     EXPECT_EQ(
         setupContextBody.find("IsEnvironmentFlagEnabled(\"NLS_ENABLE_THREADED_RENDERING\")"),
         std::string::npos)
@@ -1582,22 +1580,17 @@ TEST(RHIUiOverlaySourceGuardTests, RHIUIBridgeFactoryNeverCreatesLegacyDX12Bridg
            "choosing a legacy renderer bridge.";
 }
 
-TEST(RHIUiOverlaySourceGuardTests, RhiThreadPrepareUiRenderDoesNotStartStandaloneFrameWhenOverlayIsSupported)
+TEST(RHIUiOverlaySourceGuardTests, PresentPublishesUiOnlyCommandsWithoutStandaloneQueueOrResourceOperations)
 {
-    const auto source = ReadSourceText(RepoPath("Runtime/Rendering/Context/RhiThreadCoordinator.cpp"));
-    const auto prepareBody = ExtractFunctionBody(source, "bool RhiThreadCoordinator::PrepareUIRender(");
-    const auto presentBody = ExtractFunctionBody(source, "void RhiThreadCoordinator::PresentSwapchain(");
-
-    const auto capabilityCheck = prepareBody.find("GetUIOverlayFrameGraphFeature");
-    const auto standaloneBegin = prepareBody.find("BeginStandaloneUiExplicitFrame");
-    ASSERT_NE(standaloneBegin, std::string::npos);
-    ASSERT_NE(capabilityCheck, std::string::npos)
-        << "PrepareUIRender must inspect UIOverlayFrameGraph before considering the legacy "
-           "standalone UI explicit frame path.";
-    EXPECT_LT(capabilityCheck, standaloneBegin)
-        << "Migrated UI overlay devices must fail closed before standalone UI explicit frame startup.";
-    EXPECT_EQ(prepareBody.find("PublishUiOnlyFrame"), std::string::npos)
-        << "PrepareUIRender must not consume the pending UI snapshot before a scene package can attach it.";
+    const auto source = ReadSourceText(RepoPath("Runtime/Rendering/Context/RhiCommandListExecutorFrame.cpp"));
+    const auto presentBody = ExtractFunctionBody(source, "void RhiCommandListExecutor::PresentSwapchain(");
+    EXPECT_EQ(source.find("StandaloneUiFrame"), std::string::npos);
+    EXPECT_EQ(source.find("FinalizeStandaloneUiFrame"), std::string::npos);
+    EXPECT_EQ(source.find("RhiCommandListExecutor::PrepareUIRender"), std::string::npos);
+    EXPECT_EQ(presentBody.find("SubmitChecked"), std::string::npos);
+    EXPECT_EQ(presentBody.find("PresentChecked"), std::string::npos);
+    EXPECT_EQ(presentBody.find("AcquireNextImage"), std::string::npos);
+    EXPECT_EQ(presentBody.find("Reset()"), std::string::npos);
     EXPECT_NE(presentBody.find("PublishUiOnlyFrame"), std::string::npos)
         << "PresentSwapchain owns the UI-only fallback after scene publication had a chance to consume the snapshot.";
     EXPECT_EQ(presentBody.find("NotifyThreadedWorkers"), std::string::npos)

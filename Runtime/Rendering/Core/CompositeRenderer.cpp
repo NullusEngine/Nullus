@@ -6,7 +6,6 @@
 
 #include "Profiling/Profiler.h"
 #include "Rendering/Core/CompositeRenderer.h"
-#include "Rendering/Context/ThreadedRenderingLifecycle.h"
 
 namespace NLS::Render::Core
 {
@@ -187,6 +186,7 @@ void CompositeRenderer::EndFrame()
     {
         ABaseRenderer::EndFrame();
         ClearDescriptors();
+        m_rendererStats.EndFrame();
         m_compositeFrameActive = false;
         return;
     }
@@ -238,8 +238,7 @@ void CompositeRenderer::AbortFrameForBackgroundPreview()
 
     ABaseRenderer::AbortFrameForBackgroundPreview();
     ClearDescriptors();
-    if (m_compositeFrameActive)
-        m_rendererStats.EndFrame();
+    m_rendererStats.EndFrame();
     m_compositeFrameActive = false;
 }
 
@@ -321,6 +320,7 @@ void CompositeRenderer::DrawEntity(
         {
             preparedDraw.objectConstants = bindingSets.objectConstants;
             preparedDraw.usesObjectIndex = bindingSets.usesObjectIndex;
+            preparedDraw.objectBindingImmutable = bindingSets.objectBindingImmutable;
             if (preparedDraw.commandBuffer == nullptr)
             {
                 preparedDraw.frameBindingSet = std::move(bindingSets.frameBindingSet);
@@ -435,6 +435,7 @@ void CompositeRenderer::DrawEntity(
         {
             preparedDraw.objectConstants = bindingSets.objectConstants;
             preparedDraw.usesObjectIndex = bindingSets.usesObjectIndex;
+            preparedDraw.objectBindingImmutable = bindingSets.objectBindingImmutable;
             if (preparedDraw.commandBuffer == nullptr)
             {
                 preparedDraw.frameBindingSet = std::move(bindingSets.frameBindingSet);
@@ -492,6 +493,7 @@ bool CompositeRenderer::CaptureRecordedDrawCommand(
         outDraw.vertexCount = preparedDraw.vertexCount;
         outDraw.objectConstants = preparedDraw.objectConstants;
         outDraw.usesObjectIndex = preparedDraw.usesObjectIndex;
+        outDraw.objectBindingImmutable = preparedDraw.objectBindingImmutable;
         return true;
     };
 
@@ -530,6 +532,7 @@ bool CompositeRenderer::CaptureRecordedDrawCommand(
         preparedDraw.objectBindingSet = std::move(bindingSets.objectBindingSet);
         preparedDraw.objectConstants = bindingSets.objectConstants;
         preparedDraw.usesObjectIndex = bindingSets.usesObjectIndex;
+        preparedDraw.objectBindingImmutable = bindingSets.objectBindingImmutable;
     }
 
     return populateRecordedDrawCommandInput(preparedDraw);
@@ -581,6 +584,7 @@ bool CompositeRenderer::CaptureRecordedDrawCommand(
         outDraw.vertexCount = preparedDraw.vertexCount;
         outDraw.objectConstants = preparedDraw.objectConstants;
         outDraw.usesObjectIndex = preparedDraw.usesObjectIndex;
+        outDraw.objectBindingImmutable = preparedDraw.objectBindingImmutable;
         return true;
     };
 
@@ -591,27 +595,35 @@ bool CompositeRenderer::CaptureRecordedDrawCommand(
     auto* effectiveShader = effectiveMaterial != nullptr
         ? effectiveMaterial->ResolveShaderForLightMode(lightMode)
         : nullptr;
-    const bool frameObjectPrepared = m_frameObjectBindingProvider == nullptr ||
-        (effectiveShader != nullptr
-            ? m_frameObjectBindingProvider->PrepareDraw(
-                effectivePso,
-                p_drawable,
-                *effectiveMaterial,
-                *effectiveShader)
-            : effectiveMaterial != nullptr
-                ? m_frameObjectBindingProvider->PrepareDraw(effectivePso, p_drawable, *effectiveMaterial)
-                : m_frameObjectBindingProvider->PrepareDraw(effectivePso, p_drawable));
+    bool frameObjectPrepared = false;
+    {
+        NLS_PROFILE_NAMED_SCOPE("CaptureRecordedDrawCommand::PrepareObject");
+        frameObjectPrepared = m_frameObjectBindingProvider == nullptr ||
+            (effectiveShader != nullptr
+                ? m_frameObjectBindingProvider->PrepareDraw(
+                    effectivePso,
+                    p_drawable,
+                    *effectiveMaterial,
+                    *effectiveShader)
+                : effectiveMaterial != nullptr
+                    ? m_frameObjectBindingProvider->PrepareDraw(effectivePso, p_drawable, *effectiveMaterial)
+                    : m_frameObjectBindingProvider->PrepareDraw(effectivePso, p_drawable));
+    }
     if (!frameObjectPrepared)
     {
         return false;
     }
 
     PreparedRecordedDraw preparedDraw;
-    if (!PrepareRecordedDraw(p_drawable, pipelineOverrides, depthCompareOverride, lightMode, preparedDraw))
-        return false;
+    {
+        NLS_PROFILE_NAMED_SCOPE("CaptureRecordedDrawCommand::PrepareResources");
+        if (!PrepareRecordedDraw(p_drawable, pipelineOverrides, depthCompareOverride, lightMode, preparedDraw))
+            return false;
+    }
 
     if (preparedDraw.commandBuffer == nullptr && usesThreadedRendering && m_frameObjectBindingProvider != nullptr)
     {
+        NLS_PROFILE_NAMED_SCOPE("CaptureRecordedDrawCommand::CaptureBindings");
         FrameObjectBindingProvider::PreparedBindingSets bindingSets;
         if (!m_frameObjectBindingProvider->CapturePreparedBindingSets(effectivePso, p_drawable, bindingSets))
             return false;
@@ -620,6 +632,7 @@ bool CompositeRenderer::CaptureRecordedDrawCommand(
         preparedDraw.objectBindingSet = std::move(bindingSets.objectBindingSet);
         preparedDraw.objectConstants = bindingSets.objectConstants;
         preparedDraw.usesObjectIndex = bindingSets.usesObjectIndex;
+        preparedDraw.objectBindingImmutable = bindingSets.objectBindingImmutable;
     }
 
     return populateRecordedDrawCommandInput(preparedDraw);
@@ -657,12 +670,12 @@ bool CompositeRenderer::HasDebugDrawService() const
     return m_debugDrawService != nullptr;
 }
 
-const Data::FrameInfo& CompositeRenderer::GetFrameInfo() const
+Data::FrameInfo CompositeRenderer::GetFrameInfo() const
 {
     return m_rendererStats.GetFrameInfo();
 }
 
-const Data::FrameInfo& CompositeRenderer::GetCumulativeFrameInfo() const
+Data::FrameInfo CompositeRenderer::GetCumulativeFrameInfo() const
 {
     return m_rendererStats.GetCumulativeFrameInfo();
 }

@@ -1,17 +1,26 @@
 #include <gtest/gtest.h>
 
 #include <memory>
+#include <future>
+#include <atomic>
+#include <stdexcept>
 #include <string_view>
 
 #include "Rendering/Context/Driver.h"
 #include "Rendering/Context/DriverAccess.h"
+#include "Rendering/Context/DriverInternal.h"
+#include "Rendering/Context/RenderCommandPipe.h"
+#include "Rendering/Context/RenderingThreadSystem.h"
+#include "Rendering/Context/RenderScenePackageBuilder.h"
+#include "Rendering/Context/RenderThreadCoordinator.h"
+#include "Rendering/Context/RhiCommandListExecutor.h"
 #include "Rendering/Context/SwapchainResizePolicy.h"
-#include "Rendering/Context/ThreadedRenderingLifecycle.h"
 #include "Rendering/RHI/Core/RHICommand.h"
 #include "Rendering/RHI/Core/RHIResource.h"
 #include "Rendering/RHI/Core/RHISwapchain.h"
 #include "Rendering/RHI/Utils/ResourceStateTracker/ResourceStateTracker.h"
 #include "Rendering/Settings/DriverSettings.h"
+#include "Tests/RenderingThreadTestHelpers.h"
 
 namespace
 {
@@ -88,7 +97,7 @@ namespace
             m_trackedTexture = std::move(trackedTexture);
         }
 
-        bool resizeCalled = false;
+        std::atomic_bool resizeCalled{ false };
         uint32_t resizeCalls = 0u;
         bool resizeResult = true;
         bool backbufferReleasedBeforeResize = false;
@@ -150,6 +159,26 @@ namespace
 
         std::shared_ptr<TestCommandBuffer> commandBuffer;
         uint32_t resetCalls = 0u;
+    };
+
+    class BlockingGpuFence final : public NLS::Render::RHI::RHIFence
+    {
+    public:
+        std::string_view GetDebugName() const override { return "ResizeGpuFence"; }
+        bool IsSignaled() const override { return signaled.load(); }
+        void Reset() override { signaled = false; }
+        bool Wait(uint64_t timeoutNanoseconds) override
+        {
+            waitStarted.Signal();
+            if (!release.WaitFor(std::chrono::duration_cast<std::chrono::milliseconds>(
+                    std::chrono::nanoseconds(timeoutNanoseconds))))
+                return false;
+            signaled = true;
+            return true;
+        }
+        NLS::Render::Context::RenderCommandEvent waitStarted;
+        NLS::Render::Context::RenderCommandEvent release;
+        std::atomic_bool signaled{ false };
     };
 }
 
@@ -349,13 +378,14 @@ TEST(DriverSwapchainResizeTests, NotifiesWillResizeOnlyWhenResizeActuallyApplies
         heldBackbufferView.reset();
     });
 
-    NLS::Render::Context::DriverTestAccess::SetExplicitFrameActive(driver, true);
-    driver.ResizePlatformSwapchain(1600u, 900u);
-
-    EXPECT_FALSE(swapchain->resizeCalled);
-    EXPECT_EQ(willResizeNotifications, 0u);
-
-    NLS::Render::Context::DriverTestAccess::SetExplicitFrameActive(driver, false);
+    NLS::Render::Context::DriverTestAccess::EnsureFrameContext(driver, 0u);
+    NLS::Tests::RunOnRenderThread([&]
+    {
+        const NLS::Render::Context::ScopedFrameResourceContext frameResources(driver, 0u);
+        driver.ResizePlatformSwapchain(1600u, 900u);
+        EXPECT_FALSE(swapchain->resizeCalled);
+        EXPECT_EQ(willResizeNotifications, 0u);
+    });
     NLS::Render::Context::DriverTestAccess::AgePendingSwapchainResize(
         driver,
         NLS::Render::Context::GetInteractiveSwapchainResizeDebounce());
@@ -396,16 +426,15 @@ TEST(DriverSwapchainResizeTests, ThreadedResizeWaitsForInFlightFrameRetirementBe
     NLS::Render::Settings::DriverSettings settings;
     settings.graphicsBackend = NLS::Render::Settings::EGraphicsBackend::NONE;
     settings.enableExplicitRHI = false;
-    settings.enableThreadedRendering = true;
-    settings.threadedFrameSlotCount = 1u;
     settings.framesInFlight = 1u;
 
     NLS::Render::Context::Driver driver(settings);
     NLS::Render::Context::DriverTestAccess::PauseThreadedRenderingWorkers(driver);
 
-    NLS::Render::Context::FrameSnapshot snapshot;
+    NLS::Render::Context::RenderFramePacket snapshot;
     snapshot.frameId = 17u;
-    ASSERT_TRUE(NLS::Render::Context::DriverTestAccess::TryPublishHarnessFrameSnapshot(driver, snapshot));
+    ASSERT_TRUE(NLS::Render::Context::DriverRendererAccess::TryEnqueueRenderFrame(driver, snapshot,
+        [snapshot](size_t) { return NLS::Render::Context::BuildRenderFramePackage(snapshot); }));
 
     auto view = std::make_shared<TestTextureView>();
     std::weak_ptr<NLS::Render::RHI::RHITextureView> weakView = view;
@@ -420,17 +449,7 @@ TEST(DriverSwapchainResizeTests, ThreadedResizeWaitsForInFlightFrameRetirementBe
     EXPECT_FALSE(swapchain->resizeCalled);
     EXPECT_NE(frameContext.swapchainBackbufferView, nullptr);
 
-    auto* lifecycle = NLS::Render::Context::DriverTestAccess::GetThreadedRenderingLifecycle(driver);
-    ASSERT_NE(lifecycle, nullptr);
-    NLS::Render::Context::RenderScenePackage package;
-    package.frameId = 17u;
-    NLS::Render::Context::RhiSubmissionFrame submissionFrame;
-    submissionFrame.frameId = 17u;
-    ASSERT_TRUE(lifecycle->TryBeginRenderScene(0u));
-    ASSERT_TRUE(lifecycle->CompleteRenderScene(0u, package));
-    ASSERT_TRUE(lifecycle->TryBeginRhiSubmission(0u));
-    ASSERT_TRUE(lifecycle->CompleteRhiSubmission(0u, submissionFrame));
-    ASSERT_TRUE(lifecycle->RetireFrame(0u));
+    ASSERT_TRUE(NLS::Render::Context::DriverRendererAccess::TryDrainThreadedRendering(driver, false));
 
     NLS::Render::Context::DriverTestAccess::AgePendingSwapchainResize(
         driver,
@@ -447,17 +466,16 @@ TEST(DriverSwapchainResizeTests, ThreadedResizeAppliesPendingResizeBeforeRecover
     NLS::Render::Settings::DriverSettings settings;
     settings.graphicsBackend = NLS::Render::Settings::EGraphicsBackend::NONE;
     settings.enableExplicitRHI = false;
-    settings.enableThreadedRendering = true;
-    settings.threadedFrameSlotCount = 1u;
     settings.framesInFlight = 1u;
 
     NLS::Render::Context::Driver driver(settings);
     NLS::Render::Context::DriverTestAccess::PauseThreadedRenderingWorkers(driver);
 
-    NLS::Render::Context::FrameSnapshot firstSnapshot;
+    NLS::Render::Context::RenderFramePacket firstSnapshot;
     firstSnapshot.frameId = 23u;
     firstSnapshot.targetsSwapchain = true;
-    ASSERT_TRUE(NLS::Render::Context::DriverTestAccess::TryPublishHarnessFrameSnapshot(driver, firstSnapshot));
+    ASSERT_TRUE(NLS::Render::Context::DriverRendererAccess::TryEnqueueRenderFrame(driver, firstSnapshot,
+        [firstSnapshot](size_t) { return NLS::Render::Context::BuildRenderFramePackage(firstSnapshot); }));
 
     auto view = std::make_shared<TestTextureView>();
     std::weak_ptr<NLS::Render::RHI::RHITextureView> weakView = view;
@@ -469,32 +487,335 @@ TEST(DriverSwapchainResizeTests, ThreadedResizeAppliesPendingResizeBeforeRecover
     NLS::Render::Context::DriverTestAccess::SetExplicitSwapchain(driver, swapchain);
     driver.ResizePlatformSwapchain(1440u, 810u);
 
-    auto* lifecycle = NLS::Render::Context::DriverTestAccess::GetThreadedRenderingLifecycle(driver);
-    ASSERT_NE(lifecycle, nullptr);
-    NLS::Render::Context::RenderScenePackage package;
-    package.frameId = 23u;
-    package.targetsSwapchain = true;
-    NLS::Render::Context::RhiSubmissionFrame submissionFrame;
-    submissionFrame.frameId = 23u;
-    ASSERT_TRUE(lifecycle->TryBeginRenderScene(0u));
-    ASSERT_TRUE(lifecycle->CompleteRenderScene(0u, package));
-    ASSERT_TRUE(lifecycle->TryBeginRhiSubmission(0u));
-    ASSERT_TRUE(lifecycle->CompleteRhiSubmission(0u, submissionFrame));
-    ASSERT_TRUE(lifecycle->RetireFrame(0u));
+    ASSERT_TRUE(NLS::Render::Context::DriverRendererAccess::TryDrainThreadedRendering(driver, false));
 
     NLS::Render::Context::DriverTestAccess::AgePendingSwapchainResize(
         driver,
         NLS::Render::Context::GetInteractiveSwapchainResizeDebounce());
-    NLS::Render::Context::FrameSnapshot secondSnapshot;
+    NLS::Render::Context::RenderFramePacket secondSnapshot;
     secondSnapshot.frameId = 24u;
     secondSnapshot.targetsSwapchain = true;
-    EXPECT_TRUE(NLS::Render::Context::DriverTestAccess::TryPublishHarnessFrameSnapshot(driver, secondSnapshot));
+    EXPECT_TRUE(NLS::Render::Context::DriverRendererAccess::TryEnqueueRenderFrame(driver, secondSnapshot,
+        [secondSnapshot](size_t) { return NLS::Render::Context::BuildRenderFramePackage(secondSnapshot); }));
 
     EXPECT_TRUE(swapchain->resizeCalled);
     EXPECT_EQ(swapchain->resizeWidth, 1440u);
     EXPECT_EQ(swapchain->resizeHeight, 810u);
     EXPECT_TRUE(swapchain->backbufferReleasedBeforeResize);
     EXPECT_EQ(frameContext.swapchainBackbufferView, nullptr);
+}
+
+TEST(DriverSwapchainResizeTests, PendingResizePausesOffscreenProducersAndRecoversAtLatestSize)
+{
+    using namespace NLS::Render;
+    Settings::DriverSettings settings;
+    settings.graphicsBackend = Settings::EGraphicsBackend::NONE;
+    settings.enableExplicitRHI = false;
+    settings.framesInFlight = 2u;
+    Context::Driver driver(settings);
+    Context::DriverTestAccess::PauseThreadedRenderingWorkers(driver);
+    auto swapchain = std::make_shared<TestSwapchain>(std::weak_ptr<RHI::RHITextureView> {});
+    Context::DriverTestAccess::SetExplicitSwapchain(driver, swapchain);
+    Context::RenderFramePacket packet;
+    packet.frameId = 100u;
+    ASSERT_TRUE(Context::DriverRendererAccess::TryEnqueueRenderFrame(driver, packet,
+        [packet](size_t) { return Context::BuildRenderFramePackage(packet); }));
+
+    driver.ResizePlatformSwapchain(1280u, 720u);
+    driver.ResizePlatformSwapchain(1600u, 900u);
+    EXPECT_FALSE(swapchain->resizeCalled);
+    uint64_t frameId = 1u;
+    EXPECT_FALSE(Context::DriverRendererAccess::TryEnqueueRenderFrame(driver, packet,
+        [packet](size_t) { return Context::BuildRenderFramePackage(packet); }, nullptr, &frameId));
+    EXPECT_EQ(frameId, 0u);
+    EXPECT_FALSE(Context::RenderThreadCoordinator::BeginRendererFrame(driver, false, false));
+    EXPECT_EQ(Context::DriverRendererAccess::GetThreadedFrameTelemetry(driver).publishedFrameCount, 1u);
+
+    ASSERT_TRUE(Context::DriverRendererAccess::TryDrainThreadedRendering(driver, false));
+    packet.frameId = 101u;
+    ASSERT_TRUE(Context::DriverRendererAccess::TryEnqueueRenderFrame(driver, packet,
+        [packet](size_t) { return Context::BuildRenderFramePackage(packet); }));
+    EXPECT_EQ(swapchain->resizeCalls, 1u);
+    EXPECT_EQ(swapchain->GetDesc().width, 1600u);
+    EXPECT_EQ(swapchain->GetDesc().height, 900u);
+}
+
+TEST(DriverSwapchainResizeTests, ThreadedDrainJoinsQueuedResizeBeforeReturning)
+{
+    NLS::Render::Settings::DriverSettings settings;
+    settings.graphicsBackend = NLS::Render::Settings::EGraphicsBackend::NONE;
+    settings.enableExplicitRHI = false;
+    settings.framesInFlight = 1u;
+    bool resizedOnRenderThread = false;
+    NLS::Render::Context::Driver driver(settings);
+    auto swapchain = std::make_shared<TestSwapchain>(std::weak_ptr<NLS::Render::RHI::RHITextureView> {});
+    NLS::Render::Context::DriverTestAccess::SetExplicitSwapchain(driver, swapchain);
+    driver.SetSwapchainWillResizeCallback([&resizedOnRenderThread]
+    {
+        resizedOnRenderThread = NLS::Render::Context::RenderingThreadSystem::IsInRenderingThread();
+    });
+    NLS::Render::Context::RenderCommandEvent resizeStarted;
+    NLS::Render::Context::RenderCommandEvent allowResize;
+    NLS::Render::Context::RenderCommandDispatcher::Enqueue([&driver, resizeStarted, allowResize]
+    {
+        resizeStarted.Signal();
+        allowResize.Wait();
+        driver.ResizePlatformSwapchain(1600u, 900u);
+    });
+    const bool started = resizeStarted.WaitFor(std::chrono::seconds(5));
+    if (!started)
+        allowResize.Signal();
+    ASSERT_TRUE(started);
+    auto drain = std::async(std::launch::async, [&driver]
+    {
+        return NLS::Render::Context::DriverRendererAccess::TryDrainThreadedRendering(driver);
+    });
+    const auto beforeResize = drain.wait_for(std::chrono::milliseconds(50));
+    allowResize.Signal();
+    EXPECT_EQ(beforeResize, std::future_status::timeout)
+        << "Drain must not return while the queued resize is still blocked.";
+    ASSERT_TRUE(drain.get());
+    EXPECT_TRUE(resizedOnRenderThread);
+    EXPECT_EQ(swapchain->resizeCalls, 1u);
+    EXPECT_EQ(swapchain->GetDesc().width, 1600u);
+    EXPECT_EQ(swapchain->GetDesc().height, 900u);
+}
+
+TEST(DriverSwapchainResizeTests, WindowResizeExecutesAfterEarlierMainPipeCommands)
+{
+    using namespace NLS::Render;
+    Settings::DriverSettings settings;
+    settings.graphicsBackend = Settings::EGraphicsBackend::NONE;
+    settings.enableExplicitRHI = false;
+    Context::Driver driver(settings);
+    auto swapchain = std::make_shared<TestSwapchain>(std::weak_ptr<RHI::RHITextureView> {});
+    Context::DriverTestAccess::SetExplicitSwapchain(driver, swapchain);
+    std::atomic_bool resizedOnRenderThread = false;
+    driver.SetSwapchainWillResizeCallback([&]
+    {
+        resizedOnRenderThread = Context::RenderingThreadSystem::IsInRenderingThread();
+    });
+
+    Context::RenderCommandEvent earlierStarted;
+    Context::RenderCommandEvent releaseEarlier;
+    Context::EnqueueRenderCommand<struct EarlierResizeCommand>([=]
+    {
+        earlierStarted.Signal();
+        releaseEarlier.Wait();
+    });
+    const bool started = earlierStarted.WaitFor(std::chrono::seconds(5));
+    if (!started)
+        releaseEarlier.Signal();
+    ASSERT_TRUE(started);
+    auto resize = std::async(std::launch::async, [&] { driver.ResizePlatformSwapchain(1420u, 840u); });
+    const auto beforeEarlierFinished = resize.wait_for(std::chrono::milliseconds(50));
+    EXPECT_FALSE(swapchain->resizeCalled);
+    releaseEarlier.Signal();
+    EXPECT_EQ(beforeEarlierFinished, std::future_status::timeout);
+    resize.get();
+    EXPECT_TRUE(resizedOnRenderThread);
+    EXPECT_EQ(swapchain->resizeCalls, 1u);
+    EXPECT_EQ(swapchain->GetDesc().width, 1420u);
+    EXPECT_EQ(swapchain->GetDesc().height, 840u);
+}
+
+TEST(DriverSwapchainResizeTests, ResizeFlushesEarlierPresentBeforeRebuildingSwapchain)
+{
+    using namespace NLS::Render;
+    Settings::DriverSettings settings;
+    settings.graphicsBackend = Settings::EGraphicsBackend::NONE;
+    settings.enableExplicitRHI = false;
+    Context::Driver driver(settings);
+    auto swapchain = std::make_shared<TestSwapchain>(std::weak_ptr<RHI::RHITextureView> {});
+    Context::DriverTestAccess::SetExplicitSwapchain(driver, swapchain);
+    std::atomic_bool presentFinished = false;
+    std::atomic_bool callbackCalled = false;
+    driver.SetSwapchainWillResizeCallback([&]
+    {
+        EXPECT_TRUE(presentFinished.load());
+        EXPECT_TRUE(Context::RenderingThreadSystem::IsInRenderingThread());
+        callbackCalled = true;
+    });
+    Context::RenderCommandEvent presentStarted;
+    Context::RenderCommandEvent releasePresent;
+    auto& executor = Context::RhiCommandListExecutor::Get();
+    auto present = std::async(std::launch::async, [&]
+    {
+        return executor.RunOnSubmitLane("BlockedPresentBeforeResize", [&, presentStarted, releasePresent]
+        {
+            presentStarted.Signal();
+            releasePresent.Wait();
+            presentFinished = true;
+            return RHI::RHIQueueOperationResult {};
+        }, true);
+    });
+    const bool started = presentStarted.WaitFor(std::chrono::seconds(5));
+    if (!started)
+        releasePresent.Signal();
+    ASSERT_TRUE(started);
+    auto resize = std::async(std::launch::async, [&] { driver.ResizePlatformSwapchain(1720u, 960u); });
+    const auto beforePresentFinished = resize.wait_for(std::chrono::milliseconds(50));
+    EXPECT_FALSE(callbackCalled.load());
+    releasePresent.Signal();
+    EXPECT_EQ(beforePresentFinished, std::future_status::timeout);
+    ASSERT_TRUE(present.get().Succeeded());
+    resize.get();
+    EXPECT_TRUE(callbackCalled.load());
+    EXPECT_EQ(swapchain->resizeCalls, 1u);
+    EXPECT_EQ(executor.GetPresentSequence(), executor.GetPresentRequestSequence());
+}
+
+TEST(DriverSwapchainResizeTests, ClearingResizeCallbackJoinsItsActiveInvocation)
+{
+    using namespace NLS::Render;
+    Settings::DriverSettings settings;
+    settings.graphicsBackend = Settings::EGraphicsBackend::NONE;
+    settings.enableExplicitRHI = false;
+    Context::Driver driver(settings);
+    auto swapchain = std::make_shared<TestSwapchain>(std::weak_ptr<RHI::RHITextureView> {});
+    Context::DriverTestAccess::SetExplicitSwapchain(driver, swapchain);
+    Context::RenderCommandEvent callbackStarted;
+    Context::RenderCommandEvent releaseCallback;
+    std::atomic_uint32_t calls = 0u;
+    driver.SetSwapchainWillResizeCallback([&]
+    {
+        ++calls;
+        callbackStarted.Signal();
+        releaseCallback.Wait();
+    });
+    auto resize = std::async(std::launch::async, [&] { driver.ResizePlatformSwapchain(1440u, 810u); });
+    const bool started = callbackStarted.WaitFor(std::chrono::seconds(5));
+    if (!started)
+        releaseCallback.Signal();
+    ASSERT_TRUE(started);
+    auto clear = std::async(std::launch::async, [&] { driver.SetSwapchainWillResizeCallback(nullptr); });
+    const auto beforeCallbackFinished = clear.wait_for(std::chrono::milliseconds(50));
+    releaseCallback.Signal();
+    EXPECT_EQ(beforeCallbackFinished, std::future_status::timeout);
+    resize.get();
+    clear.get();
+    driver.ResizePlatformSwapchain(1500u, 850u);
+    EXPECT_EQ(calls.load(), 1u);
+    EXPECT_EQ(swapchain->resizeCalls, 2u);
+}
+
+TEST(DriverSwapchainResizeTests, ResizeCallbackCanClearItself)
+{
+    using namespace NLS::Render;
+    Settings::DriverSettings settings;
+    settings.graphicsBackend = Settings::EGraphicsBackend::NONE;
+    settings.enableExplicitRHI = false;
+    Context::Driver driver(settings);
+    auto swapchain = std::make_shared<TestSwapchain>(std::weak_ptr<RHI::RHITextureView> {});
+    Context::DriverTestAccess::SetExplicitSwapchain(driver, swapchain);
+    uint32_t calls = 0u;
+    driver.SetSwapchainWillResizeCallback([&]
+    {
+        ++calls;
+        driver.SetSwapchainWillResizeCallback(nullptr);
+    });
+    driver.ResizePlatformSwapchain(1440u, 810u);
+    driver.ResizePlatformSwapchain(1500u, 850u);
+    EXPECT_EQ(calls, 1u);
+    EXPECT_EQ(swapchain->resizeCalls, 2u);
+}
+
+TEST(DriverSwapchainResizeTests, FailedPresentPreventsResizeAndAllocatorReset)
+{
+    using namespace NLS::Render;
+    Settings::DriverSettings settings;
+    settings.graphicsBackend = Settings::EGraphicsBackend::NONE;
+    settings.enableExplicitRHI = false;
+    {
+        Context::Driver driver(settings);
+        auto swapchain = std::make_shared<TestSwapchain>(std::weak_ptr<RHI::RHITextureView> {});
+        Context::DriverTestAccess::SetExplicitSwapchain(driver, swapchain);
+        auto commandBuffer = std::make_shared<TestCommandBuffer>();
+        auto& frame = Context::DriverTestAccess::EnsureFrameContext(driver, 0u);
+        frame.commandBuffer = commandBuffer;
+        auto& executor = Context::RhiCommandListExecutor::Get();
+        const auto failed = executor.RunOnSubmitLane("FailedPresentBeforeResize", []
+        {
+            RHI::RHIQueueOperationResult result;
+            result.code = RHI::RHIQueueOperationStatusCode::BackendFailure;
+            result.message = "Present rejected during resize test";
+            return result;
+        }, true);
+        ASSERT_FALSE(failed.Succeeded());
+        EXPECT_THROW(driver.ResizePlatformSwapchain(1440u, 810u), std::runtime_error);
+        EXPECT_FALSE(swapchain->resizeCalled);
+        EXPECT_EQ(commandBuffer->resetCalls, 0u);
+        EXPECT_TRUE(Context::DriverRendererAccess::GetThreadedFrameTelemetry(driver).unsafeGpuWorkQuarantined);
+    }
+    Context::ResetRenderFatalErrorForTesting();
+    Context::RhiCommandListExecutor::Get().ResetForTesting();
+}
+
+TEST(DriverSwapchainResizeTests, RhiSubmitCallbackDefersResizeUntilItsOwnSubmissionCompletes)
+{
+    using namespace NLS::Render;
+    for (const auto mode : {Settings::RhiThreadModePreference::ForceNone,
+        Settings::RhiThreadModePreference::ForceDedicatedThread})
+    {
+        Settings::DriverSettings settings;
+        settings.graphicsBackend = Settings::EGraphicsBackend::NONE;
+        settings.enableExplicitRHI = false;
+        settings.rhiThreadMode = mode;
+        Context::Driver driver(settings);
+        auto swapchain = std::make_shared<TestSwapchain>(std::weak_ptr<RHI::RHITextureView> {});
+        Context::DriverTestAccess::SetExplicitSwapchain(driver, swapchain);
+        driver.SetSwapchainWillResizeCallback([]
+        {
+            EXPECT_TRUE(Context::RenderingThreadSystem::IsInRenderingThread());
+            EXPECT_FALSE(Context::RenderingThreadSystem::IsInRhiThread());
+        });
+        const auto submit = Context::EnqueueRenderCommand<struct ResizeFromSubmitCommand>([&]
+        {
+            const auto result = Context::RhiCommandListExecutor::Get().RunOnSubmitLane("ResizeDuringSubmit", [&]
+            {
+                EXPECT_TRUE(Context::RenderingThreadSystem::IsInRhiThread());
+                driver.ResizePlatformSwapchain(1440u, 810u);
+                EXPECT_FALSE(swapchain->resizeCalled.load());
+                return RHI::RHIQueueOperationResult {};
+            }, true);
+            EXPECT_TRUE(result.Succeeded()) << result.message;
+        });
+        ASSERT_TRUE(submit.WaitFor(std::chrono::seconds(5)));
+        ASSERT_TRUE(Context::DriverRendererAccess::TryDrainThreadedRendering(driver));
+        EXPECT_EQ(swapchain->resizeCalls, 1u);
+        EXPECT_EQ(swapchain->GetDesc().width, 1440u);
+    }
+}
+
+TEST(DriverSwapchainResizeTests, GpuFenceCompletesBeforeAllocatorResetAndResize)
+{
+    using namespace NLS::Render;
+    Settings::DriverSettings settings;
+    settings.graphicsBackend = Settings::EGraphicsBackend::NONE;
+    settings.enableExplicitRHI = false;
+    Context::Driver driver(settings);
+    auto swapchain = std::make_shared<TestSwapchain>(std::weak_ptr<RHI::RHITextureView> {});
+    Context::DriverTestAccess::SetExplicitSwapchain(driver, swapchain);
+    auto fence = std::make_shared<BlockingGpuFence>();
+    auto buffer = std::make_shared<TestCommandBuffer>();
+    auto pool = std::make_shared<TestCommandPool>();
+    auto& frame = Context::DriverTestAccess::EnsureFrameContext(driver, 0u);
+    frame.frameFence = fence;
+    frame.commandBuffer = buffer;
+    frame.commandPool = pool;
+    Context::DriverTestAccess::GetImplForTesting(driver)->frameResourceSlots->RetireSlot(0u, fence);
+    auto resize = std::async(std::launch::async, [&] { driver.ResizePlatformSwapchain(1440u, 810u); });
+    const bool waiting = fence->waitStarted.WaitFor(std::chrono::seconds(5));
+    EXPECT_FALSE(swapchain->resizeCalled.load());
+    EXPECT_EQ(buffer->resetCalls, 0u);
+    EXPECT_EQ(pool->resetCalls, 0u);
+    fence->release.Signal();
+    ASSERT_TRUE(waiting);
+    resize.get();
+    EXPECT_TRUE(fence->IsSignaled());
+    EXPECT_EQ(buffer->resetCalls, 1u);
+    EXPECT_EQ(pool->resetCalls, 1u);
+    EXPECT_EQ(swapchain->resizeCalls, 1u);
 }
 
 TEST(DriverSwapchainResizeTests, RetriesPendingSwapchainResizeAfterBackendResizeFailure)

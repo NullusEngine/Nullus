@@ -5,6 +5,7 @@
 #endif
 
 #include <filesystem>
+#include <atomic>
 #include <fstream>
 #include <sstream>
 #include <string>
@@ -13,9 +14,13 @@
 
 #if defined(_WIN32)
 #include "Rendering/RHI/Backends/DX12/DX12Device.h"
+#include "Rendering/RHI/Backends/DX12/DX12QueueSynchronization.h"
+#include "Rendering/Context/RhiCommandListExecutor.h"
+#include "TaskGraph/TaskGraph.h"
 
 #include <chrono>
 #include <d3d12.h>
+#include <limits>
 #include <wrl/client.h>
 #endif
 
@@ -26,6 +31,49 @@
 
 namespace
 {
+#if defined(_WIN32)
+class ScopedProfilerSubmitLane final
+{
+public:
+    explicit ScopedProfilerSubmitLane(
+        const NLS::Render::Context::RhiThreadMode mode = NLS::Render::Context::RhiThreadMode::None)
+    {
+        auto& executor = NLS::Render::Context::RhiCommandListExecutor::Get();
+        executor.ResetForTesting();
+        EXPECT_TRUE(m_graph.Start());
+        executor.Initialize(mode, {}, &m_graph);
+        if (mode == NLS::Render::Context::RhiThreadMode::DedicatedThread)
+        {
+            m_rhiThread = std::thread([this, &executor]
+            {
+                m_graph.RegisterCurrentThread(NLS::Base::TaskGraph::NamedThread::Rhi);
+                while (!m_stop.load(std::memory_order_acquire))
+                {
+                    m_graph.Pump(NLS::Base::TaskGraph::NamedThread::Rhi);
+                    executor.Pump();
+                    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+                }
+                m_graph.UnregisterCurrentThread(NLS::Base::TaskGraph::NamedThread::Rhi);
+            });
+        }
+    }
+    ~ScopedProfilerSubmitLane()
+    {
+        auto& executor = NLS::Render::Context::RhiCommandListExecutor::Get();
+        executor.Shutdown();
+        m_stop.store(true, std::memory_order_release);
+        if (m_rhiThread.joinable())
+            m_rhiThread.join();
+        m_graph.Shutdown();
+        executor.ResetForTesting();
+    }
+private:
+    NLS::Base::TaskGraph::TaskGraph m_graph{{1u, false, true}};
+    std::atomic_bool m_stop{false};
+    std::thread m_rhiThread;
+};
+#endif
+
 std::string ReadSourceFile(const std::filesystem::path& path)
 {
     std::ifstream input(path, std::ios::binary);
@@ -178,22 +226,11 @@ TEST(TimelineProfilerGpuLifecycleTests, GpuProfilerResolveQueueOperationsUseShar
     ASSERT_NE(shutdownFunction, std::string::npos);
     const auto drainQueueBody = profilerSource.substr(drainQueueFunction, shutdownFunction - drainQueueFunction);
 
-    const auto drainQueueLock = drainQueueBody.find("ScopedDX12QueueLock");
-    const auto drainQueueSignal = drainQueueBody.find("pQueue->Signal");
+    const auto drainQueueSignal = drainQueueBody.find("SubmitDX12CommandLists(");
     ASSERT_NE(drainQueueSignal, std::string::npos);
-    ASSERT_NE(drainQueueLock, std::string::npos);
-    EXPECT_LT(drainQueueLock, drainQueueSignal)
-        << "Shutdown/drain fence signals must be ordered under the shared DX12 queue lock.";
     const auto drainQueueWait = drainQueueBody.find("WaitForGpuProfilerFenceValue");
     ASSERT_NE(drainQueueWait, std::string::npos);
-    const auto drainQueueLockBlockStart = drainQueueBody.rfind('{', drainQueueLock);
-    ASSERT_NE(drainQueueLockBlockStart, std::string::npos);
-    const auto drainQueueLockBlockEnd = FindMatchingBrace(drainQueueBody, drainQueueLockBlockStart);
-    ASSERT_NE(drainQueueLockBlockEnd, std::string::npos);
-    EXPECT_LT(drainQueueLock, drainQueueSignal);
-    EXPECT_LT(drainQueueSignal, drainQueueLockBlockEnd)
-        << "The drain fence signal must remain inside the shared DX12 queue lock scope.";
-    EXPECT_LT(drainQueueLockBlockEnd, drainQueueWait)
+    EXPECT_LT(drainQueueSignal, drainQueueWait)
         << "Profiler shutdown must not hold the shared DX12 queue lock while blocking on a CPU fence wait.";
 
     const auto resolveFunction = profilerSource.find("bool GPUProfiler::QueryHeap::Resolve");
@@ -204,30 +241,30 @@ TEST(TimelineProfilerGpuLifecycleTests, GpuProfilerResolveQueueOperationsUseShar
     ASSERT_NE(markFrameFunction, std::string::npos);
     const auto resolveBody = profilerSource.substr(resolveFunction, markFrameFunction - resolveFunction);
 
-    const auto resolveLock = resolveBody.find("ScopedDX12QueueLock");
-    const auto resolveExecute = resolveBody.find("m_pResolveQueue->ExecuteCommandLists");
-    const auto resolveSignal = resolveBody.find("m_pResolveQueue->Signal");
+    EXPECT_NE(resolveBody.find("SubmitDX12CommandLists("), std::string::npos);
+    const auto nativeSource = ReadSourceFile(std::filesystem::path(NLS_ROOT_DIR) /
+        "Runtime/Rendering/RHI/Backends/DX12/DX12QueueSynchronization.cpp");
+    const auto lane = nativeSource.find("RunBackendOperation(");
+    const auto resolveLock = nativeSource.find("ScopedDX12QueueLock", lane);
+    const auto resolveExecute = nativeSource.find("queue->ExecuteCommandLists", resolveLock);
+    const auto resolveSignal = nativeSource.find("queue->Signal", resolveExecute);
+    ASSERT_NE(lane, std::string::npos);
+    ASSERT_NE(resolveLock, std::string::npos);
     ASSERT_NE(resolveExecute, std::string::npos);
     ASSERT_NE(resolveSignal, std::string::npos);
-    ASSERT_NE(resolveLock, std::string::npos);
-    EXPECT_LT(resolveLock, resolveExecute)
-        << "Profiler resolve command lists must not race normal graphics/UI submissions.";
-    EXPECT_LT(resolveExecute, resolveSignal)
-        << "The resolve fence must still be signalled after the resolve command list is queued.";
-    const auto resolveLockBlockStart = resolveBody.rfind('{', resolveLock);
-    ASSERT_NE(resolveLockBlockStart, std::string::npos);
-    const auto resolveLockBlockEnd = FindMatchingBrace(resolveBody, resolveLockBlockStart);
-    ASSERT_NE(resolveLockBlockEnd, std::string::npos);
-    EXPECT_LT(resolveExecute, resolveLockBlockEnd)
-        << "The resolve ExecuteCommandLists call must be inside the shared DX12 queue lock scope.";
-    EXPECT_LT(resolveSignal, resolveLockBlockEnd)
-        << "The resolve fence Signal call must be inside the same shared DX12 queue lock scope.";
+    EXPECT_LT(lane, resolveLock);
+    EXPECT_LT(resolveLock, resolveExecute);
+    EXPECT_LT(resolveExecute, resolveSignal);
+    const auto lockBlock = nativeSource.rfind('{', resolveLock);
+    const auto lockEnd = FindMatchingBrace(nativeSource, lockBlock);
+    ASSERT_NE(lockEnd, std::string::npos);
+    EXPECT_LT(resolveSignal, lockEnd);
     EXPECT_EQ(
         resolveBody.find("gVerifyHR(m_pResolveQueue->Signal"),
         std::string::npos)
         << "Profiler resolve must not assert after queueing GPU work if the resolve fence Signal fails.";
     EXPECT_NE(
-        resolveBody.find("FAILED(signalHr)"),
+        resolveBody.find("!submission.Succeeded()"),
         std::string::npos)
         << "Profiler resolve must classify/retain failed post-execute Signal state instead of crashing.";
 #else
@@ -425,9 +462,10 @@ TEST(TimelineProfilerGpuLifecycleTests, GpuProfilerResolveSignalFailureQuarantin
     ASSERT_NE(markFrameFunction, std::string::npos);
     const auto resolveBody = profilerSource.substr(resolveFunction, markFrameFunction - resolveFunction);
 
-    const auto execute = resolveBody.find("m_pResolveQueue->ExecuteCommandLists");
-    const auto signalFailure = resolveBody.find("FAILED(signalHr)", execute);
-    const auto markHeapQuarantine = resolveBody.find("m_HasUnfencedSubmittedWork = true", signalFailure);
+    const auto execute = resolveBody.find("SubmitDX12CommandLists(");
+    const auto signalFailure = resolveBody.find("!submission.Succeeded()", execute);
+    const auto markHeapQuarantine = resolveBody.find(
+        "m_HasUnfencedSubmittedWork = submission.operation.mayHaveQueuedGpuWork", signalFailure);
     const auto failedReturn = resolveBody.find("return false", markHeapQuarantine);
     ASSERT_NE(execute, std::string::npos);
     ASSERT_NE(signalFailure, std::string::npos);
@@ -602,9 +640,52 @@ TEST(TimelineProfilerGpuLifecycleTests, TimelineSinkGpuProfilerOwnershipIsNonCop
 #endif
 }
 
+TEST(TimelineProfilerGpuLifecycleTests, ClearingGpuContextReleasesBeforeSubmitLaneShutdown)
+{
+#if NLS_ENABLE_TIMELINE_PROFILER && defined(_WIN32)
+    for (const auto mode : {NLS::Render::Context::RhiThreadMode::None,
+        NLS::Render::Context::RhiThreadMode::DedicatedThread, NLS::Render::Context::RhiThreadMode::Tasks})
+    {
+        SCOPED_TRACE(static_cast<int>(mode));
+        ScopedProfilerSubmitLane submitLane(mode);
+        const auto resources = NLS::Render::Backend::CreateDX12DeviceResources(false);
+        if (!resources.IsValid())
+            GTEST_SKIP() << "DX12 device unavailable on this test machine";
+        NLS::Base::Profiling::TimelineProfilerSink timeline;
+        timeline.SetRecordingEnabled(true);
+        NLS::Base::Profiling::ProfilerGpuContextEvent context;
+        context.nativeDevice = resources.device.Get();
+        context.nativeCommandQueues = {resources.graphicsQueue.Get()};
+        context.frameLatency = 2u;
+        timeline.InitializeGpuContext(context);
+        ASSERT_NE(timeline.GetState().capabilities &
+            NLS::Base::Profiling::ProfilerCapability_GPUScopes, 0u);
+
+        int unrelatedDevice = 0;
+        timeline.ClearGpuContext(&unrelatedDevice);
+        EXPECT_NE(timeline.GetState().capabilities &
+            NLS::Base::Profiling::ProfilerCapability_GPUScopes, 0u);
+        timeline.ClearGpuContext(resources.device.Get());
+        EXPECT_EQ(timeline.GetState().capabilities &
+            NLS::Base::Profiling::ProfilerCapability_GPUScopes, 0u);
+
+        timeline.InitializeGpuContext(context);
+        EXPECT_NE(timeline.GetState().capabilities &
+            NLS::Base::Profiling::ProfilerCapability_GPUScopes, 0u);
+        timeline.ClearGpuContext(nullptr);
+        EXPECT_EQ(timeline.GetState().capabilities &
+            NLS::Base::Profiling::ProfilerCapability_GPUScopes, 0u);
+        NLS::Render::Context::RhiCommandListExecutor::Get().Shutdown();
+    }
+#else
+    GTEST_SKIP() << "TimelineProfiler or DX12 is not enabled in this build.";
+#endif
+}
+
 TEST(TimelineProfilerGpuLifecycleTests, UnsupportedComputeQueueDoesNotRecordGpuEvents)
 {
 #if NLS_ENABLE_TIMELINE_PROFILER && defined(_WIN32)
+    ScopedProfilerSubmitLane submitLane;
     const auto resources = NLS::Render::Backend::CreateDX12DeviceResources(false);
     if (!resources.IsValid())
         GTEST_SKIP() << "DX12 device unavailable on this test machine";
@@ -665,6 +746,7 @@ TEST(TimelineProfilerGpuLifecycleTests, UnsupportedComputeQueueDoesNotRecordGpuE
 TEST(TimelineProfilerGpuLifecycleTests, EmptyGpuFramesDoNotSubmitReadbackAtRuntime)
 {
 #if NLS_ENABLE_TIMELINE_PROFILER && defined(_WIN32)
+    ScopedProfilerSubmitLane submitLane;
     const auto resources = NLS::Render::Backend::CreateDX12DeviceResources(false);
     if (!resources.IsValid())
         GTEST_SKIP() << "DX12 device unavailable on this test machine";
@@ -694,6 +776,7 @@ TEST(TimelineProfilerGpuLifecycleTests, EmptyGpuFramesDoNotSubmitReadbackAtRunti
 TEST(TimelineProfilerGpuLifecycleTests, MultipleDirectQueuesDoNotRecordAmbiguousSharedHeapEvents)
 {
 #if NLS_ENABLE_TIMELINE_PROFILER && defined(_WIN32)
+    ScopedProfilerSubmitLane submitLane;
     const auto resources = NLS::Render::Backend::CreateDX12DeviceResources(false);
     if (!resources.IsValid())
         GTEST_SKIP() << "DX12 device unavailable on this test machine";
@@ -752,9 +835,28 @@ TEST(TimelineProfilerGpuLifecycleTests, MultipleDirectQueuesDoNotRecordAmbiguous
 #endif
 }
 
-TEST(TimelineProfilerGpuLifecycleTests, NonEmptyGpuFramePublishesResolvedEvent)
-{
 #if NLS_ENABLE_TIMELINE_PROFILER && defined(_WIN32)
+namespace
+{
+bool WaitForTestGpuFence(ID3D12Fence* fence, const UINT64 value)
+{
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+    for (;;)
+    {
+        const auto completed = fence->GetCompletedValue();
+        if (completed == (std::numeric_limits<UINT64>::max)())
+            return false;
+        if (completed >= value)
+            return true;
+        if (std::chrono::steady_clock::now() >= deadline)
+            return false;
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+}
+
+void ValidateTimelineGpuPublication(const NLS::Render::Context::RhiThreadMode mode)
+{
+    ScopedProfilerSubmitLane submitLane(mode);
     const auto resources = NLS::Render::Backend::CreateDX12DeviceResources(false);
     if (!resources.IsValid())
         GTEST_SKIP() << "DX12 device unavailable on this test machine";
@@ -785,6 +887,7 @@ TEST(TimelineProfilerGpuLifecycleTests, NonEmptyGpuFramePublishesResolvedEvent)
     ASSERT_TRUE(SUCCEEDED(hr)) << "CreateCommandList failed: 0x" << std::hex << hr;
 
     constexpr const char* kEventName = "TimelineGpuPublishTest";
+    const auto previousEventCount = timeline.CountRecordedEventsForTesting(kEventName, true);
     NLS::Base::Profiling::ProfilerGpuScopeEvent gpuScope;
     gpuScope.nativeCommandBuffer = commandList.Get();
     gpuScope.name = kEventName;
@@ -836,7 +939,7 @@ TEST(TimelineProfilerGpuLifecycleTests, NonEmptyGpuFramePublishesResolvedEvent)
         &defaultHeap,
         D3D12_HEAP_FLAG_NONE,
         &bufferDesc,
-        D3D12_RESOURCE_STATE_COPY_DEST,
+        D3D12_RESOURCE_STATE_COMMON,
         nullptr,
         IID_PPV_ARGS(&destinationBuffer));
     ASSERT_TRUE(SUCCEEDED(hr)) << "Create destination buffer failed: 0x" << std::hex << hr;
@@ -850,7 +953,26 @@ TEST(TimelineProfilerGpuLifecycleTests, NonEmptyGpuFramePublishesResolvedEvent)
     ASSERT_TRUE(SUCCEEDED(hr)) << "CommandList Close failed: 0x" << std::hex << hr;
 
     ID3D12CommandList* submittedLists[] = { static_cast<ID3D12CommandList*>(commandList.Get()) };
-    resources.graphicsQueue->ExecuteCommandLists(1u, submittedLists);
+    Microsoft::WRL::ComPtr<ID3D12Fence> submitFence;
+    ASSERT_TRUE(SUCCEEDED(resources.device->CreateFence(
+        0u, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&submitFence))));
+    const auto submission = NLS::Render::RHI::DX12::SubmitDX12CommandLists(
+        resources.graphicsQueue.Get(), submittedLists, submitFence.Get(), 1u,
+        kEventName);
+    const bool gpuComplete = submission.operation.frameFenceSignalQueued &&
+        WaitForTestGpuFence(submitFence.Get(), 1u);
+    if (submission.operation.mayHaveQueuedGpuWork && !gpuComplete)
+    {
+        // A failed test must also preserve objects whose GPU retirement is unknown.
+        (void)sourceBuffer.Detach();
+        (void)destinationBuffer.Detach();
+        (void)commandList.Detach();
+        (void)allocator.Detach();
+        (void)submitFence.Detach();
+        FAIL() << "GPU work did not retire: " << submission.operation.message;
+    }
+    ASSERT_TRUE(submission.Succeeded()) << submission.operation.message;
+    ASSERT_TRUE(gpuComplete);
 
     NLS::Base::Profiling::ProfilerGpuCommandListSubmitEvent submitEvent;
     submitEvent.nativeCommandQueue = resources.graphicsQueue.Get();
@@ -862,14 +984,96 @@ TEST(TimelineProfilerGpuLifecycleTests, NonEmptyGpuFramePublishesResolvedEvent)
     for (int attempt = 0; attempt < 200; ++attempt)
     {
         timeline.TickFrame();
-        if (timeline.HasRecordedEventForTesting(kEventName))
+        if (timeline.CountRecordedEventsForTesting(kEventName, true) > previousEventCount)
             break;
         std::this_thread::sleep_for(std::chrono::milliseconds(1));
     }
 
-    EXPECT_GT(timeline.CountRecordedEventsForTesting(kEventName, true), 0u)
+    EXPECT_GT(timeline.CountRecordedEventsForTesting(kEventName, true), previousEventCount)
         << "invalid-or-unresolved count="
         << timeline.CountRecordedEventsForTesting(kEventName, false);
+}
+}
+#endif
+
+TEST(TimelineProfilerGpuLifecycleTests, NonEmptyGpuFramePublishesResolvedEvent)
+{
+#if NLS_ENABLE_TIMELINE_PROFILER && defined(_WIN32)
+    for (const auto mode : {NLS::Render::Context::RhiThreadMode::None,
+        NLS::Render::Context::RhiThreadMode::DedicatedThread, NLS::Render::Context::RhiThreadMode::Tasks})
+    {
+        SCOPED_TRACE(static_cast<int>(mode));
+        ValidateTimelineGpuPublication(mode);
+    }
+#else
+    GTEST_SKIP() << "TimelineProfiler or DX12 is not enabled in this build.";
+#endif
+}
+
+TEST(TimelineProfilerGpuLifecycleTests, TickAllowsEarlierSubmitToFinishItsGpuScopes)
+{
+#if NLS_ENABLE_TIMELINE_PROFILER && defined(_WIN32)
+    for (const auto mode : {NLS::Render::Context::RhiThreadMode::DedicatedThread,
+        NLS::Render::Context::RhiThreadMode::Tasks})
+    {
+        SCOPED_TRACE(static_cast<int>(mode));
+        ScopedProfilerSubmitLane submitLane(mode);
+        const auto resources = NLS::Render::Backend::CreateDX12DeviceResources(false);
+        if (!resources.IsValid())
+            GTEST_SKIP() << "DX12 device unavailable on this test machine";
+        NLS::Base::Profiling::TimelineProfilerSink timeline;
+        timeline.SetRecordingEnabled(true);
+        NLS::Base::Profiling::ProfilerGpuContextEvent context;
+        context.nativeDevice = resources.device.Get();
+        context.nativeCommandQueues = {resources.graphicsQueue.Get()};
+        context.frameLatency = 2u;
+        timeline.InitializeGpuContext(context);
+        Microsoft::WRL::ComPtr<ID3D12CommandAllocator> allocator;
+        ASSERT_TRUE(SUCCEEDED(resources.device->CreateCommandAllocator(
+            D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(&allocator))));
+        Microsoft::WRL::ComPtr<ID3D12GraphicsCommandList> commandList;
+        ASSERT_TRUE(SUCCEEDED(resources.device->CreateCommandList(0u,
+            D3D12_COMMAND_LIST_TYPE_DIRECT, allocator.Get(), nullptr, IID_PPV_ARGS(&commandList))));
+        Microsoft::WRL::ComPtr<ID3D12Fence> fence;
+        ASSERT_TRUE(SUCCEEDED(resources.device->CreateFence(0u, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&fence))));
+        std::atomic_bool releaseEarlierSubmit = false;
+        auto& executor = NLS::Render::Context::RhiCommandListExecutor::Get();
+        const auto earlier = executor.EnqueueOnSubmitLane("EarlierTimelineScopes", [&]
+        {
+            while (!releaseEarlierSubmit.load(std::memory_order_acquire))
+                std::this_thread::yield();
+            NLS::Base::Profiling::ProfilerGpuScopeEvent scope;
+            scope.nativeCommandBuffer = commandList.Get();
+            scope.name = "EarlierTimelineScopes";
+            timeline.BeginGpuScope(scope);
+            timeline.EndGpuScope(scope);
+            EXPECT_TRUE(SUCCEEDED(commandList->Close()));
+            NLS::Base::Profiling::ProfilerGpuCommandListSubmitEvent submitted;
+            submitted.nativeCommandQueue = resources.graphicsQueue.Get();
+            submitted.nativeCommandLists = {commandList.Get()};
+            timeline.SubmitGpuCommandLists(submitted);
+            ID3D12CommandList* lists[] = {commandList.Get()};
+            resources.graphicsQueue->ExecuteCommandLists(1u, lists);
+            EXPECT_TRUE(SUCCEEDED(resources.graphicsQueue->Signal(fence.Get(), 1u)));
+            return NLS::Render::RHI::RHIQueueOperationResult{};
+        });
+        const auto sequence = executor.GetDispatchSequence();
+        std::thread ticking([&] { timeline.TickFrame(); });
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+        while (executor.GetDispatchSequence() == sequence && std::chrono::steady_clock::now() < deadline)
+            std::this_thread::yield();
+        const bool tickQueued = executor.GetDispatchSequence() > sequence;
+        releaseEarlierSubmit.store(true, std::memory_order_release);
+        ticking.join();
+        EXPECT_TRUE(tickQueued);
+        EXPECT_TRUE(earlier.completion.Succeeded());
+        EXPECT_FALSE(executor.HasFailed()) << executor.GetFailureDiagnostic();
+        EXPECT_TRUE(executor.Flush(NLS::Render::Context::RhiFlushFlags::Submit));
+        const auto gpuDeadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+        while (fence->GetCompletedValue() < 1u && std::chrono::steady_clock::now() < gpuDeadline)
+            std::this_thread::yield();
+        EXPECT_GE(fence->GetCompletedValue(), 1u);
+    }
 #else
     GTEST_SKIP() << "TimelineProfiler or DX12 is not enabled in this build.";
 #endif

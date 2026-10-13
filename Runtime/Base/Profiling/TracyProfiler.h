@@ -32,6 +32,7 @@ public:
 
     static bool IsConnected();
     static void MarkFrame();
+    static void RegisterThread(std::string_view name);
 
 private:
     struct Impl;

@@ -4,6 +4,58 @@
 #include <memory>
 #include <unordered_map>
 
+#include "Rendering/Context/RhiCommandListExecutor.h"
+
+#if defined(_WIN32)
+#include <d3d12.h>
+#endif
+
+namespace NLS::Render::RHI::DX12
+{
+    DX12QueueSubmissionResult SubmitDX12CommandLists(
+        ID3D12CommandQueue* queue,
+        const std::span<ID3D12CommandList* const> commandLists,
+        ID3D12Fence* fence,
+        const std::uint64_t fenceValue,
+        std::string debugName)
+    {
+        DX12QueueSubmissionResult submission;
+#if defined(_WIN32)
+        if (queue == nullptr || fence == nullptr)
+        {
+            submission.nativeStatus = E_INVALIDARG;
+            submission.operation = {RHIQueueOperationStatusCode::InvalidArgument,
+                "DX12 submission requires a queue and a retirement fence"};
+            return submission;
+        }
+        submission.operation = Context::RhiCommandListExecutor::Get().RunBackendOperation(
+            debugName,
+            [&]
+            {
+                ScopedDX12QueueLock queueLock(queue);
+                if (!commandLists.empty())
+                    queue->ExecuteCommandLists(static_cast<UINT>(commandLists.size()), commandLists.data());
+                submission.nativeStatus = queue->Signal(fence, fenceValue);
+                const bool signaled = SUCCEEDED(submission.nativeStatus);
+                return RHIQueueOperationResult{
+                    signaled ? RHIQueueOperationStatusCode::Success : RHIQueueOperationStatusCode::BackendFailure,
+                    signaled ? std::string{} : debugName + ": queue signal failed hr=" +
+                        std::to_string(submission.nativeStatus),
+                    true, signaled};
+            });
+#else
+        (void)queue;
+        (void)commandLists;
+        (void)fence;
+        (void)fenceValue;
+        (void)debugName;
+        submission.operation = {RHIQueueOperationStatusCode::BackendFailure,
+            "DX12 submission is only available on Windows"};
+#endif
+        return submission;
+    }
+}
+
 namespace NLS::Render::RHI::DX12::Detail
 {
     namespace

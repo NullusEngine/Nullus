@@ -1,5 +1,6 @@
 #include "ManagedScriptBuildService.h"
 #include "ManagedScriptProjectPaths.h"
+#include "Profiling/Profiler.h"
 
 #include <Scripting/ScriptTypes.h>
 
@@ -237,6 +238,7 @@ std::future<ManagedScriptBuildResult> ManagedScriptBuildService::Start(ManagedSc
         m_activeBuild.wait();
     m_activeBuild = std::async(std::launch::async, [request = std::move(request)]
     {
+        NLS_PROFILE_REGISTER_THREAD("Managed Script Build");
         return Build(request);
     });
     return std::future<ManagedScriptBuildResult>(

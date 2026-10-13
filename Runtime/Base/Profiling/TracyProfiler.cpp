@@ -5,12 +5,14 @@
 #include <cstdint>
 #include <memory>
 #include <mutex>
+#include <string>
 #include <string_view>
 #include <unordered_map>
 #include <utility>
 #include <vector>
 
 #include <tracy/TracyC.h>
+#include <common/TracySystem.hpp>
 
 #if defined(_WIN32)
 #include <d3d12.h>
@@ -86,6 +88,16 @@ TracyProfiler::TracyProfiler()
 TracyProfiler::~TracyProfiler()
 {
     ClearGpuContext(nullptr);
+}
+
+void TracyProfiler::RegisterThread(const std::string_view name)
+{
+#if NLS_ENABLE_TRACY && !defined(NLS_TRACY_UNAVAILABLE)
+    if (!name.empty())
+        tracy::SetThreadName(std::string(name).c_str());
+#else
+    (void)name;
+#endif
 }
 
 void TracyProfiler::BeginScope(const ProfilerScopeEvent& event)

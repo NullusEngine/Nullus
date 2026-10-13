@@ -37,6 +37,8 @@
 //#include "Panels/GameView.h"
 #include "Settings/EditorSettings.h"
 
+#include <Rendering/Context/RenderingThreadSystem.h>
+
 #include "Core/EditorActions.h"
 using namespace NLS;
 using namespace Maths;
@@ -591,7 +593,8 @@ private:
         };
         bool canReuseCachedCommands =
             m_threadedCommandCacheKey.has_value() &&
-            *m_threadedCommandCacheKey == cacheKey;
+            *m_threadedCommandCacheKey == cacheKey &&
+            Editor::Rendering::CanCacheEditorDrawCommands(m_cachedThreadedDrawCommands);
         if (canReuseCachedCommands)
         {
             std::shared_ptr<NLS::Render::RHI::RHIBindingSet> currentFrameBindingSet;
@@ -638,10 +641,18 @@ private:
                     passInput.recordedDrawCommands);
             }
 
-            m_cachedThreadedDrawCommands = passInput.recordedDrawCommands;
-            for (auto& drawCommand : m_cachedThreadedDrawCommands)
-                drawCommand.frameBindingSet.reset();
-            m_threadedCommandCacheKey = cacheKey;
+            if (Editor::Rendering::CanCacheEditorDrawCommands(passInput.recordedDrawCommands))
+            {
+                m_cachedThreadedDrawCommands = passInput.recordedDrawCommands;
+                for (auto& drawCommand : m_cachedThreadedDrawCommands)
+                    drawCommand.frameBindingSet.reset();
+                m_threadedCommandCacheKey = cacheKey;
+            }
+            else
+            {
+                m_threadedCommandCacheKey.reset();
+                m_cachedThreadedDrawCommands.clear();
+            }
         }
 
         passInput.drawCount = static_cast<uint64_t>(passInput.recordedDrawCommands.size());
@@ -1349,15 +1360,14 @@ void Editor::Rendering::DebugSceneRenderer::OnThreadedFramePublished(const uint6
 void Editor::Rendering::DebugSceneRenderer::OnThreadedFramePublishFailed()
 {
     GetPass<DebugGameObjectRenderPass>("Debug GameObject").DiscardPendingSelectionOutlineMaskCache();
+    GetPass<PickingRenderPass>("Picking").DiscardUnpublishedPickingFrame();
     Engine::Rendering::DeferredSceneRenderer::OnThreadedFramePublishFailed();
 }
 
-std::optional<NLS::Render::Context::FrameSnapshot> Editor::Rendering::DebugSceneRenderer::BuildFrameSnapshot(
-    const NLS::Render::Data::FrameDescriptor& frameDescriptor) const
+uint64_t Editor::Rendering::DebugSceneRenderer::CountEditorHelperDraws() const
 {
-    auto snapshot = Engine::Rendering::DeferredSceneRenderer::BuildFrameSnapshot(frameDescriptor);
-    if (!snapshot.has_value() || !HasDescriptor<Engine::Rendering::BaseSceneRenderer::SceneDescriptor>())
-        return snapshot;
+    if (!HasDescriptor<Engine::Rendering::BaseSceneRenderer::SceneDescriptor>())
+        return 0u;
 
     const auto& scene = GetDescriptor<Engine::Rendering::BaseSceneRenderer::SceneDescriptor>().scene;
     const bool gridPassEnabled = !ShouldDisableEditorGridPass();
@@ -1400,13 +1410,12 @@ std::optional<NLS::Render::Context::FrameSnapshot> Editor::Rendering::DebugScene
     if (const auto* debugDrawService = GetDebugDrawService(); debugDrawService != nullptr)
         helperState.hasVisibleDebugDrawPrimitives = debugDrawService->HasVisiblePrimitives();
 
-    snapshot->visibleHelperDrawCount = CountThreadedEditorHelperPasses(helperState);
-    return snapshot;
+    return CountThreadedEditorHelperPasses(helperState);
 }
 
 std::vector<Editor::Rendering::DebugSceneRenderer::CullingOverlayItem>
 Editor::Rendering::DebugSceneRenderer::BuildCullingOverlayItems(
-    const NLS::Render::Context::FrameSnapshot& snapshot) const
+    const NLS::Render::Context::RenderSceneBuildData& snapshot) const
 {
     return Editor::Rendering::BuildDebugSceneCullingOverlayItems(
         snapshot,
@@ -1415,7 +1424,7 @@ Editor::Rendering::DebugSceneRenderer::BuildCullingOverlayItems(
 
 std::vector<Editor::Rendering::DebugSceneRenderer::CullingOverlayItem>
 Editor::Rendering::BuildDebugSceneCullingOverlayItems(
-    const NLS::Render::Context::FrameSnapshot& snapshot,
+    const NLS::Render::Context::RenderSceneBuildData& snapshot,
     const DebugSceneRenderer::CullingOverlayOptions& options)
 {
     std::vector<DebugSceneRenderer::CullingOverlayItem> items;
@@ -1468,6 +1477,15 @@ uint64_t Editor::Rendering::DebugSceneRenderer::GetCullReasonDebugSnapshotMaxEnt
 
 std::vector<NLS::InstanceID> Editor::Rendering::DebugSceneRenderer::GetEditorInspectionRoots() const
 {
+    // Reads the renderer's descriptor map, which the game thread owns: it is
+    // rebuilt every frame by the panel's AddDescriptor and by
+    // CompositeRenderer::EndFrame's ClearDescriptors. Calling this from the render
+    // thread races those rehashes, so the scene parse freezes the result during its
+    // game-thread capture half instead.
+    NLS_ASSERT(
+        !NLS::Render::Context::RenderingThreadSystem::IsInRenderingThread(),
+        "GetEditorInspectionRoots reads the game-thread descriptor map and must run on the game thread");
+
     std::vector<NLS::InstanceID> roots;
     if (!HasDescriptor<DebugSceneDescriptor>())
         return roots;
@@ -1489,9 +1507,10 @@ bool Editor::Rendering::ShouldPublishDebugSceneCullReasonSnapshots(
     return options.enabled && options.maxItems > 0u;
 }
 
-NLS::Render::Context::PreparedRenderSceneBuilder Editor::Rendering::DebugSceneRenderer::BuildPreparedRenderSceneBuilder(
-    const NLS::Render::Context::FrameSnapshot& snapshot)
+NLS::Render::Context::RenderSceneBuildCommand Editor::Rendering::DebugSceneRenderer::BuildRenderSceneCommand(
+    const NLS::Render::Context::RenderFramePacket& packet)
 {
+    const auto helperPassCount = CountEditorHelperDraws();
     const auto& gridPassInput = GetPass<GridRenderPass>("Grid").GetPreparedThreadedPassInput();
     const auto& cameraPassInput = GetPass<DebugCamerasRenderPass>("Debug Cameras").GetPreparedThreadedPassInput();
     const auto& lightPassInput = GetPass<DebugLightsRenderPass>("Debug Lights").GetPreparedThreadedPassInput();
@@ -1516,7 +1535,7 @@ NLS::Render::Context::PreparedRenderSceneBuilder Editor::Rendering::DebugSceneRe
             " picking=" +
             std::to_string(pickingPassInput.has_value() ? pickingPassInput->drawCount : 0u) +
             " snapshotVisibleHelpers=" +
-            std::to_string(snapshot.visibleHelperDrawCount));
+            std::to_string(helperPassCount));
     }
     const auto explicitHelperContribution =
         static_cast<uint64_t>(gridPassInput.has_value() ? 1u : 0u) +
@@ -1524,8 +1543,8 @@ NLS::Render::Context::PreparedRenderSceneBuilder Editor::Rendering::DebugSceneRe
         static_cast<uint64_t>(lightPassInput.has_value() ? 1u : 0u) +
         static_cast<uint64_t>(selectionOutlineMetadata.size());
     const auto aggregateHelperVisibleCount =
-        snapshot.visibleHelperDrawCount >= explicitHelperContribution
-            ? snapshot.visibleHelperDrawCount - explicitHelperContribution
+        helperPassCount >= explicitHelperContribution
+            ? helperPassCount - explicitHelperContribution
             : 0u;
     auto metadata = BuildDebugDeferredThreadedPassMetadata(
         aggregateHelperVisibleCount,
@@ -1564,16 +1583,16 @@ NLS::Render::Context::PreparedRenderSceneBuilder Editor::Rendering::DebugSceneRe
     const bool hasSkyboxTexture =
         HasDescriptor<DeferredSceneDescriptor>() &&
         GetDescriptor<DeferredSceneDescriptor>().hasSkyboxTexture;
+    auto captureInput = BuildThreadedCaptureInputForPreparedBuilder();
     const bool includeDeferredSceneExecution =
-        snapshot.visibleOpaqueDrawCount > 0u ||
-        snapshot.visibleDecalDrawCount > 0u ||
-        snapshot.visibleTransparentDrawCount > 0u ||
-        snapshot.visibleSkyboxDrawCount > 0u;
+        !IsThreadedFramePublishSkippedForCurrentFrame() && captureInput.sceneParseInput != nullptr;
 
-    return BuildDeferredPreparedRenderSceneBuilder(
-        snapshot,
+    return BuildDeferredRenderSceneCommand(
+        packet,
+        std::move(m_threadedRecordedDrawCommands),
+        helperPassCount,
         hasSkyboxTexture,
-        BuildThreadedCaptureInputForPreparedBuilder(),
+        std::move(captureInput),
         std::move(appendedPassInputs),
         std::move(metadata),
         std::move(preferredReadbackTexture),

@@ -38,6 +38,8 @@ public:
         std::shared_ptr<RHI::RHIBindingSet> objectBindingSet;
         Data::ObjectDrawConstants objectConstants;
         bool usesObjectIndex = false;
+        // Only bindings backed by an immutable buffer may be cached across frames.
+        bool objectBindingImmutable = false;
     };
 
     explicit FrameObjectBindingProvider(CompositeRenderer& renderer);
@@ -77,6 +79,9 @@ public:
     bool IsFramePrepared() const;
     bool IsObjectPrepared() const;
     uint64_t GetPreparedDrawCount() const;
+    // Object-constant ring diagnostics. A provider without a ring reports zero.
+    virtual uint64_t GetLegacyObjectConstantsRingHitCount() const { return 0u; }
+    virtual uint64_t GetLegacyObjectConstantsRingFallbackCount() const { return 0u; }
 
 protected:
     struct PreparationState

@@ -6,6 +6,7 @@
 #include "Rendering/Data/PipelineState.h"
 #include "Rendering/Settings/EngineDiagnosticsSettings.h"
 #include "Rendering/Settings/EGraphicsBackend.h"
+#include "Rendering/Settings/RhiThreadMode.h"
 #include "RenderDef.h"
 namespace NLS::Render::Settings
 {
@@ -31,11 +32,13 @@ namespace NLS::Render::Settings
 			false;
 #endif
 		uint32_t framesInFlight = 2;
+		// Zero uses the resource-ring size; consumers can cap CPU queue depth independently.
+		uint32_t cpuFrameLatencyLimit = 0u;
 		bool enableExplicitRHI = true;
-		bool enableThreadedRendering = false;
 		bool enableLightGrid = true;
-		uint32_t threadedFrameSlotCount = 0;
-		uint32_t threadedPublishRetirementWaitMs = 0;
+		// The render thread is always dedicated; this selects the logical RHI lane.
+		// Restart-scoped: changing it requires recreating the Driver.
+		RhiThreadModePreference rhiThreadMode = RhiThreadModePreference::BackendDefault;
 		// Non-owning platform window used by WSI backends (for example Vulkan/GLFW).
 		// The application owns the window and keeps it alive for the Driver lifetime.
 		void* platformWindow = nullptr;

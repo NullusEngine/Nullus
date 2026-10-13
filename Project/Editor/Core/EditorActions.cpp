@@ -5123,6 +5123,7 @@ bool Editor::Core::EditorActions::RestorePrefabInstancesForCurrentSceneFromDisk(
                         // The immutable prefab graph can be indexed while mesh artifacts are loaded and uploaded.
                         auto templatesFuture = std::async(std::launch::async, [artifact]
                         {
+                            NLS_PROFILE_REGISTER_THREAD("Prefab Dependency Preparation");
                             return std::make_shared<const RendererDependencyTemplates>(
                                 NLS::Editor::Assets::BuildImportedPrefabRendererDependencyTemplates(*artifact));
                         });

@@ -82,8 +82,8 @@ public:
     bool WasCameraPerformanceViewThreadedFramePublished() const;
     std::pair<uint16_t, uint16_t> GetSceneViewSafeSize() const;
     std::pair<uint16_t, uint16_t> GetCameraPerformanceViewSafeSize() const;
-    const Render::Data::FrameInfo& GetSceneViewCumulativeFrameInfo() const;
-    const Render::Data::FrameInfo& GetCameraPerformanceViewCumulativeFrameInfo() const;
+    [[nodiscard]] Render::Data::FrameInfo GetSceneViewCumulativeFrameInfo() const;
+    [[nodiscard]] Render::Data::FrameInfo GetCameraPerformanceViewCumulativeFrameInfo() const;
 
     /**
      * Update the current editor mode

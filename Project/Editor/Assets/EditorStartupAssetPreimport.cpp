@@ -8,6 +8,7 @@
 #include "Assets/ExternalAssetImporter.h"
 #include "Debug/Logger.h"
 #include "Guid.h"
+#include "Profiling/Profiler.h"
 #include "Rendering/ShaderCompiler/ShaderCompiler.h"
 
 #if defined(_WIN32)
@@ -230,8 +231,9 @@ void ParallelForStartupCacheItems(const size_t itemCount, Function&& function)
     workers.reserve(workerCount);
     for (size_t workerIndex = 0u; workerIndex < workerCount; ++workerIndex)
     {
-        workers.emplace_back([&]()
+        workers.emplace_back([&, workerIndex]()
         {
+            NLS_PROFILE_REGISTER_THREAD("Asset Metadata Worker " + std::to_string(workerIndex));
             while (true)
             {
                 const auto index = nextIndex.fetch_add(1u, std::memory_order_relaxed);
@@ -3305,6 +3307,7 @@ StartupAssetPreimportCacheAnalysisTask StartStartupAssetPreimportCacheAnalysis(
         std::launch::async,
         [projectRoot, stampPath]
         {
+            NLS_PROFILE_REGISTER_THREAD("Startup Asset Cache Analysis");
             return AnalyzeStartupAssetPreimportCache(projectRoot, stampPath);
         });
     return task;

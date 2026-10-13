@@ -21,15 +21,6 @@ namespace NLS::Render::Data
 		BackPressured
 	};
 
-	enum class ThreadedFrameStageSummary : uint8_t
-	{
-		Direct = 0,
-		Logic,
-		RenderScene,
-		Rhi,
-		Retired
-	};
-
 	enum class FrameRetirementState : uint8_t
 	{
 		Direct = 0,
@@ -145,7 +136,6 @@ namespace NLS::Render::Data
         uint64_t reservedSlotWaitTotalNs = 0;
         uint64_t reservedSlotWaitMaxNs = 0;
 		FramePublishState publishState = FramePublishState::Direct;
-		ThreadedFrameStageSummary stageSummary = ThreadedFrameStageSummary::Direct;
 		FrameRetirementState retirementState = FrameRetirementState::Direct;
         bool descriptorMainlineActive = false;
         bool pipelineMainlineActive = false;

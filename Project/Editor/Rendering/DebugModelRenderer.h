@@ -2,7 +2,7 @@
 
 #include <Math/Matrix4.h>
 #include <Rendering/Data/PipelineState.h>
-#include <Rendering/Context/ThreadedRenderingLifecycle.h>
+#include <Rendering/Context/RenderScenePackage.h>
 
 namespace NLS::Render::Core { class CompositeRenderer; }
 namespace NLS::Render::Resources { class Material; class Mesh; }
@@ -27,7 +27,8 @@ public:
         NLS::Render::Resources::Mesh& mesh,
         NLS::Render::Resources::Material& material,
         const Maths::Matrix4& modelMatrix,
-        std::vector<NLS::Render::Context::RecordedDrawCommandInput>& outDrawCommands);
+        std::vector<NLS::Render::Context::RecordedDrawCommandInput>& outDrawCommands,
+        bool requiresImmutableObjectBinding = false);
 
 private:
     NLS::Render::Core::CompositeRenderer& m_renderer;

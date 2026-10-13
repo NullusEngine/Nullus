@@ -118,10 +118,7 @@ inline bool IsEditorUiTraceEventName(const char* name)
 		TraceNameStartsWith(name, "Panel::Draw:") ||
 		TraceNameStartsWith(name, "ProfilerPanel::") ||
 		TraceNameStartsWith(name, "RHIFrameGraph::UIOverlay") ||
-		TraceNameStartsWith(name, "ImGui::") ||
-		TraceNameStartsWith(name, "StandaloneUiFrame::") ||
-		TraceNameStartsWith(name, "RhiThreadCoordinator::BeginStandaloneUiExplicitFrame") ||
-		TraceNameStartsWith(name, "RhiThreadCoordinator::PresentStandaloneUiFrame");
+        TraceNameStartsWith(name, "ImGui::");
 }
 
 inline unsigned long long TraceTicksToMicroseconds(

@@ -418,6 +418,10 @@ NLS::Render::Context::Driver& EnsureGameObjectAssetImportTestDriver()
         settings.enableExplicitRHI = false;
         return settings;
     }());
+    // No render thread: this suite does not exercise threaded frame ownership, and a
+    // fixture driver that outlives its test must not keep the process-wide render
+    // thread alive for the next suite.
+    driver->ShutdownThreadedRendering();
     NLS::Core::ServiceLocator::Provide(*driver);
     return *driver;
 }

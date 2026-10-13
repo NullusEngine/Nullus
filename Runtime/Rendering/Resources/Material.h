@@ -455,6 +455,8 @@ public:
     bool HasExplicitBindingErrors() const;
     bool RequiresPassDescriptorSet() const;
     bool RequiresPassDescriptorSet(const Shader* effectiveShader) const;
+    // Call only after render work and GPU fences for this device have drained.
+    static void ReleaseDefaultTexturesForDevice(uint64_t deviceIdentity);
     void SetRawParameter(const std::string& name, std::any value);
     void MarkParametersDirty();
 #if defined(NLS_ENABLE_TEST_HOOKS)
@@ -515,7 +517,16 @@ protected:
     NLS::Render::ShaderLab::ShaderLabKeywordSet m_shaderLabKeywords;
     MaterialLayout m_materialLayout;
     ResourceBindingLayout m_bindingLayout;
-    mutable std::unique_ptr<MaterialRuntimeState> m_runtimeState;
+    /**
+     * Lazily created, and created from more than one thread: the game thread
+     * builds material state while the render thread resolves prepared draws from
+     * the same material. A plain unique_ptr assignment lets the loser of that
+     * race destroy the state the winner is already using, which surfaced as a
+     * shared_ptr control-block access violation inside
+     * Material::GetExplicitPipelineLayout. Publish through an atomic pointer so
+     * every caller keeps observing the same state object.
+     */
+    mutable std::atomic<MaterialRuntimeState*> m_runtimeState { nullptr };
 
     bool m_blendable = false;
     MaterialSurfaceMode m_surfaceMode;

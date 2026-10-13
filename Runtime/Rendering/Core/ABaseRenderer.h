@@ -5,6 +5,7 @@
 #include <list>
 #include <limits>
 #include <memory>
+#include <mutex>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -16,7 +17,7 @@
 #include "Rendering/Core/IRenderer.h"
 #include "Rendering/Core/RenderClearValues.h"
 #include "Rendering/Core/RendererStats.h"
-#include "Rendering/Context/ThreadedRenderingLifecycle.h"
+#include "Rendering/Context/RenderScenePackage.h"
 #include "Rendering/Data/DrawableObjectDescriptor.h"
 #include "Rendering/Data/FrameInfo.h"
 #include "Rendering/Data/PipelineState.h"
@@ -51,11 +52,6 @@ namespace NLS::Render::RHI
     class RHITextureView;
     struct RHIFrameContext;
     class RHIMesh;
-}
-
-namespace NLS::Render::Context
-{
-    struct FrameSnapshot;
 }
 
 namespace NLS::Render::Resources
@@ -102,6 +98,23 @@ public:
     Context::Driver& GetDriver();
     const Context::Driver& GetDriver() const;
     PipelineState CreatePipelineState() const;
+
+    /**
+     * Retires every frame this renderer published before its state is destroyed.
+     *
+     * A published frame carries a prepared-scene builder that captures the
+     * renderer, its frame-object binding provider and its scene state by raw
+     * pointer, and the render thread may still be inside that builder. Destroying
+     * any of that state first leaves the render thread dereferencing freed memory,
+     * which can block it permanently and, in turn, block the join in driver
+     * shutdown.
+     *
+     * Must run as the first statement of the first destructor body in the most
+     * derived renderer, because every later step - releasing shaders, pipelines,
+     * GPU resources or the binding provider - is exactly what this drain is
+     * protecting.
+     */
+    void DrainPublishedFramesBeforeTeardown();
     bool IsDrawing() const;
     bool IsFrameActive() const;
     bool SupportsEditorPickingReadback() const;
@@ -111,6 +124,34 @@ public:
     bool IsRenderCoordinateInBounds(uint32_t p_x, uint32_t p_y) const;
     std::shared_ptr<NLS::Render::RHI::RHIBindingSet> CreateExplicitUniformBufferBindingSet(
         const NLS::Render::Buffers::UniformBuffer& buffer,
+        const ExplicitUniformBufferBindingDesc& desc) const;
+    /**
+     * Binds a sub-range of a caller-owned buffer without taking a snapshot of it.
+     *
+     * Callers that write one uniform block per draw into a per-frame ring use this
+     * to avoid allocating and uploading a dedicated GPU buffer per draw, which is
+     * what the snapshot-taking overload has to do to keep a shared buffer's value
+     * alive until submission.
+     */
+    std::shared_ptr<NLS::Render::RHI::RHIBindingSet> CreateExplicitUniformBufferBindingSetAtOffset(
+        const std::shared_ptr<NLS::Render::RHI::RHIBuffer>& buffer,
+        uint64_t bufferOffset,
+        uint64_t bufferRange,
+        const ExplicitUniformBufferBindingDesc& desc) const;
+    /**
+     * Resolves (and caches) the binding layout a uniform-buffer binding desc needs.
+     *
+     * Resolving is keyed by a composed string, so a caller that binds the same
+     * layout once per draw must hoist it out of its loop instead of paying for the
+     * key construction and the cache lock every time.
+     */
+    std::shared_ptr<NLS::Render::RHI::RHIBindingLayout> ResolveExplicitUniformBufferBindingLayout(
+        const ExplicitUniformBufferBindingDesc& desc) const;
+    std::shared_ptr<NLS::Render::RHI::RHIBindingSet> CreateExplicitUniformBufferBindingSetWithLayout(
+        const std::shared_ptr<NLS::Render::RHI::RHIBindingLayout>& layout,
+        const std::shared_ptr<NLS::Render::RHI::RHIBuffer>& buffer,
+        uint64_t bufferOffset,
+        uint64_t bufferRange,
         const ExplicitUniformBufferBindingDesc& desc) const;
     bool BeginRecordedRenderPass(
         NLS::Render::Buffers::Framebuffer* p_framebuffer,
@@ -212,14 +253,35 @@ public:
     uint64_t GetExplicitUniformSnapshotBufferCreationCount() const;
 
 protected:
-    virtual std::optional<NLS::Render::Context::FrameSnapshot> BuildFrameSnapshot(
+    class NLS_RENDER_API PreparedFrameScope final
+    {
+    public:
+        PreparedFrameScope(
+            const ABaseRenderer& renderer,
+            const Data::FrameDescriptor& frame,
+            PipelineState pipelineState);
+        ~PreparedFrameScope();
+
+        PreparedFrameScope(const PreparedFrameScope&) = delete;
+        PreparedFrameScope& operator=(const PreparedFrameScope&) = delete;
+
+    private:
+        friend class ABaseRenderer;
+        const ABaseRenderer* m_renderer;
+        const Data::FrameDescriptor& m_frame;
+        PipelineState m_pipelineState;
+        const PreparedFrameScope* m_previous;
+        std::shared_ptr<RHI::RHIBindingSet> m_previousPassBindingSet;
+    };
+
+    virtual std::optional<NLS::Render::Context::RenderFramePacket> BuildRenderFramePacket(
         const Data::FrameDescriptor& frameDescriptor) const;
-    virtual NLS::Render::Context::PreparedRenderSceneBuilder BuildPreparedRenderSceneBuilder(
-        const NLS::Render::Context::FrameSnapshot& snapshot);
-    void SetPendingFrameSnapshot(
-        NLS::Render::Context::FrameSnapshot snapshot);
-    void SetPendingPreparedRenderSceneBuilder(
-        NLS::Render::Context::PreparedRenderSceneBuilder renderSceneBuilder);
+    virtual NLS::Render::Context::RenderSceneBuildCommand BuildRenderSceneCommand(
+        const NLS::Render::Context::RenderFramePacket& packet);
+    void SetPendingRenderFramePacket(
+        NLS::Render::Context::RenderFramePacket packet);
+    void SetPendingRenderSceneCommand(
+        NLS::Render::Context::RenderSceneBuildCommand renderSceneBuilder);
     virtual bool TryPublishThreadedFrame();
     virtual void OnThreadedFramePublished(uint64_t publishedFrameId);
     virtual void OnThreadedFramePublishFailed();
@@ -238,6 +300,7 @@ protected:
         uint32_t vertexCount = 0u;
         Data::ObjectDrawConstants objectConstants;
         bool usesObjectIndex = false;
+        bool objectBindingImmutable = false;
     };
 
     virtual bool PrepareRecordedDraw(
@@ -322,9 +385,8 @@ protected:
     bool m_frameActive = false;
     bool m_globalFrameReleaseDeferred = false;
     bool m_recordedRenderPassActive = false;
-    std::shared_ptr<NLS::Render::RHI::RHIBindingSet> m_activePreparedPassBindingSet;
-    std::optional<Context::FrameSnapshot> m_pendingFrameSnapshot;
-    Context::PreparedRenderSceneBuilder m_pendingPreparedRenderSceneBuilder;
+    std::optional<Context::RenderFramePacket> m_pendingRenderFramePacket;
+    Context::RenderSceneBuildCommand m_pendingRenderSceneCommand;
     std::vector<Context::PostSubmitTextureReadbackRequest> m_nextFramePostSubmitTextureReadbacks;
     bool m_lastThreadedFramePublished = false;
     std::vector<Context::RecordedDrawCommandInput> m_threadedRecordedDrawCommands;
@@ -333,6 +395,8 @@ protected:
 
 private:
     void BeginFrameInternal(const Data::FrameDescriptor& p_frameDescriptor, bool globalFrameAlreadyAcquired);
+    const PreparedFrameScope* FindPreparedFrameScope() const;
+    const Data::FrameDescriptor& GetDrawFrameDescriptor() const;
 
     struct PreparedRecordedDrawStaticBaseCacheKey
     {
@@ -462,7 +526,7 @@ private:
         bool lruLinked = false;
     };
 
-    const PreparedRecordedDrawStaticBase* ResolvePreparedRecordedDrawStaticBase(
+    std::shared_ptr<const PreparedRecordedDrawStaticBase> ResolvePreparedRecordedDrawStaticBase(
         const char* preparationPath,
         const Entities::Drawable& drawable,
         Resources::Material& material,
@@ -493,7 +557,15 @@ private:
         const PreparedRecordedDrawStaticBaseCacheKey& key,
         PreparedRecordedDrawStaticBase& entry) const;
     void TouchPreparedRecordedDrawStaticBaseEntry(PreparedRecordedDrawStaticBase& entry) const;
+
+    // Cache and LRU mutations require m_preparedResourceCacheMutex. A linked
+    // entry owns a live list iterator until removal clears its membership.
+    void SplicePreparedRecordedDrawStaticBaseLruToBack(
+        PreparedRecordedDrawStaticBase& entry) const;
+    void SplicePreparedRecordedDrawStaticBaseRevisionLruToBack(
+        PreparedRecordedDrawStaticBaseRevisionIndexEntry& entry) const;
     void TrimPreparedRecordedDrawStaticBaseCache(bool includeFrameAgeSweep) const;
+    void ClearPreparedRecordedDrawStaticBaseCacheLocked() const;
     void InvalidateExplicitDeviceDependentCachesIfNeeded() const;
     static PreparedRecordedDrawStaticBaseStableKey BuildPreparedRecordedDrawStaticBaseStableKey(
         const PreparedRecordedDrawStaticBaseCacheKey& key);
@@ -541,9 +613,13 @@ private:
     std::shared_ptr<RHI::RHIBindingSet> CreateExplicitUniformBufferBindingSetForSnapshot(
         const NLS::Render::Buffers::UniformBuffer& buffer,
         const ExplicitUniformBufferBindingDesc& desc,
-        const std::shared_ptr<RHI::RHIBuffer>& snapshotBuffer) const;
+        const std::shared_ptr<RHI::RHIBuffer>& snapshotBuffer,
+        uint64_t snapshotOffset = 0u) const;
 
     static std::atomic_bool s_isDrawing;
+    static const PreparedFrameScope*& CurrentPreparedFrameScope();
+    // BeginFrame maintenance and prepared builders can run on different threads.
+    mutable std::mutex m_preparedResourceCacheMutex;
     mutable std::unordered_map<
         PreparedRecordedDrawStaticBaseCacheKey,
         std::shared_ptr<PreparedRecordedDrawStaticBase>,
@@ -571,7 +647,13 @@ private:
     mutable RHI::NativeBackendType m_cachedExplicitDeviceBackend = RHI::NativeBackendType::None;
     mutable std::shared_ptr<RHI::RHIDevice> m_preparedRecordedDrawDevice;
     mutable std::unordered_map<std::string, std::weak_ptr<NLS::Render::RHI::RHIBindingLayout>> m_explicitUniformBindingLayouts;
-    mutable uint64_t m_explicitUniformBindingSetCreationCount = 0u;
-    mutable uint64_t m_explicitUniformSnapshotBufferCreationCount = 0u;
+    // Monotonic counters read per drawable by the capture path. They are
+    // plain tallies with no invariant tying them to the cache, so they are
+    // relaxed atomics rather than cache-guarded members: the capture path
+    // took the prepared-resource-cache mutex twice per draw just to read
+    // them, which is both unnecessary and a contention point with the game
+    // thread's frame-boundary cache trim.
+    mutable std::atomic<uint64_t> m_explicitUniformBindingSetCreationCount { 0u };
+    mutable std::atomic<uint64_t> m_explicitUniformSnapshotBufferCreationCount { 0u };
 };
 }

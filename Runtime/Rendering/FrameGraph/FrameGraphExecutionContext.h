@@ -79,6 +79,17 @@ namespace NLS::Render::FrameGraph
 			if (!CanTrackExplicitResourceState())
 				return {};
 
+			return RecordResourceBarriers(*commandBuffer, *frameContext, requestedBarriers);
+		}
+
+		static NLS::Render::RHI::RHICommandRecordingResult RecordResourceBarriers(
+			NLS::Render::RHI::RHICommandBuffer& commandBuffer,
+			NLS::Render::RHI::RHIFrameContext& frameContext,
+			const NLS::Render::RHI::RHIBarrierDesc& requestedBarriers)
+		{
+			if (frameContext.resourceStateTracker == nullptr)
+				return {};
+
 			const auto hasWriteAccess = [](const NLS::Render::RHI::AccessMask accessMask)
 			{
 				constexpr uint32_t kWriteAccessMask =
@@ -91,7 +102,7 @@ namespace NLS::Render::FrameGraph
 				return (static_cast<uint32_t>(accessMask) & kWriteAccessMask) != 0u;
 			};
 
-			auto resolvedBarriers = frameContext->resourceStateTracker->BuildTransitionBarriers(
+			auto resolvedBarriers = frameContext.resourceStateTracker->BuildTransitionBarriers(
 				requestedBarriers.bufferBarriers,
 				requestedBarriers.textureBarriers);
 			std::erase_if(
@@ -115,14 +126,14 @@ namespace NLS::Render::FrameGraph
 			if (resolvedBarriers.bufferBarriers.empty() && resolvedBarriers.textureBarriers.empty())
 				return {};
 
-			const auto filteredBarriers = commandBuffer->FilterBarrierDesc(resolvedBarriers);
+			const auto filteredBarriers = commandBuffer.FilterBarrierDesc(resolvedBarriers);
 			if (filteredBarriers.bufferBarriers.empty() && filteredBarriers.textureBarriers.empty())
 				return {};
 
-			const auto barrierResult = commandBuffer->BarrierChecked(filteredBarriers);
+			const auto barrierResult = commandBuffer.BarrierChecked(filteredBarriers);
 			if (!barrierResult.Succeeded())
 				return barrierResult;
-			frameContext->resourceStateTracker->Commit(filteredBarriers);
+			frameContext.resourceStateTracker->Commit(filteredBarriers);
 			return {};
 		}
 	};

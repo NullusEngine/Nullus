@@ -18,6 +18,7 @@ namespace NLS::Game::Launch
 		std::printf("  --material-validation-output <path>   Write a renderer readback PNG for material validation\n");
 		std::printf("  --material-validation-summary <path>  Write material validation analysis text\n");
 		std::printf("  --material-validation-after-frames <N> Capture material validation after N presents\n");
+			std::printf("  --material-validation-swapchain Capture the presented Game output\n");
 		std::printf("  --help, -h                  Show this help message\n");
 		std::printf("\nArguments:\n");
 		std::printf("  project_path   Path to .nullus project file or project directory\n");
@@ -84,6 +85,12 @@ namespace NLS::Game::Launch
 				if (!parsed.materialValidation.has_value())
 					parsed.materialValidation = MaterialValidationLaunchSettings {};
 				parsed.materialValidation->outputPath = argv[++i];
+			}
+			else if (arg == "--material-validation-swapchain")
+			{
+				if (!parsed.materialValidation.has_value())
+					parsed.materialValidation = MaterialValidationLaunchSettings {};
+				parsed.materialValidation->captureSwapchain = true;
 			}
 			else if (arg == "--material-validation-summary" && i + 1 < argc)
 			{

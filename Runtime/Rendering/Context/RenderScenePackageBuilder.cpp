@@ -98,24 +98,6 @@ namespace NLS::Render::Context
             package.parallelDrawCommandBatches = BuildParallelDrawCommandBatchMetadata(package.parallelCommandWorkUnits);
         }
 
-        uint64_t CountVisibleUiDrawCommands(const UI::UiDrawDataSnapshot& snapshot)
-        {
-            uint64_t drawCount = 0u;
-            for (const auto& drawList : snapshot.drawLists)
-            {
-                for (const auto& command : drawList.commands)
-                {
-                    if (command.elementCount != 0u &&
-                        command.callbackKind != UI::UiDrawCallbackKind::Unsupported &&
-                        !command.hasUnsupportedTextureId)
-                    {
-                        ++drawCount;
-                    }
-                }
-            }
-            return drawCount;
-        }
-
         TextureResourceAccess MakeSwapchainOverlayRenderTargetAccess()
         {
             TextureResourceAccess access;
@@ -163,12 +145,25 @@ namespace NLS::Render::Context
         }
     }
 
-    namespace
+    uint64_t CountVisibleUiDrawCommands(const UI::UiDrawDataSnapshot& snapshot)
     {
-    RenderScenePackage BuildSnapshotOwnedRenderScenePackageImpl(
-        const FrameSnapshot& snapshot,
-        const SnapshotRenderScenePackageBuildMode buildMode,
-        std::vector<RecordedDrawCommandInput> recordedDrawCommands)
+        uint64_t drawCount = 0u;
+        for (const auto& drawList : snapshot.drawLists)
+        {
+            for (const auto& command : drawList.commands)
+            {
+                if (command.elementCount != 0u &&
+                    command.callbackKind != UI::UiDrawCallbackKind::Unsupported &&
+                    !command.hasUnsupportedTextureId)
+                {
+                    ++drawCount;
+                }
+            }
+        }
+        return drawCount;
+    }
+
+    RenderScenePackage BuildRenderFramePackage(const RenderFramePacket& snapshot)
     {
         RenderScenePackage package;
         package.frameId = snapshot.frameId;
@@ -179,8 +174,6 @@ namespace NLS::Render::Context
         package.clearStencilBuffer = snapshot.clearStencilBuffer;
         package.renderWidth = snapshot.renderWidth;
         package.renderHeight = snapshot.renderHeight;
-        package.sceneGameObjectCount = snapshot.sceneGameObjectCount;
-        package.recordedDrawCommands = std::move(recordedDrawCommands);
         package.postSubmitTextureReadbacks = snapshot.postSubmitTextureReadbacks;
         for (const auto& request : package.postSubmitTextureReadbacks)
         {
@@ -196,12 +189,27 @@ namespace NLS::Render::Context
         package.externalSceneOutputTextureCount = snapshot.externalOutputTextureCount;
         package.externalSceneOutputColorView = snapshot.externalOutputColorView;
         package.externalSceneOutputDepthView = snapshot.externalOutputDepthView;
-        package.streamingDependencyPins = snapshot.streamingDependencyPins;
-        package.opaqueDrawCount = snapshot.visibleOpaqueDrawCount;
-        package.decalDrawCount = snapshot.visibleDecalDrawCount;
-        package.transparentDrawCount = snapshot.visibleTransparentDrawCount;
-        package.skyboxDrawCount = snapshot.visibleSkyboxDrawCount;
-        package.helperDrawCount = snapshot.visibleHelperDrawCount;
+        package.renderTargetUseCount = package.targetsSwapchain ? 1u : 2u;
+        return package;
+    }
+
+    namespace
+    {
+    RenderScenePackage BuildRenderScenePackageImpl(
+        const RenderFramePacket& packet,
+        const RenderSceneBuildData& scene,
+        const RenderScenePackageBuildMode buildMode,
+        std::vector<RecordedDrawCommandInput> recordedDrawCommands)
+    {
+        auto package = BuildRenderFramePackage(packet);
+        package.sceneGameObjectCount = scene.sceneGameObjectCount;
+        package.recordedDrawCommands = std::move(recordedDrawCommands);
+        package.streamingDependencyPins = scene.streamingDependencyPins;
+        package.opaqueDrawCount = scene.visibleOpaqueDrawCount;
+        package.decalDrawCount = scene.visibleDecalDrawCount;
+        package.transparentDrawCount = scene.visibleTransparentDrawCount;
+        package.skyboxDrawCount = scene.visibleSkyboxDrawCount;
+        package.helperDrawCount = scene.visibleHelperDrawCount;
         package.visibleDrawCount =
             package.opaqueDrawCount +
             package.decalDrawCount +
@@ -209,7 +217,7 @@ namespace NLS::Render::Context
             package.skyboxDrawCount +
             package.helperDrawCount;
         package.hasVisibleDraws = package.visibleDrawCount > 0u;
-        package.hasLightingData = snapshot.sceneLightCount > 0u;
+        package.hasLightingData = scene.sceneLightCount > 0u;
         package.frameDataReady = true;
         package.objectDataReady = true;
         package.lightingDataReady = true;
@@ -222,9 +230,8 @@ namespace NLS::Render::Context
             ? static_cast<uint64_t>(package.recordedDrawCommands.size())
             : package.visibleDrawCount;
         package.materialBatchCount = package.drawCommandCount;
-        package.renderTargetUseCount = package.targetsSwapchain ? 1u : 2u;
 
-        if (buildMode == SnapshotRenderScenePackageBuildMode::BuildDefaultPassInputs)
+        if (buildMode == RenderScenePackageBuildMode::BuildDefaultPassInputs)
         {
             package.passPlanCount =
                 static_cast<uint64_t>(package.hasOpaquePass) +
@@ -260,24 +267,20 @@ namespace NLS::Render::Context
     }
     }
 
-    RenderScenePackage BuildSnapshotOwnedRenderScenePackage(
-        const FrameSnapshot& snapshot,
-        const SnapshotRenderScenePackageBuildMode buildMode)
+    RenderScenePackage BuildRenderScenePackage(
+        const RenderFramePacket& packet,
+        const RenderSceneBuildData& scene,
+        const RenderScenePackageBuildMode buildMode)
     {
-        return BuildSnapshotOwnedRenderScenePackageImpl(
-            snapshot,
-            buildMode,
-            snapshot.recordedDrawCommands);
+        return BuildRenderScenePackageImpl(packet, scene, buildMode, scene.recordedDrawCommands);
     }
 
-    RenderScenePackage BuildSnapshotOwnedRenderScenePackage(
-        FrameSnapshot&& snapshot,
-        const SnapshotRenderScenePackageBuildMode buildMode)
+    RenderScenePackage BuildRenderScenePackage(
+        const RenderFramePacket& packet,
+        RenderSceneBuildData&& scene,
+        const RenderScenePackageBuildMode buildMode)
     {
-        return BuildSnapshotOwnedRenderScenePackageImpl(
-            snapshot,
-            buildMode,
-            std::move(snapshot.recordedDrawCommands));
+        return BuildRenderScenePackageImpl(packet, scene, buildMode, std::move(scene.recordedDrawCommands));
     }
 
     bool AttachUiOverlaySnapshotToRenderScenePackage(
@@ -374,8 +377,8 @@ namespace NLS::Render::Context
         package.hasVisibleDraws = package.visibleDrawCount > 0u;
         package.passPlanCount = static_cast<uint64_t>(package.passCommandInputs.size());
         package.drawCommandCount = !package.recordedDrawCommands.empty()
-            ? static_cast<uint64_t>(package.recordedDrawCommands.size()) + package.uiOverlayDrawCount
-            : package.visibleDrawCount;
+            ? static_cast<uint64_t>(package.recordedDrawCommands.size()) + package.uiOverlayDrawCount + package.swapchainOutputDrawCount
+            : package.visibleDrawCount + package.swapchainOutputDrawCount;
         package.materialBatchCount = package.drawCommandCount;
         package.containsCommandInputs = !package.passCommandInputs.empty();
         package.parallelCommandWorkUnitCount = static_cast<uint64_t>(package.parallelCommandWorkUnits.size());

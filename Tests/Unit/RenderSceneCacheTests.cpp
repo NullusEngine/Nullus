@@ -1,4 +1,5 @@
 #include <gtest/gtest.h>
+#include "Tests/RenderingThreadTestHelpers.h"
 
 #include <algorithm>
 #include <array>
@@ -259,6 +260,7 @@ namespace
             settings.enableExplicitRHI = false;
             return settings;
         }());
+        NLS::Render::Context::DriverTestAccess::PauseThreadedRenderingWorkers(*driver);
         NLS::Core::ServiceLocator::Provide(*driver);
         return *driver;
     }
@@ -362,13 +364,19 @@ namespace
             transparentMaterial.SetShader(shader);
             transparentMaterial.SetBlendable(true);
             meshes.reserve(primitiveCount);
+            std::vector<std::unique_ptr<NLS::Engine::GameObject>> pendingObjects;
+            std::vector<NLS::Engine::GameObject*> objects;
+            pendingObjects.reserve(primitiveCount);
+            objects.reserve(primitiveCount);
 
             for (size_t index = 0u; index < primitiveCount; ++index)
             {
                 auto* mesh = CreateSingleMesh();
                 meshes.push_back(mesh);
 
-                auto& object = scene.CreateGameObject("VisibilityPrimitive" + std::to_string(index));
+                auto pendingObject = std::make_unique<NLS::Engine::GameObject>(
+                    "VisibilityPrimitive" + std::to_string(index));
+                auto& object = *pendingObject;
                 auto* meshFilter = object.AddComponent<NLS::Engine::Components::MeshFilter>();
                 auto* meshRenderer = object.AddComponent<NLS::Engine::Components::MeshRenderer>();
                 meshFilter->SetMesh(mesh);
@@ -389,7 +397,15 @@ namespace
                     0.0f,
                     visible ? -6.0f - static_cast<float>(index % 5u) : -6.0f
                 });
+                objects.push_back(pendingObject.get());
+                pendingObjects.push_back(std::move(pendingObject));
             }
+
+            // Build the component index once; these tests measure visibility,
+            // not repeated scene registration while constructing the fixture.
+            EXPECT_TRUE(scene.AddGameObjects(objects));
+            for (auto& object : pendingObjects)
+                (void)object.release();
         }
 
         ~ManyPrimitiveFixture()
@@ -632,16 +648,39 @@ namespace
         AllDrawables CaptureSceneDrawables(const NLS::Render::Data::FrameDescriptor& frameDescriptor)
         {
             m_frameDescriptor = frameDescriptor;
-            return ParseScene();
+            // ParseScene consumes a frozen descriptor, so the probe freezes the
+            // same inputs the production callers do.
+            return ParseScene(
+                NLS::Render::FrameGraph::FreezeFrameDescriptor(frameDescriptor));
         }
 
-        const NLS::Engine::Rendering::SceneOcclusionFrameInput& GetLastHZBFrameInputForTesting() const
+        // By value: the getter now returns a copy of a published snapshot, so a
+        // reference return here would dangle.
+        NLS::Engine::Rendering::SceneOcclusionFrameInput GetLastHZBFrameInputForTesting() const
         {
             return GetLastHZBOcclusionFrameInput();
         }
+
+        /** Pins the publication accessors used by game-thread readers. */
+        bool HasPublishedPickableSourcesForTesting() const
+        {
+            return HasLastVisiblePickablePrimitiveDrawSources();
+        }
+
+        std::shared_ptr<const std::vector<NLS::Engine::Rendering::ScenePickablePrimitiveDrawSource>>
+        GetPublishedPickableSourcesForTesting() const
+        {
+            return GetLastVisiblePickablePrimitiveDrawSources();
+        }
+
+        std::shared_ptr<const NLS::Engine::Rendering::SceneOcclusionPrimitivePacketBuildResult>
+        GetPublishedHZBPacketBuildForTesting() const
+        {
+            return GetLastHZBOcclusionPrimitivePacketBuildResult();
+        }
     };
 
-    TEST(RenderSceneCacheTests, BaseSceneRendererStoresLargeSceneSettingsOverride)
+TEST(RenderSceneCacheTests, BaseSceneRendererStoresLargeSceneSettingsOverride)
     {
         NLS::Render::Settings::DriverSettings driverSettings;
         driverSettings.graphicsBackend = NLS::Render::Settings::EGraphicsBackend::NONE;
@@ -972,10 +1011,10 @@ TEST(RenderSceneCacheTests, StableSceneReusesPersistentPrimitivesAndCachedComman
     NLS::Engine::Rendering::RenderSceneSyncOptions options;
     options.defaultMaterial = &fixture.material;
 
-    auto first = renderScene.Synchronize(fixture.scene, options);
+    auto first = NLS::Tests::SynchronizeSceneForTest(renderScene, fixture.scene, options);
     const auto firstVisible = renderScene.GatherVisibleCommands({});
     const auto firstOptimizationStats = renderScene.GetLastDrawCallOptimizationStatsForTesting();
-    auto second = renderScene.Synchronize(fixture.scene, options);
+    auto second = NLS::Tests::SynchronizeSceneForTest(renderScene, fixture.scene, options);
     const auto secondVisible = renderScene.GatherVisibleCommands({});
     const auto secondOptimizationStats = renderScene.GetLastDrawCallOptimizationStatsForTesting();
 
@@ -1006,11 +1045,11 @@ TEST(RenderSceneCacheTests, TrustedEditorSceneRevisionSkipsStablePrimitiveScan)
     options.defaultMaterial = &fixture.material;
     options.trustSceneRenderContentRevision = true;
 
-    const auto first = renderScene.Synchronize(fixture.scene, options);
+    const auto first = NLS::Tests::SynchronizeSceneForTest(renderScene, fixture.scene, options);
     ASSERT_EQ(first.rebuiltCachedCommandCount, 128u);
     EXPECT_FALSE(first.usedSceneRenderContentRevisionFastPath);
 
-    const auto second = renderScene.Synchronize(fixture.scene, options);
+    const auto second = NLS::Tests::SynchronizeSceneForTest(renderScene, fixture.scene, options);
     EXPECT_TRUE(second.usedSceneRenderContentRevisionFastPath);
     EXPECT_EQ(second.syncTouchedPrimitiveCount, 0u);
     EXPECT_EQ(second.reusedPrimitiveCount, 128u);
@@ -1019,7 +1058,7 @@ TEST(RenderSceneCacheTests, TrustedEditorSceneRevisionSkipsStablePrimitiveScan)
         1u);
 
     fixture.scene.MarkRenderContentChanged();
-    const auto invalidated = renderScene.Synchronize(fixture.scene, options);
+    const auto invalidated = NLS::Tests::SynchronizeSceneForTest(renderScene, fixture.scene, options);
     EXPECT_FALSE(invalidated.usedSceneRenderContentRevisionFastPath);
     EXPECT_EQ(invalidated.syncTouchedPrimitiveCount, 0u);
     EXPECT_EQ(invalidated.syncFullSweepCount, 0u);
@@ -1036,15 +1075,15 @@ TEST(RenderSceneCacheTests, TrustedEditorSceneRevisionTouchesOnlyMovedPrimitive)
     options.defaultMaterial = &fixture.material;
     options.trustSceneRenderContentRevision = true;
 
-    ASSERT_EQ(renderScene.Synchronize(fixture.scene, options).syncTouchedPrimitiveCount, 128u);
-    ASSERT_TRUE(renderScene.Synchronize(fixture.scene, options).usedSceneRenderContentRevisionFastPath);
+    ASSERT_EQ(NLS::Tests::SynchronizeSceneForTest(renderScene, fixture.scene, options).syncTouchedPrimitiveCount, 128u);
+    ASSERT_TRUE(NLS::Tests::SynchronizeSceneForTest(renderScene, fixture.scene, options).usedSceneRenderContentRevisionFastPath);
 
     auto& objects = fixture.scene.GetGameObjects();
     ASSERT_EQ(objects.size(), 128u);
     ASSERT_NE(objects[73u], nullptr);
     objects[73u]->GetTransform()->TranslateLocal({1.0f, 0.0f, 0.0f});
 
-    const auto moved = renderScene.Synchronize(fixture.scene, options);
+    const auto moved = NLS::Tests::SynchronizeSceneForTest(renderScene, fixture.scene, options);
     EXPECT_FALSE(moved.usedSceneRenderContentRevisionFastPath);
     EXPECT_EQ(moved.syncTouchedPrimitiveCount, 1u);
     EXPECT_EQ(moved.syncFullSweepCount, 0u);
@@ -1062,13 +1101,13 @@ TEST(RenderSceneCacheTests, TrustedEditorSceneRevisionInvalidatesAfterMeshReload
     options.defaultMaterial = &fixture.material;
     options.trustSceneRenderContentRevision = true;
 
-    const auto first = renderScene.Synchronize(fixture.scene, options);
+    const auto first = NLS::Tests::SynchronizeSceneForTest(renderScene, fixture.scene, options);
     ASSERT_EQ(first.rebuiltCachedCommandCount, 1u);
     ASSERT_EQ(renderScene.GatherVisibleCommands({}).opaques.size(), 1u);
     EXPECT_EQ(renderScene.GetCachedCommandBuildCountForTesting(), 1u);
     EXPECT_EQ(renderScene.GetOpaqueSortTokenBuildCountForTesting(), 1u);
 
-    const auto stable = renderScene.Synchronize(fixture.scene, options);
+    const auto stable = NLS::Tests::SynchronizeSceneForTest(renderScene, fixture.scene, options);
     ASSERT_TRUE(stable.usedSceneRenderContentRevisionFastPath);
     ASSERT_EQ(stable.rebuiltCachedCommandCount, 0u);
 
@@ -1083,7 +1122,7 @@ TEST(RenderSceneCacheTests, TrustedEditorSceneRevisionInvalidatesAfterMeshReload
         NLS::Render::Resources::MeshBufferUploadMode::GpuOnly,
         {{0.0f, 0.0f, 0.0f}, 2.0f});
 
-    const auto reloaded = renderScene.Synchronize(fixture.scene, options);
+    const auto reloaded = NLS::Tests::SynchronizeSceneForTest(renderScene, fixture.scene, options);
     EXPECT_FALSE(reloaded.usedSceneRenderContentRevisionFastPath);
     EXPECT_EQ(reloaded.syncTouchedPrimitiveCount, 1u);
     EXPECT_EQ(reloaded.rebuiltCachedCommandCount, 1u);
@@ -1110,12 +1149,12 @@ TEST(RenderSceneCacheTests, TrustedEditorSceneRevisionInvalidatesAfterExplicitMa
     options.defaultMaterial = &fixture.opaqueMaterialB;
     options.trustSceneRenderContentRevision = true;
 
-    const auto first = renderScene.Synchronize(fixture.scene, options);
+    const auto first = NLS::Tests::SynchronizeSceneForTest(renderScene, fixture.scene, options);
     ASSERT_EQ(first.rebuiltCachedCommandCount, 1u);
-    ASSERT_EQ(renderScene.Synchronize(fixture.scene, options).usedSceneRenderContentRevisionFastPath, true);
+    ASSERT_EQ(NLS::Tests::SynchronizeSceneForTest(renderScene, fixture.scene, options).usedSceneRenderContentRevisionFastPath, true);
 
     fixture.opaqueMaterialA.SetBackfaceCulling(!fixture.opaqueMaterialA.HasBackfaceCulling());
-    const auto changed = renderScene.Synchronize(fixture.scene, options);
+    const auto changed = NLS::Tests::SynchronizeSceneForTest(renderScene, fixture.scene, options);
 
     EXPECT_FALSE(changed.usedSceneRenderContentRevisionFastPath);
     EXPECT_EQ(changed.syncTouchedPrimitiveCount, 1u);
@@ -1133,14 +1172,14 @@ TEST(RenderSceneCacheTests, TrustedEditorSceneRevisionInvalidatesAfterMaterialUn
     NLS::Engine::Rendering::RenderSceneSyncOptions options;
     options.defaultMaterial = &fixture.material;
     options.trustSceneRenderContentRevision = true;
-    ASSERT_EQ(renderScene.Synchronize(fixture.scene, options).rebuiltCachedCommandCount, 1u);
-    ASSERT_TRUE(renderScene.Synchronize(fixture.scene, options).usedSceneRenderContentRevisionFastPath);
+    ASSERT_EQ(NLS::Tests::SynchronizeSceneForTest(renderScene, fixture.scene, options).rebuiltCachedCommandCount, 1u);
+    ASSERT_TRUE(NLS::Tests::SynchronizeSceneForTest(renderScene, fixture.scene, options).usedSceneRenderContentRevisionFastPath);
 
     const auto mutationEpoch = NLS::Render::Resources::Material::GetGlobalMutationEpoch();
     fixture.material.FillUniform();
     EXPECT_GT(NLS::Render::Resources::Material::GetGlobalMutationEpoch(), mutationEpoch);
 
-    const auto changed = renderScene.Synchronize(fixture.scene, options);
+    const auto changed = NLS::Tests::SynchronizeSceneForTest(renderScene, fixture.scene, options);
     EXPECT_FALSE(changed.usedSceneRenderContentRevisionFastPath);
     EXPECT_EQ(changed.syncTouchedPrimitiveCount, 1u);
     EXPECT_EQ(changed.rebuiltCachedCommandCount, 1u);
@@ -1154,13 +1193,13 @@ TEST(RenderSceneCacheTests, TrustedEditorSceneRevisionIgnoresUnrelatedMaterialMu
     NLS::Engine::Rendering::RenderSceneSyncOptions options;
     options.defaultMaterial = &fixture.material;
     options.trustSceneRenderContentRevision = true;
-    ASSERT_EQ(renderScene.Synchronize(fixture.scene, options).rebuiltCachedCommandCount, 1u);
-    ASSERT_TRUE(renderScene.Synchronize(fixture.scene, options).usedSceneRenderContentRevisionFastPath);
+    ASSERT_EQ(NLS::Tests::SynchronizeSceneForTest(renderScene, fixture.scene, options).rebuiltCachedCommandCount, 1u);
+    ASSERT_TRUE(NLS::Tests::SynchronizeSceneForTest(renderScene, fixture.scene, options).usedSceneRenderContentRevisionFastPath);
 
     NLS::Render::Resources::Material unrelatedMaterial;
     unrelatedMaterial.FillUniform();
 
-    const auto unchanged = renderScene.Synchronize(fixture.scene, options);
+    const auto unchanged = NLS::Tests::SynchronizeSceneForTest(renderScene, fixture.scene, options);
     EXPECT_TRUE(unchanged.usedSceneRenderContentRevisionFastPath);
     EXPECT_EQ(unchanged.syncTouchedPrimitiveCount, 0u);
 }
@@ -1202,12 +1241,12 @@ TEST(RenderSceneCacheTests, TrustedEditorSceneRevisionRejectsDestroyedReplacedMa
     NLS::Engine::Rendering::RenderSceneSyncOptions options;
     options.defaultMaterial = &fixture.opaqueMaterialB;
     options.trustSceneRenderContentRevision = true;
-    ASSERT_EQ(renderScene.Synchronize(fixture.scene, options).rebuiltCachedCommandCount, 1u);
-    ASSERT_TRUE(renderScene.Synchronize(fixture.scene, options).usedSceneRenderContentRevisionFastPath);
+    ASSERT_EQ(NLS::Tests::SynchronizeSceneForTest(renderScene, fixture.scene, options).rebuiltCachedCommandCount, 1u);
+    ASSERT_TRUE(NLS::Tests::SynchronizeSceneForTest(renderScene, fixture.scene, options).usedSceneRenderContentRevisionFastPath);
 
     meshRenderer->SetMaterialAtIndex(0u, fixture.opaqueMaterialA);
     previewMaterial.reset();
-    const auto changed = renderScene.Synchronize(fixture.scene, options);
+    const auto changed = NLS::Tests::SynchronizeSceneForTest(renderScene, fixture.scene, options);
 
     EXPECT_FALSE(changed.usedSceneRenderContentRevisionFastPath);
     EXPECT_EQ(changed.rebuiltCachedCommandCount, 1u);
@@ -1226,11 +1265,11 @@ TEST(RenderSceneCacheTests, TrustedEditorSceneRevisionDetectsExplicitMaterialBec
     NLS::Engine::Rendering::RenderSceneSyncOptions options;
     options.defaultMaterial = &fixture.opaqueMaterialB;
     options.trustSceneRenderContentRevision = true;
-    ASSERT_EQ(renderScene.Synchronize(fixture.scene, options).rebuiltCachedCommandCount, 1u);
-    ASSERT_TRUE(renderScene.Synchronize(fixture.scene, options).usedSceneRenderContentRevisionFastPath);
+    ASSERT_EQ(NLS::Tests::SynchronizeSceneForTest(renderScene, fixture.scene, options).rebuiltCachedCommandCount, 1u);
+    ASSERT_TRUE(NLS::Tests::SynchronizeSceneForTest(renderScene, fixture.scene, options).usedSceneRenderContentRevisionFastPath);
 
     explicitMaterial.SetShader(fixture.shader);
-    const auto changed = renderScene.Synchronize(fixture.scene, options);
+    const auto changed = NLS::Tests::SynchronizeSceneForTest(renderScene, fixture.scene, options);
 
     EXPECT_FALSE(changed.usedSceneRenderContentRevisionFastPath);
     EXPECT_EQ(changed.rebuiltCachedCommandCount, 1u);
@@ -1254,8 +1293,8 @@ TEST(RenderSceneCacheTests, TrustedEditorSceneRevisionTracksMeshWithoutValidCach
     NLS::Engine::Rendering::RenderScene renderScene;
     NLS::Engine::Rendering::RenderSceneSyncOptions options;
     options.trustSceneRenderContentRevision = true;
-    ASSERT_EQ(renderScene.Synchronize(scene, options).rebuiltCachedCommandCount, 0u);
-    ASSERT_TRUE(renderScene.Synchronize(scene, options).usedSceneRenderContentRevisionFastPath);
+    ASSERT_EQ(NLS::Tests::SynchronizeSceneForTest(renderScene, scene, options).rebuiltCachedCommandCount, 0u);
+    ASSERT_TRUE(NLS::Tests::SynchronizeSceneForTest(renderScene, scene, options).usedSceneRenderContentRevisionFastPath);
 
     mesh->Reload(
         {
@@ -1267,7 +1306,7 @@ TEST(RenderSceneCacheTests, TrustedEditorSceneRevisionTracksMeshWithoutValidCach
         0u,
         NLS::Render::Resources::MeshBufferUploadMode::GpuOnly,
         {{0.0f, 0.0f, 0.0f}, 3.0f});
-    const auto changed = renderScene.Synchronize(scene, options);
+    const auto changed = NLS::Tests::SynchronizeSceneForTest(renderScene, scene, options);
 
     EXPECT_FALSE(changed.usedSceneRenderContentRevisionFastPath);
     EXPECT_EQ(changed.syncTouchedPrimitiveCount, 1u);
@@ -1287,21 +1326,21 @@ TEST(RenderSceneCacheTests, TrustedSceneRevisionFastPathTracksChangesWhilePlayin
     NLS::Engine::Rendering::RenderSceneSyncOptions options;
     options.defaultMaterial = &fixture.material;
     options.trustSceneRenderContentRevision = true;
-    ASSERT_EQ(renderScene.Synchronize(fixture.scene, options).rebuiltCachedCommandCount, 1u);
+    ASSERT_EQ(NLS::Tests::SynchronizeSceneForTest(renderScene, fixture.scene, options).rebuiltCachedCommandCount, 1u);
 
 	fixture.scene.Play();
-	const auto firstPlaying = renderScene.Synchronize(fixture.scene, options);
+	const auto firstPlaying = NLS::Tests::SynchronizeSceneForTest(renderScene, fixture.scene, options);
 	EXPECT_FALSE(firstPlaying.usedSceneRenderContentRevisionFastPath);
-	EXPECT_TRUE(renderScene.Synchronize(fixture.scene, options).usedSceneRenderContentRevisionFastPath);
+	EXPECT_TRUE(NLS::Tests::SynchronizeSceneForTest(renderScene, fixture.scene, options).usedSceneRenderContentRevisionFastPath);
 
 	auto* transform = fixture.meshRenderer->gameobject()->GetTransform();
 	ASSERT_NE(transform, nullptr);
 	transform->TranslateLocal({ 1.0f, 0.0f, 0.0f });
 
-	const auto playing = renderScene.Synchronize(fixture.scene, options);
+	const auto playing = NLS::Tests::SynchronizeSceneForTest(renderScene, fixture.scene, options);
 	EXPECT_FALSE(playing.usedSceneRenderContentRevisionFastPath);
 	EXPECT_EQ(playing.syncTouchedPrimitiveCount, 1u);
-    EXPECT_TRUE(renderScene.Synchronize(fixture.scene, options).usedSceneRenderContentRevisionFastPath);
+    EXPECT_TRUE(NLS::Tests::SynchronizeSceneForTest(renderScene, fixture.scene, options).usedSceneRenderContentRevisionFastPath);
 }
 
 TEST(RenderSceneCacheTests, RenderComponentChangesAdvanceSceneRevision)
@@ -1371,8 +1410,8 @@ TEST(RenderSceneCacheTests, MutableTransformAccessUpdatesPrimitiveWorldMatrixWit
     NLS::Engine::Rendering::RenderSceneSyncOptions options;
     options.defaultMaterial = &fixture.material;
 
-    ASSERT_EQ(renderScene.Synchronize(fixture.scene, options).rebuiltCachedCommandCount, 1u);
-    ASSERT_EQ(renderScene.Synchronize(fixture.scene, options).reusedPrimitiveCount, 1u);
+    ASSERT_EQ(NLS::Tests::SynchronizeSceneForTest(renderScene, fixture.scene, options).rebuiltCachedCommandCount, 1u);
+    ASSERT_EQ(NLS::Tests::SynchronizeSceneForTest(renderScene, fixture.scene, options).reusedPrimitiveCount, 1u);
     auto beforeMove = renderScene.CreatePrimitiveSnapshotForHandles(
         renderScene.GetLivePrimitiveHandles(),
         {});
@@ -1382,7 +1421,7 @@ TEST(RenderSceneCacheTests, MutableTransformAccessUpdatesPrimitiveWorldMatrixWit
     ASSERT_NE(owner, nullptr);
     owner->GetTransform()->TranslateLocal({1.0f, 0.0f, 0.0f});
 
-    const auto moved = renderScene.Synchronize(fixture.scene, options);
+    const auto moved = NLS::Tests::SynchronizeSceneForTest(renderScene, fixture.scene, options);
     auto afterMove = renderScene.CreatePrimitiveSnapshotForHandles(
         renderScene.GetLivePrimitiveHandles(),
         {});
@@ -1412,7 +1451,7 @@ TEST(RenderSceneCacheTests, ParentMotionAdvancesChildTrustedTransformRevisionWit
     NLS::Engine::Rendering::RenderSceneSyncOptions options;
     options.defaultMaterial = &fixture.material;
 
-    ASSERT_EQ(renderScene.Synchronize(fixture.scene, options).rebuiltCachedCommandCount, 1u);
+    ASSERT_EQ(NLS::Tests::SynchronizeSceneForTest(renderScene, fixture.scene, options).rebuiltCachedCommandCount, 1u);
     const auto initialVisible = renderScene.GatherVisibleCommands({});
     ASSERT_EQ(initialVisible.opaques.size(), 1u);
     NLS::Engine::Rendering::EngineDrawableDescriptor initialDescriptor;
@@ -1422,7 +1461,7 @@ TEST(RenderSceneCacheTests, ParentMotionAdvancesChildTrustedTransformRevisionWit
     const auto initialCommandBuildCount = renderScene.GetCachedCommandBuildCountForTesting();
 
     parent.GetTransform()->TranslateLocal({3.0f, 0.0f, 0.0f});
-    const auto moved = renderScene.Synchronize(fixture.scene, options);
+    const auto moved = NLS::Tests::SynchronizeSceneForTest(renderScene, fixture.scene, options);
     const auto movedVisible = renderScene.GatherVisibleCommands({});
     ASSERT_EQ(movedVisible.opaques.size(), 1u);
     NLS::Engine::Rendering::EngineDrawableDescriptor movedDescriptor;
@@ -1461,7 +1500,7 @@ TEST(RenderSceneCacheTests, MeshContentRevisionChangeInvalidatesRetainedPrimitiv
     NLS::Engine::Rendering::RenderSceneSyncOptions options;
     options.defaultMaterial = &fixture.material;
 
-    const auto first = renderScene.Synchronize(fixture.scene, options);
+    const auto first = NLS::Tests::SynchronizeSceneForTest(renderScene, fixture.scene, options);
     ASSERT_EQ(first.rebuiltCachedCommandCount, 1u);
     ASSERT_EQ(renderScene.GatherVisibleCommands({}).opaques.size(), 1u);
     auto firstSnapshot = renderScene.CreatePrimitiveSnapshotForHandles(
@@ -1481,7 +1520,7 @@ TEST(RenderSceneCacheTests, MeshContentRevisionChangeInvalidatesRetainedPrimitiv
         NLS::Render::Resources::MeshBufferUploadMode::GpuOnly,
         {{0.0f, 0.0f, 0.0f}, 4.0f});
 
-    const auto changed = renderScene.Synchronize(fixture.scene, options);
+    const auto changed = NLS::Tests::SynchronizeSceneForTest(renderScene, fixture.scene, options);
     ASSERT_EQ(renderScene.GatherVisibleCommands({}).opaques.size(), 1u);
     auto changedSnapshot = renderScene.CreatePrimitiveSnapshotForHandles(
         renderScene.GetLastVisiblePrimitiveHandles(),
@@ -1501,7 +1540,7 @@ TEST(RenderSceneCacheTests, DestroyedGameObjectInvalidatesFastAccessSoRenderScen
     NLS::Engine::Rendering::RenderSceneSyncOptions options;
     options.defaultMaterial = &fixture.material;
 
-    const auto first = renderScene.Synchronize(fixture.scene, options);
+    const auto first = NLS::Tests::SynchronizeSceneForTest(renderScene, fixture.scene, options);
     ASSERT_EQ(first.addedPrimitiveCount, 1u);
     ASSERT_EQ(renderScene.GetPrimitiveCount(), 1u);
 
@@ -1511,7 +1550,7 @@ TEST(RenderSceneCacheTests, DestroyedGameObjectInvalidatesFastAccessSoRenderScen
 
     EXPECT_GT(revisionAfterDestroy, revisionBeforeDestroy)
         << "RenderScene only removes missing MeshRenderers when Scene fast-access membership changes.";
-    const auto second = renderScene.Synchronize(fixture.scene, options);
+    const auto second = NLS::Tests::SynchronizeSceneForTest(renderScene, fixture.scene, options);
     EXPECT_EQ(second.removedPrimitiveCount, 1u);
     EXPECT_EQ(renderScene.GetPrimitiveCount(), 0u);
     EXPECT_TRUE(renderScene.GetLastRemovedPrimitiveHandles().size() >= 1u);
@@ -1528,7 +1567,7 @@ TEST(RenderSceneCacheTests, DisabledSpatialIndexDoesNotBuildIndexDuringSync)
     syncOptions.defaultMaterial = &fixture.material;
     syncOptions.largeSceneSettings = &largeSceneSettings;
 
-    ASSERT_EQ(renderScene.Synchronize(fixture.scene, syncOptions).rebuiltCachedCommandCount, 128u);
+    ASSERT_EQ(NLS::Tests::SynchronizeSceneForTest(renderScene, fixture.scene, syncOptions).rebuiltCachedCommandCount, 128u);
 
     auto frustum = CreateForwardFrustum();
     NLS::Engine::Rendering::RenderSceneVisibilityOptions visibilityOptions;
@@ -1553,7 +1592,7 @@ TEST(RenderSceneCacheTests, SpatialVisibilityFinalizationAvoidsGlobalBitsetsOnRu
 
     NLS::Engine::Rendering::RenderSceneSyncOptions syncOptions;
     syncOptions.defaultMaterial = &fixture.material;
-    ASSERT_EQ(renderScene.Synchronize(fixture.scene, syncOptions).rebuiltCachedCommandCount, 256u);
+    ASSERT_EQ(NLS::Tests::SynchronizeSceneForTest(renderScene, fixture.scene, syncOptions).rebuiltCachedCommandCount, 256u);
 
     auto frustum = CreateForwardFrustum();
     NLS::Engine::Rendering::RenderSceneVisibilityOptions visibilityOptions;
@@ -1578,7 +1617,7 @@ TEST(RenderSceneCacheTests, SpatialVisibilityReusesCandidateSnapshotAndInvalidat
 
 	NLS::Engine::Rendering::RenderSceneSyncOptions syncOptions;
 	syncOptions.defaultMaterial = &fixture.material;
-	ASSERT_EQ(renderScene.Synchronize(fixture.scene, syncOptions).rebuiltCachedCommandCount, 1u);
+	ASSERT_EQ(NLS::Tests::SynchronizeSceneForTest(renderScene, fixture.scene, syncOptions).rebuiltCachedCommandCount, 1u);
 
 	auto frustum = CreateForwardFrustum();
 	NLS::Engine::Rendering::RenderSceneVisibilityOptions visibilityOptions;
@@ -1590,7 +1629,7 @@ TEST(RenderSceneCacheTests, SpatialVisibilityReusesCandidateSnapshotAndInvalidat
 	EXPECT_EQ(renderScene.GetSpatialCandidateSnapshotCacheHitCountForTesting(), 1u);
 
 	fixture.meshRenderer->SetUserMatrixElement(0u, 3u, 7.0f);
-	ASSERT_EQ(renderScene.Synchronize(fixture.scene, syncOptions).syncTouchedPrimitiveCount, 1u);
+	ASSERT_EQ(NLS::Tests::SynchronizeSceneForTest(renderScene, fixture.scene, syncOptions).syncTouchedPrimitiveCount, 1u);
 	const auto changedVisible = renderScene.GatherVisibleCommands(visibilityOptions);
 	ASSERT_EQ(changedVisible.opaques.size(), 1u);
 	EXPECT_EQ(renderScene.GetSpatialCandidateSnapshotCacheHitCountForTesting(), 1u);
@@ -1611,10 +1650,10 @@ TEST(RenderSceneCacheTests, MaterialStateChangeInvalidatesOnlyAffectedCachedComm
 
     NLS::Engine::Rendering::RenderSceneSyncOptions options;
     options.defaultMaterial = &fixture.material;
-    ASSERT_EQ(renderScene.Synchronize(fixture.scene, options).rebuiltCachedCommandCount, 1u);
+    ASSERT_EQ(NLS::Tests::SynchronizeSceneForTest(renderScene, fixture.scene, options).rebuiltCachedCommandCount, 1u);
 
     fixture.material.SetBlendable(true);
-    const auto changed = renderScene.Synchronize(fixture.scene, options);
+    const auto changed = NLS::Tests::SynchronizeSceneForTest(renderScene, fixture.scene, options);
 
     EXPECT_EQ(changed.addedPrimitiveCount, 0u);
     EXPECT_EQ(changed.reusedPrimitiveCount, 1u);
@@ -1633,7 +1672,7 @@ TEST(RenderSceneCacheTests, OpaqueVisiblePrimitiveBuildsHZBOcclusionCandidateSou
 
     NLS::Engine::Rendering::RenderSceneSyncOptions options;
     options.defaultMaterial = &fixture.material;
-    ASSERT_EQ(renderScene.Synchronize(fixture.scene, options).rebuiltCachedCommandCount, 1u);
+    ASSERT_EQ(NLS::Tests::SynchronizeSceneForTest(renderScene, fixture.scene, options).rebuiltCachedCommandCount, 1u);
 
     const auto visible = renderScene.GatherVisibleCommands({});
     ASSERT_EQ(visible.opaques.size(), 1u);
@@ -1667,7 +1706,7 @@ TEST(RenderSceneCacheTests, HZBOcclusionCandidateSourceUsesMeshAABBWhenFrustumUs
 
     NLS::Engine::Rendering::RenderSceneSyncOptions options;
     options.defaultMaterial = &fixture.material;
-    ASSERT_EQ(renderScene.Synchronize(fixture.scene, options).rebuiltCachedCommandCount, 1u);
+    ASSERT_EQ(NLS::Tests::SynchronizeSceneForTest(renderScene, fixture.scene, options).rebuiltCachedCommandCount, 1u);
 
     const auto visible = renderScene.GatherVisibleCommands({});
     ASSERT_EQ(visible.opaques.size(), 1u);
@@ -1722,11 +1761,11 @@ TEST(RenderSceneCacheTests, TransformAndUserMatrixUpdateVisibleObjectDescriptorW
 
     NLS::Engine::Rendering::RenderSceneSyncOptions options;
     options.defaultMaterial = &fixture.material;
-    ASSERT_EQ(renderScene.Synchronize(fixture.scene, options).rebuiltCachedCommandCount, 1u);
+    ASSERT_EQ(NLS::Tests::SynchronizeSceneForTest(renderScene, fixture.scene, options).rebuiltCachedCommandCount, 1u);
 
     fixture.meshRenderer->gameobject()->GetTransform()->SetWorldPosition({3.0f, 4.0f, 5.0f});
     fixture.meshRenderer->SetUserMatrixElement(0u, 3u, 9.0f);
-    const auto unchangedCommands = renderScene.Synchronize(fixture.scene, options);
+    const auto unchangedCommands = NLS::Tests::SynchronizeSceneForTest(renderScene, fixture.scene, options);
     const auto visible = renderScene.GatherVisibleCommands({});
     const auto optimizationStats = renderScene.GetLastDrawCallOptimizationStatsForTesting();
 
@@ -1754,7 +1793,7 @@ TEST(RenderSceneCacheTests, GatherVisibleCommandsAssignsStablePerFrameObjectIndi
 
     NLS::Engine::Rendering::RenderSceneSyncOptions syncOptions;
     syncOptions.defaultMaterial = &fixture.material;
-    ASSERT_EQ(renderScene.Synchronize(fixture.scene, syncOptions).rebuiltCachedCommandCount, 6u);
+    ASSERT_EQ(NLS::Tests::SynchronizeSceneForTest(renderScene, fixture.scene, syncOptions).rebuiltCachedCommandCount, 6u);
 
     const auto firstVisible = renderScene.GatherVisibleCommands({});
     const auto secondVisible = renderScene.GatherVisibleCommands({});
@@ -1798,12 +1837,12 @@ TEST(RenderSceneCacheTests, RemovedMeshRendererRemovesPersistentPrimitive)
 
     NLS::Engine::Rendering::RenderSceneSyncOptions options;
     options.defaultMaterial = &fixture.material;
-    ASSERT_EQ(renderScene.Synchronize(fixture.scene, options).addedPrimitiveCount, 1u);
+    ASSERT_EQ(NLS::Tests::SynchronizeSceneForTest(renderScene, fixture.scene, options).addedPrimitiveCount, 1u);
 
     EXPECT_TRUE(fixture.scene.DestroyGameObject(*fixture.meshRenderer->gameobject()));
     fixture.meshRenderer = nullptr;
 
-    const auto removed = renderScene.Synchronize(fixture.scene, options);
+    const auto removed = NLS::Tests::SynchronizeSceneForTest(renderScene, fixture.scene, options);
 
     EXPECT_EQ(removed.removedPrimitiveCount, 1u);
     EXPECT_EQ(renderScene.GetPrimitiveCount(), 0u);
@@ -1817,11 +1856,11 @@ TEST(RenderSceneCacheTests, MarkedDestroyedMeshRendererRemovesPersistentPrimitiv
 
     NLS::Engine::Rendering::RenderSceneSyncOptions options;
     options.defaultMaterial = &fixture.material;
-    ASSERT_EQ(renderScene.Synchronize(fixture.scene, options).addedPrimitiveCount, 1u);
+    ASSERT_EQ(NLS::Tests::SynchronizeSceneForTest(renderScene, fixture.scene, options).addedPrimitiveCount, 1u);
 
     fixture.meshRenderer->gameobject()->MarkAsDestroy();
 
-    const auto removed = renderScene.Synchronize(fixture.scene, options);
+    const auto removed = NLS::Tests::SynchronizeSceneForTest(renderScene, fixture.scene, options);
 
     EXPECT_EQ(removed.removedPrimitiveCount, 1u);
     EXPECT_EQ(renderScene.GetPrimitiveCount(), 0u);
@@ -1869,7 +1908,7 @@ TEST(RenderSceneCacheTests, SynchronizeRetriesDeferredMeshAndMaterialReferencesA
     NLS::Engine::Rendering::RenderSceneSyncOptions syncOptions;
     syncOptions.defaultMaterial = &defaultMaterial;
 
-    EXPECT_EQ(renderScene.Synchronize(scene, syncOptions).rebuiltCachedCommandCount, 0u);
+    EXPECT_EQ(NLS::Tests::SynchronizeSceneForTest(renderScene, scene, syncOptions).rebuiltCachedCommandCount, 0u);
     EXPECT_EQ(meshFilter->ResolveMesh(), nullptr);
 
     auto* mesh = CreateSingleMesh();
@@ -1882,7 +1921,7 @@ TEST(RenderSceneCacheTests, SynchronizeRetriesDeferredMeshAndMaterialReferencesA
     meshManager.RegisterResource(meshPath, mesh);
     materialManager.RegisterResource(materialPath, material);
 
-    const auto retried = renderScene.Synchronize(scene, syncOptions);
+    const auto retried = NLS::Tests::SynchronizeSceneForTest(renderScene, scene, syncOptions);
 
     EXPECT_EQ(retried.rebuiltCachedCommandCount, 1u);
     EXPECT_EQ(meshFilter->ResolveMesh(), mesh);
@@ -1938,13 +1977,13 @@ TEST(RenderSceneCacheTests, SynchronizeDoesNotReloadPreviouslyMissingDeferredRef
     NLS::Engine::Rendering::RenderSceneSyncOptions syncOptions;
     syncOptions.defaultMaterial = &defaultMaterial;
 
-    EXPECT_EQ(renderScene.Synchronize(scene, syncOptions).rebuiltCachedCommandCount, 0u);
+    EXPECT_EQ(NLS::Tests::SynchronizeSceneForTest(renderScene, scene, syncOptions).rebuiltCachedCommandCount, 0u);
     EXPECT_EQ(meshFilter->ResolveMesh(), nullptr);
     EXPECT_EQ(meshFilter->GetMeshReference().Get(), nullptr);
     EXPECT_EQ(meshRenderer->GetMaterials()[0], nullptr);
     EXPECT_EQ(meshRenderer->GetMaterialReferences()[0].Get(), nullptr);
 
-    EXPECT_EQ(renderScene.Synchronize(scene, syncOptions).rebuiltCachedCommandCount, 0u);
+    EXPECT_EQ(NLS::Tests::SynchronizeSceneForTest(renderScene, scene, syncOptions).rebuiltCachedCommandCount, 0u);
     EXPECT_EQ(meshFilter->ResolveMesh(), nullptr);
     EXPECT_EQ(meshFilter->GetMeshReference().Get(), nullptr);
     EXPECT_EQ(meshRenderer->GetMaterials()[0], nullptr);
@@ -1960,7 +1999,7 @@ TEST(RenderSceneCacheTests, SynchronizeDoesNotReloadPreviouslyMissingDeferredRef
     meshManager.RegisterResource(meshPath, mesh);
     materialManager.RegisterResource(materialPath, material);
 
-    const auto retried = renderScene.Synchronize(scene, syncOptions);
+    const auto retried = NLS::Tests::SynchronizeSceneForTest(renderScene, scene, syncOptions);
     EXPECT_EQ(retried.rebuiltCachedCommandCount, 1u);
     EXPECT_EQ(meshFilter->ResolveMesh(), mesh);
     EXPECT_EQ(meshRenderer->GetMaterials()[0], material);
@@ -1996,7 +2035,7 @@ TEST(RenderSceneCacheTests, SynchronizeDrawsDirectMeshReferenceWithoutModelResou
     NLS::Engine::Rendering::RenderSceneSyncOptions syncOptions;
     syncOptions.defaultMaterial = &material;
 
-    const auto stats = renderScene.Synchronize(scene, syncOptions);
+    const auto stats = NLS::Tests::SynchronizeSceneForTest(renderScene, scene, syncOptions);
     const auto visible = renderScene.GatherVisibleCommands({nullptr, {}});
 
     EXPECT_EQ(stats.rebuiltCachedCommandCount, 1u);
@@ -2386,6 +2425,18 @@ TEST(RenderSceneCacheTests, SceneRendererUsesOnlyExactStandardPbrForwardArtifact
     EXPECT_EQ(
         drawables.opaques.front().second.material->GetShader()->GetImportedArtifactSubAssetKey(),
         "shader:StandardPBR/Forward#0");
+
+    const auto& parameters = drawables.opaques.front().second.material->GetParameterBlock();
+    const auto* ambientOcclusion = parameters.TryGet("_AmbientOcclusion");
+    const auto* roughnessChannel = parameters.TryGet("_RoughnessMapChannel");
+    const auto* normalScale = parameters.TryGet("_NormalScale");
+    ASSERT_NE(ambientOcclusion, nullptr);
+    ASSERT_NE(roughnessChannel, nullptr);
+    ASSERT_NE(normalScale, nullptr);
+    EXPECT_FLOAT_EQ(std::any_cast<float>(*ambientOcclusion), 1.0f);
+    EXPECT_FLOAT_EQ(std::any_cast<float>(*normalScale), 1.0f);
+    EXPECT_EQ(std::any_cast<NLS::Maths::Vector4>(*roughnessChannel),
+        NLS::Maths::Vector4(1.0f, 0.0f, 0.0f, 0.0f));
 }
 
 TEST(RenderSceneCacheTests, SynchronizeResolvesOnlyMaterialSlotUsedByMesh)
@@ -2429,7 +2480,7 @@ TEST(RenderSceneCacheTests, SynchronizeResolvesOnlyMaterialSlotUsedByMesh)
     NLS::Engine::Rendering::RenderSceneSyncOptions syncOptions;
     syncOptions.defaultMaterial = usedMaterial;
 
-    const auto stats = renderScene.Synchronize(scene, syncOptions);
+    const auto stats = NLS::Tests::SynchronizeSceneForTest(renderScene, scene, syncOptions);
 
     EXPECT_EQ(stats.rebuiltCachedCommandCount, 1u);
     EXPECT_EQ(meshRenderer->GetMaterials()[0], usedMaterial);
@@ -2481,7 +2532,7 @@ TEST(RenderSceneCacheTests, SynchronizeResolvesMaterialSlotAboveLegacyByteRange)
     NLS::Engine::Rendering::RenderSceneSyncOptions syncOptions;
     syncOptions.defaultMaterial = &defaultMaterial;
 
-    const auto stats = renderScene.Synchronize(scene, syncOptions);
+    const auto stats = NLS::Tests::SynchronizeSceneForTest(renderScene, scene, syncOptions);
     const auto visible = renderScene.GatherVisibleCommands({});
 
     EXPECT_EQ(stats.rebuiltCachedCommandCount, 1u);
@@ -2526,7 +2577,7 @@ TEST(RenderSceneCacheTests, ExplicitMaterialPathSuppressesDefaultMaterialUntilRe
     NLS::Engine::Rendering::RenderSceneSyncOptions syncOptions;
     syncOptions.defaultMaterial = &defaultMaterial;
 
-    const auto unresolved = renderScene.Synchronize(scene, syncOptions);
+    const auto unresolved = NLS::Tests::SynchronizeSceneForTest(renderScene, scene, syncOptions);
     EXPECT_EQ(unresolved.rebuiltCachedCommandCount, 0u);
     EXPECT_TRUE(renderScene.GatherVisibleCommands({}).opaques.empty())
         << "A generated model with an explicit but unresolved material path must not render with the white fallback.";
@@ -2536,7 +2587,7 @@ TEST(RenderSceneCacheTests, ExplicitMaterialPathSuppressesDefaultMaterialUntilRe
     const_cast<std::string&>(material->path) = materialPath;
     materialManager.RegisterResource(materialPath, material);
 
-    const auto resolved = renderScene.Synchronize(scene, syncOptions);
+    const auto resolved = NLS::Tests::SynchronizeSceneForTest(renderScene, scene, syncOptions);
     const auto visible = renderScene.GatherVisibleCommands({});
 
     EXPECT_EQ(resolved.rebuiltCachedCommandCount, 1u);
@@ -2586,7 +2637,7 @@ TEST(RenderSceneCacheTests, ExplicitMaterialPathSuppressesDrawUntilDeclaredTextu
     syncOptions.defaultMaterial = &defaultMaterial;
     syncOptions.requireExplicitMaterialTextures = true;
 
-    const auto texturePending = renderScene.Synchronize(scene, syncOptions);
+    const auto texturePending = NLS::Tests::SynchronizeSceneForTest(renderScene, scene, syncOptions);
     EXPECT_EQ(texturePending.rebuiltCachedCommandCount, 0u);
     EXPECT_TRUE(renderScene.GatherVisibleCommands({}).opaques.empty())
         << "A generated model material with declared but unresolved textures must not render as a white/default-textured model.";
@@ -2596,7 +2647,7 @@ TEST(RenderSceneCacheTests, ExplicitMaterialPathSuppressesDrawUntilDeclaredTextu
     texture->path = texturePath;
     material.Set<NLS::Render::Resources::Texture2D*>("u_DiffuseMap", texture);
 
-    const auto textureResolved = renderScene.Synchronize(scene, syncOptions);
+    const auto textureResolved = NLS::Tests::SynchronizeSceneForTest(renderScene, scene, syncOptions);
     const auto visible = renderScene.GatherVisibleCommands({});
 
     EXPECT_EQ(textureResolved.rebuiltCachedCommandCount, 1u);
@@ -2651,7 +2702,7 @@ TEST(RenderSceneCacheTests, ExplicitMaterialTexturePathWithInvalidBytesDoesNotTh
     syncOptions.requireExplicitMaterialTextures = true;
 
     EXPECT_NO_THROW({
-        const auto stats = renderScene.Synchronize(scene, syncOptions);
+        const auto stats = NLS::Tests::SynchronizeSceneForTest(renderScene, scene, syncOptions);
         EXPECT_EQ(stats.rebuiltCachedCommandCount, 0u);
     });
     EXPECT_TRUE(renderScene.GatherVisibleCommands({}).opaques.empty());
@@ -2698,7 +2749,7 @@ TEST(RenderSceneCacheTests, ExistingSceneExplicitMaterialPathRemainsVisibleWhile
     NLS::Engine::Rendering::RenderSceneSyncOptions syncOptions;
     syncOptions.defaultMaterial = &defaultMaterial;
 
-    const auto texturePending = renderScene.Synchronize(scene, syncOptions);
+    const auto texturePending = NLS::Tests::SynchronizeSceneForTest(renderScene, scene, syncOptions);
     const auto visible = renderScene.GatherVisibleCommands({});
 
     EXPECT_EQ(texturePending.rebuiltCachedCommandCount, 1u);
@@ -2759,7 +2810,7 @@ TEST(RenderSceneCacheTests, ExplicitMaterialPathBindsCachedDeclaredTexturesBefor
     NLS::Engine::Rendering::RenderSceneSyncOptions syncOptions;
     syncOptions.defaultMaterial = &defaultMaterial;
 
-    const auto textureResolved = renderScene.Synchronize(scene, syncOptions);
+    const auto textureResolved = NLS::Tests::SynchronizeSceneForTest(renderScene, scene, syncOptions);
     const auto visible = renderScene.GatherVisibleCommands({});
 
     EXPECT_EQ(textureResolved.rebuiltCachedCommandCount, 1u);
@@ -2828,7 +2879,7 @@ TEST(RenderSceneCacheTests, ExplicitMaterialPathRejectsManagerTextureWithoutGpuH
     syncOptions.defaultMaterial = &defaultMaterial;
     syncOptions.requireExplicitMaterialTextures = true;
 
-    const auto stats = renderScene.Synchronize(scene, syncOptions);
+    const auto stats = NLS::Tests::SynchronizeSceneForTest(renderScene, scene, syncOptions);
     EXPECT_EQ(stats.rebuiltCachedCommandCount, 0u);
     EXPECT_TRUE(renderScene.GatherVisibleCommands({}).opaques.empty());
 
@@ -2911,7 +2962,7 @@ TEST(RenderSceneCacheTests, ExplicitMaterialPathRebindsDeclaredTextureWhenItArri
     NLS::Engine::Rendering::RenderSceneSyncOptions syncOptions;
     syncOptions.defaultMaterial = &defaultMaterial;
 
-    const auto firstSync = renderScene.Synchronize(scene, syncOptions);
+    const auto firstSync = NLS::Tests::SynchronizeSceneForTest(renderScene, scene, syncOptions);
     EXPECT_EQ(firstSync.rebuiltCachedCommandCount, 1u);
     ASSERT_EQ(renderScene.GatherVisibleCommands({}).opaques.size(), 1u);
     const auto* firstParameter = material->GetParameterBlock().TryGet("u_DiffuseMap");
@@ -2924,7 +2975,7 @@ TEST(RenderSceneCacheTests, ExplicitMaterialPathRebindsDeclaredTextureWhenItArri
     texture->path = texturePath;
     textureManager.RegisterResource(texturePath, texture);
 
-    const auto secondSync = renderScene.Synchronize(scene, syncOptions);
+    const auto secondSync = NLS::Tests::SynchronizeSceneForTest(renderScene, scene, syncOptions);
     EXPECT_EQ(secondSync.syncTouchedPrimitiveCount, 1u)
         << "A primitive with unresolved declared material textures must keep synchronizing until the texture cache can bind them.";
     EXPECT_EQ(secondSync.rebuiltCachedCommandCount, 1u);
@@ -2995,7 +3046,7 @@ TEST(RenderSceneCacheTests, ExplicitMaterialPathAcceptsEquivalentCachedDeclaredT
     NLS::Engine::Rendering::RenderSceneSyncOptions syncOptions;
     syncOptions.defaultMaterial = &defaultMaterial;
 
-    const auto textureResolved = renderScene.Synchronize(scene, syncOptions);
+    const auto textureResolved = NLS::Tests::SynchronizeSceneForTest(renderScene, scene, syncOptions);
     const auto visible = renderScene.GatherVisibleCommands({});
 
     EXPECT_EQ(textureResolved.rebuiltCachedCommandCount, 1u);
@@ -3080,7 +3131,7 @@ TEST(RenderSceneCacheTests, SharedDeclaredTexturePathIsResolvedOncePerSync)
     NLS::Engine::Rendering::RenderSceneSyncOptions syncOptions;
     syncOptions.defaultMaterial = &defaultMaterial;
 
-    const auto stats = renderScene.Synchronize(scene, syncOptions);
+    const auto stats = NLS::Tests::SynchronizeSceneForTest(renderScene, scene, syncOptions);
 
     EXPECT_EQ(stats.declaredTextureLookupCount, kMaterialCount);
     EXPECT_EQ(stats.declaredTextureCacheMissCount, 1u);
@@ -3743,7 +3794,7 @@ TEST(RenderSceneCacheTests, MissingMaterialPathStillUsesDefaultMaterial)
     NLS::Engine::Rendering::RenderSceneSyncOptions syncOptions;
     syncOptions.defaultMaterial = &defaultMaterial;
 
-    const auto stats = renderScene.Synchronize(scene, syncOptions);
+    const auto stats = NLS::Tests::SynchronizeSceneForTest(renderScene, scene, syncOptions);
     const auto visible = renderScene.GatherVisibleCommands({});
 
     EXPECT_EQ(stats.rebuiltCachedCommandCount, 1u);
@@ -3780,11 +3831,11 @@ TEST(RenderSceneCacheTests, ExplicitMaterialPathUsesDefaultMaterialOnlyWhenFallb
     NLS::Engine::Rendering::RenderSceneSyncOptions syncOptions;
     syncOptions.defaultMaterial = &defaultMaterial;
 
-    EXPECT_EQ(renderScene.Synchronize(scene, syncOptions).rebuiltCachedCommandCount, 0u);
+    EXPECT_EQ(NLS::Tests::SynchronizeSceneForTest(renderScene, scene, syncOptions).rebuiltCachedCommandCount, 0u);
     EXPECT_TRUE(renderScene.GatherVisibleCommands({}).opaques.empty());
 
     syncOptions.allowDefaultMaterialForUnresolvedExplicitMaterials = true;
-    EXPECT_EQ(renderScene.Synchronize(scene, syncOptions).rebuiltCachedCommandCount, 1u);
+    EXPECT_EQ(NLS::Tests::SynchronizeSceneForTest(renderScene, scene, syncOptions).rebuiltCachedCommandCount, 1u);
     const auto visible = renderScene.GatherVisibleCommands({});
 
     ASSERT_EQ(visible.opaques.size(), 1u);
@@ -3801,7 +3852,7 @@ TEST(RenderSceneCacheTests, BitsetVisibilityTracksPrimitiveAndMeshResults)
 
     NLS::Engine::Rendering::RenderSceneSyncOptions syncOptions;
     syncOptions.defaultMaterial = &fixture.material;
-    ASSERT_EQ(renderScene.Synchronize(fixture.scene, syncOptions).rebuiltCachedCommandCount, 9u);
+    ASSERT_EQ(NLS::Tests::SynchronizeSceneForTest(renderScene, fixture.scene, syncOptions).rebuiltCachedCommandCount, 9u);
 
     auto frustum = CreateForwardFrustum();
     NLS::Engine::Rendering::RenderSceneVisibilityOptions visibilityOptions;
@@ -3833,7 +3884,7 @@ TEST(RenderSceneCacheTests, TransientRenderSuppressionHidesMeshWithoutChangingGa
     NLS::Engine::Rendering::RenderSceneSyncOptions syncOptions;
     syncOptions.defaultMaterial = &fixture.material;
 
-    ASSERT_EQ(renderScene.Synchronize(fixture.scene, syncOptions).rebuiltCachedCommandCount, 1u);
+    ASSERT_EQ(NLS::Tests::SynchronizeSceneForTest(renderScene, fixture.scene, syncOptions).rebuiltCachedCommandCount, 1u);
     auto visible = renderScene.GatherVisibleCommands({});
     ASSERT_EQ(visible.opaques.size(), 1u);
 
@@ -3844,7 +3895,7 @@ TEST(RenderSceneCacheTests, TransientRenderSuppressionHidesMeshWithoutChangingGa
     EXPECT_TRUE(owner->IsSelfActive())
         << "Render-only suppression must not mutate serialized GameObject active state.";
 
-    ASSERT_EQ(renderScene.Synchronize(fixture.scene, syncOptions).rebuiltCachedCommandCount, 0u)
+    ASSERT_EQ(NLS::Tests::SynchronizeSceneForTest(renderScene, fixture.scene, syncOptions).rebuiltCachedCommandCount, 0u)
         << "Render-only suppression should skip retained primitive synchronization.";
     visible = renderScene.GatherVisibleCommands({});
     EXPECT_TRUE(visible.opaques.empty());
@@ -3852,7 +3903,7 @@ TEST(RenderSceneCacheTests, TransientRenderSuppressionHidesMeshWithoutChangingGa
     fixture.meshRenderer->SetTransientRenderingSuppressed(false);
     EXPECT_TRUE(owner->IsSelfActive());
 
-    ASSERT_EQ(renderScene.Synchronize(fixture.scene, syncOptions).rebuiltCachedCommandCount, 1u)
+    ASSERT_EQ(NLS::Tests::SynchronizeSceneForTest(renderScene, fixture.scene, syncOptions).rebuiltCachedCommandCount, 1u)
         << "Restoring render-only suppression should rebuild the retained command after the primitive was skipped.";
     visible = renderScene.GatherVisibleCommands({});
     ASSERT_EQ(visible.opaques.size(), 1u);
@@ -3867,18 +3918,18 @@ TEST(RenderSceneCacheTests, TransientRenderSuppressionRemovesPrimitiveFromRetain
     NLS::Engine::Rendering::RenderSceneSyncOptions syncOptions;
     syncOptions.defaultMaterial = &fixture.material;
 
-    ASSERT_EQ(renderScene.Synchronize(fixture.scene, syncOptions).rebuiltCachedCommandCount, 1u);
+    ASSERT_EQ(NLS::Tests::SynchronizeSceneForTest(renderScene, fixture.scene, syncOptions).rebuiltCachedCommandCount, 1u);
     ASSERT_EQ(renderScene.GetPrimitiveCount(), 1u);
 
     fixture.meshRenderer->SetTransientRenderingSuppressed(true);
 
-    const auto suppressedStats = renderScene.Synchronize(fixture.scene, syncOptions);
+    const auto suppressedStats = NLS::Tests::SynchronizeSceneForTest(renderScene, fixture.scene, syncOptions);
     EXPECT_EQ(suppressedStats.syncTouchedPrimitiveCount, 0u);
     EXPECT_EQ(suppressedStats.removedPrimitiveCount, 1u);
     EXPECT_EQ(renderScene.GetPrimitiveCount(), 0u);
     EXPECT_TRUE(renderScene.GatherVisibleCommands({}).opaques.empty());
 
-    const auto steadySuppressedStats = renderScene.Synchronize(fixture.scene, syncOptions);
+    const auto steadySuppressedStats = NLS::Tests::SynchronizeSceneForTest(renderScene, fixture.scene, syncOptions);
     EXPECT_EQ(steadySuppressedStats.syncTouchedPrimitiveCount, 0u);
     EXPECT_EQ(steadySuppressedStats.removedPrimitiveCount, 0u);
     EXPECT_EQ(steadySuppressedStats.rebuiltCachedCommandCount, 0u);
@@ -3886,7 +3937,7 @@ TEST(RenderSceneCacheTests, TransientRenderSuppressionRemovesPrimitiveFromRetain
 
     fixture.meshRenderer->SetTransientRenderingSuppressed(false);
 
-    const auto restoredStats = renderScene.Synchronize(fixture.scene, syncOptions);
+    const auto restoredStats = NLS::Tests::SynchronizeSceneForTest(renderScene, fixture.scene, syncOptions);
     EXPECT_EQ(restoredStats.addedPrimitiveCount, 1u);
     EXPECT_EQ(restoredStats.rebuiltCachedCommandCount, 1u);
     EXPECT_EQ(renderScene.GetPrimitiveCount(), 1u);
@@ -3903,7 +3954,7 @@ TEST(RenderSceneCacheTests, SerialAndParallelVisibilityProduceEquivalentQueues)
 
     NLS::Engine::Rendering::RenderSceneSyncOptions syncOptions;
     syncOptions.defaultMaterial = &fixture.material;
-    ASSERT_EQ(renderScene.Synchronize(fixture.scene, syncOptions).rebuiltCachedCommandCount, 192u);
+    ASSERT_EQ(NLS::Tests::SynchronizeSceneForTest(renderScene, fixture.scene, syncOptions).rebuiltCachedCommandCount, 192u);
 
     auto frustum = CreateForwardFrustum();
     NLS::Engine::Rendering::LargeSceneSettings largeSceneSettings;
@@ -3953,7 +4004,7 @@ TEST(RenderSceneCacheTests, AutoVisibilityStaysSerialUntilTaskGraphStarts)
 
     NLS::Engine::Rendering::RenderSceneSyncOptions syncOptions;
     syncOptions.defaultMaterial = &fixture.material;
-    ASSERT_EQ(renderScene.Synchronize(fixture.scene, syncOptions).rebuiltCachedCommandCount, 1152u);
+    ASSERT_EQ(NLS::Tests::SynchronizeSceneForTest(renderScene, fixture.scene, syncOptions).rebuiltCachedCommandCount, 1152u);
 
     auto frustum = CreateForwardFrustum();
     NLS::Engine::Rendering::RenderSceneVisibilityOptions visibilityOptions;
@@ -3997,7 +4048,7 @@ TEST(RenderSceneCacheTests, MeshBitsetCanCullIndividualImportedPrefabNodes)
     NLS::Engine::Rendering::RenderScene renderScene;
     NLS::Engine::Rendering::RenderSceneSyncOptions syncOptions;
     syncOptions.defaultMaterial = &fixture.material;
-    ASSERT_EQ(renderScene.Synchronize(fixture.scene, syncOptions).rebuiltCachedCommandCount, 2u);
+    ASSERT_EQ(NLS::Tests::SynchronizeSceneForTest(renderScene, fixture.scene, syncOptions).rebuiltCachedCommandCount, 2u);
 
     auto frustum = CreateForwardFrustum();
     NLS::Engine::Rendering::RenderSceneVisibilityOptions visibilityOptions;
@@ -4047,7 +4098,7 @@ TEST(RenderSceneCacheTests, PickablePrimitiveDrawSourcesUseLastVisibleHandles)
     NLS::Engine::Rendering::RenderScene renderScene;
     NLS::Engine::Rendering::RenderSceneSyncOptions syncOptions;
     syncOptions.defaultMaterial = &fixture.material;
-    ASSERT_EQ(renderScene.Synchronize(fixture.scene, syncOptions).rebuiltCachedCommandCount, 2u);
+    ASSERT_EQ(NLS::Tests::SynchronizeSceneForTest(renderScene, fixture.scene, syncOptions).rebuiltCachedCommandCount, 2u);
 
     auto frustum = CreateForwardFrustum();
     NLS::Engine::Rendering::RenderSceneVisibilityOptions visibilityOptions;
@@ -4119,7 +4170,7 @@ TEST(RenderSceneCacheTests, GatherVisibleCommandsAppliesImportedHierarchyHLODMet
     NLS::Engine::Rendering::RenderSceneSyncOptions syncOptions;
     syncOptions.defaultMaterial = &fixture.material;
     syncOptions.largeSceneSettings = &largeSceneSettings;
-    ASSERT_EQ(renderScene.Synchronize(fixture.scene, syncOptions).rebuiltCachedCommandCount, 3u);
+    ASSERT_EQ(NLS::Tests::SynchronizeSceneForTest(renderScene, fixture.scene, syncOptions).rebuiltCachedCommandCount, 3u);
 
     NLS::Engine::Rendering::RenderSceneVisibilityOptions visibilityOptions;
     visibilityOptions.cameraPosition = {0.0f, 0.0f, 500.0f};
@@ -4190,7 +4241,7 @@ TEST(RenderSceneCacheTests, ImportedHierarchyHLODUsesWorldBoundsForSelection)
     NLS::Engine::Rendering::RenderSceneSyncOptions syncOptions;
     syncOptions.defaultMaterial = &fixture.material;
     syncOptions.largeSceneSettings = &largeSceneSettings;
-    ASSERT_EQ(renderScene.Synchronize(fixture.scene, syncOptions).rebuiltCachedCommandCount, 3u);
+    ASSERT_EQ(NLS::Tests::SynchronizeSceneForTest(renderScene, fixture.scene, syncOptions).rebuiltCachedCommandCount, 3u);
 
     NLS::Engine::Rendering::RenderSceneVisibilityOptions visibilityOptions;
     visibilityOptions.cameraPosition = {0.0f, 0.0f, 500.0f};
@@ -4262,7 +4313,7 @@ TEST(RenderSceneCacheTests, EditorInspectionRootKeepsImportedHierarchyHLODChildr
     NLS::Engine::Rendering::RenderSceneSyncOptions syncOptions;
     syncOptions.defaultMaterial = &fixture.material;
     syncOptions.largeSceneSettings = &largeSceneSettings;
-    ASSERT_EQ(renderScene.Synchronize(fixture.scene, syncOptions).rebuiltCachedCommandCount, 3u);
+    ASSERT_EQ(NLS::Tests::SynchronizeSceneForTest(renderScene, fixture.scene, syncOptions).rebuiltCachedCommandCount, 3u);
 
     NLS::Engine::Rendering::RenderSceneVisibilityOptions visibilityOptions;
     visibilityOptions.cameraPosition = {0.0f, 0.0f, 500.0f};
@@ -4348,7 +4399,7 @@ TEST(RenderSceneCacheTests, ImportedHierarchyHLODMetadataScopesRepeatedSourceKey
     NLS::Engine::Rendering::RenderSceneSyncOptions syncOptions;
     syncOptions.defaultMaterial = &fixture.material;
     syncOptions.largeSceneSettings = &largeSceneSettings;
-    ASSERT_EQ(renderScene.Synchronize(fixture.scene, syncOptions).rebuiltCachedCommandCount, 7u);
+    ASSERT_EQ(NLS::Tests::SynchronizeSceneForTest(renderScene, fixture.scene, syncOptions).rebuiltCachedCommandCount, 7u);
 
     NLS::Engine::Rendering::RenderSceneVisibilityOptions visibilityOptions;
     visibilityOptions.cameraPosition = {0.0f, 0.0f, 500.0f};
@@ -4425,7 +4476,7 @@ TEST(RenderSceneCacheTests, ImportedHierarchyHLODRecordsAreSkippedAndClearedWhen
     NLS::Engine::Rendering::RenderSceneSyncOptions syncOptions;
     syncOptions.defaultMaterial = &fixture.material;
     syncOptions.largeSceneSettings = &disabledSettings;
-    ASSERT_EQ(renderScene.Synchronize(fixture.scene, syncOptions).rebuiltCachedCommandCount, 3u);
+    ASSERT_EQ(NLS::Tests::SynchronizeSceneForTest(renderScene, fixture.scene, syncOptions).rebuiltCachedCommandCount, 3u);
 
     NLS::Engine::Rendering::RenderSceneVisibilityOptions visibilityOptions;
     visibilityOptions.cameraPosition = {0.0f, 0.0f, 500.0f};
@@ -4439,7 +4490,7 @@ TEST(RenderSceneCacheTests, ImportedHierarchyHLODRecordsAreSkippedAndClearedWhen
     EXPECT_EQ(telemetry.activeHLODClusterCount, 0u);
 
     syncOptions.largeSceneSettings = &enabledSettings;
-    ASSERT_EQ(renderScene.Synchronize(fixture.scene, syncOptions).rebuiltCachedCommandCount, 0u);
+    ASSERT_EQ(NLS::Tests::SynchronizeSceneForTest(renderScene, fixture.scene, syncOptions).rebuiltCachedCommandCount, 0u);
     visible = renderScene.GatherVisibleCommands(
         visibilityOptions,
         NLS::Engine::Rendering::RenderSceneVisibilityMode::Serial);
@@ -4451,7 +4502,7 @@ TEST(RenderSceneCacheTests, ImportedHierarchyHLODRecordsAreSkippedAndClearedWhen
     EXPECT_EQ(telemetry.activeHLODClusterCount, 1u);
 
     syncOptions.largeSceneSettings = &disabledSettings;
-    ASSERT_EQ(renderScene.Synchronize(fixture.scene, syncOptions).rebuiltCachedCommandCount, 0u);
+    ASSERT_EQ(NLS::Tests::SynchronizeSceneForTest(renderScene, fixture.scene, syncOptions).rebuiltCachedCommandCount, 0u);
     visible = renderScene.GatherVisibleCommands(
         visibilityOptions,
         NLS::Engine::Rendering::RenderSceneVisibilityMode::Serial);
@@ -4489,7 +4540,7 @@ TEST(RenderSceneCacheTests, SynchronizeKeepsManuallyRegisteredHLODClusters)
     NLS::Engine::Rendering::RenderScene renderScene;
     NLS::Engine::Rendering::RenderSceneSyncOptions syncOptions;
     syncOptions.defaultMaterial = &fixture.material;
-    ASSERT_EQ(renderScene.Synchronize(fixture.scene, syncOptions).rebuiltCachedCommandCount, 3u);
+    ASSERT_EQ(NLS::Tests::SynchronizeSceneForTest(renderScene, fixture.scene, syncOptions).rebuiltCachedCommandCount, 3u);
     const auto snapshot = renderScene.CreatePrimitiveSnapshotForTesting();
     std::vector<NLS::Engine::Rendering::ScenePrimitiveHandle> childHandles;
     std::optional<NLS::Engine::Rendering::ScenePrimitiveHandle> proxyHandle;
@@ -4514,7 +4565,7 @@ TEST(RenderSceneCacheTests, SynchronizeKeepsManuallyRegisteredHLODClusters)
         NLS::Engine::Rendering::HLODCompatibilityFlags::ProxySafe;
     renderScene.RegisterHLODClusterForTesting(cluster);
 
-    ASSERT_EQ(renderScene.Synchronize(fixture.scene, syncOptions).rebuiltCachedCommandCount, 0u);
+    ASSERT_EQ(NLS::Tests::SynchronizeSceneForTest(renderScene, fixture.scene, syncOptions).rebuiltCachedCommandCount, 0u);
 
     NLS::Engine::Rendering::LargeSceneSettings largeSceneSettings;
     largeSceneSettings.enableSpatialIndex = false;
@@ -4550,7 +4601,7 @@ TEST(RenderSceneCacheTests, OpaqueQueueGroupsCompatibleStateAndTransparentKeepsB
     NLS::Engine::Rendering::RenderScene renderScene;
     NLS::Engine::Rendering::RenderSceneSyncOptions syncOptions;
     syncOptions.defaultMaterial = &fixture.opaqueMaterialA;
-    ASSERT_EQ(renderScene.Synchronize(fixture.scene, syncOptions).rebuiltCachedCommandCount, 7u);
+    ASSERT_EQ(NLS::Tests::SynchronizeSceneForTest(renderScene, fixture.scene, syncOptions).rebuiltCachedCommandCount, 7u);
 
     const auto visible = renderScene.GatherVisibleCommands({ nullptr, {} });
 
@@ -4929,7 +4980,7 @@ TEST(RenderSceneCacheTests, DynamicInstancingMergesCompatibleOpaqueCommandsIntoO
     NLS::Engine::Rendering::RenderScene renderScene;
     NLS::Engine::Rendering::RenderSceneSyncOptions syncOptions;
     syncOptions.defaultMaterial = &fixture.opaqueMaterialA;
-    ASSERT_EQ(renderScene.Synchronize(fixture.scene, syncOptions).rebuiltCachedCommandCount, 3u);
+    ASSERT_EQ(NLS::Tests::SynchronizeSceneForTest(renderScene, fixture.scene, syncOptions).rebuiltCachedCommandCount, 3u);
 
     const auto visible = renderScene.GatherVisibleCommands({ nullptr, {} });
 
@@ -4964,7 +5015,7 @@ TEST(RenderSceneCacheTests, OpaqueInstanceOrderRemainsStableWhenCameraMoves)
     NLS::Engine::Rendering::RenderScene renderScene;
     NLS::Engine::Rendering::RenderSceneSyncOptions syncOptions;
     syncOptions.defaultMaterial = &fixture.opaqueMaterialA;
-    ASSERT_EQ(renderScene.Synchronize(fixture.scene, syncOptions).rebuiltCachedCommandCount, 3u);
+    ASSERT_EQ(NLS::Tests::SynchronizeSceneForTest(renderScene, fixture.scene, syncOptions).rebuiltCachedCommandCount, 3u);
 
     NLS::Engine::Rendering::RenderSceneVisibilityOptions visibilityOptions;
     visibilityOptions.cameraPosition = { 0.0f, 0.0f, 0.0f };
@@ -5012,7 +5063,7 @@ TEST(RenderSceneCacheTests, TrustedSingleObjectIndexRemainsStableWhenAVisiblePri
     NLS::Engine::Rendering::RenderScene renderScene;
     NLS::Engine::Rendering::RenderSceneSyncOptions syncOptions;
     syncOptions.defaultMaterial = &fixture.opaqueMaterialA;
-    ASSERT_EQ(renderScene.Synchronize(fixture.scene, syncOptions).rebuiltCachedCommandCount, 2u);
+    ASSERT_EQ(NLS::Tests::SynchronizeSceneForTest(renderScene, fixture.scene, syncOptions).rebuiltCachedCommandCount, 2u);
 
     const auto frustum = CreateForwardFrustum();
     NLS::Engine::Rendering::RenderSceneVisibilityOptions visibilityOptions;
@@ -5047,7 +5098,7 @@ TEST(RenderSceneCacheTests, TrustedSingleObjectIndexRemainsStableWhenAVisiblePri
     ASSERT_NE(retainedBefore.objectIndex, 0u);
 
     hiddenObject->GetTransform()->SetWorldPosition({ 250.0f, 0.0f, -6.0f });
-    ASSERT_EQ(renderScene.Synchronize(fixture.scene, syncOptions).rebuiltCachedCommandCount, 0u);
+    ASSERT_EQ(NLS::Tests::SynchronizeSceneForTest(renderScene, fixture.scene, syncOptions).rebuiltCachedCommandCount, 0u);
     const auto secondVisible = renderScene.GatherVisibleCommands(visibilityOptions);
     ASSERT_EQ(secondVisible.opaques.size(), 1u);
 
@@ -5134,7 +5185,7 @@ TEST(RenderSceneCacheTests, CachedOpaqueSortTokenReusesAcrossCameraMovesAndRebui
     NLS::Engine::Rendering::RenderSceneSyncOptions syncOptions;
     syncOptions.defaultMaterial = &fixture.material;
 
-    ASSERT_EQ(renderScene.Synchronize(fixture.scene, syncOptions).rebuiltCachedCommandCount, 1u);
+    ASSERT_EQ(NLS::Tests::SynchronizeSceneForTest(renderScene, fixture.scene, syncOptions).rebuiltCachedCommandCount, 1u);
     NLS::Engine::Rendering::RenderSceneVisibilityOptions visibilityOptions;
     visibilityOptions.cameraPosition = { 0.0f, 0.0f, 0.0f };
     const auto firstVisible = renderScene.GatherVisibleCommands(visibilityOptions);
@@ -5149,7 +5200,7 @@ TEST(RenderSceneCacheTests, CachedOpaqueSortTokenReusesAcrossCameraMovesAndRebui
     EXPECT_EQ(optimizationStats.opaqueSortTokenRebuildCount, 1u);
     EXPECT_EQ(renderScene.GetOpaqueSortTokenBuildCountForTesting(), 1u);
 
-    ASSERT_EQ(renderScene.Synchronize(fixture.scene, syncOptions).rebuiltCachedCommandCount, 0u);
+    ASSERT_EQ(NLS::Tests::SynchronizeSceneForTest(renderScene, fixture.scene, syncOptions).rebuiltCachedCommandCount, 0u);
     visibilityOptions.cameraPosition = { 10.0f, 3.0f, -4.0f };
     const auto cameraMovedVisible = renderScene.GatherVisibleCommands(visibilityOptions);
     ASSERT_EQ(cameraMovedVisible.opaques.size(), 1u);
@@ -5162,7 +5213,7 @@ TEST(RenderSceneCacheTests, CachedOpaqueSortTokenReusesAcrossCameraMovesAndRebui
     EXPECT_EQ(renderScene.GetOpaqueSortTokenBuildCountForTesting(), 1u);
 
     fixture.material.SetBackfaceCulling(!fixture.material.HasBackfaceCulling());
-    ASSERT_EQ(renderScene.Synchronize(fixture.scene, syncOptions).rebuiltCachedCommandCount, 1u);
+    ASSERT_EQ(NLS::Tests::SynchronizeSceneForTest(renderScene, fixture.scene, syncOptions).rebuiltCachedCommandCount, 1u);
     const auto materialChangedVisible = renderScene.GatherVisibleCommands(visibilityOptions);
     ASSERT_EQ(materialChangedVisible.opaques.size(), 1u);
     NLS::Engine::Rendering::EngineDrawableDescriptor materialChangedDescriptor;
@@ -5183,7 +5234,7 @@ TEST(RenderSceneCacheTests, CachedOpaqueSortTokenReusesAcrossCameraMovesAndRebui
         0u,
         NLS::Render::Resources::MeshBufferUploadMode::GpuOnly,
         { { 0.0f, 0.0f, 0.0f }, 1.0f });
-    ASSERT_EQ(renderScene.Synchronize(fixture.scene, syncOptions).rebuiltCachedCommandCount, 1u);
+    ASSERT_EQ(NLS::Tests::SynchronizeSceneForTest(renderScene, fixture.scene, syncOptions).rebuiltCachedCommandCount, 1u);
     const auto meshChangedVisible = renderScene.GatherVisibleCommands(visibilityOptions);
     ASSERT_EQ(meshChangedVisible.opaques.size(), 1u);
     optimizationStats = renderScene.GetLastDrawCallOptimizationStatsForTesting();
@@ -5205,7 +5256,7 @@ TEST(RenderSceneCacheTests, TransparentAndDecalOrderingRemainCameraDistanceDepen
     NLS::Engine::Rendering::RenderScene renderScene;
     NLS::Engine::Rendering::RenderSceneSyncOptions syncOptions;
     syncOptions.defaultMaterial = &fixture.opaqueMaterialA;
-    ASSERT_EQ(renderScene.Synchronize(fixture.scene, syncOptions).rebuiltCachedCommandCount, 4u);
+    ASSERT_EQ(NLS::Tests::SynchronizeSceneForTest(renderScene, fixture.scene, syncOptions).rebuiltCachedCommandCount, 4u);
 
     NLS::Engine::Rendering::RenderSceneVisibilityOptions visibilityOptions;
     visibilityOptions.cameraPosition = { 0.0f, 0.0f, 0.0f };
@@ -5230,7 +5281,7 @@ TEST(RenderSceneCacheTests, TransparentAndDecalOrderingRemainCameraDistanceDepen
     EXPECT_EQ(optimizationStats.opaqueSortTokenHitCount, 0u);
     EXPECT_EQ(optimizationStats.opaqueSortTokenRebuildCount, 0u);
 
-    ASSERT_EQ(renderScene.Synchronize(fixture.scene, syncOptions).rebuiltCachedCommandCount, 0u);
+    ASSERT_EQ(NLS::Tests::SynchronizeSceneForTest(renderScene, fixture.scene, syncOptions).rebuiltCachedCommandCount, 0u);
     visibilityOptions.cameraPosition = { 100.0f, 0.0f, 0.0f };
     const auto movedVisible = renderScene.GatherVisibleCommands(visibilityOptions);
     ASSERT_EQ(movedVisible.transparents.size(), 2u);
@@ -5252,7 +5303,7 @@ TEST(RenderSceneCacheTests, OpaqueSortKeepsStableAndDistanceFallbackKeysInStrict
     NLS::Engine::Rendering::RenderScene renderScene;
     NLS::Engine::Rendering::RenderSceneSyncOptions syncOptions;
     syncOptions.defaultMaterial = &fixture.opaqueMaterialA;
-    ASSERT_EQ(renderScene.Synchronize(fixture.scene, syncOptions).rebuiltCachedCommandCount, 3u);
+    ASSERT_EQ(NLS::Tests::SynchronizeSceneForTest(renderScene, fixture.scene, syncOptions).rebuiltCachedCommandCount, 3u);
 
     const auto visible = renderScene.GatherVisibleCommands({ nullptr, {} });
     ASSERT_EQ(visible.opaques.size(), 1u);
@@ -5296,7 +5347,7 @@ TEST(RenderSceneCacheTests, ShadowCastFlagDifferenceSplitsDynamicInstances)
     NLS::Engine::Rendering::RenderScene renderScene;
     NLS::Engine::Rendering::RenderSceneSyncOptions syncOptions;
     syncOptions.defaultMaterial = &fixture.opaqueMaterialA;
-    ASSERT_EQ(renderScene.Synchronize(fixture.scene, syncOptions).rebuiltCachedCommandCount, 2u);
+    ASSERT_EQ(NLS::Tests::SynchronizeSceneForTest(renderScene, fixture.scene, syncOptions).rebuiltCachedCommandCount, 2u);
 
     auto visible = renderScene.GatherVisibleCommands({ nullptr, {} });
     ASSERT_EQ(visible.opaques.size(), 1u);
@@ -5324,7 +5375,7 @@ TEST(RenderSceneCacheTests, ShadowReceiveFlagDifferenceSplitsDynamicInstances)
     NLS::Engine::Rendering::RenderScene renderScene;
     NLS::Engine::Rendering::RenderSceneSyncOptions syncOptions;
     syncOptions.defaultMaterial = &fixture.opaqueMaterialA;
-    ASSERT_EQ(renderScene.Synchronize(fixture.scene, syncOptions).rebuiltCachedCommandCount, 2u);
+    ASSERT_EQ(NLS::Tests::SynchronizeSceneForTest(renderScene, fixture.scene, syncOptions).rebuiltCachedCommandCount, 2u);
 
     auto visible = renderScene.GatherVisibleCommands({ nullptr, {} });
     ASSERT_EQ(visible.opaques.size(), 1u);
@@ -5353,11 +5404,11 @@ TEST(RenderSceneCacheTests, DynamicInstancingKeepsSiblingVisibleAfterDeletingOne
     NLS::Engine::Rendering::RenderScene renderScene;
     NLS::Engine::Rendering::RenderSceneSyncOptions syncOptions;
     syncOptions.defaultMaterial = &fixture.opaqueMaterialA;
-    ASSERT_EQ(renderScene.Synchronize(fixture.scene, syncOptions).rebuiltCachedCommandCount, 2u);
+    ASSERT_EQ(NLS::Tests::SynchronizeSceneForTest(renderScene, fixture.scene, syncOptions).rebuiltCachedCommandCount, 2u);
     ASSERT_EQ(renderScene.GatherVisibleCommands({ nullptr, {} }).opaques.size(), 1u);
 
     ASSERT_TRUE(fixture.scene.DestroyGameObject(first));
-    const auto afterDelete = renderScene.Synchronize(fixture.scene, syncOptions);
+    const auto afterDelete = NLS::Tests::SynchronizeSceneForTest(renderScene, fixture.scene, syncOptions);
     const auto visible = renderScene.GatherVisibleCommands({ nullptr, {} });
 
     EXPECT_EQ(afterDelete.removedPrimitiveCount, 1u);
@@ -5380,11 +5431,11 @@ TEST(RenderSceneCacheTests, DynamicInstancingKeepsPersistentNonContiguousObjectI
     NLS::Engine::Rendering::RenderScene renderScene;
     NLS::Engine::Rendering::RenderSceneSyncOptions syncOptions;
     syncOptions.defaultMaterial = &fixture.opaqueMaterialA;
-    ASSERT_EQ(renderScene.Synchronize(fixture.scene, syncOptions).rebuiltCachedCommandCount, 4u);
+    ASSERT_EQ(NLS::Tests::SynchronizeSceneForTest(renderScene, fixture.scene, syncOptions).rebuiltCachedCommandCount, 4u);
 
     // Freeing the third proxy slot leaves persistent object slots {0, 1, 3}.
     ASSERT_TRUE(fixture.scene.DestroyGameObject(removed));
-    ASSERT_EQ(renderScene.Synchronize(fixture.scene, syncOptions).removedPrimitiveCount, 1u);
+    ASSERT_EQ(NLS::Tests::SynchronizeSceneForTest(renderScene, fixture.scene, syncOptions).removedPrimitiveCount, 1u);
 
     const auto visible = renderScene.GatherVisibleCommands({ nullptr, {} });
     ASSERT_EQ(visible.opaques.size(), 1u);
@@ -5422,7 +5473,7 @@ TEST(RenderSceneCacheTests, DynamicInstancingBuildsMergedDescriptorInLinearPass)
     NLS::Engine::Rendering::RenderScene renderScene;
     NLS::Engine::Rendering::RenderSceneSyncOptions syncOptions;
     syncOptions.defaultMaterial = &fixture.opaqueMaterialA;
-    ASSERT_EQ(renderScene.Synchronize(fixture.scene, syncOptions).rebuiltCachedCommandCount, kInstanceCount);
+    ASSERT_EQ(NLS::Tests::SynchronizeSceneForTest(renderScene, fixture.scene, syncOptions).rebuiltCachedCommandCount, kInstanceCount);
 
     const auto visible = renderScene.GatherVisibleCommands({ nullptr, {} });
 
@@ -5461,7 +5512,7 @@ TEST(RenderSceneCacheTests, DynamicInstancingRejectsIncompatibleMeshMaterialAndT
     NLS::Engine::Rendering::RenderScene renderScene;
     NLS::Engine::Rendering::RenderSceneSyncOptions syncOptions;
     syncOptions.defaultMaterial = &fixture.opaqueMaterialA;
-    ASSERT_EQ(renderScene.Synchronize(fixture.scene, syncOptions).rebuiltCachedCommandCount, 6u);
+    ASSERT_EQ(NLS::Tests::SynchronizeSceneForTest(renderScene, fixture.scene, syncOptions).rebuiltCachedCommandCount, 6u);
 
     const auto visible = renderScene.GatherVisibleCommands({ nullptr, {} });
 
@@ -5495,7 +5546,7 @@ TEST(RenderSceneCacheTests, DynamicInstancingRejectsDifferentUserMatrices)
     NLS::Engine::Rendering::RenderScene renderScene;
     NLS::Engine::Rendering::RenderSceneSyncOptions syncOptions;
     syncOptions.defaultMaterial = &fixture.opaqueMaterialA;
-    ASSERT_EQ(renderScene.Synchronize(fixture.scene, syncOptions).rebuiltCachedCommandCount, 2u);
+    ASSERT_EQ(NLS::Tests::SynchronizeSceneForTest(renderScene, fixture.scene, syncOptions).rebuiltCachedCommandCount, 2u);
 
     const auto visible = renderScene.GatherVisibleCommands({ nullptr, {} });
 
@@ -5524,7 +5575,7 @@ TEST(RenderSceneCacheTests, DynamicInstancingSplitsSubmittedDrawsWhenObjectDataL
     EXPECT_EQ(NLS::Render::Data::GetObjectDataCountPerDrawLimitForTesting(), 3u);
     NLS::Engine::Rendering::RenderSceneSyncOptions syncOptions;
     syncOptions.defaultMaterial = &fixture.opaqueMaterialA;
-    ASSERT_EQ(renderScene.Synchronize(fixture.scene, syncOptions).rebuiltCachedCommandCount, 4u);
+    ASSERT_EQ(NLS::Tests::SynchronizeSceneForTest(renderScene, fixture.scene, syncOptions).rebuiltCachedCommandCount, 4u);
 
     const auto visible = renderScene.GatherVisibleCommands({ nullptr, {} });
     const auto optimizationStats = renderScene.GetLastDrawCallOptimizationStatsForTesting();
@@ -5571,7 +5622,7 @@ TEST(RenderSceneCacheTests, DynamicInstancingDropsOverflowObjectsWithDiagnosticW
     EXPECT_EQ(NLS::Render::Data::GetObjectDataCountLimitForTesting(), 3u);
     NLS::Engine::Rendering::RenderSceneSyncOptions syncOptions;
     syncOptions.defaultMaterial = &fixture.opaqueMaterialA;
-    ASSERT_EQ(renderScene.Synchronize(fixture.scene, syncOptions).rebuiltCachedCommandCount, 4u);
+    ASSERT_EQ(NLS::Tests::SynchronizeSceneForTest(renderScene, fixture.scene, syncOptions).rebuiltCachedCommandCount, 4u);
 
     const auto visible = renderScene.GatherVisibleCommands({ nullptr, {} });
     const auto optimizationStats = renderScene.GetLastDrawCallOptimizationStatsForTesting();
@@ -5617,7 +5668,7 @@ TEST(RenderSceneCacheTests, NonIndexedObjectDataDrawsDoNotConsumeGlobalObjectDat
     const ScopedObjectDataCountLimitOverride scopedTotalLimit(3u);
     NLS::Engine::Rendering::RenderSceneSyncOptions syncOptions;
     syncOptions.defaultMaterial = &legacyMaterial;
-    ASSERT_EQ(renderScene.Synchronize(fixture.scene, syncOptions).rebuiltCachedCommandCount, 4u);
+    ASSERT_EQ(NLS::Tests::SynchronizeSceneForTest(renderScene, fixture.scene, syncOptions).rebuiltCachedCommandCount, 4u);
 
     const auto visible = renderScene.GatherVisibleCommands({ nullptr, {} });
     const auto optimizationStats = renderScene.GetLastDrawCallOptimizationStatsForTesting();
@@ -5657,7 +5708,7 @@ TEST(RenderSceneCacheTests, DynamicInstancingDropsOverflowObjectsAfterPerDrawChu
     const ScopedObjectDataCountPerDrawLimitOverride scopedPerDrawLimit(3u);
     NLS::Engine::Rendering::RenderSceneSyncOptions syncOptions;
     syncOptions.defaultMaterial = &fixture.opaqueMaterialA;
-    ASSERT_EQ(renderScene.Synchronize(fixture.scene, syncOptions).rebuiltCachedCommandCount, 8u);
+    ASSERT_EQ(NLS::Tests::SynchronizeSceneForTest(renderScene, fixture.scene, syncOptions).rebuiltCachedCommandCount, 8u);
 
     const auto visible = renderScene.GatherVisibleCommands({ nullptr, {} });
     const auto optimizationStats = renderScene.GetLastDrawCallOptimizationStatsForTesting();
@@ -5703,7 +5754,7 @@ TEST(RenderSceneCacheTests, DenseCompatibleInstancesStayBoundedBySubmittedDrawLi
     const ScopedObjectDataCountPerDrawLimitOverride scopedPerDrawLimit(256u);
     NLS::Engine::Rendering::RenderSceneSyncOptions syncOptions;
     syncOptions.defaultMaterial = &fixture.opaqueMaterialA;
-    ASSERT_EQ(renderScene.Synchronize(fixture.scene, syncOptions).rebuiltCachedCommandCount, kInstanceCount);
+    ASSERT_EQ(NLS::Tests::SynchronizeSceneForTest(renderScene, fixture.scene, syncOptions).rebuiltCachedCommandCount, kInstanceCount);
 
     const auto visible = renderScene.GatherVisibleCommands({ nullptr, {} });
     const auto optimizationStats = renderScene.GetLastDrawCallOptimizationStatsForTesting();
@@ -5734,7 +5785,7 @@ TEST(RenderSceneCacheTests, RetainedSingleDrawPreservesMaterialGpuInstances)
     NLS::Engine::Rendering::RenderScene renderScene;
     NLS::Engine::Rendering::RenderSceneSyncOptions syncOptions;
     syncOptions.defaultMaterial = &fixture.opaqueMaterialA;
-    ASSERT_EQ(renderScene.Synchronize(fixture.scene, syncOptions).rebuiltCachedCommandCount, 2u);
+    ASSERT_EQ(NLS::Tests::SynchronizeSceneForTest(renderScene, fixture.scene, syncOptions).rebuiltCachedCommandCount, 2u);
 
     const auto visible = renderScene.GatherVisibleCommands({ nullptr, {} });
 
@@ -5884,7 +5935,7 @@ TEST(RenderSceneCacheTests, GatherVisibleCommandsSubmitsSceneSelectedRuntimeMesh
     NLS::Engine::Rendering::RenderScene renderScene;
     NLS::Engine::Rendering::RenderSceneSyncOptions syncOptions;
     syncOptions.defaultMaterial = &material;
-    renderScene.Synchronize(scene, syncOptions);
+    NLS::Tests::SynchronizeSceneForTest(renderScene, scene, syncOptions);
 
     NLS::Engine::Rendering::LargeSceneSettings settings;
     settings.enableLOD = true;
@@ -5948,7 +5999,7 @@ TEST(RenderSceneCacheTests, MixedRuntimeMeshLODsGroupByResolvedMeshForDynamicIns
     NLS::Engine::Rendering::RenderScene renderScene;
     NLS::Engine::Rendering::RenderSceneSyncOptions syncOptions;
     syncOptions.defaultMaterial = &material;
-    ASSERT_EQ(renderScene.Synchronize(scene, syncOptions).rebuiltCachedCommandCount, 4u);
+    ASSERT_EQ(NLS::Tests::SynchronizeSceneForTest(renderScene, scene, syncOptions).rebuiltCachedCommandCount, 4u);
 
     NLS::Engine::Rendering::LargeSceneSettings settings;
     settings.enableLOD = true;
@@ -5992,3 +6043,104 @@ TEST(RenderSceneCacheTests, MixedRuntimeMeshLODsGroupByResolvedMeshForDynamicIns
 }
 
 #undef NLS_RENDER_SCENE_CACHE_SKIP_IF_NATIVE_DXC_UNAVAILABLE
+
+TEST(RenderSceneCacheTests, ParsePublicationsAreSharedAndOutliveLaterParses)
+{
+    // The accessors hand out immutable snapshots rather than references into
+    // members a later parse rewrites. Holding one must keep it valid and
+    // unchanged even after another parse publishes.
+    NLS::Render::Settings::DriverSettings driverSettings;
+    driverSettings.graphicsBackend = NLS::Render::Settings::EGraphicsBackend::NONE;
+    NLS::Render::Context::Driver driver(driverSettings);
+    ScopedDriverService driverService(driver);
+    SceneDrawableProbeRenderer renderer(driver);
+
+    // ParseScene needs a scene descriptor; an empty scene is enough to publish.
+    NLS::Engine::SceneSystem::Scene scene;
+    renderer.AddDescriptor<NLS::Engine::Rendering::BaseSceneRenderer::SceneDescriptor>({
+        scene,
+        std::nullopt,
+        nullptr
+    });
+
+    NLS::Render::Entities::Camera camera;
+    NLS::Render::Data::FrameDescriptor frameDescriptor;
+    frameDescriptor.renderWidth = 64u;
+    frameDescriptor.renderHeight = 64u;
+    frameDescriptor.camera = &camera;
+
+    (void)renderer.CaptureSceneDrawables(frameDescriptor);
+
+    const auto firstPickableSources = renderer.GetPublishedPickableSourcesForTesting();
+    const auto firstHZBPacketBuild = renderer.GetPublishedHZBPacketBuildForTesting();
+    ASSERT_NE(firstPickableSources, nullptr);
+    ASSERT_NE(firstHZBPacketBuild, nullptr);
+    const size_t firstPickableCount = firstPickableSources->size();
+
+    // A second parse must publish a fresh snapshot without invalidating the one a
+    // reader already holds.
+    (void)renderer.CaptureSceneDrawables(frameDescriptor);
+    const auto secondPickableSources = renderer.GetPublishedPickableSourcesForTesting();
+    ASSERT_NE(secondPickableSources, nullptr);
+
+    EXPECT_NE(firstPickableSources.get(), secondPickableSources.get())
+        << "each parse must publish its own snapshot";
+    EXPECT_EQ(firstPickableSources->size(), firstPickableCount)
+        << "a held snapshot must not be rewritten by a later parse";
+
+    // The small POD accessor must return a coherent copy.
+    const auto hzbInput = renderer.GetLastHZBFrameInputForTesting();
+    EXPECT_EQ(
+        hzbInput.viewportWidth,
+        static_cast<uint32_t>(frameDescriptor.renderWidth));
+    EXPECT_EQ(
+        hzbInput.viewportHeight,
+        static_cast<uint32_t>(frameDescriptor.renderHeight));
+}
+
+TEST(RenderSceneCacheTests, PublishingAParseDoesNotInvalidateAPreviouslyAcquiredSnapshot)
+{
+    // The accessors used to return references into members that the next parse
+    // rewrote, so a game-thread reader could observe a half-updated parse. They now
+    // hand out immutable snapshots, which means a held snapshot stays valid and
+    // unchanged across further parses.
+    NLS::Render::Settings::DriverSettings driverSettings;
+    driverSettings.graphicsBackend = NLS::Render::Settings::EGraphicsBackend::NONE;
+    NLS::Render::Context::Driver driver(driverSettings);
+    ScopedDriverService driverService(driver);
+    SceneDrawableProbeRenderer renderer(driver);
+
+    NLS::Engine::SceneSystem::Scene scene;
+    renderer.AddDescriptor<NLS::Engine::Rendering::BaseSceneRenderer::SceneDescriptor>({
+        scene,
+        std::nullopt,
+        nullptr
+    });
+
+    NLS::Render::Entities::Camera camera;
+    NLS::Render::Data::FrameDescriptor frameDescriptor;
+    frameDescriptor.renderWidth = 64u;
+    frameDescriptor.renderHeight = 64u;
+    frameDescriptor.camera = &camera;
+
+    (void)renderer.CaptureSceneDrawables(frameDescriptor);
+    const auto heldPacketBuild = renderer.GetPublishedHZBPacketBuildForTesting();
+    ASSERT_NE(heldPacketBuild, nullptr)
+        << "a parse must publish its HZB packet build result";
+    const size_t heldInputCount = heldPacketBuild->primitiveInputs.size();
+
+    // Parse repeatedly: none of these may mutate the snapshot we already hold.
+    for (uint32_t pass = 0u; pass < 3u; ++pass)
+        (void)renderer.CaptureSceneDrawables(frameDescriptor);
+
+    EXPECT_EQ(heldPacketBuild->primitiveInputs.size(), heldInputCount)
+        << "a held snapshot must not be rewritten by a later parse";
+
+    // The live accessor must also stay well-formed after those parses, including
+    // the HZB input POD that game-thread readers consult every frame.
+    const auto currentPacketBuild = renderer.GetPublishedHZBPacketBuildForTesting();
+    ASSERT_NE(currentPacketBuild, nullptr);
+    const auto hzbInput = renderer.GetLastHZBFrameInputForTesting();
+    EXPECT_EQ(hzbInput.viewportWidth, static_cast<uint32_t>(frameDescriptor.renderWidth));
+    EXPECT_EQ(hzbInput.viewportHeight, static_cast<uint32_t>(frameDescriptor.renderHeight));
+}

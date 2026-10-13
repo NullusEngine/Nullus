@@ -209,6 +209,9 @@ TEST(DebugDrawPassTests, ExplicitPassConsumesOnlyVisiblePrimitivesOncePerExecuti
     settings.enableExplicitRHI = false;
 
     static auto driver = std::make_unique<NLS::Render::Context::Driver>(settings);
+    // No render thread: this suite does not exercise threaded frame ownership, so its
+    // fixture driver must not keep a process-wide render thread alive for another suite.
+    driver->ShutdownThreadedRendering();
     NLS::Core::ServiceLocator::Provide(*driver);
 
     PassRecordingRenderer renderer(*driver);
@@ -255,6 +258,9 @@ TEST(DebugDrawPassTests, CompatibleLinesRenderAsSingleBatch)
     settings.enableExplicitRHI = false;
 
     static auto driver = std::make_unique<NLS::Render::Context::Driver>(settings);
+    // No render thread: this suite does not exercise threaded frame ownership, so its
+    // fixture driver must not keep a process-wide render thread alive for another suite.
+    driver->ShutdownThreadedRendering();
     NLS::Core::ServiceLocator::Provide(*driver);
 
     PassRecordingRenderer renderer(*driver);
@@ -298,6 +304,9 @@ TEST(DebugDrawPassTests, LinesWithDifferentRenderStateSplitIntoSeparateBatches)
     settings.enableExplicitRHI = false;
 
     static auto driver = std::make_unique<NLS::Render::Context::Driver>(settings);
+    // No render thread: this suite does not exercise threaded frame ownership, so its
+    // fixture driver must not keep a process-wide render thread alive for another suite.
+    driver->ShutdownThreadedRendering();
     NLS::Core::ServiceLocator::Provide(*driver);
 
     PassRecordingRenderer renderer(*driver);
@@ -349,6 +358,9 @@ TEST(DebugDrawPassTests, NonAdjacentCompatibleLinesDoNotReorderAcrossDifferentLi
     settings.enableExplicitRHI = false;
 
     static auto driver = std::make_unique<NLS::Render::Context::Driver>(settings);
+    // No render thread: this suite does not exercise threaded frame ownership, so its
+    // fixture driver must not keep a process-wide render thread alive for another suite.
+    driver->ShutdownThreadedRendering();
     NLS::Core::ServiceLocator::Provide(*driver);
 
     PassRecordingRenderer renderer(*driver);
@@ -383,10 +395,12 @@ TEST(DebugDrawPassTests, ThreadedPassClearsOneFrameHelpersAfterFrameEndWithoutDu
     NLS::Render::Settings::DriverSettings settings;
     settings.graphicsBackend = NLS::Render::Settings::EGraphicsBackend::NONE;
     settings.enableExplicitRHI = false;
-    settings.enableThreadedRendering = true;
-    settings.threadedFrameSlotCount = 1u;
+    settings.framesInFlight = 1u;
 
     static auto driver = std::make_unique<NLS::Render::Context::Driver>(settings);
+    // No render thread: this suite does not exercise threaded frame ownership, so its
+    // fixture driver must not keep a process-wide render thread alive for another suite.
+    driver->ShutdownThreadedRendering();
     NLS::Core::ServiceLocator::Provide(*driver);
 
     PassRecordingRenderer renderer(*driver);
@@ -432,6 +446,9 @@ TEST(DebugDrawPassTests, LineBatchDrawUsesVertexPositionsAndNonIndexedLineList)
     settings.enableExplicitRHI = false;
 
     static auto driver = std::make_unique<NLS::Render::Context::Driver>(settings);
+    // No render thread: this suite does not exercise threaded frame ownership, so its
+    // fixture driver must not keep a process-wide render thread alive for another suite.
+    driver->ShutdownThreadedRendering();
     NLS::Core::ServiceLocator::Provide(*driver);
 
     PassRecordingRenderer renderer(*driver);
@@ -474,10 +491,12 @@ TEST(DebugDrawPassTests, CompositeRendererExecutePassDrawsDebugLinesDuringActive
     NLS::Render::Settings::DriverSettings settings;
     settings.graphicsBackend = NLS::Render::Settings::EGraphicsBackend::NONE;
     settings.enableExplicitRHI = false;
-    settings.enableThreadedRendering = true;
-    settings.threadedFrameSlotCount = 1u;
+    settings.framesInFlight = 1u;
 
     static auto driver = std::make_unique<NLS::Render::Context::Driver>(settings);
+    // No render thread: this suite does not exercise threaded frame ownership, so its
+    // fixture driver must not keep a process-wide render thread alive for another suite.
+    driver->ShutdownThreadedRendering();
     NLS::Core::ServiceLocator::Provide(*driver);
 
     PassRecordingRenderer renderer(*driver);
@@ -515,6 +534,9 @@ TEST(DebugDrawPassTests, SeparateLineStateBatchesShareUploadedMeshAndUseDrawRang
     settings.enableExplicitRHI = false;
 
     static auto driver = std::make_unique<NLS::Render::Context::Driver>(settings);
+    // No render thread: this suite does not exercise threaded frame ownership, so its
+    // fixture driver must not keep a process-wide render thread alive for another suite.
+    driver->ShutdownThreadedRendering();
     NLS::Core::ServiceLocator::Provide(*driver);
 
     PassRecordingRenderer renderer(*driver);
@@ -561,6 +583,9 @@ TEST(DebugDrawPassTests, LineMeshSlotReusesCapacityWhenLaterFramesNeedFewerVerti
     settings.enableExplicitRHI = false;
 
     static auto driver = std::make_unique<NLS::Render::Context::Driver>(settings);
+    // No render thread: this suite does not exercise threaded frame ownership, so its
+    // fixture driver must not keep a process-wide render thread alive for another suite.
+    driver->ShutdownThreadedRendering();
     NLS::Core::ServiceLocator::Provide(*driver);
 
     PassRecordingRenderer renderer(*driver);
@@ -613,6 +638,9 @@ TEST(DebugDrawPassTests, PersistentLineGroupReusesUploadedMeshUntilContentChange
     settings.enableExplicitRHI = false;
 
     static auto driver = std::make_unique<NLS::Render::Context::Driver>(settings);
+    // No render thread: this suite does not exercise threaded frame ownership, so its
+    // fixture driver must not keep a process-wide render thread alive for another suite.
+    driver->ShutdownThreadedRendering();
     NLS::Core::ServiceLocator::Provide(*driver);
 
     PassRecordingRenderer renderer(*driver);

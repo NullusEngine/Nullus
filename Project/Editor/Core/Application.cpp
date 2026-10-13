@@ -4,6 +4,7 @@
 #include <filesystem>
 #include <stdexcept>
 #include <thread>
+#include <utility>
 
 #include <Profiling/Profiler.h>
 #include <Jobs/JobSystem.h>
@@ -196,9 +197,12 @@ Editor::Core::Application::Application(const std::string& p_projectPath, const s
         if (nativeResizeInProgress)
         {
             const auto framebufferSize = m_context.window->GetFramebufferSize();
+            const auto now = std::chrono::steady_clock::now();
             if (m_hasLastNativeResizeTickSize &&
-                m_lastNativeResizeTickSize.x == framebufferSize.x &&
-                m_lastNativeResizeTickSize.y == framebufferSize.y)
+                !ShouldRefreshNativeResizeFrame(
+                    m_lastNativeResizeTickSize.x != framebufferSize.x ||
+                        m_lastNativeResizeTickSize.y != framebufferSize.y,
+                    now - m_lastEditorFrameCompletedTime))
             {
                 return;
             }
@@ -224,9 +228,20 @@ Editor::Core::Application::Application(const std::string& p_projectPath, const s
         TickResizeFrame();
     };
 
-    const auto handleResizeEvent = [tickWhileResizing]()
+    const auto handleResizeEvent = [this, tickWhileResizing]() noexcept
     {
-        tickWhileResizing();
+        if (m_resizeCallbackException != nullptr)
+            return;
+        try
+        {
+            tickWhileResizing();
+        }
+        catch (...)
+        {
+            // Win32/GLFW callbacks cannot unwind C++ exceptions through the OS.
+            m_resizeCallbackException = std::current_exception();
+            m_pendingResizeTick = false;
+        }
     };
 
     m_context.window->RefreshEvent.AddListener([handleResizeEvent]()
@@ -325,7 +340,12 @@ Editor::Core::Application::Application(const std::string& p_projectPath, const s
         {
             const bool drained =
                 m_context.driver == nullptr ||
-                NLS::Render::Context::DriverRendererAccess::TryDrainThreadedRendering(*m_context.driver);
+                NLS::Render::Context::DriverRendererAccess::TryDrainThreadedRendering(
+                    *m_context.driver,
+                    true,
+                    std::chrono::duration_cast<std::chrono::milliseconds>(
+                        ResolveStartupSceneRendererResourceHardTimeout(
+                            NLS::Base::Jobs::GetBackgroundJobWorkerCount())));
             if (drained)
                 NLS_LOG_INFO("[Startup] FinalStartupSceneReadyFrame submission drain complete");
             return drained;
@@ -375,6 +395,8 @@ Editor::Core::Application::Application(const std::string& p_projectPath, const s
 
 Editor::Core::Application::~Application()
 {
+    // Panel/preview destructors still need the render and RHI lanes to retire work.
+    m_editor.reset();
     m_context.ShutdownThreadedRendering();
 }
 
@@ -417,6 +439,7 @@ bool Editor::Core::Application::WaitForStartupSceneRendererResources()
         {
             if (m_context.device != nullptr)
                 m_context.device->PollEvents();
+            RethrowResizeCallbackException();
             if (!IsRunning())
                 return;
             RunEditorFrame(0.0f);
@@ -639,6 +662,20 @@ bool Editor::Core::Application::FinalizeCameraPerformanceBenchmark()
 {
     const auto& diagnostics = m_context.GetDiagnosticsSettings();
     SetEditorCameraPerformanceStageTimingEnabled(false);
+    if (m_context.driver != nullptr)
+    {
+        const auto latency =
+            Render::Context::DriverRendererAccess::GetFrameLatencyDebugStats(*m_context.driver);
+        NLS_LOG_INFO(
+            "Editor camera benchmark frame latency: openFrames=" +
+            std::to_string(latency.openFrameCount) +
+            " opened=" + std::to_string(latency.openedFrameCount) +
+            " retired=" + std::to_string(latency.retiredFrameCount) +
+            " stalled=" + std::to_string(latency.stalledFrameCount) +
+            " stallTimeouts=" + std::to_string(latency.stallTimeoutCount) +
+            " totalStallMs=" +
+            std::to_string(static_cast<double>(latency.totalStallTimeNanoseconds) / 1.0e6));
+    }
     {
         const auto stageTotals = GetEditorCameraPerformanceStageTotals();
         for (size_t stageIndex = 0; stageIndex < EditorCameraPerformanceStageTotals::kStageCount; ++stageIndex)
@@ -734,6 +771,7 @@ bool Editor::Core::Application::FinalizeCameraPerformanceBenchmark()
 
 void Editor::Core::Application::TickFrame(float p_deltaTime, bool p_pollEvents)
 {
+    RethrowResizeCallbackException();
     if (m_isTicking)
         return;
 
@@ -754,6 +792,7 @@ void Editor::Core::Application::TickFrame(float p_deltaTime, bool p_pollEvents)
             m_editor->PreUpdate();
         }
     }
+    RethrowResizeCallbackException();
     if (!IsRunning())
         return;
 
@@ -818,7 +857,7 @@ void Editor::Core::Application::TickResizeFrame()
     if (!IsRunning())
         return;
 
-    if (ShouldRunResizeFollowUpFrame(true, false, false))
+    if (ShouldRunResizeFollowUpFrame(true, false, false, m_context.window->IsNativeResizeInProgress()))
     {
         // The first resize frame updates ImGui's layout state.
         // The follow-up frame re-renders views against the new panel sizes.
@@ -836,11 +875,21 @@ void Editor::Core::Application::QueueResizeTick()
 
 void Editor::Core::Application::FlushDeferredResizeTick()
 {
+    RethrowResizeCallbackException();
     while (m_pendingResizeTick && IsRunning())
     {
         m_pendingResizeTick = false;
         TickResizeFrame();
     }
+}
+
+void Editor::Core::Application::RethrowResizeCallbackException()
+{
+    if (m_resizeCallbackException == nullptr)
+        return;
+    m_runSucceeded = false;
+    const auto failure = std::exchange(m_resizeCallbackException, nullptr);
+    std::rethrow_exception(failure);
 }
 
 void Editor::Core::Application::PaceIdleFrameIfNeeded()
@@ -915,6 +964,7 @@ void Editor::Core::Application::RunEditorFrame(const float deltaTime)
         m_editor->PostUpdate();
     }
     logFrameStage("EditorPostUpdate");
+    m_lastEditorFrameCompletedTime = std::chrono::steady_clock::now();
 }
 
 void Editor::Core::Application::SyncPlatformSwapchainToFramebufferSize()
@@ -927,9 +977,14 @@ void Editor::Core::Application::SyncPlatformSwapchainToFramebufferSize()
     const auto framebufferSize = m_context.window->GetFramebufferSize();
     if (framebufferSize.x <= 0.0f || framebufferSize.y <= 0.0f)
         return;
+    if (m_lastRequestedSwapchainSize.has_value() &&
+        m_lastRequestedSwapchainSize->x == framebufferSize.x &&
+        m_lastRequestedSwapchainSize->y == framebufferSize.y)
+        return;
 
     m_context.driver->ResizePlatformSwapchain(
         static_cast<uint32_t>(framebufferSize.x),
         static_cast<uint32_t>(framebufferSize.y));
+    m_lastRequestedSwapchainSize = framebufferSize;
 }
 } // namespace NLS

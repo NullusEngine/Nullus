@@ -1,4 +1,5 @@
 #include "Rendering/RHI/Backends/DX12/DX12Synchronization.h"
+#include <limits>
 
 #if defined(_WIN32)
 #include <Windows.h>
@@ -33,7 +34,10 @@ namespace NLS::Render::Backend
 #if defined(_WIN32)
 		if (m_fence == nullptr)
 			return false;
-		return m_fence->GetCompletedValue() >= m_targetValue;
+		const auto completedValue = m_fence->GetCompletedValue();
+		if (completedValue == (std::numeric_limits<UINT64>::max)())
+			return false;
+		return completedValue >= m_targetValue;
 #else
 		return false;
 #endif
@@ -51,9 +55,9 @@ namespace NLS::Render::Backend
 #if defined(_WIN32)
 		if (m_fence == nullptr)
 			return false;
-		if (m_targetValue == 0)
-			return true;
 		const UINT64 completedValue = m_fence->GetCompletedValue();
+		if (completedValue == (std::numeric_limits<UINT64>::max)())
+			return false;
 		if (completedValue >= m_targetValue)
 			return true;
 
@@ -70,7 +74,7 @@ namespace NLS::Render::Backend
 		const DWORD waitMs = NLS::Render::RHI::DX12::ConvertDX12WaitTimeoutNanosecondsToMilliseconds(timeoutNanoseconds);
 		const DWORD result = WaitForSingleObject(event, waitMs);
 		CloseHandle(event);
-		return result == WAIT_OBJECT_0;
+		return result == WAIT_OBJECT_0 && IsSignaled();
 #else
 		(void)timeoutNanoseconds;
 		return false;
@@ -123,7 +127,10 @@ namespace NLS::Render::Backend
 #if defined(_WIN32)
 		if (m_fence == nullptr)
 			return false;
-		return m_waitValue != 0 && m_fence->GetCompletedValue() >= m_waitValue;
+		const auto completedValue = m_fence->GetCompletedValue();
+		if (completedValue == (std::numeric_limits<UINT64>::max)())
+			return false;
+		return m_waitValue != 0 && completedValue >= m_waitValue;
 #else
 		return false;
 #endif
@@ -163,11 +170,6 @@ namespace NLS::Render::Backend
 
 		m_waitValue = ++m_signalValue;
 		return SUCCEEDED(m_fence->Signal(m_waitValue));
-	}
-
-	bool NativeDX12Semaphore::SignalOnQueue(ID3D12CommandQueue* queue)
-	{
-		return SUCCEEDED(SignalOnQueueChecked(queue));
 	}
 
 	HRESULT NativeDX12Semaphore::SignalOnQueueChecked(ID3D12CommandQueue* queue)

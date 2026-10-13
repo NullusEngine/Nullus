@@ -8,10 +8,14 @@
 #include <filesystem>
 #include <limits>
 #include <optional>
+#include <stdexcept>
+#include <Rendering/Context/RenderingThreadSystem.h>
 #include <unordered_map>
 #include <unordered_set>
 
 #include <Json/json.hpp>
+
+#include <Debug/Logger.h>
 
 #include "Components/MeshFilter.h"
 #include "Components/MeshRenderer.h"
@@ -845,37 +849,21 @@ RenderScene::RenderScene()
 {
 }
 
-RenderScene::~RenderScene()
-{
-	if (m_proxyStore != nullptr)
-	{
-		const void* const proxySceneIdentity = m_proxySceneIdentity;
-		const bool releaseRegistryEntry = m_proxyStore.use_count() <= 2;
-		m_proxyStore.reset();
-		m_proxySourceRegistry.reset();
-		if (releaseRegistryEntry && proxySceneIdentity != nullptr)
-			SceneRenderStoreRegistry::Release(proxySceneIdentity);
-	}
-}
+RenderScene::~RenderScene() = default;
 
 SceneProxyUpdateBatch RenderScene::CollectProxyUpdates(
 	SceneSystem::Scene& scene,
 	const RenderSceneSyncOptions& options,
 	const uint64_t frameId)
 {
-	if (m_proxySceneIdentity != &scene)
-	{
-		m_lastProxyStoreChangeSerial = 0u;
-		m_lastProxySceneRevision = 0u;
-		m_lastProxyMeshMutationEpoch = 0u;
-	}
-	m_proxySceneIdentity = &scene;
 	const auto entry = SceneRenderStoreRegistry::Acquire(
 		static_cast<uint64_t>(scene.GetInstanceID()),
-		m_proxySceneIdentity);
-	m_proxySourceRegistry = entry.sourceRegistry;
-	m_proxyStore = entry.store;
-	if (m_proxySourceRegistry == nullptr)
+		&scene);
+
+	// Collect through a handle taken before the call: the registry stays alive for
+	// the duration even if another thread republishes the handles meanwhile.
+	const std::shared_ptr<SceneProxySourceRegistry> sourceRegistry = entry.sourceRegistry;
+	if (sourceRegistry == nullptr)
 		return {};
 
 	SceneProxyExtractionOptions extractionOptions;
@@ -885,40 +873,58 @@ SceneProxyUpdateBatch RenderScene::CollectProxyUpdates(
 	extractionOptions.allowDefaultMaterialForUnresolvedExplicitMaterials =
 		options.allowDefaultMaterialForUnresolvedExplicitMaterials;
 	extractionOptions.largeSceneSettings = options.largeSceneSettings;
-	return m_proxySourceRegistry->Collect(scene, extractionOptions, frameId);
+	return sourceRegistry->Collect(scene, extractionOptions, frameId);
 }
 
 SceneRenderStoreApplyStats RenderScene::ApplyProxyUpdates(const SceneProxyUpdateBatch& batch)
 {
-	if (m_proxyStore == nullptr || m_proxyStore->GetSceneId() != batch.sceneId)
-		if (m_proxySceneIdentity != nullptr)
+	if (!NLS::Render::Context::RenderingThreadSystem::IsInRenderingThread())
+		throw std::logic_error("RenderScene proxy updates require the render thread");
+	std::shared_ptr<SceneRenderStore> store = GetProxyStoreHandle();
+	if (store == nullptr || store->GetSceneId() != batch.sceneId)
+	{
+		const void* const proxySceneIdentity = GetProxySceneIdentity();
+		if (proxySceneIdentity == nullptr)
+			return {};
+
+		store = SceneRenderStoreRegistry::Acquire(
+			batch.sceneId,
+			proxySceneIdentity).store;
 		{
-			m_proxyStore = SceneRenderStoreRegistry::Acquire(
-				batch.sceneId,
-				m_proxySceneIdentity).store;
-			m_lastProxyStoreChangeSerial = 0u;
+			std::lock_guard lock(m_proxyHandleMutex);
+			m_proxyStore = store;
 		}
-	if (m_proxyStore == nullptr)
+		PublishResolvedSynchronizationState({});
+	}
+	if (store == nullptr)
 		return {};
-	const auto stats = m_proxyStore->Apply(batch);
-	m_proxyStore->RetireResourcesThrough(batch.frameId);
+	const auto stats = store->Apply(batch);
+    store->RetireResources();
 	return stats;
 }
 
-const SceneRenderStore& RenderScene::GetProxyStore() const noexcept
+std::shared_ptr<const SceneRenderStore> RenderScene::GetProxyStoreHandle() const
 {
-	static const SceneRenderStore kEmptyStore;
-	return m_proxyStore != nullptr ? *m_proxyStore : kEmptyStore;
+	std::lock_guard lock(m_proxyHandleMutex);
+	return m_proxyStore;
 }
 
-SceneRenderStore& RenderScene::GetProxyStore() noexcept
+std::shared_ptr<SceneRenderStore> RenderScene::GetProxyStoreHandle()
 {
-	if (m_proxyStore == nullptr)
-	{
-		static SceneRenderStore kEmptyStore;
-		return kEmptyStore;
-	}
-	return *m_proxyStore;
+	std::lock_guard lock(m_proxyHandleMutex);
+	return m_proxyStore;
+}
+
+const void* RenderScene::GetProxySceneIdentity() const
+{
+	std::lock_guard lock(m_proxyHandleMutex);
+	return m_proxySceneIdentity;
+}
+
+void RenderScene::SetProxySceneIdentity(const void* const sceneIdentity)
+{
+	std::lock_guard lock(m_proxyHandleMutex);
+	m_proxySceneIdentity = sceneIdentity;
 }
 
 RenderScene::RenderScene(RenderScene&& other) noexcept
@@ -934,7 +940,7 @@ RenderScene::RenderScene(RenderScene&& other) noexcept
 	  m_firstFreePrimitiveSlot(other.m_firstFreePrimitiveSlot),
 	  m_livePrimitiveCount(other.m_livePrimitiveCount),
 	  m_lastSceneFastAccessRevision(other.m_lastSceneFastAccessRevision),
-	  m_lastSceneSynchronizationStamp(other.m_lastSceneSynchronizationStamp),
+	  m_resolvedSynchronization(other.ReadResolvedSynchronizationState()),
 	  m_lastMeshMutationEpoch(other.m_lastMeshMutationEpoch),
 	  m_lastObservedMaterialMutationEpoch(other.m_lastObservedMaterialMutationEpoch),
 	  m_nextCachedCommandBuildSerial(other.m_nextCachedCommandBuildSerial),
@@ -960,10 +966,7 @@ RenderScene::RenderScene(RenderScene&& other) noexcept
 	  m_proxySourceRegistry(std::move(other.m_proxySourceRegistry)),
 	  m_proxyStore(std::move(other.m_proxyStore)),
 	  m_proxySceneIdentity(other.m_proxySceneIdentity),
-	  m_proxyFrameSerial(other.m_proxyFrameSerial),
-	  m_lastProxySceneRevision(other.m_lastProxySceneRevision),
-	  m_lastProxyMeshMutationEpoch(other.m_lastProxyMeshMutationEpoch),
-	  m_lastProxyStoreChangeSerial(other.m_lastProxyStoreChangeSerial)
+	  m_proxyFrameSerial(other.m_proxyFrameSerial)
 {
 	other.ResetMovedFromState();
 }
@@ -985,7 +988,7 @@ RenderScene& RenderScene::operator=(RenderScene&& other) noexcept
 	m_firstFreePrimitiveSlot = other.m_firstFreePrimitiveSlot;
 	m_livePrimitiveCount = other.m_livePrimitiveCount;
 	m_lastSceneFastAccessRevision = other.m_lastSceneFastAccessRevision;
-	m_lastSceneSynchronizationStamp = other.m_lastSceneSynchronizationStamp;
+	PublishResolvedSynchronizationState(other.ReadResolvedSynchronizationState());
 	m_lastMeshMutationEpoch = other.m_lastMeshMutationEpoch;
 	m_lastObservedMaterialMutationEpoch = other.m_lastObservedMaterialMutationEpoch;
 	m_syncMeshLODRevisionDigestCache.clear();
@@ -1013,9 +1016,6 @@ RenderScene& RenderScene::operator=(RenderScene&& other) noexcept
 	m_proxyStore = std::move(other.m_proxyStore);
 	m_proxySceneIdentity = other.m_proxySceneIdentity;
 	m_proxyFrameSerial = other.m_proxyFrameSerial;
-	m_lastProxySceneRevision = other.m_lastProxySceneRevision;
-	m_lastProxyMeshMutationEpoch = other.m_lastProxyMeshMutationEpoch;
-	m_lastProxyStoreChangeSerial = other.m_lastProxyStoreChangeSerial;
 
 	other.ResetMovedFromState();
 	return *this;
@@ -1034,7 +1034,6 @@ void RenderScene::ResetMovedFromState() noexcept
 	m_firstFreePrimitiveSlot.reset();
 	m_livePrimitiveCount = 0u;
 	m_lastSceneFastAccessRevision = 0u;
-	m_lastSceneSynchronizationStamp.reset();
 	m_lastMeshMutationEpoch = 0u;
 	m_lastObservedMaterialMutationEpoch = 0u;
 	m_syncMeshLODRevisionDigestCache.clear();
@@ -1059,13 +1058,42 @@ void RenderScene::ResetMovedFromState() noexcept
 	m_spatialCandidateSnapshotCache.reset();
 	m_spatialCandidateSnapshotCacheHitCount = 0u;
 	m_importedHierarchyHLODClusterHandles.clear();
-	m_proxySourceRegistry.reset();
-	m_proxyStore.reset();
+	{
+		std::lock_guard lock(m_proxyHandleMutex);
+		m_proxySourceRegistry.reset();
+		m_proxyStore.reset();
+	}
 	m_proxySceneIdentity = nullptr;
 	m_proxyFrameSerial = 0u;
-	m_lastProxySceneRevision = 0u;
-	m_lastProxyMeshMutationEpoch = 0u;
-	m_lastProxyStoreChangeSerial = 0u;
+	PublishResolvedSynchronizationState({});
+}
+
+RenderScene::ResolvedSceneSynchronizationState
+RenderScene::ReadResolvedSynchronizationState() const
+{
+	std::lock_guard lock(m_resolvedSynchronizationMutex);
+	return m_resolvedSynchronization;
+}
+
+void RenderScene::PublishResolvedSynchronizationState(
+	const ResolvedSceneSynchronizationState& state)
+{
+	std::lock_guard lock(m_resolvedSynchronizationMutex);
+	m_resolvedSynchronization = state;
+}
+
+std::shared_ptr<const RenderScene::TrackedMaterialKeys>
+RenderScene::ReadTrackedMaterialKeys() const
+{
+	std::lock_guard lock(m_resolvedSynchronizationMutex);
+	return m_trackedMaterialKeys;
+}
+
+void RenderScene::PublishTrackedMaterialKeys(
+	std::shared_ptr<const TrackedMaterialKeys> keys)
+{
+	std::lock_guard lock(m_resolvedSynchronizationMutex);
+	m_trackedMaterialKeys = std::move(keys);
 }
 
 bool RenderScene::CachedCommandInputStamp::operator==(const CachedCommandInputStamp& other) const
@@ -1146,56 +1174,139 @@ bool RenderScene::IntrinsicLODGroupRecordMatches(
 	return true;
 }
 
-RenderSceneSyncStats RenderScene::Synchronize(
+RenderSceneSyncRequest RenderScene::BeginSynchronize(
 	SceneSystem::Scene& scene,
 	const RenderSceneSyncOptions& options)
 {
-	NLS_PROFILE_NAMED_SCOPE("RenderScene::Synchronize");
+	NLS_PROFILE_NAMED_SCOPE("RenderScene::BeginSynchronize");
+
+	// Bound game-thread capture without changing the render thread's current scene.
+	uint64_t claimedCaptureSerial = 0u;
+	{
+		std::lock_guard lock(m_outstandingSynchronizationMutex);
+		if (m_outstandingSynchronizations.size() >= m_maxOutstandingSynchronizations)
+		{
+			NLS_LOG_ERROR(
+				"RenderScene::BeginSynchronize refused: " +
+				std::to_string(m_outstandingSynchronizations.size()) +
+				" capture(s) are still outstanding (limit " +
+				std::to_string(m_maxOutstandingSynchronizations) +
+				"). Resolve them before starting another.");
+			return {};
+		}
+
+		claimedCaptureSerial = ++m_nextCaptureSerial;
+		m_outstandingSynchronizations.push_back(claimedCaptureSerial);
+	}
+
+	RenderSceneSyncRequest request;
+	request.captureSerial = claimedCaptureSerial;
+	request.sceneIdentity = &scene;
+	request.sceneInstanceId = static_cast<uint64_t>(scene.GetInstanceID());
+		request.sceneGameObjectCount = static_cast<uint64_t>(scene.GetGameObjects().size());
+
+	request.proxyStore = SceneRenderStoreRegistry::Acquire(request.sceneInstanceId, &scene).store;
+	const auto resolved = ReadResolvedSynchronizationState();
+	request.sceneIdentityChanged = !resolved.hasSynchronizationStamp ||
+		resolved.synchronizationStamp.scene != &scene;
+
+	request.sceneRenderContentRevision = scene.GetRenderContentRevision();
+	request.meshMutationEpoch = NLS::Render::Resources::Mesh::GetGlobalMutationEpoch();
+	request.trackedMaterialMutationObserved = HasTrackedMaterialMutation();
+	// One consistent snapshot: a torn read here would let this frame believe it
+	// had already accounted for changes the resolve half has not applied yet.
+	request.meshMutationObserved = resolved.meshMutationEpoch != request.meshMutationEpoch;
+
+	const auto synchronizationStamp =
+		BuildSceneSynchronizationStamp(request.sceneIdentity, options);
+	request.synchronizationOptionsChanged =
+		!resolved.hasSynchronizationStamp ||
+		!(resolved.synchronizationStamp == synchronizationStamp);
+	const uint64_t storeChangeSerial =
+		request.proxyStore != nullptr ? request.proxyStore->GetChangeSerial() : 0u;
+	const bool sharedStoreChanged = storeChangeSerial != resolved.storeChangeSerial;
+	const bool hasPendingDeclaredTextures = resolved.hasPendingDeclaredTextures;
+	request.canReuseProxySynchronization =
+		options.trustSceneRenderContentRevision &&
+		request.proxyStore != nullptr &&
+		!request.sceneIdentityChanged &&
+		!request.synchronizationOptionsChanged &&
+		resolved.sceneRenderContentRevision == request.sceneRenderContentRevision &&
+		resolved.meshMutationEpoch == request.meshMutationEpoch &&
+		!request.trackedMaterialMutationObserved &&
+		!sharedStoreChanged &&
+		!hasPendingDeclaredTextures;
+
+	if (!request.canReuseProxySynchronization)
+	{
+		request.sourceNeedsCollection =
+			request.sceneIdentityChanged ||
+			request.synchronizationOptionsChanged ||
+			!options.trustSceneRenderContentRevision ||
+			resolved.sceneRenderContentRevision != request.sceneRenderContentRevision ||
+			request.meshMutationObserved ||
+			request.trackedMaterialMutationObserved;
+	}
+
+	if (request.sourceNeedsCollection)
+	{
+		NLS_PROFILE_NAMED_SCOPE("RenderScene::BeginSynchronize::CollectProxyUpdates");
+		request.frameSerial = ++m_proxyFrameSerial;
+		request.proxyBatch = CollectProxyUpdates(scene, options, request.frameSerial);
+	}
+
+	return request;
+}
+
+RenderSceneSyncStats RenderScene::CompleteSynchronize(
+	RenderSceneSyncRequest request,
+	const RenderSceneSyncOptions& options)
+{
+	if (!NLS::Render::Context::RenderingThreadSystem::IsInRenderingThread())
+		throw std::logic_error("RenderScene synchronization must resolve on the render thread");
+	NLS_PROFILE_NAMED_SCOPE("RenderScene::CompleteSynchronize");
 	const auto syncStart = std::chrono::steady_clock::now();
 	RenderSceneSyncStats stats;
 	m_lastDirtySyncHandles.clear();
 	m_lastRemovedHandles.clear();
 
-	const bool sceneIdentityChanged = m_proxySceneIdentity != &scene;
-	if (sceneIdentityChanged)
+	// Base state for the "did anything change?" decisions below. Read once so the
+	// whole resolve decides against one consistent snapshot.
+	const auto resolvedBefore = ReadResolvedSynchronizationState();
+	// Carried out of the resolve block: the state published below must record the
+	// serial the store was actually observed at, including when no sweep ran.
+	uint64_t observedStoreChangeSerial = resolvedBefore.storeChangeSerial;
+
+	if (!request.IsValid())
 	{
-		m_lastProxyStoreChangeSerial = 0u;
-		m_lastProxySceneRevision = 0u;
-		m_lastProxyMeshMutationEpoch = 0u;
-		m_lastSceneSynchronizationStamp.reset();
-		m_proxySceneIdentity = &scene;
-	}
-	if (sceneIdentityChanged || m_proxyStore == nullptr || m_proxySourceRegistry == nullptr)
-	{
-		const auto entry = SceneRenderStoreRegistry::Acquire(
-			static_cast<uint64_t>(scene.GetInstanceID()),
-			m_proxySceneIdentity);
-		m_proxySourceRegistry = entry.sourceRegistry;
-		m_proxyStore = entry.store;
+		// Nothing was captured, so there is no safe state transition to perform.
+		stats.syncTimeNs = ElapsedNanoseconds(syncStart);
+		return stats;
 	}
 
-	const auto sceneRevision = scene.GetRenderContentRevision();
-	const auto meshMutationEpoch = NLS::Render::Resources::Mesh::GetGlobalMutationEpoch();
-	const bool trackedMaterialMutation = HasTrackedMaterialMutation();
-	const bool meshMutationObserved = m_lastProxyMeshMutationEpoch != meshMutationEpoch;
-	const auto synchronizationStamp = BuildSceneSynchronizationStamp(scene, options);
+	// Re-derived from the same options the capture used, so it compares equal to
+	// the stamp that drove the fast-path decision.
+	const auto synchronizationStamp =
+		BuildSceneSynchronizationStamp(request.sceneIdentity, options);
+	const auto store = request.proxyStore != nullptr
+		? request.proxyStore
+		: SceneRenderStoreRegistry::Acquire(request.sceneInstanceId, request.sceneIdentity).store;
+	const bool sceneIdentityChanged =
+		!resolvedBefore.hasSynchronizationStamp ||
+		resolvedBefore.synchronizationStamp.scene != request.sceneIdentity ||
+		GetProxyStoreHandle() != store;
 	const bool synchronizationOptionsChanged =
-		!m_lastSceneSynchronizationStamp.has_value() ||
-		!(*m_lastSceneSynchronizationStamp == synchronizationStamp);
-	const uint64_t storeChangeSerial =
-		m_proxyStore != nullptr ? m_proxyStore->GetChangeSerial() : 0u;
-	const bool sharedStoreChanged = storeChangeSerial != m_lastProxyStoreChangeSerial;
-	const bool hasPendingDeclaredTextures = !m_pendingDeclaredTextureProxyKeys.empty();
+		!resolvedBefore.hasSynchronizationStamp ||
+		!(resolvedBefore.synchronizationStamp == synchronizationStamp);
+	{
+		std::lock_guard lock(m_proxyHandleMutex);
+		m_proxyStore = store;
+		m_proxySceneIdentity = request.sceneIdentity;
+	}
 	const bool canReuseProxySynchronization =
-		options.trustSceneRenderContentRevision &&
-		m_proxyStore != nullptr &&
-		!sceneIdentityChanged &&
-		!synchronizationOptionsChanged &&
-		m_lastProxySceneRevision == sceneRevision &&
-		m_lastProxyMeshMutationEpoch == meshMutationEpoch &&
-		!trackedMaterialMutation &&
-		!sharedStoreChanged &&
-		!hasPendingDeclaredTextures;
+		request.canReuseProxySynchronization &&
+		!sceneIdentityChanged && !synchronizationOptionsChanged &&
+		store != nullptr && store->GetChangeSerial() == resolvedBefore.storeChangeSerial;
 
 	if (canReuseProxySynchronization)
 	{
@@ -1205,31 +1316,31 @@ RenderSceneSyncStats RenderScene::Synchronize(
 	else
 	{
 		SceneRenderStoreApplyStats applyStats;
-		const bool sourceNeedsCollection =
-			sceneIdentityChanged ||
-			synchronizationOptionsChanged ||
-			!options.trustSceneRenderContentRevision ||
-			m_lastProxySceneRevision != sceneRevision ||
-			meshMutationObserved ||
-			trackedMaterialMutation;
-		if (sourceNeedsCollection)
+		if (request.sourceNeedsCollection)
 		{
-			NLS_PROFILE_NAMED_SCOPE("RenderScene::Synchronize::CollectAndApplyProxyUpdates");
-			const auto proxyBatch = CollectProxyUpdates(scene, options, ++m_proxyFrameSerial);
-			applyStats = ApplyProxyUpdates(proxyBatch);
+			NLS_PROFILE_NAMED_SCOPE("RenderScene::CompleteSynchronize::ApplyProxyUpdates");
+			applyStats = ApplyProxyUpdates(request.proxyBatch);
 		}
 
 		const bool forceFullResync = sceneIdentityChanged || synchronizationOptionsChanged;
+		const bool hasPendingDeclaredTextures =
+			!m_pendingDeclaredTextureProxyKeys.empty();
+		const std::shared_ptr<SceneRenderStore> resolveStore = GetProxyStoreHandle();
 		const bool proxySynchronizationNeeded =
 			forceFullResync ||
 			hasPendingDeclaredTextures ||
-			(m_proxyStore != nullptr &&
-			 m_proxyStore->GetChangeSerial() != m_lastProxyStoreChangeSerial);
+			(resolveStore != nullptr &&
+			 resolveStore->GetChangeSerial() != resolvedBefore.storeChangeSerial);
 		bool observedStoreChange = false;
 		if (proxySynchronizationNeeded)
 		{
-			NLS_PROFILE_NAMED_SCOPE("RenderScene::Synchronize::SynchronizeProxyPrimitives");
-			observedStoreChange = SynchronizeProxyPrimitives(options, stats, forceFullResync);
+			NLS_PROFILE_NAMED_SCOPE("RenderScene::CompleteSynchronize::SynchronizeProxyPrimitives");
+			observedStoreChange = SynchronizeProxyPrimitives(
+				options,
+				stats,
+				forceFullResync,
+				resolvedBefore.storeChangeSerial,
+				observedStoreChangeSerial);
 		}
 		else
 		{
@@ -1317,8 +1428,8 @@ RenderSceneSyncStats RenderScene::Synchronize(
 			applyStats.updatedPayloadCount != 0u ||
 			applyStats.removedProxyCount != 0u;
 		stats.detectedRenderContentChange =
-			trackedMaterialMutation ||
-			meshMutationObserved ||
+			request.trackedMaterialMutationObserved ||
+			request.meshMutationObserved ||
 			synchronizationOptionsChanged ||
 			appliedStoreChange ||
 			observedStoreChange ||
@@ -1328,31 +1439,206 @@ RenderSceneSyncStats RenderScene::Synchronize(
 			stats.rebuiltOpaqueSortTokenCount != 0u ||
 			stats.boundsDirtyPrimitiveCount != 0u;
 	}
-	m_lastSceneSynchronizationStamp = synchronizationStamp;
-	m_lastProxySceneRevision = sceneRevision;
-	m_lastProxyMeshMutationEpoch = meshMutationEpoch;
+	// Publish as one block: the capture half reads all of these together to decide
+	// whether it may reuse this synchronization, so a partial update would let it
+	// skip collecting changes this resolve had not applied.
+	ResolvedSceneSynchronizationState resolvedAfter;
+	resolvedAfter.sceneRenderContentRevision = request.sceneRenderContentRevision;
+	resolvedAfter.meshMutationEpoch = request.meshMutationEpoch;
+	resolvedAfter.storeChangeSerial = observedStoreChangeSerial;
+	resolvedAfter.hasPendingDeclaredTextures = !m_pendingDeclaredTextureProxyKeys.empty();
+	resolvedAfter.hasSynchronizationStamp = true;
+	resolvedAfter.synchronizationStamp = synchronizationStamp;
+	PublishResolvedSynchronizationState(resolvedAfter);
 	m_lastSyncStats = stats;
 	stats.syncTimeNs = ElapsedNanoseconds(syncStart);
 	m_lastSyncStats.syncTimeNs = stats.syncTimeNs;
 	RefreshSyncTelemetry(stats);
+
+	// Mark the capture resolved only now that the sweep is finished: the claim
+	// guard exists because the sweep mutates state the capture reads, so releasing
+	// it earlier would re-open that window.
+	ReleaseCaptureClaim(request.captureSerial);
 	return stats;
+}
+
+SceneRenderStoreApplyStats RenderScene::ApplyDroppedSynchronizeCapture(
+	const RenderSceneSyncRequest& request)
+{
+	if (!NLS::Render::Context::RenderingThreadSystem::IsInRenderingThread())
+		throw std::logic_error("Dropped scene updates require the render thread");
+	if (!request.IsValid())
+		return {};
+
+	// Apply whatever the capture collected. The registry cursor has already moved
+	// past these updates, so dropping them here would lose them outright.
+	SceneRenderStoreApplyStats applyStats;
+	if (!request.proxyBatch.commands.empty() && request.proxyStore != nullptr)
+	{
+		applyStats = request.proxyStore->Apply(request.proxyBatch);
+		request.proxyStore->RetireResources();
+	}
+
+	// Deliberately no primitive rebuild: this frame will not be gathered or drawn.
+	// The next CompleteSynchronize sees the store change serial move and rebuilds.
+	ReleaseCaptureClaim(request.captureSerial);
+	return applyStats;
+}
+
+void RenderScene::ReleaseCaptureClaim(const uint64_t captureSerial) noexcept
+{
+	if (captureSerial == 0u)
+		return;
+
+	// Removes exactly this claim. Erasing by serial rather than popping the front
+	// also releases a claim that resolves out of order, so resolving a newer
+	// capture first cannot leave an older one permanently occupying a slot.
+	std::lock_guard lock(m_outstandingSynchronizationMutex);
+	const auto claim = std::find(
+		m_outstandingSynchronizations.begin(),
+		m_outstandingSynchronizations.end(),
+		captureSerial);
+	if (claim != m_outstandingSynchronizations.end())
+	{
+		m_outstandingSynchronizations.erase(claim);
+	}
+}
+
+void RenderScene::SetMaxOutstandingSynchronizations(const size_t maxOutstanding)
+{
+	std::lock_guard lock(m_outstandingSynchronizationMutex);
+	// At least one: a limit of zero would refuse every capture and the scene could
+	// never render.
+	m_maxOutstandingSynchronizations = (std::max)(size_t { 1u }, maxOutstanding);
+}
+
+size_t RenderScene::GetMaxOutstandingSynchronizations() const
+{
+	std::lock_guard lock(m_outstandingSynchronizationMutex);
+	return m_maxOutstandingSynchronizations;
+}
+
+size_t RenderScene::GetOutstandingSynchronizationCount() const
+{
+	std::lock_guard lock(m_outstandingSynchronizationMutex);
+	return m_outstandingSynchronizations.size();
+}
+
+bool RenderScene::HasOutstandingSynchronization(const uint64_t captureSerial) const
+{
+	if (captureSerial == 0u)
+		return false;
+
+	std::lock_guard lock(m_outstandingSynchronizationMutex);
+	return std::find(
+		m_outstandingSynchronizations.begin(),
+		m_outstandingSynchronizations.end(),
+		captureSerial) != m_outstandingSynchronizations.end();
 }
 
 bool RenderScene::SynchronizeProxyPrimitives(
 	const RenderSceneSyncOptions& options,
 	RenderSceneSyncStats& stats,
-	const bool forceFullResync)
+	const bool forceFullResync,
+	const uint64_t baseStoreChangeSerial,
+	uint64_t& outObservedStoreChangeSerial)
 {
-	auto* store = m_proxyStore.get();
+	const std::shared_ptr<SceneRenderStore> store = GetProxyStoreHandle();
 	if (store == nullptr)
 		return false;
 
 	m_syncMeshLODRevisionDigestCache.clear();
-	const auto changes = store->GetChangesSince(m_lastProxyStoreChangeSerial);
-	const bool fullResync = forceFullResync || changes.requiresFullResync;
+
+	// Copy the proxies this pass needs under one short read view, then release it
+	// before the expensive per-proxy work.
+	//
+	// The store's per-call read helpers release their lock before returning, so a
+	// payload/transform pointer handed back by one of them is unprotected the
+	// instant the call returns, and synchronizeProxy reads far more than one field.
+	// Holding the view for the whole sweep would close that hole but would also
+	// block every other render scene sharing this store from applying its updates
+	// for the whole sweep, declared-texture resolution included.
+	//
+	// Copying first keeps the lock hold proportional to the copied proxy count and
+	// lets the sweep work from one consistent snapshot, so the change serial this
+	// pass records is the serial those copies came from.
+	struct StoreProxySnapshot final
+	{
+		SceneProxyHandle handle;
+		SceneProxyPayload payload;
+		SceneProxyTransformState transform;
+	};
+
+	std::vector<StoreProxySnapshot> snapshots;
+	std::vector<SceneProxyHandle> missingHandles;
+	std::vector<SceneProxyHandle> removedHandles;
+	uint64_t observedChangeSerial = baseStoreChangeSerial;
+	bool changesRequiredFullResync = false;
+
+	{
+		const auto view = store->Read();
+		const auto changes = view.GetChangesSince(baseStoreChangeSerial);
+		observedChangeSerial = changes.changeSerial;
+		changesRequiredFullResync = changes.requiresFullResync;
+
+		if (forceFullResync || changes.requiresFullResync)
+		{
+			snapshots.reserve(view.GetProxyCount());
+			view.ForEachProxy(
+				[&snapshots](
+					const SceneProxyHandle proxyHandle,
+					const SceneProxyPayload& payload,
+					const SceneProxyTransformState& transform)
+				{
+					if (payload.kind != SceneProxyKind::Primitive)
+						return;
+					snapshots.push_back(StoreProxySnapshot { proxyHandle, payload, transform });
+				});
+		}
+		else
+		{
+			removedHandles = changes.removedHandles;
+
+			std::vector<SceneProxyHandle> handlesToSynchronize = changes.changedHandles;
+			handlesToSynchronize.reserve(
+				handlesToSynchronize.size() + m_pendingDeclaredTextureProxyKeys.size());
+			for (const uint64_t proxyKey : m_pendingDeclaredTextureProxyKeys)
+			{
+				const auto found = m_primitiveIndexByProxy.find(proxyKey);
+				if (found == m_primitiveIndexByProxy.end())
+					continue;
+				const auto& primitive = m_primitives[found->second];
+				if (primitive.occupied && !primitive.tombstoned)
+					handlesToSynchronize.push_back(primitive.proxyHandle);
+			}
+
+			std::unordered_set<uint64_t> requestedProxyKeys;
+			requestedProxyKeys.reserve(handlesToSynchronize.size());
+			snapshots.reserve(handlesToSynchronize.size());
+			for (const auto proxyHandle : handlesToSynchronize)
+			{
+				const uint64_t proxyKey = MakeSceneProxyKey(proxyHandle);
+				if (!requestedProxyKeys.insert(proxyKey).second)
+					continue;
+
+				const SceneProxyPayload* payload = nullptr;
+				const SceneProxyTransformState* transform = nullptr;
+				if (!view.TryGetProxy(proxyHandle, payload, transform) ||
+					payload == nullptr || transform == nullptr)
+				{
+					missingHandles.push_back(proxyHandle);
+					continue;
+				}
+
+				snapshots.push_back(StoreProxySnapshot { proxyHandle, *payload, *transform });
+			}
+		}
+	}
+
+	const bool fullResync = forceFullResync || changesRequiredFullResync;
 	const bool observedStoreChange =
-		changes.requiresFullResync ||
-		changes.changeSerial != m_lastProxyStoreChangeSerial;
+		changesRequiredFullResync ||
+		observedChangeSerial != baseStoreChangeSerial;
 	RenderSceneDeclaredTextureLookupCache declaredTextureCache;
 
 	const auto unlinkFreePrimitiveSlot = [this](const size_t primitiveIndex)
@@ -1589,18 +1875,12 @@ bool RenderScene::SynchronizeProxyPrimitives(
 		m_parentByOwnerInstanceId.clear();
 		m_pendingDeclaredTextureProxyKeys.clear();
 		std::unordered_set<uint64_t> liveProxyKeys;
-		liveProxyKeys.reserve(store->GetProxyCount());
-		store->ForEachProxy(
-			[&](
-				const SceneProxyHandle proxyHandle,
-				const SceneProxyPayload& payload,
-				const SceneProxyTransformState& transform)
-			{
-				if (payload.kind != SceneProxyKind::Primitive)
-					return;
-				liveProxyKeys.insert(MakeSceneProxyKey(proxyHandle));
-				synchronizeProxy(proxyHandle, payload, transform);
-			});
+		liveProxyKeys.reserve(snapshots.size());
+		for (const auto& snapshot : snapshots)
+		{
+			liveProxyKeys.insert(MakeSceneProxyKey(snapshot.handle));
+			synchronizeProxy(snapshot.handle, snapshot.payload, snapshot.transform);
+		}
 
 		stats.syncSweepTouchedSlotCount += m_primitiveIndexByProxy.size();
 		for (auto iterator = m_primitiveIndexByProxy.begin();
@@ -1620,7 +1900,7 @@ bool RenderScene::SynchronizeProxyPrimitives(
 	}
 	else
 	{
-		for (const auto removedHandle : changes.removedHandles)
+		for (const auto removedHandle : removedHandles)
 		{
 			const uint64_t proxyKey = MakeSceneProxyKey(removedHandle);
 			m_pendingDeclaredTextureProxyKeys.erase(proxyKey);
@@ -1629,42 +1909,18 @@ bool RenderScene::SynchronizeProxyPrimitives(
 				TombstonePrimitive(found->second, stats);
 		}
 
-		std::vector<SceneProxyHandle> handlesToSynchronize = changes.changedHandles;
-		handlesToSynchronize.reserve(
-			handlesToSynchronize.size() + m_pendingDeclaredTextureProxyKeys.size());
-		for (const uint64_t proxyKey : m_pendingDeclaredTextureProxyKeys)
-		{
-			const auto found = m_primitiveIndexByProxy.find(proxyKey);
-			if (found == m_primitiveIndexByProxy.end())
-				continue;
-			const auto& primitive = m_primitives[found->second];
-			if (primitive.occupied && !primitive.tombstoned)
-				handlesToSynchronize.push_back(primitive.proxyHandle);
-		}
+		for (const auto& snapshot : snapshots)
+			synchronizeProxy(snapshot.handle, snapshot.payload, snapshot.transform);
 
-		std::unordered_set<uint64_t> synchronizedProxyKeys;
-		synchronizedProxyKeys.reserve(handlesToSynchronize.size());
-		for (const auto proxyHandle : handlesToSynchronize)
+		for (const auto handle : missingHandles)
 		{
-			const uint64_t proxyKey = MakeSceneProxyKey(proxyHandle);
-			if (!synchronizedProxyKeys.insert(proxyKey).second)
-				continue;
-
-			const SceneProxyPayload* payload = nullptr;
-			const SceneProxyTransformState* transform = nullptr;
-			if (!store->TryGetProxy(proxyHandle, payload, transform) ||
-				payload == nullptr || transform == nullptr)
-			{
-				const auto found = m_primitiveIndexByProxy.find(proxyKey);
-				if (found != m_primitiveIndexByProxy.end())
-					TombstonePrimitive(found->second, stats);
-				continue;
-			}
-			synchronizeProxy(proxyHandle, *payload, *transform);
+			const auto found = m_primitiveIndexByProxy.find(MakeSceneProxyKey(handle));
+			if (found != m_primitiveIndexByProxy.end())
+				TombstonePrimitive(found->second, stats);
 		}
 	}
 
-	m_lastProxyStoreChangeSerial = changes.changeSerial;
+	outObservedStoreChangeSerial = observedChangeSerial;
 	if (stats.syncTouchedPrimitiveCount == 0u &&
 		stats.addedPrimitiveCount == 0u &&
 		stats.removedPrimitiveCount == 0u)
@@ -1692,14 +1948,20 @@ bool RenderScene::HasTrackedMaterialMutation()
 	if (!hasCompleteMutationJournal)
 		return true;
 
+	// Membership is tested against the resolve half's published snapshot, never
+	// against the live sets: those are rebuilt on the render thread, and this half
+	// runs on the game thread. A null snapshot means no resolve has published yet,
+	// so nothing is tracked and nothing can match.
+	const auto trackedKeys = ReadTrackedMaterialKeys();
+	if (trackedKeys == nullptr)
+		return false;
+
 	for (size_t mutationIndex = 0u; mutationIndex < mutationCount; ++mutationIndex)
 	{
 		const auto& mutation = mutations[mutationIndex];
-		const auto found = m_trackedMaterialStates.find(
-			const_cast<NLS::Render::Resources::Material*>(mutation.material));
-		if (found == m_trackedMaterialStates.end() &&
-			m_trackedMaterialInstanceIds.find(mutation.instanceId) ==
-				m_trackedMaterialInstanceIds.end())
+		if (trackedKeys->materials.find(mutation.material) == trackedKeys->materials.end() &&
+			trackedKeys->instanceIds.find(mutation.instanceId) ==
+				trackedKeys->instanceIds.end())
 			continue;
 
 		return true;
@@ -1741,14 +2003,26 @@ void RenderScene::RefreshTrackedMaterialStates()
 				trackMaterial(slot.stamp.material);
 		}
 	}
+
+	// Publish an immutable copy so the capture half can test membership without
+	// reading the sets this function is rewriting.
+	auto keys = std::make_shared<TrackedMaterialKeys>();
+	keys->materials.reserve(m_trackedMaterialStates.size());
+	for (const auto& [material, state] : m_trackedMaterialStates)
+	{
+		(void)state;
+		keys->materials.insert(material);
+	}
+	keys->instanceIds = m_trackedMaterialInstanceIds;
+	PublishTrackedMaterialKeys(std::move(keys));
 }
 
 RenderScene::SceneSynchronizationStamp RenderScene::BuildSceneSynchronizationStamp(
-	const SceneSystem::Scene& scene,
+	const SceneSystem::Scene* scene,
 	const RenderSceneSyncOptions& options)
 {
 	SceneSynchronizationStamp stamp;
-	stamp.scene = &scene;
+	stamp.scene = scene;
 	stamp.defaultMaterial = options.defaultMaterial;
 	stamp.overrideMaterial = options.overrideMaterial;
 	stamp.requireExplicitMaterialTextures = options.requireExplicitMaterialTextures;
@@ -3281,12 +3555,19 @@ RenderSceneVisibilitySnapshot RenderScene::EvaluateVisibility(
 		return EvaluateVisibilitySpatial(options, meshBaseIndices, mode, buildVisibilityBitsets);
 	if (representationEnabled || occlusionEnabled || options.enableCullReasonDebugSnapshot)
 	{
+		// The pipeline decides for itself between the parallel and serial full
+		// scan, but only when it is told the caller has no opinion. Forcing
+		// Serial here disabled `enableParallelVisibility` for every scene that
+		// uses LOD, HLOD or occlusion - i.e. all of them - and silently turned a
+		// worker-parallel cull into a serial one on the render thread.
 		return EvaluateVisibilityThroughPipeline(
 			options,
 			meshBaseIndices,
 			mode == RenderSceneVisibilityMode::Parallel
 				? SceneVisibilityPipelineMode::Parallel
-				: SceneVisibilityPipelineMode::Serial,
+				: mode == RenderSceneVisibilityMode::Serial
+					? SceneVisibilityPipelineMode::Serial
+					: SceneVisibilityPipelineMode::Auto,
 			buildVisibilityBitsets);
 	}
 
@@ -3603,7 +3884,11 @@ RenderSceneVisibilitySnapshot RenderScene::EvaluateVisibilitySpatial(
 			return EvaluateVisibilityThroughPipeline(
 				options,
 				meshBaseIndices,
-				SceneVisibilityPipelineMode::Serial,
+				mode == RenderSceneVisibilityMode::Parallel
+					? SceneVisibilityPipelineMode::Parallel
+					: mode == RenderSceneVisibilityMode::Serial
+						? SceneVisibilityPipelineMode::Serial
+						: SceneVisibilityPipelineMode::Auto,
 				buildVisibilityBitsets);
 		}
 		return EvaluateVisibilitySerialRange(options, meshBaseIndices, 0u, m_primitives.size());

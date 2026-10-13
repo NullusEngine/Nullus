@@ -918,7 +918,8 @@ Material* MaterialManager::PrewarmArtifactWithDependencies(const std::string& pa
 	return nullptr;
 }
 
-Material* MaterialManager::LoadArtifactWithoutTextures(const std::string& path)
+Material* MaterialManager::LoadArtifactWithoutTextures(
+    const std::string& path, const std::string& targetPlatform)
 {
 	if (auto* cached = GetResource(path, false))
 		return cached;
@@ -926,7 +927,10 @@ Material* MaterialManager::LoadArtifactWithoutTextures(const std::string& path)
 	if (auto* cached = FindCachedMaterialByEquivalentArtifactPath(*this, realPath))
 		return cached;
 
-	auto* loaded = CreateResource(path, {false, true});
+    NLS::Render::Resources::Loaders::MaterialLoader::LoadOptions options;
+    options.loadMissingTextures = false;
+    options.targetPlatform = targetPlatform;
+	auto* loaded = CreateResource(path, options);
 	if (loaded && loaded->IsValid())
 		return RegisterResource(path, loaded);
 

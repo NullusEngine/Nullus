@@ -1,11 +1,14 @@
 #include "Profiling/Profiler.h"
+#include "Profiling/TracyProfiler.h"
 
 #include <algorithm>
 #include <atomic>
 #include <condition_variable>
+#include <functional>
 #include <memory>
 #include <mutex>
 #include <optional>
+#include <thread>
 #include <utility>
 #include <vector>
 
@@ -159,6 +162,14 @@ bool g_hasGpuContext = false;
 thread_local uint32_t g_scopeDepth = 0u;
 thread_local uint32_t g_gpuScopeDepth = 0u;
 thread_local std::string g_threadName;
+
+const std::string& GetCurrentThreadName()
+{
+    if (g_threadName.empty())
+        Profiler::RegisterThread("Thread " +
+            std::to_string(std::hash<std::thread::id> {}(std::this_thread::get_id())));
+    return g_threadName;
+}
 
 bool AcceptsCPUScopes(const ProfilerDestinationState& state)
 {
@@ -445,7 +456,11 @@ size_t Profiler::GetDestinationCountForTesting()
 
 void Profiler::RegisterThread(const std::string_view name)
 {
+    if (name.empty() || name == g_threadName)
+        return;
     g_threadName = std::string(name);
+    // Thread metadata must exist even before a destination or capture is active.
+    TracyProfiler::RegisterThread(g_threadName);
 }
 
 ProfilerScopeEvent Profiler::BeginScope(const std::string_view name, const std::string_view sourceFunction)
@@ -466,7 +481,7 @@ ProfilerScopeEvent Profiler::BeginScope(const std::string_view name, const std::
 
     event.name = name.empty() ? std::string(sourceFunction) : std::string(name);
     event.sourceFunction = std::string(sourceFunction);
-    event.threadName = g_threadName;
+    event.threadName = GetCurrentThreadName();
     event.depth = g_scopeDepth;
 
     if (event.name.empty())
@@ -559,7 +574,7 @@ ProfilerGpuScopeEvent Profiler::BeginGpuScope(
     event.nativeCommandQueue = nativeCommandQueue;
     event.name = name.empty() ? std::string(sourceFunction) : std::string(name);
     event.sourceFunction = std::string(sourceFunction);
-    event.threadName = g_threadName;
+    event.threadName = GetCurrentThreadName();
     event.depth = g_gpuScopeDepth;
 
     if (event.name.empty())

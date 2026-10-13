@@ -70,6 +70,14 @@ namespace NLS::Editor::Rendering
             m_pixelReadbackInFlight = false;
         }
 
+        bool CancelPendingFrame(const uint64_t serial)
+        {
+            if (!m_pendingFrame.has_value() || m_pendingFrame->serial != serial)
+                return false;
+            m_pendingFrame.reset();
+            return true;
+        }
+
         const Frame* GetReadableFrame() const
         {
             return m_readableFrame.has_value() ? &m_readableFrame.value() : nullptr;

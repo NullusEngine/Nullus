@@ -1,6 +1,7 @@
 #pragma once
 
 #include <array>
+#include <atomic>
 #include <functional>
 #include <memory>
 #include <mutex>
@@ -154,6 +155,9 @@ namespace NLS::Engine::Rendering
 				};
 
 				std::shared_ptr<AllDrawables> drawables;
+				std::shared_ptr<SceneParseInput> sceneParseInput;
+				SceneParseCaptureDropper sceneParseDropper;
+				bool suppressLightGridCompute = false;
 				NLS::Render::Resources::TextureCube* skyboxTexture = nullptr;
 				NLS::Render::Resources::Material* skyboxMaterial = nullptr;
 				bool logPreparedDrawResults = false;
@@ -167,11 +171,15 @@ namespace NLS::Engine::Rendering
 		};
 
 			DeferredThreadedCaptureInput BuildThreadedCaptureInputForPreparedBuilder();
+			bool ResolveThreadedSceneCapture(
+				NLS::Render::Context::RenderSceneBuildData& snapshot,
+				DeferredThreadedCaptureInput& captureInput,
+				const NLS::Render::FrameGraph::FrozenFrameDescriptor& frame);
 			void ConsumeThreadedHZBReadbackHandoffs();
 			void CancelCurrentThreadedHZBReadbackHandoff();
 
 		static void SynchronizeThreadedDeferredSnapshot(
-			NLS::Render::Context::FrameSnapshot& snapshot,
+			NLS::Render::Context::RenderSceneBuildData& snapshot,
 			uint64_t queuedGBufferDrawCount,
 			uint64_t queuedDecalDrawCount,
 			uint64_t queuedLightingDrawCount,
@@ -189,8 +197,10 @@ namespace NLS::Engine::Rendering
 			bool captured,
 			bool queued,
 			const PreparedRecordedDraw& preparedDraw) const;
-		NLS::Render::Context::PreparedRenderSceneBuilder BuildDeferredPreparedRenderSceneBuilder(
-			NLS::Render::Context::FrameSnapshot snapshot,
+		NLS::Render::Context::RenderSceneBuildCommand BuildDeferredRenderSceneCommand(
+			NLS::Render::Context::RenderFramePacket packet,
+			std::vector<NLS::Render::Context::RecordedDrawCommandInput> helperDrawCommands,
+			uint64_t helperPassCount,
 			bool hasSkyboxTexture,
 			DeferredThreadedCaptureInput captureInput,
 			std::vector<NLS::Render::Context::RenderPassCommandInput> appendedPassInputs = {},
@@ -199,8 +209,8 @@ namespace NLS::Engine::Rendering
 						uint64_t preferredReadbackTextureGeneration = 0u,
 						uint64_t additionalRenderTargetUseCount = 0u,
 						bool includeDeferredSceneExecution = true);
-		NLS::Render::Context::PreparedRenderSceneBuilder BuildPreparedRenderSceneBuilder(
-			const NLS::Render::Context::FrameSnapshot& snapshot) override;
+		NLS::Render::Context::RenderSceneBuildCommand BuildRenderSceneCommand(
+			const NLS::Render::Context::RenderFramePacket& packet) override;
 			bool TryPublishThreadedFrame() override;
 			void OnThreadedFramePublishFailed() override;
 
@@ -258,6 +268,7 @@ namespace NLS::Engine::Rendering
 		std::unique_ptr<NLS::Render::Resources::Texture2D> m_gBufferNormalTexture;
 		std::unique_ptr<NLS::Render::Resources::Texture2D> m_gBufferMaterialTexture;
 		std::unique_ptr<NLS::Render::Resources::Texture2D> m_gBufferDepthTexture;
+			std::atomic<std::shared_ptr<NLS::Render::RHI::RHITextureView>> m_publishedGBufferDepthView;
 		std::shared_ptr<NLS::Render::RHI::RHITexture> m_hzbTexture;
 		std::shared_ptr<NLS::Render::RHI::RHIBuffer> m_hzbOcclusionPrimitiveInputBuffer;
 		std::shared_ptr<NLS::Render::RHI::RHIBuffer> m_hzbOcclusionPrimitiveResultBuffer;
@@ -288,7 +299,8 @@ namespace NLS::Engine::Rendering
 				std::unordered_map<uint64_t, GBufferMaterialResolveEntry> m_gBufferMaterialResolveCache;
 				std::unordered_map<std::string, DeferredDecalMaterialCacheEntry> m_deferredDecalMaterialCache;
 				std::unordered_map<uint64_t, DeferredDecalMaterialResolveEntry> m_deferredDecalMaterialResolveCache;
-				std::mutex m_threadedPreparedBuilderMutex;
+				std::shared_ptr<SceneParseInput> m_pendingThreadedSceneParse;
+				SceneParseCaptureDropper m_pendingThreadedSceneParseDropper;
 				NLS::Render::Resources::Shader* m_gBufferShader = nullptr;
 		NLS::Render::Resources::Shader* m_deferredDecalShader = nullptr;
 		NLS::Render::Resources::Shader* m_lightingShader = nullptr;
@@ -300,10 +312,6 @@ namespace NLS::Engine::Rendering
 		std::array<uint32_t, 3u> m_hzbOcclusionDispatchGroups{ 1u, 1u, 1u };
 		uint32_t m_hzbOcclusionPrimitiveCount = 1u;
 		uint32_t m_hzbOcclusionObservationPrimitiveCount = 0u;
-		uint64_t m_threadedQueuedGBufferDrawCount = 0u;
-		uint64_t m_threadedQueuedDecalDrawCount = 0u;
-		uint64_t m_threadedQueuedLightingDrawCount = 0u;
-		uint64_t m_threadedQueuedTransparentDrawCount = 0u;
 				// Telemetry validating the game-thread capturable-count estimate against the capture loop.
 				uint64_t m_threadedDrawCountEstimateHitCount = 0u;
 				uint64_t m_threadedDrawCountEstimateMismatchCount = 0u;
@@ -383,13 +391,13 @@ namespace NLS::Engine::Rendering
 			const NLS::Render::Resources::Material& sourceMaterial);
 		static NLS::Render::Settings::EComparaisonAlgorithm GetDeferredDecalDepthCompareForTesting();
 		static bool ShouldSkipThreadedDeferredFramePublishForTesting(
-			const NLS::Render::Context::FrameSnapshot& snapshot,
+			const NLS::Render::Context::RenderSceneBuildData& snapshot,
 			uint64_t queuedGBufferDrawCount,
 			uint64_t queuedDecalDrawCount,
 			uint64_t queuedLightingDrawCount,
 			uint64_t queuedTransparentDrawCount);
 		static void SynchronizeThreadedDeferredSnapshotForTesting(
-			NLS::Render::Context::FrameSnapshot& snapshot,
+			NLS::Render::Context::RenderSceneBuildData& snapshot,
 			uint64_t queuedGBufferDrawCount,
 			uint64_t queuedDecalDrawCount,
 			uint64_t queuedLightingDrawCount,

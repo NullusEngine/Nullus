@@ -24,6 +24,10 @@
 #include "ImGuiExtensions/TimelineProfiler/ProfilerTraceCursor.h"
 #include "Profiling/TracyProfiler.h"
 
+#if NLS_ENABLE_TRACY && !defined(NLS_TRACY_UNAVAILABLE) && defined(_WIN32)
+#include <Windows.h>
+#endif
+
 namespace
 {
 using BaseProfiler = NLS::Base::Profiling::Profiler;
@@ -584,6 +588,56 @@ TEST_F(ProfilerDestinationTest, RegisterThreadLabelsSubsequentScopeEvents)
     ASSERT_EQ(destination.events.size(), 2u);
     EXPECT_EQ(destination.events[0].threadName, "Render Thread");
     EXPECT_EQ(destination.events[1].threadName, "Render Thread");
+}
+
+#if NLS_ENABLE_TRACY && !defined(NLS_TRACY_UNAVAILABLE) && defined(_WIN32)
+TEST_F(ProfilerDestinationTest, ThreadNameReachesNativeThreadBeforeProfilingIsEnabled)
+{
+    using GetDescription = HRESULT(WINAPI*)(HANDLE, PWSTR*);
+    const auto getDescription = reinterpret_cast<GetDescription>(
+        GetProcAddress(GetModuleHandleW(L"kernel32.dll"), "GetThreadDescription"));
+    if (getDescription == nullptr)
+        GTEST_SKIP() << "Native thread descriptions are unavailable.";
+
+    EXPECT_FALSE(BaseProfiler::IsEnabled());
+    EXPECT_EQ(BaseProfiler::GetDestinationCountForTesting(), 0u);
+    auto registeredName = std::async(std::launch::async, [getDescription]
+    {
+        const std::string storage = "Tracy Named Worker suffix";
+        BaseProfiler::RegisterThread(std::string_view(storage).substr(0u, 18u));
+        BaseProfiler::RegisterThread({});
+        PWSTR description = nullptr;
+        const auto result = getDescription(GetCurrentThread(), &description);
+        const std::wstring name = SUCCEEDED(result) && description != nullptr
+            ? description : L"";
+        LocalFree(description);
+        return name;
+    });
+    EXPECT_EQ(registeredName.get(), L"Tracy Named Worker");
+}
+#endif
+
+TEST_F(ProfilerDestinationTest, UnregisteredWorkerScopesHaveAStableNonemptyThreadName)
+{
+    using namespace NLS::Base::Profiling;
+
+    RecordingProfilerDestination destination;
+    destination.m_state.capabilities = ProfilerCapability_CPUScopes | ProfilerCapability_GPUScopes;
+    ScopedProfilerDestinationRegistration registration(destination);
+    BaseProfiler::SetEnabled(true);
+    std::thread worker([]
+    {
+        const auto cpuScope = BaseProfiler::BeginScope("Unnamed Worker CPU", __FUNCTION__);
+        BaseProfiler::EndScope(cpuScope);
+        const auto gpuScope = BaseProfiler::BeginGpuScope(nullptr, "Unnamed Worker GPU", __FUNCTION__);
+        BaseProfiler::EndGpuScope(gpuScope);
+    });
+    worker.join();
+
+    ASSERT_EQ(destination.events.size(), 4u);
+    EXPECT_FALSE(destination.events.front().threadName.empty());
+    for (const auto& event : destination.events)
+        EXPECT_EQ(event.threadName, destination.events.front().threadName);
 }
 
 TEST_F(ProfilerDestinationTest, GpuScopeRoutesOnlyToGpuCapableDestinations)

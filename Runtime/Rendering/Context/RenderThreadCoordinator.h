@@ -3,7 +3,7 @@
 #include <cstddef>
 #include <optional>
 
-#include "Rendering/Context/ThreadedRenderingLifecycle.h"
+#include "Rendering/Context/FrameSubmissionTelemetry.h"
 #include "RenderDef.h"
 
 namespace NLS::Render::Context
@@ -13,29 +13,25 @@ namespace NLS::Render::Context
     struct NLS_RENDER_API RenderThreadCoordinator final
     {
         static bool IsThreadedRenderingEnabled(const Driver& driver);
-        static bool BeginRendererFrame(Driver& driver, bool acquireSwapchainImage);
-        static void EndRendererFrame(Driver& driver, bool presentSwapchain);
-        static bool TryPublishHarnessFrameSnapshot(
+        static bool BeginRendererFrame(
+            Driver& driver, bool waitForRetirement = true, bool targetsSwapchain = true);
+        static void EndRendererFrame(Driver& driver);
+        static bool TryEnqueueRenderFrame(
             Driver& driver,
-            const FrameSnapshot& snapshot,
-            size_t* publishedSlotIndex = nullptr);
-        static bool TryPublishHarnessPreparedFrame(
-            Driver& driver,
-            const FrameSnapshot& snapshot,
-            const RenderScenePackage& renderScenePackage,
-            size_t* publishedSlotIndex = nullptr);
-        static bool TryPublishPreparedFrameBuilder(
-            Driver& driver,
-            const FrameSnapshot& snapshot,
-            PreparedRenderSceneBuilder renderSceneBuilder,
+            const RenderFramePacket& packet,
+            RenderSceneBuildCommand renderSceneBuilder,
             bool applyPendingSwapchainResize = true,
             size_t* publishedSlotIndex = nullptr,
             uint64_t* publishedFrameId = nullptr,
             bool backgroundPreview = false,
             // False performs a single non-blocking slot reservation attempt.
             bool waitForRetirement = true);
-        static bool DrainPendingRenderFrameBuildsSynchronously(Driver& driver);
         static ThreadedFrameTelemetry GetThreadedFrameTelemetry(const Driver& driver);
         static std::optional<ThreadedFrameTelemetry> TryGetThreadedFrameTelemetry(const Driver& driver);
+
+    private:
+        static void EnqueuePublishedFrame(
+            Driver& driver, size_t slotIndex, RenderFramePacket packet,
+            std::shared_ptr<RenderSceneBuildCommand> renderSceneBuilder);
     };
 }

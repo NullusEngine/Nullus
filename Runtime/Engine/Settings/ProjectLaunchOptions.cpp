@@ -25,11 +25,18 @@ ProjectLaunchOptions ReadProjectLaunchOptions(
                 ProjectLaunchOptionKeys::VerticalSynchronization, options.verticalSynchronization);
             options.hasVerticalSynchronization = true;
         }
-        if (projectFile.IsKeyExisting(ProjectLaunchOptionKeys::ThreadedRendering))
+        if (projectFile.IsKeyExisting(ProjectLaunchOptionKeys::RhiThreadMode))
         {
-            options.threadedRendering = projectFile.GetOrDefault<bool>(
-                ProjectLaunchOptionKeys::ThreadedRendering, options.threadedRendering);
-            options.hasThreadedRendering = true;
+            const auto value = projectFile.GetOrDefault<std::string>(ProjectLaunchOptionKeys::RhiThreadMode, "");
+            const auto mode = Render::Settings::ParseRhiThreadModePreference(value);
+            if (!mode.has_value())
+            {
+                if (p_outError != nullptr)
+                    *p_outError = "Invalid rhi_thread_mode: " + value;
+                return options;
+            }
+            options.rhiThreadMode = *mode;
+            options.hasRhiThreadMode = true;
         }
         if (projectFile.IsKeyExisting(ProjectLaunchOptionKeys::RenderDocStartupCaptureFrames))
         {
@@ -66,6 +73,14 @@ bool WriteProjectLaunchOptions(
         return false;
     }
 
+    const char* const rhiMode = Render::Settings::ToConfigString(p_options.rhiThreadMode);
+    if (rhiMode == nullptr)
+    {
+        if (p_outError != nullptr)
+            *p_outError = "Invalid RHI thread mode preference.";
+        return false;
+    }
+
     try
     {
         Filesystem::IniFile projectFile(p_projectFilePath.string());
@@ -76,7 +91,8 @@ bool WriteProjectLaunchOptions(
         };
 
         store(ProjectLaunchOptionKeys::VerticalSynchronization, p_options.verticalSynchronization);
-        store(ProjectLaunchOptionKeys::ThreadedRendering, p_options.threadedRendering);
+        projectFile.Remove("enable_threaded_rendering");
+        store(ProjectLaunchOptionKeys::RhiThreadMode, std::string(rhiMode));
         store(
             ProjectLaunchOptionKeys::RenderDocStartupCaptureFrames,
             p_options.renderDocStartupCaptureFrames < 0 ? 0 : p_options.renderDocStartupCaptureFrames);

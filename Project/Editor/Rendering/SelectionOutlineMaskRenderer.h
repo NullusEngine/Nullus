@@ -10,7 +10,7 @@
 #include <Math/Matrix4.h>
 #include <Math/Vector4.h>
 #include <Rendering/Buffers/MultiFramebuffer.h>
-#include <Rendering/Context/ThreadedRenderingLifecycle.h>
+#include <Rendering/Context/RenderScenePackage.h>
 #include <Rendering/Data/FrameDescriptor.h>
 #include <Rendering/Data/PipelineState.h>
 #include <Rendering/FrameGraph/SceneRenderGraphBuilder.h>

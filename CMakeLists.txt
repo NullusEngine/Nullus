@@ -88,7 +88,47 @@ if(MSVC)
     # cannot silently drop the debugger metadata.
     add_compile_options(
         "$<$<CONFIG:Debug>:/Zi>"
+        "$<$<CONFIG:RelWithDebInfo>:/Zi>"
         "$<$<CONFIG:Release>:/Zi>")
+    # A blank per-config cache variable stops CMake from ever applying the
+    # compiler module's defaults for that configuration, which silently turns
+    # RelWithDebInfo into an unoptimised build with assertions live. That
+    # happened in this repository and invalidated a week of performance
+    # measurements, so every flag variable the build depends on is asserted
+    # here instead of assumed.
+    foreach(_nls_flag_var IN ITEMS
+        CMAKE_CXX_FLAGS CMAKE_C_FLAGS
+        CMAKE_CXX_FLAGS_DEBUG CMAKE_C_FLAGS_DEBUG
+        CMAKE_CXX_FLAGS_RELEASE CMAKE_C_FLAGS_RELEASE
+        CMAKE_CXX_FLAGS_RELWITHDEBINFO CMAKE_C_FLAGS_RELWITHDEBINFO)
+        if("${${_nls_flag_var}}" STREQUAL "")
+            message(FATAL_ERROR
+                "${_nls_flag_var} is empty. CMake only initialises this variable "
+                "when it is absent, so an empty value in the cache removes the "
+                "compiler defaults (/O2, /Ob1, /Zi, /DNDEBUG) and produces an "
+                "unoptimised build that looks like a performance regression. "
+                "Delete CMakeCache.txt and reconfigure, or set the flag "
+                "explicitly on the command line.")
+        endif()
+    endforeach()
+    # Same hazard for the linker: an empty linker-flag variable removes `/debug`,
+    # so the build silently stops emitting PDBs and every crash report is
+    # symbolised against a stale .pdb from an older binary - which is how one
+    # use-after-free in this repository first appeared to be in unrelated code.
+    foreach(_nls_link_flag_var IN ITEMS
+        CMAKE_EXE_LINKER_FLAGS CMAKE_SHARED_LINKER_FLAGS CMAKE_MODULE_LINKER_FLAGS
+        CMAKE_EXE_LINKER_FLAGS_DEBUG CMAKE_SHARED_LINKER_FLAGS_DEBUG CMAKE_MODULE_LINKER_FLAGS_DEBUG
+        CMAKE_EXE_LINKER_FLAGS_RELEASE CMAKE_SHARED_LINKER_FLAGS_RELEASE CMAKE_MODULE_LINKER_FLAGS_RELEASE
+        CMAKE_EXE_LINKER_FLAGS_RELWITHDEBINFO CMAKE_SHARED_LINKER_FLAGS_RELWITHDEBINFO CMAKE_MODULE_LINKER_FLAGS_RELWITHDEBINFO)
+        if("${${_nls_link_flag_var}}" STREQUAL "")
+            message(FATAL_ERROR
+                "${_nls_link_flag_var} is empty. CMake only initialises this variable "
+                "when it is absent, so an empty value in the cache removes the linker "
+                "defaults (/machine:x64, /debug, /INCREMENTAL) and the build stops "
+                "producing usable PDBs. Delete CMakeCache.txt and reconfigure, or set "
+                "the flag explicitly on the command line.")
+        endif()
+    endforeach()
     set(CMAKE_EXE_LINKER_FLAGS_DEBUG
         "${CMAKE_EXE_LINKER_FLAGS_DEBUG} /DEBUG")
     set(CMAKE_SHARED_LINKER_FLAGS_DEBUG
@@ -273,6 +313,16 @@ function(nls_register_external_runtime_file)
 endfunction()
 
 function(nls_copy_shared_runtime_to_target TARGET_NAME)
+    # App is shared by build trees; keep the linked executable for provenance checks.
+    set(_nls_app_binary_archive "${CMAKE_BINARY_DIR}/app-binaries/$<CONFIG>")
+    add_custom_command(TARGET ${TARGET_NAME} POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E make_directory "${_nls_app_binary_archive}"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:${TARGET_NAME}>"
+            "${_nls_app_binary_archive}/$<TARGET_FILE_NAME:${TARGET_NAME}>"
+        VERBATIM
+        COMMENT "Archiving linked binary for ${TARGET_NAME}"
+    )
     if(NLS_USE_SHARED_LIBRARY)
         get_property(_nls_runtime_targets GLOBAL PROPERTY NLS_SHARED_RUNTIME_TARGETS)
         if(_nls_runtime_targets)

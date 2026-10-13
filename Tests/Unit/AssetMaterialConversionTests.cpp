@@ -7,6 +7,7 @@
 #include "Rendering/Assets/TextureMipGenerator.h"
 #include "Rendering/Context/Driver.h"
 #include "Rendering/Context/DriverAccess.h"
+#include "Rendering/Context/DriverInternal.h"
 #include "Rendering/Resources/Loaders/MaterialLoader.h"
 #include "Rendering/Resources/Loaders/ShaderLoader.h"
 #include "Rendering/Resources/Loaders/TextureLoader.h"
@@ -529,9 +530,12 @@ public:
     void Reset() override { m_signaled = false; }
     bool Wait(uint64_t = 0u) override
     {
-        m_signaled = true;
-        return true;
+        if (waitResult)
+            m_signaled = true;
+        return waitResult;
     }
+
+    bool waitResult = true;
 
 private:
     std::string m_debugName;
@@ -604,6 +608,13 @@ public:
         lastTextureUploadDesc = uploadDesc;
         return std::make_shared<TextureLoaderTestTexture>(desc);
     }
+    NLS::Render::RHI::RHIUpdateResult UpdateTexture(
+        const NLS::Render::RHI::RHITextureUpdateDesc& desc) override
+    {
+        return supportsTextureUpdates ? NLS::Render::RHI::RHIUpdateResult {
+            NLS::Render::RHI::RHIUpdateStatusCode::Success, {}, {} }
+            : NLS::Render::RHI::RHIDevice::UpdateTexture(desc);
+    }
     std::shared_ptr<NLS::Render::RHI::RHITextureView> CreateTextureView(
         const std::shared_ptr<NLS::Render::RHI::RHITexture>& texture,
         const NLS::Render::RHI::RHITextureViewDesc& desc) override
@@ -651,6 +662,7 @@ public:
         NLS::Render::Settings::EPixelDataType,
         void*) override {}
 
+    bool supportsTextureUpdates = false;
     size_t textureCreateCalls = 0u;
     size_t bindingLayoutCreateCalls = 0u;
     size_t bindingSetCreateCalls = 0u;
@@ -3299,8 +3311,7 @@ TEST(AssetMaterialConversionTests, DefaultWhiteTextureRecoversRhiHandleAfterHead
 
     NLS::Render::Settings::DriverSettings settings;
     settings.graphicsBackend = NLS::Render::Settings::EGraphicsBackend::NONE;
-    settings.enableThreadedRendering = true;
-    settings.threadedFrameSlotCount = 1u;
+    settings.framesInFlight = 1u;
     NLS::Render::Context::Driver driver(settings);
     const ScopedDriverService driverService(driver);
     auto explicitDevice = std::make_shared<TextureLoaderTestDevice>();
@@ -3331,6 +3342,86 @@ TEST(AssetMaterialConversionTests, DefaultWhiteTextureRecoversRhiHandleAfterHead
     std::filesystem::remove_all(root);
 }
 
+TEST(AssetMaterialConversionTests, DefaultMaterialTexturesRetireOnlyAfterDeviceFrameFencesComplete)
+{
+    const auto root = std::filesystem::temp_directory_path() /
+        ("nullus_default_material_texture_retirement_" + NLS::Guid::New().ToString());
+    const auto artifactPath = ArtifactPath(
+        root,
+        "2b40aa9d7e26302abaee46d90172b24a111dda5b6d466fcf2e7a2aff001a0607");
+    auto reflection = MakeAlbedoMapShaderReflection();
+    reflection.properties.push_back({
+        "u_EnvironmentMap",
+        NLS::Render::Resources::UniformType::UNIFORM_SAMPLER_CUBE,
+        NLS::Render::Resources::ShaderResourceKind::SampledTexture,
+        NLS::Render::ShaderCompiler::ShaderStage::Pixel,
+        NLS::Render::RHI::BindingPointMap::kMaterialBindingSpace,
+        1u, -1, 1, 0u, 0u, {}
+    });
+    WriteBinaryFile(artifactPath, NLS::Render::Assets::SerializeShaderArtifact(
+        MakeShaderArtifact("Assets/Shaders/DefaultMaterialTextureRetirement.hlsl",
+            "shader:DefaultMaterialTextureRetirement", reflection)));
+    auto* shader = NLS::Render::Resources::Loaders::ShaderLoader::Create(artifactPath.string());
+    ASSERT_NE(shader, nullptr);
+
+    for (const bool replaceDevice : {false, true})
+    {
+        SCOPED_TRACE(replaceDevice ? "device replacement" : "driver shutdown");
+        std::vector<std::weak_ptr<NLS::Render::RHI::RHITexture>> textures;
+        {
+            NLS::Render::Settings::DriverSettings settings;
+            settings.graphicsBackend = NLS::Render::Settings::EGraphicsBackend::NONE;
+            NLS::Render::Context::Driver driver(settings);
+            const ScopedDriverService driverService(driver);
+            auto device = std::make_shared<TextureLoaderTestDevice>();
+            device->supportsTextureUpdates = true;
+            NLS::Render::Context::DriverTestAccess::SetExplicitDevice(driver, device);
+            {
+                NLS::Render::Resources::Material material(shader);
+                ASSERT_NE(material.GetExplicitBindingSet(device), nullptr);
+                EXPECT_FALSE(material.HasExplicitBindingErrors());
+                for (const auto& entry : device->lastBindingSetDesc.entries)
+                {
+                    if (entry.type == NLS::Render::RHI::BindingType::Texture && entry.textureView != nullptr)
+                        textures.push_back(entry.textureView->GetTexture());
+                }
+                ASSERT_EQ(textures.size(), 2u);
+            }
+            device->lastBindingSetDesc = {};
+            for (const auto& texture : textures)
+                EXPECT_FALSE(texture.expired());
+
+            auto fence = std::make_shared<TextureLoaderTestFence>("DefaultMaterialRetirementFence");
+            fence->Reset();
+            fence->waitResult = false;
+            NLS::Render::Context::DriverTestAccess::EnsureFrameContext(driver, 0u).frameFence = fence;
+            auto* impl = NLS::Render::Context::DriverTestAccess::GetImplForTesting(driver);
+            ASSERT_NE(impl->frameResourceSlots, nullptr);
+            impl->frameResourceSlots->RetireSlot(0u, fence);
+            const std::shared_ptr<TextureLoaderTestDevice> replacement = replaceDevice
+                ? std::make_shared<TextureLoaderTestDevice>() : nullptr;
+            NLS::Render::Context::DriverTestAccess::SetExplicitDevice(driver, replacement);
+            EXPECT_EQ(NLS::Render::Context::DriverRendererAccess::GetExplicitDevice(driver), device);
+            for (const auto& texture : textures)
+                EXPECT_FALSE(texture.expired()) << "Failed fence drain must keep default textures alive.";
+
+            fence->waitResult = true;
+            if (replaceDevice)
+            {
+                NLS::Render::Context::DriverTestAccess::SetExplicitDevice(driver, replacement);
+                EXPECT_EQ(NLS::Render::Context::DriverRendererAccess::GetExplicitDevice(driver), replacement);
+                for (const auto& texture : textures)
+                    EXPECT_TRUE(texture.expired());
+            }
+        }
+        for (const auto& texture : textures)
+            EXPECT_TRUE(texture.expired()) << "Device shutdown must retire cached default textures.";
+    }
+
+    EXPECT_TRUE(NLS::Render::Resources::Loaders::ShaderLoader::Destroy(shader));
+    std::filesystem::remove_all(root);
+}
+
 TEST(AssetMaterialConversionTests, ShaderReflectionFallsBackToRuntimeCompileBackendWhenLocatedDriverHasNoRhi)
 {
     const auto root = std::filesystem::temp_directory_path() /
@@ -3349,11 +3440,10 @@ TEST(AssetMaterialConversionTests, ShaderReflectionFallsBackToRuntimeCompileBack
     {
         NLS::Render::Settings::DriverSettings driverSettings;
         driverSettings.graphicsBackend = NLS::Render::Settings::EGraphicsBackend::NONE;
-        driverSettings.enableThreadedRendering = true;
-        driverSettings.threadedFrameSlotCount = 1u;
+        driverSettings.framesInFlight = 1u;
         return driverSettings;
     }();
-    static NLS::Render::Context::Driver driver(settings);
+    NLS::Render::Context::Driver driver(settings);
     const ScopedDriverService driverService(driver);
     NLS::Render::Context::DriverTestAccess::PauseThreadedRenderingWorkers(driver);
 
@@ -3416,8 +3506,7 @@ TEST(AssetMaterialConversionTests, ConvertedMaterialPayloadLoadsAsRuntimeMateria
 
     NLS::Render::Settings::DriverSettings settings;
     settings.graphicsBackend = NLS::Render::Settings::EGraphicsBackend::NONE;
-    settings.enableThreadedRendering = true;
-    settings.threadedFrameSlotCount = 1u;
+    settings.framesInFlight = 1u;
 
     NLS::Render::Context::Driver driver(settings);
     const ScopedDriverService driverService(driver);
@@ -3532,8 +3621,7 @@ PROPERTY_END
     NLS::Core::ServiceLocator::Provide<NLS::Core::ResourceManagement::TextureManager>(textureManager);
     NLS::Render::Settings::DriverSettings settings;
     settings.graphicsBackend = NLS::Render::Settings::EGraphicsBackend::NONE;
-    settings.enableThreadedRendering = true;
-    settings.threadedFrameSlotCount = 1u;
+    settings.framesInFlight = 1u;
     NLS::Render::Context::Driver driver(settings);
     const ScopedDriverService driverService(driver);
     NLS::Render::Context::DriverTestAccess::PauseThreadedRenderingWorkers(driver);
@@ -3611,8 +3699,7 @@ TEST(AssetMaterialConversionTests, ConvertedMaterialPayloadLoadsDeclaredTextureS
 
     NLS::Render::Settings::DriverSettings settings;
     settings.graphicsBackend = NLS::Render::Settings::EGraphicsBackend::NONE;
-    settings.enableThreadedRendering = true;
-    settings.threadedFrameSlotCount = 1u;
+    settings.framesInFlight = 1u;
     NLS::Render::Context::Driver driver(settings);
     const ScopedDriverService driverService(driver);
     NLS::Render::Context::DriverTestAccess::PauseThreadedRenderingWorkers(driver);
@@ -3674,8 +3761,7 @@ TEST(AssetMaterialConversionTests, MaterialLoaderKeepsDistinctTextureSlotsWhenTe
 
     NLS::Render::Settings::DriverSettings settings;
     settings.graphicsBackend = NLS::Render::Settings::EGraphicsBackend::NONE;
-    settings.enableThreadedRendering = true;
-    settings.threadedFrameSlotCount = 1u;
+    settings.framesInFlight = 1u;
     NLS::Render::Context::Driver driver(settings);
     const ScopedDriverService driverService(driver);
     NLS::Render::Context::DriverTestAccess::PauseThreadedRenderingWorkers(driver);
@@ -3770,8 +3856,7 @@ TEST(AssetMaterialConversionTests, MaterialLoaderAppliesShaderLabTextureSlotSamp
 
     NLS::Render::Settings::DriverSettings settings;
     settings.graphicsBackend = NLS::Render::Settings::EGraphicsBackend::NONE;
-    settings.enableThreadedRendering = true;
-    settings.threadedFrameSlotCount = 1u;
+    settings.framesInFlight = 1u;
     NLS::Render::Context::Driver driver(settings);
     const ScopedDriverService driverService(driver);
     NLS::Render::Context::DriverTestAccess::PauseThreadedRenderingWorkers(driver);
@@ -4076,8 +4161,7 @@ TEST(AssetMaterialConversionTests, MaterialManagerPreviewAsyncArtifactReturnsMat
 
     NLS::Render::Settings::DriverSettings settings;
     settings.graphicsBackend = NLS::Render::Settings::EGraphicsBackend::NONE;
-    settings.enableThreadedRendering = true;
-    settings.threadedFrameSlotCount = 1u;
+    settings.framesInFlight = 1u;
     NLS::Render::Context::Driver driver(settings);
     const ScopedDriverService driverService(driver);
     NLS::Render::Context::DriverTestAccess::PauseThreadedRenderingWorkers(driver);
@@ -4235,8 +4319,7 @@ TEST(AssetMaterialConversionTests, MaterialReloadClearsPreviousTextureSlotSample
 
     NLS::Render::Settings::DriverSettings settings;
     settings.graphicsBackend = NLS::Render::Settings::EGraphicsBackend::NONE;
-    settings.enableThreadedRendering = true;
-    settings.threadedFrameSlotCount = 1u;
+    settings.framesInFlight = 1u;
     NLS::Render::Context::Driver driver(settings);
     const ScopedDriverService driverService(driver);
     NLS::Render::Context::DriverTestAccess::PauseThreadedRenderingWorkers(driver);
@@ -4317,8 +4400,7 @@ TEST(AssetMaterialConversionTests, MaterialLoaderDoesNotWarnWhenTextureLoadingIs
 
     NLS::Render::Settings::DriverSettings settings;
     settings.graphicsBackend = NLS::Render::Settings::EGraphicsBackend::NONE;
-    settings.enableThreadedRendering = true;
-    settings.threadedFrameSlotCount = 1u;
+    settings.framesInFlight = 1u;
     NLS::Render::Context::Driver driver(settings);
     const ScopedDriverService driverService(driver);
     NLS::Render::Context::DriverTestAccess::PauseThreadedRenderingWorkers(driver);
@@ -4430,8 +4512,7 @@ TEST(AssetMaterialConversionTests, MaterialLoaderPrefersShaderLabPropertyNamesOv
     NLS::Core::ServiceLocator::Provide<NLS::Core::ResourceManagement::TextureManager>(textureManager);
     NLS::Render::Settings::DriverSettings settings;
     settings.graphicsBackend = NLS::Render::Settings::EGraphicsBackend::NONE;
-    settings.enableThreadedRendering = true;
-    settings.threadedFrameSlotCount = 1u;
+    settings.framesInFlight = 1u;
     NLS::Render::Context::Driver driver(settings);
     const ScopedDriverService driverService(driver);
     NLS::Render::Context::DriverTestAccess::PauseThreadedRenderingWorkers(driver);
@@ -4619,8 +4700,7 @@ TEST(AssetMaterialConversionTests, MaterialArtifactCanLoadShaderWhileDeferringTe
 
     NLS::Render::Settings::DriverSettings settings;
     settings.graphicsBackend = NLS::Render::Settings::EGraphicsBackend::NONE;
-    settings.enableThreadedRendering = true;
-    settings.threadedFrameSlotCount = 1u;
+    settings.framesInFlight = 1u;
     NLS::Render::Context::Driver driver(settings);
     const ScopedDriverService driverService(driver);
     NLS::Render::Context::DriverTestAccess::PauseThreadedRenderingWorkers(driver);
@@ -4675,8 +4755,7 @@ TEST(AssetMaterialConversionTests, MaterialLoaderReusesEquivalentCachedTextureAr
 
     NLS::Render::Settings::DriverSettings settings;
     settings.graphicsBackend = NLS::Render::Settings::EGraphicsBackend::NONE;
-    settings.enableThreadedRendering = true;
-    settings.threadedFrameSlotCount = 1u;
+    settings.framesInFlight = 1u;
     NLS::Render::Context::Driver driver(settings);
     const ScopedDriverService driverService(driver);
     NLS::Render::Context::DriverTestAccess::PauseThreadedRenderingWorkers(driver);
@@ -4749,8 +4828,7 @@ TEST(AssetMaterialConversionTests, MaterialLoaderReusesEquivalentCachedTextureAr
 
     NLS::Render::Settings::DriverSettings settings;
     settings.graphicsBackend = NLS::Render::Settings::EGraphicsBackend::NONE;
-    settings.enableThreadedRendering = true;
-    settings.threadedFrameSlotCount = 1u;
+    settings.framesInFlight = 1u;
     NLS::Render::Context::Driver driver(settings);
     const ScopedDriverService driverService(driver);
     NLS::Render::Context::DriverTestAccess::PauseThreadedRenderingWorkers(driver);
@@ -4822,8 +4900,7 @@ TEST(AssetMaterialConversionTests, TextureLoaderReadsImportedTextureArtifactPayl
 
     NLS::Render::Settings::DriverSettings settings;
     settings.graphicsBackend = NLS::Render::Settings::EGraphicsBackend::NONE;
-    settings.enableThreadedRendering = true;
-    settings.threadedFrameSlotCount = 1u;
+    settings.framesInFlight = 1u;
     NLS::Render::Context::Driver driver(settings);
     const ScopedDriverService driverService(driver);
     NLS::Render::Context::DriverTestAccess::PauseThreadedRenderingWorkers(driver);
@@ -4852,8 +4929,7 @@ TEST(AssetMaterialConversionTests, TextureLoaderCreateRejectsSourceImagesButExpl
 
     NLS::Render::Settings::DriverSettings settings;
     settings.graphicsBackend = NLS::Render::Settings::EGraphicsBackend::NONE;
-    settings.enableThreadedRendering = true;
-    settings.threadedFrameSlotCount = 1u;
+    settings.framesInFlight = 1u;
     NLS::Render::Context::Driver driver(settings);
     const ScopedDriverService driverService(driver);
     NLS::Render::Context::DriverTestAccess::PauseThreadedRenderingWorkers(driver);
@@ -4894,8 +4970,7 @@ TEST(AssetMaterialConversionTests, TextureLoaderReadsImportedRgb16TextureArtifac
 
     NLS::Render::Settings::DriverSettings settings;
     settings.graphicsBackend = NLS::Render::Settings::EGraphicsBackend::NONE;
-    settings.enableThreadedRendering = true;
-    settings.threadedFrameSlotCount = 1u;
+    settings.framesInFlight = 1u;
     NLS::Render::Context::Driver driver(settings);
     const ScopedDriverService driverService(driver);
     NLS::Render::Context::DriverTestAccess::PauseThreadedRenderingWorkers(driver);
@@ -4943,8 +5018,7 @@ TEST(AssetMaterialConversionTests, TextureLoaderReadsNativeTextureArtifactWithou
 
     NLS::Render::Settings::DriverSettings settings;
     settings.graphicsBackend = NLS::Render::Settings::EGraphicsBackend::NONE;
-    settings.enableThreadedRendering = true;
-    settings.threadedFrameSlotCount = 1u;
+    settings.framesInFlight = 1u;
     NLS::Render::Context::Driver driver(settings);
     const ScopedDriverService driverService(driver);
     NLS::Render::Context::DriverTestAccess::PauseThreadedRenderingWorkers(driver);
@@ -5012,8 +5086,7 @@ TEST(AssetMaterialConversionTests, TextureLoaderPropagatesCompressedArtifactMeta
 
     NLS::Render::Settings::DriverSettings settings;
     settings.graphicsBackend = NLS::Render::Settings::EGraphicsBackend::NONE;
-    settings.enableThreadedRendering = true;
-    settings.threadedFrameSlotCount = 1u;
+    settings.framesInFlight = 1u;
     NLS::Render::Context::Driver driver(settings);
     const ScopedDriverService driverService(driver);
     auto explicitDevice = std::make_shared<TextureLoaderTestDevice>();
@@ -5064,8 +5137,7 @@ TEST(AssetMaterialConversionTests, TextureLoaderWarnsWhenCompressedArtifactBacke
 
     NLS::Render::Settings::DriverSettings settings;
     settings.graphicsBackend = NLS::Render::Settings::EGraphicsBackend::NONE;
-    settings.enableThreadedRendering = true;
-    settings.threadedFrameSlotCount = 1u;
+    settings.framesInFlight = 1u;
     NLS::Render::Context::Driver driver(settings);
     const ScopedDriverService driverService(driver);
     NLS::Render::Context::DriverTestAccess::PauseThreadedRenderingWorkers(driver);

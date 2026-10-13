@@ -19,6 +19,7 @@
 #include "Math/Vector4.h"
 #include "SceneSystem/Scene.h"
 #include "Rendering/Context/DriverAccess.h"
+#include "Rendering/Context/RhiCommandListExecutor.h"
 #include "Rendering/Entities/Camera.h"
 #include "Rendering/Entities/Light.h"
 #include "Rendering/RHI/Core/RHIDevice.h"
@@ -834,6 +835,8 @@ namespace NLS::Editor::Rendering
 
         id<MTLTexture> texture = (__bridge id<MTLTexture>)nativeTexture.handle;
         id<MTLCommandBuffer> commandBuffer = [m_impl->queue commandBuffer];
+        if (commandBuffer == nil)
+            return false;
         MTLRenderPassDescriptor* renderPass = [MTLRenderPassDescriptor renderPassDescriptor];
         auto* colorAttachment = renderPass.colorAttachments[0];
         colorAttachment.texture = texture;
@@ -1035,7 +1038,40 @@ namespace NLS::Editor::Rendering
             }
         }
         [encoder endEncoding];
-        [commandBuffer commit];
+        [commandBuffer retain];
+        const auto committed = NLS::Render::Context::RhiCommandListExecutor::Get().RunOnSubmitLane(
+            "MetalViewportRenderer::Commit", [commandBuffer]
+            {
+                @autoreleasepool
+                {
+                    NLS::Render::RHI::RHIQueueOperationResult result;
+                    result.mayHaveQueuedGpuWork = true;
+                    @try
+                    {
+                        [commandBuffer commit];
+                        if (commandBuffer.status == MTLCommandBufferStatusError)
+                        {
+                            result.code = NLS::Render::RHI::RHIQueueOperationStatusCode::BackendFailure;
+                            result.message = "Metal preview command buffer commit failed";
+                        }
+                    }
+                    @catch (NSException* exception)
+                    {
+                        result.code = NLS::Render::RHI::RHIQueueOperationStatusCode::BackendFailure;
+                        const char* reason = exception.reason.UTF8String;
+                        result.message = reason != nullptr ? reason : "Metal preview commit threw an exception";
+                    }
+                    return result;
+                }
+            });
+        [commandBuffer release];
+        if (!committed.Succeeded())
+        {
+            NLS_LOG_ERROR("MetalViewportRenderer: " + committed.message);
+            if (committed.mayHaveQueuedGpuWork)
+                NLS::Render::Context::MarkLocatedDriverUnsafeGpuWorkQuarantined(committed.message);
+            return false;
+        }
 
         if (!m_impl->loggedFirstFrame)
         {

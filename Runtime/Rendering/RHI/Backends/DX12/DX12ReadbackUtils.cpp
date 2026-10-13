@@ -16,6 +16,7 @@
 
 #include <Debug/Logger.h>
 #include "Rendering/Context/DriverAccess.h"
+#include "Rendering/Context/RhiCommandListExecutor.h"
 #include "Rendering/RHI/Backends/DX12/DX12Command.h"
 #include "Rendering/RHI/Backends/DX12/DX12FormatUtils.h"
 #include "Rendering/RHI/Backends/DX12/DX12QueueSynchronization.h"
@@ -1029,12 +1030,14 @@ namespace NLS::Render::RHI::DX12
         const UINT64 fenceValue = ++slot->nextFenceValue;
         HRESULT executeDeviceStatus = S_OK;
         {
-            ScopedDX12QueueLock queueLock(graphicsQueue);
             ID3D12CommandList* commandLists[] = { slot->commandList.Get() };
-            graphicsQueue->ExecuteCommandLists(1, commandLists);
-            hr = graphicsQueue->Signal(slot->fence.Get(), fenceValue);
-            if (FAILED(hr))
+            const auto submission = SubmitDX12CommandLists(
+                graphicsQueue, commandLists, slot->fence.Get(), fenceValue, "DX12::ReadPixels");
+            hr = submission.nativeStatus;
+            if (!submission.Succeeded())
             {
+                if (!submission.operation.mayHaveQueuedGpuWork)
+                    return {DX12ReadbackStatusCode::BackendFailure, submission.operation.message};
                 QuarantineDX12ReadbackSubmissionAfterExecute(
                     device,
                     texture,
@@ -1276,31 +1279,36 @@ namespace NLS::Render::RHI::DX12
         const UINT64 fenceValue = ++slot->nextFenceValue;
         HRESULT executeDeviceStatus = S_OK;
         {
-            ScopedDX12QueueLock queueLock(graphicsQueue);
-            for (const auto& waitSemaphore : desc.waitSemaphores)
-            {
-                auto* nativeSemaphore =
-                    dynamic_cast<NLS::Render::Backend::NativeDX12Semaphore*>(waitSemaphore.get());
-                if (nativeSemaphore == nullptr || nativeSemaphore->GetFence() == nullptr)
-                    continue;
-
-                const HRESULT waitHr = graphicsQueue->Wait(
-                    nativeSemaphore->GetFence(),
-                    nativeSemaphore->GetWaitValue());
-                if (FAILED(waitHr))
+            const auto operation = Context::RhiCommandListExecutor::Get().RunBackendOperation(
+                "DX12::BeginReadBuffer",
+                [&]
                 {
-                    return {
-                        DX12ReadbackStatusCode::BackendFailure,
-                        "BeginReadBuffer failed to wait on producer semaphore hr=" + std::to_string(waitHr)
-                    };
-                }
-            }
-
-            ID3D12CommandList* commandLists[] = { slot->commandList.Get() };
-            graphicsQueue->ExecuteCommandLists(1, commandLists);
-            hr = graphicsQueue->Signal(slot->fence.Get(), fenceValue);
-            if (FAILED(hr))
+                    {
+                        ScopedDX12QueueLock queueLock(graphicsQueue);
+                        for (const auto& waitSemaphore : desc.waitSemaphores)
+                        {
+                            auto* nativeSemaphore =
+                                dynamic_cast<NLS::Render::Backend::NativeDX12Semaphore*>(waitSemaphore.get());
+                            if (nativeSemaphore == nullptr || nativeSemaphore->GetFence() == nullptr)
+                                continue;
+                            const HRESULT waitHr = graphicsQueue->Wait(
+                                nativeSemaphore->GetFence(), nativeSemaphore->GetWaitValue());
+                            if (FAILED(waitHr))
+                                return RHIQueueOperationResult{RHIQueueOperationStatusCode::BackendFailure,
+                                    "BeginReadBuffer failed to wait on producer semaphore hr=" + std::to_string(waitHr)};
+                        }
+                    }
+                    ID3D12CommandList* commandLists[] = { slot->commandList.Get() };
+                    const auto submission = SubmitDX12CommandLists(
+                        graphicsQueue, commandLists, slot->fence.Get(), fenceValue, "DX12::BufferReadbackCopy");
+                    hr = submission.nativeStatus;
+                    executeDeviceStatus = device->GetDeviceRemovedReason();
+                    return submission.operation;
+                });
+            if (!operation.Succeeded())
             {
+                if (!operation.mayHaveQueuedGpuWork)
+                    return {DX12ReadbackStatusCode::BackendFailure, operation.message};
                 QuarantineDX12ReadbackSubmissionAfterExecute(
                     device,
                     nullptr,
@@ -1328,8 +1336,6 @@ namespace NLS::Render::RHI::DX12
                     "BeginReadBuffer failed to signal fence after ExecuteCommandLists; submitted readback resources were quarantined"
                 };
             }
-
-            executeDeviceStatus = device->GetDeviceRemovedReason();
         }
 
         DX12BufferReadbackPendingCopy pendingCopy;

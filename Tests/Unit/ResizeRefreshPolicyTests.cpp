@@ -3,6 +3,21 @@
 #include "Core/ApplicationIdleFramePolicy.h"
 #include "Core/ResizeRefreshPolicy.h"
 
+TEST(ResizeRefreshPolicyTests, CoalescesRepeatedMessagesBeforeNativeRefreshInterval)
+{
+    using namespace std::chrono_literals;
+    EXPECT_FALSE(NLS::Editor::Core::ShouldRefreshNativeResizeFrame(false, 0ms));
+    EXPECT_FALSE(NLS::Editor::Core::ShouldRefreshNativeResizeFrame(false, 15ms));
+    EXPECT_TRUE(NLS::Editor::Core::ShouldRefreshNativeResizeFrame(true, 0ms));
+}
+
+TEST(ResizeRefreshPolicyTests, ContinuesFramesWhileNativeResizeCursorStopsMoving)
+{
+    using namespace std::chrono_literals;
+    EXPECT_TRUE(NLS::Editor::Core::ShouldRefreshNativeResizeFrame(false, 16ms));
+    EXPECT_TRUE(NLS::Editor::Core::ShouldRefreshNativeResizeFrame(false, 100ms));
+}
+
 TEST(ResizeRefreshPolicyTests, TicksImmediatelyWhenIdle)
 {
     EXPECT_TRUE(NLS::Editor::Core::ShouldTickResizeImmediately(
@@ -54,6 +69,12 @@ TEST(ResizeRefreshPolicyTests, RunsFollowUpFrameAfterPlatformResize)
         true,
         false,
         false));
+}
+
+TEST(ResizeRefreshPolicyTests, NativeResizeCallbackRendersOnlyOneFrame)
+{
+    EXPECT_FALSE(NLS::Editor::Core::ShouldRunResizeFollowUpFrame(true, false, false, true));
+    EXPECT_TRUE(NLS::Editor::Core::ShouldRunResizeFollowUpFrame(true, false, false, false));
 }
 
 TEST(ResizeRefreshPolicyTests, RunsFollowUpFrameWhileDraggingResizeSplitter)

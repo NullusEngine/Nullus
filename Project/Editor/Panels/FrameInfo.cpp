@@ -99,8 +99,6 @@ void AddFrameInfo(
     aggregate.reservedSlotWaitTotalNs += value.reservedSlotWaitTotalNs;
     if (value.publishState != NLS::Render::Data::FramePublishState::Direct)
         aggregate.publishState = value.publishState;
-    if (value.stageSummary != NLS::Render::Data::ThreadedFrameStageSummary::Direct)
-        aggregate.stageSummary = value.stageSummary;
     if (value.retirementState != NLS::Render::Data::FrameRetirementState::Direct)
         aggregate.retirementState = value.retirementState;
     aggregate.descriptorMainlineActive = aggregate.descriptorMainlineActive || value.descriptorMainlineActive;

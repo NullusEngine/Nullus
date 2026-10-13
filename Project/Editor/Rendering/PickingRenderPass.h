@@ -57,6 +57,7 @@ namespace NLS::Editor::Rendering
             const NLS::Editor::Panels::HitProxyPickingSignature& requestSignature) const;
         const std::optional<NLS::Render::Context::RenderPassCommandInput>& GetPreparedThreadedPassInput() const;
         std::optional<NLS::Render::Context::RenderPassCommandInput> ConsumePreparedThreadedPassInput();
+        void DiscardUnpublishedPickingFrame();
 
 		bool ManagesOwnRenderPass() const override { return true; }
 
@@ -136,6 +137,7 @@ namespace NLS::Editor::Rendering
         mutable std::vector<NLS::InstanceID> m_submittedPickRegistry;
         mutable std::unordered_map<NLS::InstanceID, uint32_t> m_submittedPickIds;
         uint64_t m_submittedPickingFrameSerial = 0u;
+        uint64_t m_queuedPickingFrameSerial = 0u;
 
         /**
          * Everything that can change the picking image without changing the

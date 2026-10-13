@@ -41,9 +41,9 @@ namespace NLS::Render::Backend
 	// decoding and recording the next batch instead of waiting on a fence after
 	// every submission. WaitForDX12InitialUploads drains them and reports how
 	// many batches failed.
-	NLS_RENDER_API bool HasPendingDX12InitialUploads();
-	NLS_RENDER_API size_t GetPendingDX12InitialUploadStagingBytes();
-	NLS_RENDER_API size_t WaitForDX12InitialUploads();
+	NLS_RENDER_API bool HasPendingDX12InitialUploads(ID3D12Device* device = nullptr);
+	NLS_RENDER_API size_t GetPendingDX12InitialUploadStagingBytes(ID3D12Device* device = nullptr);
+	NLS_RENDER_API size_t WaitForDX12InitialUploads(ID3D12Device* device = nullptr);
 		struct DX12InitialUploadCommandObjects final
 	{
 		std::mutex mutex;
@@ -152,6 +152,7 @@ namespace NLS::Render::Backend
 		Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> m_srvHeap;
 		Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> m_rtvHeap;
 		Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> m_dsvHeap;
+		std::mutex m_readOnlyDepthStencilDsvMutex;
 		Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> m_readOnlyDepthStencilDsvHeap;
 		D3D12_CPU_DESCRIPTOR_HANDLE m_srvHandle = {};
 		D3D12_CPU_DESCRIPTOR_HANDLE m_rtvHandle = {};

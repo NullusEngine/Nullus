@@ -685,7 +685,6 @@ TEST(ScenePrefabOpenPerformanceTests, ImportedTextureDx12UploadBreakdown)
     NLS::Render::Settings::DriverSettings driverSettings;
     driverSettings.graphicsBackend = NLS::Render::Settings::EGraphicsBackend::DX12;
     driverSettings.debugMode = false;
-    driverSettings.enableThreadedRendering = false;
     NLS::Render::Context::Driver driver(driverSettings);
     ASSERT_EQ(
         driver.GetActiveGraphicsBackend(),

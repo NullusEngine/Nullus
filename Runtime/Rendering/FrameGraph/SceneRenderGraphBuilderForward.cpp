@@ -18,14 +18,34 @@ namespace NLS::Render::FrameGraph
             FrameGraphResource depth = -1;
         };
 
+        std::vector<ForwardScenePassDescriptor> GetPreparedForwardScenePassDescriptors(
+            const NLS::Render::Context::RenderScenePackage& package)
+        {
+            const auto sceneDescriptors = GetForwardScenePassDescriptors();
+            std::vector<ForwardScenePassDescriptor> descriptors(sceneDescriptors.begin(), sceneDescriptors.end());
+            if (package.helperDrawCount > 0u)
+            {
+                ForwardScenePassDescriptor helper;
+                helper.metadata.commandKind = NLS::Render::Context::RenderPassCommandKind::Helper;
+                helper.metadata.role = ThreadedRenderScenePassRole::Helper;
+                helper.metadata.executionMode = ThreadedRenderScenePassExecutionMode::Output;
+                helper.metadata.queueType = NLS::Render::RHI::QueueType::Graphics;
+                helper.metadata.queueDependencyPolicy = NLS::Render::Context::QueueDependencyPolicy::Previous;
+                SetThreadedRenderScenePassGraphPassName(helper.metadata, "ForwardHelper");
+                descriptors.push_back(std::move(helper));
+            }
+            return descriptors;
+        }
+
         std::vector<NLS::Render::Context::RenderPassCommandInput> BuildForwardScenePassInputs(
             const NLS::Render::Context::RenderScenePackage& package)
         {
             std::vector<NLS::Render::Context::RenderPassCommandInput> passInputs;
-            passInputs.reserve(GetForwardScenePassDescriptors().size());
+            const auto descriptors = GetPreparedForwardScenePassDescriptors(package);
+            passInputs.reserve(descriptors.size());
 
             size_t nextRecordedDrawCommandIndex = 0u;
-            for (const auto& descriptor : GetForwardScenePassDescriptors())
+            for (const auto& descriptor : descriptors)
             {
                 const auto& metadata = descriptor.metadata;
                 uint64_t drawCount = 0u;
@@ -42,6 +62,9 @@ namespace NLS::Render::FrameGraph
                     break;
                 case NLS::Render::Context::RenderPassCommandKind::Transparent:
                     drawCount = package.transparentDrawCount;
+                    break;
+                case NLS::Render::Context::RenderPassCommandKind::Helper:
+                    drawCount = package.helperDrawCount;
                     break;
                 default:
                     break;
@@ -305,7 +328,7 @@ namespace NLS::Render::FrameGraph
             {
                 Detail::ResolvePreparedLightGridPassBindings(scenePackage, lightGridContext);
             },
-            GetForwardScenePassDescriptors(),
+            GetPreparedForwardScenePassDescriptors(package),
             [&package](const auto& lightGridComputeSource, const auto& compiledPasses)
             {
                 return BuildPreparedComputeAndScenePassInputs(

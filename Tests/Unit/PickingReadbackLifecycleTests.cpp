@@ -98,4 +98,25 @@ namespace
             signature,
             readableFrame->signature));
     }
+
+    TEST(PickingReadbackLifecycleTests, CancellingUnpublishedFramePreservesEarlierReadableResult)
+    {
+        TestScene scene;
+        NLS::Editor::Rendering::PickingReadbackLifecycle<TestScene> lifecycle;
+        lifecycle.MarkSubmittedFrameImmediatelyReadable({ &scene, 640u, 480u, 21u, nullptr });
+        lifecycle.QueueSubmittedFrame({ &scene, 640u, 480u, 22u, nullptr });
+        EXPECT_FALSE(lifecycle.CancelPendingFrame(21u));
+        ASSERT_NE(lifecycle.GetPendingFrame(), nullptr);
+        EXPECT_TRUE(lifecycle.CancelPendingFrame(22u));
+        EXPECT_EQ(lifecycle.GetPendingFrame(), nullptr);
+        lifecycle.PromotePendingFrameIfReadbackAvailable(true);
+        ASSERT_NE(lifecycle.GetReadableFrame(), nullptr);
+        EXPECT_EQ(lifecycle.GetReadableFrame()->serial, 21u);
+
+        lifecycle.QueueSubmittedFrame({ &scene, 640u, 480u, 23u, nullptr });
+        EXPECT_FALSE(lifecycle.CancelPendingFrame(22u));
+        lifecycle.PromotePendingFrameIfReadbackAvailable(true);
+        ASSERT_NE(lifecycle.GetReadableFrame(), nullptr);
+        EXPECT_EQ(lifecycle.GetReadableFrame()->serial, 23u);
+    }
 }

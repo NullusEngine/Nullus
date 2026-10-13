@@ -17,16 +17,17 @@ namespace
     NLS::Render::Entities::Drawable BuildDebugModelDrawable(
         NLS::Render::Resources::Material& material,
         const Maths::Matrix4& modelMatrix,
-        NLS::Render::Resources::Mesh* mesh)
+        NLS::Render::Resources::Mesh* mesh,
+        const bool requiresImmutableObjectBinding = false)
     {
         auto element = NLS::Render::Entities::Drawable {};
         element.mesh = mesh;
         element.material = &material;
         element.stateMask = material.GenerateStateMask();
-        element.AddDescriptor(Engine::Rendering::EngineDrawableDescriptor {
-            modelMatrix,
-            Maths::Matrix4::Identity
-        });
+        Engine::Rendering::EngineDrawableDescriptor descriptor;
+        descriptor.modelMatrix = modelMatrix;
+        descriptor.requiresImmutableObjectBinding = requiresImmutableObjectBinding;
+        element.AddDescriptor(std::move(descriptor));
         return element;
     }
 }
@@ -46,9 +47,10 @@ void Editor::Rendering::DebugModelRenderer::CaptureMeshDrawCommandsWithSingleMat
     NLS::Render::Resources::Mesh& mesh,
     NLS::Render::Resources::Material& material,
     const Maths::Matrix4& modelMatrix,
-    std::vector<NLS::Render::Context::RecordedDrawCommandInput>& outDrawCommands)
+    std::vector<NLS::Render::Context::RecordedDrawCommandInput>& outDrawCommands,
+    const bool requiresImmutableObjectBinding)
 {
-    auto element = BuildDebugModelDrawable(material, modelMatrix, &mesh);
+    auto element = BuildDebugModelDrawable(material, modelMatrix, &mesh, requiresImmutableObjectBinding);
     NLS::Render::Context::RecordedDrawCommandInput drawCommand;
     if (m_renderer.CaptureRecordedDrawCommand(pso, element, drawCommand))
         outDrawCommands.push_back(std::move(drawCommand));

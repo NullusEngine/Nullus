@@ -1,0 +1,108 @@
+name: Metal Threading Validation
+
+# Runs the async-rendering acceptance gates that need Apple hardware:
+# Metal API Validation, the DedicatedThread lane, the swapchain Present path
+# and the backend-policy rejection of a forced `tasks` request.
+#
+# Dispatch with the defaults for a fast smoke gate, or raise stress_frames /
+# min_seconds to reproduce the full 10,000-frame / 30-minute acceptance.
+
+on:
+  workflow_dispatch:
+    inputs:
+      stress_frames:
+        description: Frames for the Forward and swapchain stress cases
+        required: false
+        default: '256'
+      min_seconds:
+        description: Minimum seconds for the scene-mutation stress case
+        required: false
+        default: '0'
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  metal-validation:
+    runs-on: macos-15-intel
+    timeout-minutes: 360
+    steps:
+      - uses: actions/checkout@v4
+        timeout-minutes: 10
+        with:
+          submodules: false
+
+      - name: Sync submodules
+        timeout-minutes: 20
+        shell: bash
+        run: |
+          set -euo pipefail
+          git submodule sync --recursive
+          git submodule update --init --recursive --jobs 4
+
+      - name: Setup .NET SDK
+        timeout-minutes: 10
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.408'
+
+      - name: Restore managed scripting projects
+        timeout-minutes: 10
+        shell: bash
+        run: |
+          set -euo pipefail
+          dotnet restore Managed/Nullus.ScriptGenerator/Nullus.ScriptGenerator.csproj --nologo
+          dotnet restore Managed/Nullus.ScriptAnalysis/Nullus.ScriptAnalysis.csproj --nologo
+          dotnet restore Managed/Nullus.Managed/Nullus.Managed.csproj --nologo
+          dotnet restore Managed/Nullus.EngineScripts/Nullus.EngineScripts.csproj --nologo
+          dotnet restore Managed/Nullus.GameScripts/Nullus.GameScripts.csproj --nologo
+          dotnet restore Managed/Nullus.GameScriptsEditor/Nullus.GameScriptsEditor.csproj --nologo
+          dotnet restore Managed/Nullus.Editor/Nullus.Editor.csproj --nologo
+
+      - name: Build test binaries
+        timeout-minutes: 240
+        shell: bash
+        run: |
+          set -o pipefail
+          NLS_CMAKE_OPTIONS="-DNLS_BUILD_TESTS=ON -DNLS_BUILD_PERFORMANCE_TESTS=ON" \
+          NLS_BUILD_TARGETS="NullusUnitTests NullusPerformanceTests" \
+          NLS_BUILD_JOBS=2 \
+            ./build_macos.sh debug 2>&1 | tee metal_validation_build.log
+
+      - name: Run Metal acceptance gates
+        timeout-minutes: 300
+        shell: bash
+        env:
+          NLS_CONFIG: Debug
+          NLS_BUILD_DIR: build/macos
+          NLS_OUTPUT_DIR: build/macos/validation/metal-threading
+          NLS_STRESS_FRAMES: ${{ inputs.stress_frames }}
+          NLS_STRESS_MIN_SECONDS: ${{ inputs.min_seconds }}
+        run: |
+          set -euo pipefail
+          bash Tools/ValidateRenderingThreadingMetal.sh --skip-build 2>&1 | tee metal_validation.log
+
+      - name: Upload Metal validation evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: metal-threading-validation
+          path: |
+            metal_validation.log
+            metal_validation_build.log
+            build/macos/validation/metal-threading
+          if-no-files-found: warn
+          retention-days: 30
+
+      - name: Dump logs on failure
+        if: failure()
+        shell: bash
+        run: |
+          for log in metal_validation.log metal_validation_build.log; do
+            if [[ -f "$log" ]]; then
+              echo "::group::Last 200 lines of ${log}"
+              tail -n 200 "$log"
+              echo "::endgroup::"
+            fi
+          done

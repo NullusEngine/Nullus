@@ -56,13 +56,14 @@ namespace NLS::Render::Backend
 		ID3D12Fence* GetFence() const;
 		UINT64 GetWaitValue() const;
 		bool SignalOnCpu();
-		bool SignalOnQueue(ID3D12CommandQueue* queue);
-		HRESULT SignalOnQueueChecked(ID3D12CommandQueue* queue);
 #endif
 
 	private:
 		std::string m_debugName;
 #if defined(_WIN32)
+		friend class NativeDX12Queue;
+		HRESULT SignalOnQueueChecked(ID3D12CommandQueue* queue);
+
 		ID3D12Device* m_device = nullptr;
 		Microsoft::WRL::ComPtr<ID3D12Fence> m_fence;
 		UINT64 m_signalValue = 0;

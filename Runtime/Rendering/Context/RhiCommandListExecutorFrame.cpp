@@ -4,6 +4,7 @@
 #include <chrono>
 #include <cstdint>
 #include <cstring>
+#include <exception>
 #include <iterator>
 #include <limits>
 #include <mutex>
@@ -21,8 +22,8 @@
 #include "Rendering/Context/Driver.h"
 #include "Rendering/Context/DriverInternal.h"
 #include "Rendering/Context/RenderThreadCoordinator.h"
-#include "Rendering/Context/RhiThreadCoordinator.h"
-#include "Rendering/Context/RhiSubmissionGraph.h"
+#include "Rendering/Context/RhiCommandListExecutor.h"
+#include "Rendering/Context/RhiCommandListRecorder.h"
 #include "Rendering/RHI/Core/RHIDevice.h"
 #include "Rendering/RHI/Core/RHIBinding.h"
 #include "Rendering/RHI/Core/RHIPipeline.h"
@@ -41,10 +42,78 @@ namespace NLS::Render::Context
     namespace
     {
         constexpr uint64_t kFrameFenceWaitTimeoutNanoseconds = 5'000'000'000ull;
-        constexpr auto kUiStandaloneFrameSubmissionLockWait = std::chrono::milliseconds(8);
-        constexpr auto kUiStandaloneFramePendingLease = std::chrono::milliseconds(64);
         constexpr uint32_t kMinimumInRenderPassChildSlicesForParallelWorkers = 4u;
         constexpr uint32_t kDx12TextureRowPitchAlignment = 256u;
+
+        class RetainedTextureReadbackCompletion final : public RHI::RHICompletionToken
+        {
+        public:
+            RetainedTextureReadbackCompletion(std::shared_ptr<RHI::RHICompletionToken> completion,
+                std::shared_ptr<RHI::RHITexture> texture, std::shared_ptr<void> destination)
+                : m_completion(std::move(completion)), m_texture(std::move(texture)),
+                  m_destination(std::move(destination))
+            {
+            }
+
+            std::string_view GetDebugName() const override { return "FrameTextureReadbackCompletion"; }
+
+            RHI::RHICompletionStatus Poll() override
+            {
+                std::lock_guard lock(m_mutex);
+                return Finish(m_completion->Poll());
+            }
+
+            RHI::RHICompletionStatus Wait(uint64_t timeoutNanoseconds = 0u) override
+            {
+                std::lock_guard lock(m_mutex);
+                return Finish(m_completion->Wait(timeoutNanoseconds));
+            }
+
+        private:
+            RHI::RHICompletionStatus Finish(RHI::RHICompletionStatus status)
+            {
+                // GPU completion alone does not perform a deferred CPU pixel copy.
+                if (status.Succeeded())
+                {
+                    m_destination.reset();
+                    m_texture.reset();
+                }
+                return status;
+            }
+
+            std::mutex m_mutex;
+            std::shared_ptr<RHI::RHICompletionToken> m_completion;
+            std::shared_ptr<RHI::RHITexture> m_texture;
+            std::shared_ptr<void> m_destination;
+        };
+
+        RHI::RHIReadbackResult RunRenderOrderedReadback(
+            DriverImpl& impl, std::function<RHI::RHIReadbackResult()> beginReadback)
+        {
+            // A render command already owns its FIFO position. The RHI lane must
+            // not wait for a render command that may itself be waiting on that lane.
+            if (RenderingThreadSystem::IsInRenderingThread() || RenderingThreadSystem::IsInRhiThread())
+                return beginReadback();
+
+            RHI::RHIReadbackResult result {
+                RHI::RHIReadbackStatusCode::BackendFailure, "readback render command was not executed"
+            };
+            RenderCommandEvent completion;
+            EnqueueRenderCommand<struct BeginTextureReadbackCommand>(
+                [beginReadback = std::move(beginReadback), &result] { result = beginReadback(); },
+                completion);
+            Detail::NotifyThreadedWorkers(impl);
+            while (!completion.WaitFor(std::chrono::milliseconds(1)))
+            {
+                if (!RenderingThreadSystem::HasActiveRenderThread())
+                    (void)RenderCommandDispatcher::Dispatch();
+                if (impl.taskGraph != nullptr && impl.taskGraph->IsWorkerThread())
+                    (void)impl.taskGraph->PumpCurrentThread(1u);
+            }
+            if (!completion.Succeeded())
+                return { RHI::RHIReadbackStatusCode::BackendFailure, completion.GetDiagnostic() };
+            return result;
+        }
 
         uint32_t AlignTextureUploadPitch(const uint32_t value)
         {
@@ -71,12 +140,6 @@ namespace NLS::Render::Context
             }
         };
 
-        Render::RHI::RHIFrameContext* GetCurrentFrameContext(DriverImpl& impl)
-        {
-            return !impl.frameContexts.empty()
-                ? &impl.frameContexts[impl.currentFrameIndex % impl.frameContexts.size()]
-                : nullptr;
-        }
 
         bool IsSwapchainDepthStencilCompatible(
             const Render::RHI::RHIFrameContext& frameContext,
@@ -265,22 +328,6 @@ namespace NLS::Render::Context
             frameContext.resourceStateTracker->Commit(barrierDesc);
         }
 
-        Render::RHI::RHISubmitDesc BuildStandaloneGraphicsSubmitDesc(
-            const Render::RHI::RHIFrameContext& frameContext,
-            const bool signalRenderFinished,
-            const bool signalFrameFence)
-        {
-            Render::RHI::RHISubmitDesc submitDesc;
-            if (frameContext.commandBuffer != nullptr)
-                submitDesc.commandBuffers.push_back(frameContext.commandBuffer);
-            if (frameContext.hasAcquiredSwapchainImage && frameContext.imageAcquiredSemaphore != nullptr)
-                submitDesc.waitSemaphores.push_back(frameContext.imageAcquiredSemaphore);
-            if (signalRenderFinished && frameContext.renderFinishedSemaphore != nullptr)
-                submitDesc.signalSemaphores.push_back(frameContext.renderFinishedSemaphore);
-            if (signalFrameFence)
-                submitDesc.signalFence = frameContext.frameFence;
-            return submitDesc;
-        }
 
         bool ShouldDeferFrameScopedRetirementAfterSubmit(
             const Render::RHI::RHIQueueOperationResult& submitResult,
@@ -293,13 +340,9 @@ namespace NLS::Render::Context
         void MarkQueuedGpuWorkWithoutRetirementFence(
             DriverImpl& impl,
             const std::string& context,
-            const Render::RHI::RHIQueueOperationResult& submitResult);
+            const Render::RHI::RHIQueueOperationResult& submitResult,
+            const std::shared_ptr<Detail::RhiFrameQueueOperationTelemetry>& queueTelemetry = nullptr);
 
-        void RetainStandaloneSubmitResourcesUntilNextFence(
-            DriverImpl& impl,
-            size_t frameContextIndex,
-            const Render::RHI::RHIFrameContext& frameContext,
-            const Render::RHI::RHISubmitDesc& submitDesc);
 
         uint64_t ResolveSubmittedUiOverlaySnapshotFrameId(
             const RenderScenePackage& renderScenePackage)
@@ -313,42 +356,6 @@ namespace NLS::Render::Context
             return renderScenePackage.uiDrawDataSnapshot->frameId;
         }
 
-        void DeferStandaloneFrameScopedRetirementAfterSubmit(
-            DriverImpl& impl,
-            size_t frameContextIndex,
-            const Render::RHI::RHIFrameContext& frameContext,
-            const Render::RHI::RHISubmitDesc& submitDesc);
-
-        Render::RHI::RHIPresentDesc BuildSwapchainPresentDesc(
-            const DriverImpl& impl,
-            const Render::RHI::RHIFrameContext& frameContext,
-            const bool includeUiCompositionSignal,
-            const bool signalFrameFence)
-        {
-            Render::RHI::RHIPresentDesc presentDesc;
-            presentDesc.swapchain = impl.explicitSwapchain;
-            presentDesc.imageIndex = frameContext.swapchainImageIndex;
-            if (frameContext.renderFinishedSemaphore != nullptr)
-                presentDesc.waitSemaphores.push_back(frameContext.renderFinishedSemaphore);
-            if (signalFrameFence)
-                presentDesc.signalFence = frameContext.frameFence;
-
-            if (includeUiCompositionSignal && impl.uiRenderFinishedSemaphore.IsValid())
-            {
-                if (impl.uiRenderFinishedValue != 0u)
-                {
-                    presentDesc.uiSignalSemaphore = impl.uiRenderFinishedSemaphore;
-                    presentDesc.uiSignalValue = impl.uiRenderFinishedValue;
-                }
-            }
-            return presentDesc;
-        }
-
-        void ClearUICompositionSignal(DriverImpl& impl)
-        {
-            impl.uiRenderFinishedSemaphore = {};
-            impl.uiRenderFinishedValue = 0u;
-        }
 
         void PublishSceneToUiWaitSemaphore(DriverImpl& impl, const Render::RHI::RHIFrameContext& frameContext)
         {
@@ -356,12 +363,6 @@ namespace NLS::Render::Context
             impl.sceneToUiWaitSemaphore = frameContext.renderFinishedSemaphore != nullptr
                 ? frameContext.renderFinishedSemaphore->GetNativeSemaphoreHandle()
                 : Render::RHI::NativeHandle{};
-        }
-
-        void ClearSceneToUiWaitSemaphore(DriverImpl& impl)
-        {
-            std::lock_guard lock(impl.sceneToUiWaitMutex);
-            impl.sceneToUiWaitSemaphore = {};
         }
 
         void ClearSceneToUiWaitSemaphoreForFrame(
@@ -382,24 +383,40 @@ namespace NLS::Render::Context
             }
         }
 
-        void ResetCurrentFrameQueueOperationTelemetry(DriverImpl& impl)
+        void ResetFrameQueueOperationTelemetry(
+            DriverImpl& impl,
+            const std::shared_ptr<Detail::RhiFrameQueueOperationTelemetry>& queueTelemetry)
         {
-            std::lock_guard lock(impl.driverTelemetryMutex);
-            impl.currentFrameQueueOperationFailureCount = 0u;
-            impl.currentFrameLastQueueOperationFailure.clear();
+            {
+                std::lock_guard lock(impl.driverTelemetryMutex);
+                impl.currentFrameQueueOperationFailureCount = 0u;
+                impl.currentFrameLastQueueOperationFailure.clear();
+            }
+            if (queueTelemetry != nullptr)
+                queueTelemetry->Reset();
         }
 
         void CopyDriverQueueTelemetryToSubmissionFrame(
             DriverImpl& impl,
-            RhiSubmissionFrame& submissionFrame)
+            RhiSubmissionFrame& submissionFrame,
+            const std::shared_ptr<Detail::RhiFrameQueueOperationTelemetry>& queueTelemetry = nullptr)
         {
             std::lock_guard lock(impl.driverTelemetryMutex);
             submissionFrame.queueOperationFailureCount = impl.queueOperationFailureCount;
             submissionFrame.lastQueueOperationFailure = impl.lastQueueOperationFailure;
-            submissionFrame.currentFrameQueueOperationFailureCount =
-                impl.currentFrameQueueOperationFailureCount;
-            submissionFrame.currentFrameLastQueueOperationFailure =
-                impl.currentFrameLastQueueOperationFailure;
+            if (queueTelemetry != nullptr)
+            {
+                queueTelemetry->CopyTo(
+                    submissionFrame.currentFrameQueueOperationFailureCount,
+                    submissionFrame.currentFrameLastQueueOperationFailure);
+            }
+            else
+            {
+                submissionFrame.currentFrameQueueOperationFailureCount =
+                    impl.currentFrameQueueOperationFailureCount;
+                submissionFrame.currentFrameLastQueueOperationFailure =
+                    impl.currentFrameLastQueueOperationFailure;
+            }
             submissionFrame.deviceLostDetected = impl.deviceLostDetected.load(std::memory_order_acquire);
             submissionFrame.deviceLostReason = impl.deviceLostReason;
             submissionFrame.unsafeGpuWorkQuarantined =
@@ -430,18 +447,19 @@ namespace NLS::Render::Context
         bool WaitFrameFenceWithDriverPolicy(
             DriverImpl& impl,
             const std::shared_ptr<Render::RHI::RHIFence>& frameFence,
-            const std::string& context)
+            const std::string& context,
+            const std::shared_ptr<Detail::RhiFrameQueueOperationTelemetry>& queueTelemetry = nullptr)
         {
             if (frameFence == nullptr)
                 return false;
 
             {
-                NLS_PROFILE_NAMED_SCOPE("RhiThreadCoordinator::CheckFrameFenceSignaled");
+                NLS_PROFILE_NAMED_SCOPE("RhiCommandListExecutor::CheckFrameFenceSignaled");
                 if (frameFence->IsSignaled())
                     return true;
             }
 
-            NLS_PROFILE_NAMED_SCOPE("RhiThreadCoordinator::WaitFrameFenceWithDriverPolicy");
+            NLS_PROFILE_NAMED_SCOPE("RhiCommandListExecutor::WaitFrameFenceWithDriverPolicy");
             const bool waited = frameFence->Wait(kFrameFenceWaitTimeoutNanoseconds);
             if (!waited)
             {
@@ -456,6 +474,8 @@ namespace NLS::Render::Context
                     ++impl.currentFrameQueueOperationFailureCount;
                     impl.lastQueueOperationFailure = message;
                     impl.currentFrameLastQueueOperationFailure = message;
+                    if (queueTelemetry != nullptr)
+                        queueTelemetry->Record(message);
                 }
                 NLS_LOG_ERROR(message);
             }
@@ -465,10 +485,41 @@ namespace NLS::Render::Context
         bool RecordQueueOperationResult(
             DriverImpl& impl,
             const Render::RHI::RHIQueueOperationResult& result,
-            const std::string& context)
+            const std::string& context,
+            const std::shared_ptr<Detail::RhiFrameQueueOperationTelemetry>& queueTelemetry = nullptr,
+            const bool recoverableSwapchainOutOfDate = false)
         {
             if (result.Succeeded())
                 return true;
+
+            // A present whose surface went out of date is not a queue failure. The
+            // submission stays valid, the frame retires as presented, and the
+            // swapchain is rebuilt at its current size before the next present. Only
+            // atomics are touched here: this runs on the submit lane while the render
+            // thread owns the pending swapchain size.
+            //
+            // The same code from an image acquisition is *not* recoverable for that
+            // frame - it has no backbuffer to render into - so the caller opts in.
+            if (recoverableSwapchainOutOfDate && result.RequiresSwapchainRecreation())
+            {
+                // A resize that is already queued (a client resize, for example) is
+                // going to rebuild the swapchain anyway. Requesting a second rebuild
+                // from here would destroy the swapchain again while the next frame is
+                // already acquiring from it, so leave the pending request alone.
+                if (!impl.hasPendingSwapchainResize.load(std::memory_order_acquire))
+                {
+                    impl.pendingSwapchainResizeKeepsCurrentSize.store(true, std::memory_order_release);
+                    impl.hasPendingSwapchainResize.store(true, std::memory_order_release);
+                }
+                NLS_LOG_WARNING(
+                    context +
+                    ": " +
+                    (result.message.empty()
+                        ? std::string{ "swapchain is out of date" }
+                        : result.message) +
+                    "; recreating the swapchain at its current size");
+                return true;
+            }
 
             const std::string message =
                 context +
@@ -483,6 +534,8 @@ namespace NLS::Render::Context
                 impl.lastQueueOperationFailure = message;
                 ++impl.currentFrameQueueOperationFailureCount;
                 impl.currentFrameLastQueueOperationFailure = message;
+                if (queueTelemetry != nullptr)
+                    queueTelemetry->Record(message);
                 if (result.code == Render::RHI::RHIQueueOperationStatusCode::DeviceLost)
                 {
                     impl.deviceLostDetected.store(true, std::memory_order_release);
@@ -490,6 +543,8 @@ namespace NLS::Render::Context
                 }
             }
 
+            if (result.code == Render::RHI::RHIQueueOperationStatusCode::DeviceLost && impl.frameLatency != nullptr)
+                impl.frameLatency->Stop();
             NLS_LOG_ERROR(message);
             return false;
         }
@@ -508,14 +563,16 @@ namespace NLS::Render::Context
         void MarkReadbackDeviceLostIfNeeded(
             DriverImpl& impl,
             const Render::RHI::RHIReadbackResult& result,
-            const std::string& context);
+            const std::string& context,
+            const std::shared_ptr<Detail::RhiFrameQueueOperationTelemetry>& queueTelemetry = nullptr);
 
         void BeginPostSubmitBufferReadbacks(
             DriverImpl& impl,
             const RenderScenePackage& renderScenePackage,
             const bool submittedSuccessfully,
             const std::shared_ptr<Render::RHI::RHISemaphore>& lastComputeQueueCompletionSemaphore,
-            const bool dedicatedComputeSubmissionUsed)
+            const bool dedicatedComputeSubmissionUsed,
+            const std::shared_ptr<Detail::RhiFrameQueueOperationTelemetry>& queueTelemetry = nullptr)
         {
             if (renderScenePackage.postSubmitBufferReadbacks.empty())
                 return;
@@ -584,7 +641,28 @@ namespace NLS::Render::Context
                 {
                     readbackDesc.waitSemaphores.push_back(lastComputeQueueCompletionSemaphore);
                 }
-                const auto result = impl.explicitDevice->BeginReadBuffer(readbackDesc);
+                Render::RHI::RHIReadbackResult result;
+                std::string exceptionDiagnostic;
+                const auto laneResult = RhiCommandListExecutor::Get().RunOnSubmitLane(
+                    "RenderFrame::BeginBufferReadback",
+                    [&impl, &readbackDesc, &result, &exceptionDiagnostic]
+                    {
+                        try
+                        {
+                            result = impl.explicitDevice->BeginReadBuffer(readbackDesc);
+                        }
+                        catch (const std::exception& error)
+                        {
+                            exceptionDiagnostic = error.what();
+                            throw;
+                        }
+                        // Readback errors belong to their request; device loss
+                        // is surfaced below and does not strand other waiters.
+                        return Render::RHI::RHIQueueOperationResult {};
+                    });
+                if (!laneResult.Succeeded())
+                    result = {Render::RHI::RHIReadbackStatusCode::BackendFailure,
+                        exceptionDiagnostic.empty() ? laneResult.message : exceptionDiagnostic};
                 {
                     std::lock_guard lock(request.state->mutex);
                     request.state->beginAttempted = true;
@@ -597,26 +675,38 @@ namespace NLS::Render::Context
                 MarkReadbackDeviceLostIfNeeded(
                     impl,
                     result,
-                    "RhiThreadCoordinator::BeginPostSubmitBufferReadbacks");
+                    "RhiCommandListExecutor::BeginPostSubmitBufferReadbacks",
+                    queueTelemetry);
+                if (!laneResult.Succeeded())
+                    throw std::runtime_error(result.message);
             }
         }
 
         void BeginPostSubmitTextureReadbacks(
             DriverImpl& impl,
             const RenderScenePackage& renderScenePackage,
-            const bool submittedSuccessfully)
+            const Render::RHI::RHIFrameContext& frameContext,
+            const bool submittedSuccessfully,
+            const std::shared_ptr<Detail::RhiFrameQueueOperationTelemetry>& queueTelemetry = nullptr)
         {
             for (const auto& request : renderScenePackage.postSubmitTextureReadbacks)
             {
                 if (request.state == nullptr)
                     continue;
 
+                const auto texture = request.source == TextureReadbackSource::FrameSwapchain
+                    ? (renderScenePackage.targetsSwapchain && frameContext.hasAcquiredSwapchainImage &&
+                        frameContext.swapchainBackbufferView != nullptr
+                        ? frameContext.swapchainBackbufferView->GetTexture() : nullptr)
+                    : (request.source == TextureReadbackSource::FrameSceneColor
+                        ? frameContext.sceneColorTexture
+                        : request.texture);
                 {
                     std::lock_guard lock(request.state->mutex);
                     if (request.state->beginAttempted || request.state->beginInProgress)
                         continue;
                     if (!submittedSuccessfully || impl.explicitDevice == nullptr ||
-                        request.texture == nullptr || request.destination == nullptr)
+                        texture == nullptr || request.destination == nullptr)
                     {
                         request.state->beginAttempted = true;
                         request.state->beginSucceeded = false;
@@ -639,19 +729,37 @@ namespace NLS::Render::Context
                     request.state->beginInProgress = true;
                 }
 
-                const auto result = impl.explicitDevice->BeginReadPixels(
-                    request.texture,
-                    request.x,
-                    request.y,
-                    request.width,
-                    request.height,
-                    request.format,
-                    request.type,
-                    request.destination);
+                Render::RHI::RHIReadbackResult result;
+                std::string exceptionDiagnostic;
+                const auto laneResult = RhiCommandListExecutor::Get().RunBackendOperation(
+                    "RenderFrame::BeginTextureReadback",
+                    [&impl, &request, &texture, &result, &exceptionDiagnostic]
+                    {
+                        try
+                        {
+                            result = impl.explicitDevice->BeginReadPixels(
+                                texture, request.x, request.y, request.width, request.height,
+                                request.format, request.type, request.destination);
+                        }
+                        catch (const std::exception& error)
+                        {
+                            exceptionDiagnostic = error.what();
+                            throw;
+                        }
+                        return Render::RHI::RHIQueueOperationResult {};
+                    });
+                if (!laneResult.Succeeded())
+                    result = {Render::RHI::RHIReadbackStatusCode::BackendFailure,
+                        exceptionDiagnostic.empty() ? laneResult.message : exceptionDiagnostic};
                 {
                     std::lock_guard lock(request.state->mutex);
                     request.state->beginAttempted = true;
                     request.state->beginInProgress = false;
+                    if (result.Succeeded() && result.completion != nullptr && request.destinationKeepAlive != nullptr)
+                    {
+                        result.completion = std::make_shared<RetainedTextureReadbackCompletion>(
+                            std::move(result.completion), texture, request.destinationKeepAlive);
+                    }
                     request.state->beginSucceeded = result.Succeeded();
                     request.state->resultCode = result.code;
                     request.state->resultMessage = result.message;
@@ -660,38 +768,47 @@ namespace NLS::Render::Context
                 MarkReadbackDeviceLostIfNeeded(
                     impl,
                     result,
-                    "RhiThreadCoordinator::BeginPostSubmitTextureReadbacks");
+                    "RhiCommandListExecutor::BeginPostSubmitTextureReadbacks",
+                    queueTelemetry);
+                if (!laneResult.Succeeded())
+                    throw std::runtime_error(result.message);
             }
         }
 
-        void FailPostSubmitTextureReadbacks(
+        void FailPostSubmitReadbacks(
             const RenderScenePackage& renderScenePackage,
             const char* reason)
         {
             const std::string message = reason != nullptr
                 ? reason
-                : "threaded frame terminated before post-submit texture readback";
-            for (const auto& request : renderScenePackage.postSubmitTextureReadbacks)
+                : "threaded frame terminated before post-submit readback";
+            const auto failRequests = [&message](const auto& requests)
             {
-                if (request.state == nullptr)
-                    continue;
+                for (const auto& request : requests)
+                {
+                    if (request.state == nullptr)
+                        continue;
 
-                std::lock_guard lock(request.state->mutex);
-                if (request.state->beginAttempted)
-                    continue;
-                request.state->beginAttempted = true;
-                request.state->beginInProgress = false;
-                request.state->beginSucceeded = false;
-                request.state->resultCode = Render::RHI::RHIReadbackStatusCode::BackendFailure;
-                request.state->resultMessage = message;
-                request.state->completion.reset();
-            }
+                    std::lock_guard lock(request.state->mutex);
+                    if (request.state->beginAttempted)
+                        continue;
+                    request.state->beginAttempted = true;
+                    request.state->beginInProgress = false;
+                    request.state->beginSucceeded = false;
+                    request.state->resultCode = Render::RHI::RHIReadbackStatusCode::BackendFailure;
+                    request.state->resultMessage = message;
+                    request.state->completion.reset();
+                }
+            };
+            failRequests(renderScenePackage.postSubmitBufferReadbacks);
+            failRequests(renderScenePackage.postSubmitTextureReadbacks);
         }
 
         void MarkReadbackDeviceLostIfNeeded(
             DriverImpl& impl,
             const Render::RHI::RHIReadbackResult& result,
-            const std::string& context)
+            const std::string& context,
+            const std::shared_ptr<Detail::RhiFrameQueueOperationTelemetry>& queueTelemetry)
         {
             if (!IsDeviceLostReadbackFailure(result))
                 return;
@@ -708,136 +825,19 @@ namespace NLS::Render::Context
                 ++impl.currentFrameQueueOperationFailureCount;
                 impl.lastQueueOperationFailure = message;
                 impl.currentFrameLastQueueOperationFailure = message;
+                if (queueTelemetry != nullptr)
+                    queueTelemetry->Record(message);
                 impl.deviceLostDetected.store(true, std::memory_order_release);
                 impl.deviceLostReason = message;
             }
+            if (impl.frameLatency != nullptr)
+                impl.frameLatency->Stop();
+            auto& executor = RhiCommandListExecutor::Get();
+            if (!executor.HasFailed())
+                executor.NotifyDeviceLost(message);
             NLS_LOG_ERROR(message);
         }
 
-        Render::RHI::RHIQueueOperationResult PresentSwapchainFrame(
-            DriverImpl& impl,
-            Render::RHI::RHIQueue& queue,
-            const Render::RHI::RHIFrameContext& frameContext,
-            const bool includeUiCompositionSignal,
-            const bool signalFrameFence)
-        {
-            NLS_PROFILE_SCOPE();
-            if (impl.renderDocCaptureController != nullptr)
-                impl.renderDocCaptureController->OnPrePresent();
-
-            const auto presentDesc = BuildSwapchainPresentDesc(
-                impl,
-                frameContext,
-                includeUiCompositionSignal,
-                signalFrameFence);
-            const auto presentResult = queue.PresentChecked(presentDesc);
-
-            if (impl.renderDocCaptureController != nullptr)
-                impl.renderDocCaptureController->OnPostPresent();
-            return presentResult;
-        }
-
-        bool FinalizeStandaloneUiFrame(DriverImpl& impl)
-        {
-            NLS_PROFILE_SCOPE();
-            auto* frameContext = GetCurrentFrameContext(impl);
-            if (frameContext == nullptr)
-                return false;
-
-            if (frameContext->commandBuffer != nullptr && frameContext->commandBuffer->IsRecording())
-                frameContext->commandBuffer->End();
-
-            const auto submitDesc = BuildStandaloneGraphicsSubmitDesc(*frameContext, true, false);
-
-            auto queue = impl.explicitDevice != nullptr
-                ? impl.explicitDevice->GetQueue(Render::RHI::QueueType::Graphics)
-                : nullptr;
-            bool submitted = false;
-            bool submitAttempted = false;
-            Render::RHI::RHIQueueOperationResult submitResult;
-            if (queue != nullptr)
-            {
-                submitAttempted = true;
-                {
-                    NLS_PROFILE_NAMED_SCOPE("StandaloneUiFrame::QueueSubmitChecked");
-                    submitResult = queue->SubmitChecked(submitDesc);
-                    submitted = RecordQueueOperationResult(
-                        impl,
-                        submitResult,
-                        "RhiThreadCoordinator::FinalizeStandaloneUiFrame::Submit");
-                    ClearSceneToUiWaitSemaphoreForFrame(impl, *frameContext);
-                }
-                if (submitted)
-                {
-                    NLS_PROFILE_NAMED_SCOPE("StandaloneUiFrame::PresentSwapchainFrame");
-                    const auto presentResult = PresentSwapchainFrame(impl, *queue, *frameContext, true, true);
-                    RecordQueueOperationResult(
-                        impl,
-                        presentResult,
-                        "RhiThreadCoordinator::FinalizeStandaloneUiFrame::Present");
-                    submitResult.mayHaveQueuedGpuWork =
-                        submitResult.mayHaveQueuedGpuWork ||
-                        presentResult.Succeeded() ||
-                        presentResult.mayHaveQueuedGpuWork;
-                    submitResult.frameFenceSignalQueued =
-                        submitResult.frameFenceSignalQueued ||
-                        presentResult.frameFenceSignalQueued;
-                    if (presentResult.code == Render::RHI::RHIQueueOperationStatusCode::DeviceLost)
-                        submitResult.code = Render::RHI::RHIQueueOperationStatusCode::DeviceLost;
-                }
-            }
-            else
-            {
-                ClearSceneToUiWaitSemaphoreForFrame(impl, *frameContext);
-            }
-
-            ClearUICompositionSignal(impl);
-
-            const auto frameContextIndex = impl.frameContexts.empty()
-                ? 0u
-                : static_cast<size_t>(impl.currentFrameIndex % impl.frameContexts.size());
-            const bool deferFrameScopedRetirement =
-                ShouldDeferFrameScopedRetirementAfterSubmit(submitResult, submitAttempted);
-            bool quarantinedFrameScopedResources = false;
-            if (deferFrameScopedRetirement)
-            {
-                DeferStandaloneFrameScopedRetirementAfterSubmit(
-                    impl,
-                    frameContextIndex,
-                    *frameContext,
-                    submitDesc);
-            }
-            else if (SubmitMayHaveQueuedGpuWorkWithoutRetirementFence(submitResult, submitAttempted))
-            {
-                RetainStandaloneSubmitResourcesUntilNextFence(
-                    impl,
-                    frameContextIndex,
-                    *frameContext,
-                    submitDesc);
-                MarkQueuedGpuWorkWithoutRetirementFence(
-                    impl,
-                    "RhiThreadCoordinator::FinalizeStandaloneUiFrame::Submit",
-                    submitResult);
-                quarantinedFrameScopedResources = true;
-            }
-
-            if (!deferFrameScopedRetirement && !quarantinedFrameScopedResources && frameContext->descriptorAllocator != nullptr)
-                frameContext->descriptorAllocator->EndFrame(impl.currentFrameIndex);
-            if (!deferFrameScopedRetirement && !quarantinedFrameScopedResources && frameContext->uploadContext != nullptr)
-                frameContext->uploadContext->EndFrame(impl.currentFrameIndex);
-
-            Detail::RememberCompletedReadbackTexture(
-                impl,
-                frameContext->explicitReadbackTexture,
-                frameContext->explicitReadbackTextureGeneration);
-            impl.explicitFrameActive = false;
-            impl.uiStandaloneFrameActive = false;
-            ++impl.currentFrameIndex;
-            if (impl.uiStandaloneFrameSubmissionLock.owns_lock())
-                impl.uiStandaloneFrameSubmissionLock.unlock();
-
-            return submitted;
-        }
 
         void FinalizeThreadedRhiFrameContext(
             DriverImpl& impl,
@@ -854,12 +854,12 @@ namespace NLS::Render::Context
             if (!deferFrameScopedRetirement && frameContext.descriptorAllocator != nullptr)
             {
                 NLS_PROFILE_NAMED_SCOPE("ThreadedRhiFrame::EndDescriptorAllocatorFrame");
-                frameContext.descriptorAllocator->EndFrame(impl.currentFrameIndex);
+                frameContext.descriptorAllocator->EndFrame(frameContext.frameIndex);
             }
             if (!deferFrameScopedRetirement && frameContext.uploadContext != nullptr)
             {
                 NLS_PROFILE_NAMED_SCOPE("ThreadedRhiFrame::EndUploadContextFrame");
-                frameContext.uploadContext->EndFrame(impl.currentFrameIndex);
+                frameContext.uploadContext->EndFrame(frameContext.frameIndex);
             }
 
             {
@@ -870,7 +870,6 @@ namespace NLS::Render::Context
                     impl,
                     frameContext.explicitReadbackTexture,
                     frameContext.explicitReadbackTextureGeneration);
-                ++impl.currentFrameIndex;
             }
         }
 
@@ -879,12 +878,11 @@ namespace NLS::Render::Context
             const size_t frameContextIndex,
             Detail::AsyncComputeSubmitPlan& submitPlan)
         {
-            if (impl.retainedThreadedSubmitResourceKeepAliveByFrameContext.size() < impl.frameContexts.size())
-                impl.retainedThreadedSubmitResourceKeepAliveByFrameContext.resize(impl.frameContexts.size());
-            if (frameContextIndex >= impl.retainedThreadedSubmitResourceKeepAliveByFrameContext.size())
-                return;
-
-            auto& keepAlive = impl.retainedThreadedSubmitResourceKeepAliveByFrameContext[frameContextIndex];
+            std::lock_guard lock(impl.frameResourceRetirementMutex);
+            NLS_ASSERT(impl.frameResourceSlots != nullptr, "Frame resource ring was not initialized");
+            auto* slot = impl.frameResourceSlots->PeekSlot(frameContextIndex);
+            NLS_ASSERT(slot != nullptr, "Submit resource slot is outside the frame ring");
+            auto& keepAlive = slot->ownedResources;
             for (auto& batch : submitPlan.batches)
             {
                 for (auto& commandPool : batch.commandPools)
@@ -922,7 +920,8 @@ namespace NLS::Render::Context
         void MarkQueuedGpuWorkWithoutRetirementFence(
             DriverImpl& impl,
             const std::string& context,
-            const Render::RHI::RHIQueueOperationResult& submitResult)
+            const Render::RHI::RHIQueueOperationResult& submitResult,
+            const std::shared_ptr<Detail::RhiFrameQueueOperationTelemetry>& queueTelemetry)
         {
             const std::string message =
                 context +
@@ -938,45 +937,23 @@ namespace NLS::Render::Context
                     ++impl.currentFrameQueueOperationFailureCount;
                     impl.lastQueueOperationFailure = message;
                     impl.currentFrameLastQueueOperationFailure = message;
+                    if (queueTelemetry != nullptr)
+                        queueTelemetry->Record(message);
                 }
             }
+            {
+                std::lock_guard lock(impl.frameResourceRetirementMutex);
+                if (impl.frameResourceSlots != nullptr)
+                {
+                    for (size_t slotIndex = 0u; slotIndex < impl.frameResourceSlots->GetSlotCount(); ++slotIndex)
+                        impl.frameResourceSlots->QuarantineSlot(slotIndex);
+                }
+            }
+            if (impl.frameLatency != nullptr)
+                impl.frameLatency->Stop();
             NLS_LOG_ERROR(message);
         }
 
-        void RetainStandaloneSubmitResourcesUntilNextFence(
-            DriverImpl& impl,
-            const size_t frameContextIndex,
-            const Render::RHI::RHIFrameContext& frameContext,
-            const Render::RHI::RHISubmitDesc& submitDesc)
-        {
-            if (impl.retainedThreadedSubmitResourceKeepAliveByFrameContext.size() < impl.frameContexts.size())
-                impl.retainedThreadedSubmitResourceKeepAliveByFrameContext.resize(impl.frameContexts.size());
-            if (frameContextIndex >= impl.retainedThreadedSubmitResourceKeepAliveByFrameContext.size())
-                return;
-
-            auto& keepAlive = impl.retainedThreadedSubmitResourceKeepAliveByFrameContext[frameContextIndex];
-            keepAlive.push_back(frameContext.commandPool);
-            for (const auto& commandBuffer : submitDesc.commandBuffers)
-                keepAlive.push_back(commandBuffer);
-            for (const auto& semaphore : submitDesc.waitSemaphores)
-                keepAlive.push_back(semaphore);
-            for (const auto& semaphore : submitDesc.signalSemaphores)
-                keepAlive.push_back(semaphore);
-        }
-
-        void DeferStandaloneFrameScopedRetirementAfterSubmit(
-            DriverImpl& impl,
-            const size_t frameContextIndex,
-            const Render::RHI::RHIFrameContext& frameContext,
-            const Render::RHI::RHISubmitDesc& submitDesc)
-        {
-            RetainStandaloneSubmitResourcesUntilNextFence(
-                impl,
-                frameContextIndex,
-                frameContext,
-                submitDesc);
-            impl.deferredThreadedFrameScopedRetirementFrameContexts.insert(frameContextIndex);
-        }
 
         bool RequiresExplicitQueueWait(const QueueDependencyPolicy policy)
         {
@@ -1414,12 +1391,6 @@ namespace NLS::Render::Context
                 workUnit.commandInput.dependencySourceWorkUnitIndex.has_value();
         }
 
-        bool HasInFlightThreadedSwapchainFrame(const DriverImpl& impl)
-        {
-            return impl.threadedLifecycle != nullptr &&
-                impl.threadedLifecycle->HasInFlightSwapchainFrame();
-        }
-
         const char* ToThreadedPassDebugName(const RenderPassCommandKind kind)
         {
             switch (kind)
@@ -1458,232 +1429,6 @@ namespace NLS::Render::Context
             return input.queueType;
         }
 
-        bool CanBeginStandaloneExplicitFrameForImpl(const DriverImpl& impl)
-        {
-            return impl.threadedLifecycle == nullptr &&
-                !impl.deviceLostDetected.load(std::memory_order_acquire) &&
-                !impl.unsafeGpuWorkQuarantined.load(std::memory_order_acquire);
-        }
-
-        bool CanBeginStandaloneUiExplicitFrameForImpl(const DriverImpl& impl)
-        {
-            return !impl.deviceLostDetected.load(std::memory_order_acquire) &&
-                !impl.unsafeGpuWorkQuarantined.load(std::memory_order_acquire) &&
-                !HasInFlightThreadedSwapchainFrame(impl);
-        }
-
-        uint64_t GetSteadyClockTickNs()
-        {
-            return static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(
-                std::chrono::steady_clock::now().time_since_epoch()).count());
-        }
-
-        void RefreshUiStandaloneFramePendingLease(DriverImpl& impl)
-        {
-            const auto expiresAt = std::chrono::steady_clock::now() + kUiStandaloneFramePendingLease;
-            impl.uiStandaloneFramePendingUntilTickNs.store(
-                static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(
-                    expiresAt.time_since_epoch()).count()),
-                std::memory_order_release);
-            impl.uiStandaloneFramePending.store(true, std::memory_order_release);
-        }
-
-        void ClearUiStandaloneFramePending(DriverImpl& impl, const bool notifyWorkers)
-        {
-            impl.uiStandaloneFramePendingUntilTickNs.store(0u, std::memory_order_release);
-            impl.uiStandaloneFramePending.store(false, std::memory_order_release);
-            if (notifyWorkers)
-                Detail::NotifyThreadedWorkers(impl);
-        }
-
-        bool IsUiStandaloneFramePending(const DriverImpl& impl)
-        {
-            if (!impl.uiStandaloneFramePending.load(std::memory_order_acquire))
-                return false;
-
-            const uint64_t pendingUntil = impl.uiStandaloneFramePendingUntilTickNs.load(std::memory_order_acquire);
-            return pendingUntil == 0u || GetSteadyClockTickNs() <= pendingUntil;
-        }
-
-        bool BeginStandaloneUiExplicitFrame(DriverImpl& impl)
-        {
-            NLS_PROFILE_SCOPE();
-            if (impl.explicitDevice == nullptr || impl.explicitSwapchain == nullptr || impl.frameContexts.empty())
-                return false;
-
-            if (impl.explicitFrameActive)
-                return true;
-
-            if (!CanBeginStandaloneUiExplicitFrameForImpl(impl))
-            {
-                ClearUiStandaloneFramePending(impl, true);
-                return false;
-            }
-
-            impl.uiStandaloneFrameSubmissionLock =
-                std::unique_lock<std::timed_mutex>(impl.threadedRhiSubmissionMutex, std::defer_lock);
-            if (!impl.uiStandaloneFrameSubmissionLock.try_lock_for(kUiStandaloneFrameSubmissionLockWait))
-                return false;
-            if (!impl.uiStandaloneFrameSubmissionLock.owns_lock())
-            {
-                ClearUiStandaloneFramePending(impl, true);
-                return false;
-            }
-
-            const size_t frameContextIndex = impl.currentFrameIndex % impl.frameContexts.size();
-            auto& frameContext = impl.frameContexts[frameContextIndex];
-            ResetCurrentFrameQueueOperationTelemetry(impl);
-            if (frameContext.frameFence != nullptr)
-            {
-                if (!WaitFrameFenceWithDriverPolicy(
-                    impl,
-                    frameContext.frameFence,
-                    "RhiThreadCoordinator::BeginStandaloneUiExplicitFrame"))
-                {
-                    if (impl.uiStandaloneFrameSubmissionLock.owns_lock())
-                        impl.uiStandaloneFrameSubmissionLock.unlock();
-                    ClearUiStandaloneFramePending(impl, true);
-                    return false;
-                }
-                Detail::ReleaseDeferredThreadedFrameScopedResourcesAfterFence(impl, frameContext, frameContextIndex);
-            }
-            // UI-only standalone frames can temporarily prevent the worker from
-            // entering the normal threaded submission path. Retire mesh uploads
-            // while the submission lock is already held so preview preparation
-            // does not wait for an unrelated scene frame.
-            (void)Detail::RecordPendingMeshRuntimeUploads(impl);
-            frameContext.frameIndex = static_cast<uint64_t>(impl.currentFrameIndex);
-            if (frameContext.imageAcquiredSemaphore != nullptr)
-                frameContext.imageAcquiredSemaphore->Reset();
-            if (frameContext.renderFinishedSemaphore != nullptr)
-                frameContext.renderFinishedSemaphore->Reset();
-            ClearSceneToUiWaitSemaphoreForFrame(impl, frameContext);
-            if (frameContext.commandPool != nullptr)
-                frameContext.commandPool->Reset();
-            if (frameContext.commandBuffer != nullptr)
-                frameContext.commandBuffer->Reset();
-            for (const auto& parallelCommandPool : frameContext.parallelCommandPools)
-            {
-                if (parallelCommandPool != nullptr)
-                    parallelCommandPool->Reset();
-            }
-            for (const auto& parallelCommandBuffer : frameContext.parallelCommandBuffers)
-            {
-                if (parallelCommandBuffer != nullptr)
-                    parallelCommandBuffer->Reset();
-            }
-            for (const auto& childCommandPool : frameContext.childCommandPools)
-            {
-                if (childCommandPool != nullptr)
-                    childCommandPool->Reset();
-            }
-            for (const auto& childCommandBuffer : frameContext.childCommandBuffers)
-            {
-                if (childCommandBuffer != nullptr)
-                    childCommandBuffer->Reset();
-            }
-            if (frameContext.resourceStateTracker != nullptr)
-            {
-                frameContext.resourceStateTracker->RetireTransientResources(std::numeric_limits<uint64_t>::max());
-                frameContext.resourceStateTracker->Reset();
-                frameContext.resourceStateTracker->BeginFrame(impl.currentFrameIndex);
-            }
-            if (frameContext.descriptorAllocator != nullptr)
-                frameContext.descriptorAllocator->BeginFrame(impl.currentFrameIndex);
-            if (frameContext.uploadContext != nullptr)
-                frameContext.uploadContext->BeginFrame(impl.currentFrameIndex);
-
-            frameContext.hasAcquiredSwapchainImage = false;
-            frameContext.uploadBytesReserved = 0u;
-            frameContext.swapchainBackbufferView = nullptr;
-            frameContext.explicitReadbackTexture = nullptr;
-            frameContext.explicitReadbackTextureGeneration = 0u;
-
-            std::optional<Render::RHI::RHIAcquiredImage> acquiredImage;
-            {
-                NLS_PROFILE_NAMED_SCOPE("RhiThreadCoordinator::AcquireStandaloneUiImage");
-                acquiredImage = impl.explicitSwapchain->AcquireNextImage(
-                    frameContext.imageAcquiredSemaphore,
-                    frameContext.frameFence);
-            }
-            frameContext.hasAcquiredSwapchainImage = acquiredImage.has_value();
-            frameContext.swapchainImageIndex = acquiredImage.has_value() ? acquiredImage->imageIndex : 0u;
-            if (acquiredImage.has_value())
-                frameContext.swapchainBackbufferView = impl.explicitSwapchain->GetBackbufferView(frameContext.swapchainImageIndex);
-            SeedAcquiredSwapchainBackbufferState(frameContext);
-            frameContext.explicitReadbackTexture =
-                Render::FrameGraph::ResolveFrameReadbackTexture(nullptr, &frameContext);
-            frameContext.explicitReadbackTextureGeneration =
-                Render::FrameGraph::ResolveFrameReadbackTextureGeneration(nullptr, &frameContext);
-
-            if (impl.renderDocCaptureController != nullptr)
-                impl.renderDocCaptureController->OnPreFrame(true);
-
-            if (frameContext.commandBuffer != nullptr)
-                frameContext.commandBuffer->Begin();
-
-            if (frameContext.commandBuffer != nullptr && frameContext.commandBuffer->IsRecording())
-                (void)Detail::RecordPendingTextureRuntimeUploads(impl, frameContext, *frameContext.commandBuffer);
-            impl.uiStandaloneFrameActive = true;
-            impl.explicitFrameActive = true;
-            return true;
-        }
-
-        bool PresentStandaloneUiFrame(DriverImpl& impl)
-        {
-            NLS_PROFILE_SCOPE();
-            if (!impl.uiStandaloneFrameActive)
-                return false;
-
-            NLS_ASSERT(impl.explicitSwapchain != nullptr, "PresentSwapchain requires explicitSwapchain");
-            NLS_ASSERT(impl.explicitDevice != nullptr, "PresentSwapchain requires explicitDevice");
-            (void)FinalizeStandaloneUiFrame(impl);
-            return true;
-        }
-
-        class ScopedUiStandaloneFrameRequest final
-        {
-        public:
-            explicit ScopedUiStandaloneFrameRequest(DriverImpl& impl)
-                : m_impl(impl)
-            {
-                RefreshUiStandaloneFramePendingLease(m_impl);
-            }
-
-            ~ScopedUiStandaloneFrameRequest()
-            {
-                if (!m_keepPending)
-                    ClearUiStandaloneFramePending(m_impl, true);
-            }
-
-            void KeepPending()
-            {
-                m_keepPending = true;
-            }
-
-        private:
-            DriverImpl& m_impl;
-            bool m_keepPending = false;
-        };
-
-    }
-
-    bool Detail::TryBeginNextRhiFrameExecution(
-        ThreadedRenderingLifecycle& lifecycle,
-        size_t* slotIndex,
-        RenderScenePackage* renderScenePackage)
-    {
-        NLS_PROFILE_SCOPE();
-        size_t claimedSlotIndex = 0u;
-        RenderScenePackage claimedRenderScenePackage;
-        if (!lifecycle.TryBeginNextRhiSubmission(&claimedSlotIndex, &claimedRenderScenePackage))
-            return false;
-
-        if (slotIndex != nullptr)
-            *slotIndex = claimedSlotIndex;
-        if (renderScenePackage != nullptr)
-            *renderScenePackage = std::move(claimedRenderScenePackage);
-        return true;
     }
 
     uint64_t Detail::ResolveAsyncComputeCandidateWorkloadCount(
@@ -1730,11 +1475,7 @@ namespace NLS::Render::Context
             if (!Detail::SupportsOrderedParallelCommandSubmission(impl))
                 return false;
 
-            // External scene outputs are reused by the editor UI as sampled textures.
-            // Recording their render passes in parallel lets the DX12 backend race on
-            // per-texture state during command-list construction, which is especially
-            // fragile while the Scene view is being resized.
-            return !Render::FrameGraph::HasExternalSceneOutput(renderScenePackage);
+            return true;
         }
     }
 
@@ -1897,29 +1638,6 @@ namespace NLS::Render::Context
         };
 
         bool sawComputeBatch = false;
-        const auto routeToGraphicsQueueSubmission = [&submitPlan, &submissionUnits]()
-        {
-            submitPlan.batches.clear();
-            submitPlan.temporarySemaphores.clear();
-
-            ThreadedQueueSubmissionBatch graphicsBatch;
-            graphicsBatch.queueType = Render::RHI::QueueType::Graphics;
-            graphicsBatch.queueDependencyPolicy = QueueDependencyPolicy::Previous;
-            graphicsBatch.requiresDependencyVisibility = false;
-            for (const auto& submissionUnit : submissionUnits)
-            {
-                if (submissionUnit.commandBuffer == nullptr)
-                    continue;
-
-                if (submissionUnit.commandPool != nullptr)
-                    graphicsBatch.commandPools.push_back(submissionUnit.commandPool);
-                graphicsBatch.commandBuffers.push_back(submissionUnit.commandBuffer);
-            }
-
-            if (!graphicsBatch.commandBuffers.empty())
-                submitPlan.batches.push_back(std::move(graphicsBatch));
-            submitPlan.usedDedicatedComputeQueueSubmission = false;
-        };
         auto appendBatchIfNeeded = [&](
             const Render::RHI::QueueType queueType,
             const QueueDependencyPolicy queueDependencyPolicy,
@@ -1970,6 +1688,8 @@ namespace NLS::Render::Context
                 crossQueueDependencySourceSubmissionOrders,
                 submissionUnit.requiresDependencyVisibility);
             auto& batch = submitPlan.batches.back();
+            batch.consumesSwapchainImage =
+                batch.consumesSwapchainImage || submissionUnit.targetsSwapchain;
             if (submissionUnit.commandPool != nullptr)
                 batch.commandPools.push_back(submissionUnit.commandPool);
             batch.commandBuffers.push_back(submissionUnit.commandBuffer);
@@ -2065,7 +1785,7 @@ namespace NLS::Render::Context
 
                 if (handoffSemaphore == nullptr)
                 {
-                    routeToGraphicsQueueSubmission();
+                    submitPlan.failureDiagnostic = "Cross-queue handoff semaphore creation failed";
                     return submitPlan;
                 }
 
@@ -2122,6 +1842,21 @@ namespace NLS::Render::Context
         }
 
         return nullptr;
+    }
+
+    size_t Detail::FindFirstSwapchainDependentWorkUnitPosition(
+        const std::vector<ParallelCommandWorkUnit>& workUnits,
+        const std::vector<size_t>& submissionOrderedIndices)
+    {
+        for (size_t position = 0u; position < submissionOrderedIndices.size(); ++position)
+        {
+            const size_t workUnitIndex = submissionOrderedIndices[position];
+            if (workUnitIndex >= workUnits.size())
+                return position;
+            if (workUnits[workUnitIndex].commandInput.targetsSwapchain)
+                return position;
+        }
+        return submissionOrderedIndices.size();
     }
 
     std::vector<ParallelCommandWorkUnit> Detail::BuildParallelCommandWorkUnits(
@@ -2491,6 +2226,9 @@ namespace NLS::Render::Context
             ParallelCommandWorkUnit workUnit;
             std::shared_ptr<Render::RHI::RHICommandPool> commandPool;
             std::shared_ptr<Render::RHI::RHICommandBuffer> commandBuffer;
+            std::shared_ptr<RhiCommandList> commands;
+            std::unique_ptr<RecordedParallelCommandWorkUnit> queueRelease;
+            std::thread::id translationThreadId;
             uint64_t recordedPassCount = 0u;
             uint64_t recordedDrawCount = 0u;
             uint64_t recordedComputeDispatchCount = 0u;
@@ -2502,6 +2240,7 @@ namespace NLS::Render::Context
         struct RecordedParallelCommandBufferBatch
         {
             std::vector<RecordedParallelCommandWorkUnit> recordedWorkUnits;
+            std::optional<RecordedParallelCommandWorkUnit> postPassTransitions;
             uint64_t recordedPassCount = 0u;
             uint64_t recordedDrawCount = 0u;
             uint64_t recordedComputeDispatchCount = 0u;
@@ -2637,7 +2376,7 @@ namespace NLS::Render::Context
             bool usedTranslationMerge = false;
         };
 
-        /** Aborts the remaining nodes of one submission graph. */
+        /** Stops the remaining operations of one frame dispatch. */
         struct ThreadedRhiSubmissionStageAbort final
         {
         };
@@ -2647,18 +2386,44 @@ namespace NLS::Render::Context
     namespace Detail
     {
         /**
-         * Shared state of one RHI submission. The six submission stages run as
-         * separate TaskGraph nodes, so each field is written by exactly one stage
-         * and the TaskHandle dependency chain establishes the happens-before edge.
-         * The producer thread owns the shared pointer until the retire node has
-         * published the completion back to the lifecycle.
+         * Render-thread state for one frame dispatch. Translate workers own their
+         * independent command lists; submit operations run through the executor.
+         * The producer retains this object until CPU completion is published.
          */
+        /**
+         * One frame's asynchronous swapchain image acquisition.
+         *
+         * BeginThreadedRhiFrame enqueues it on the executor's ordered lane so the
+         * lane can process it while the frame builds work units and records its
+         * earlier passes. The view is bound by ResolveThreadedSwapchainAcquisition
+         * at the first point a pass actually needs the backbuffer.
+         */
+        struct ThreadedSwapchainAcquisition final
+        {
+            RhiSubmitLaneOperation laneOperation;
+            std::shared_ptr<Render::RHI::RHITextureView> backbufferView;
+            uint32_t imageIndex = 0u;
+            bool hasImage = false;
+            bool enqueued = false;
+            /** Guarantees the lane operation is waited on at most once. */
+            bool resolved = false;
+        };
+
         struct ThreadedRhiSubmissionExecution
         {
             Driver* driver = nullptr;
             DriverImpl* impl = nullptr;
             size_t frameContextIndex = 0u;
+            uint64_t resourceLeaseGeneration = 0u;
             RhiSubmissionAttribution attribution = RhiSubmissionAttribution::Unknown;
+            std::shared_ptr<ThreadedSwapchainAcquisition> swapchainAcquisition;
+            /**
+             * Per-frame queue-operation diagnostics. The driver's "current frame"
+             * counters cannot be shared once several submissions may be in flight:
+             * frame N's Present runs on the RHI lane while frame N+1 is prepared.
+             */
+            std::shared_ptr<RhiFrameQueueOperationTelemetry> queueTelemetry =
+                std::make_shared<RhiFrameQueueOperationTelemetry>();
             RenderScenePackage renderScenePackage;
             RhiSubmissionFrame submissionFrame;
             Render::RHI::RHIFrameContext* frameContext = nullptr;
@@ -2667,12 +2432,16 @@ namespace NLS::Render::Context
             AsyncComputeSubmitPlan submitPlan;
             RecordedParallelCommandBufferBatch recordedParallelBatch;
             NLS::Base::TaskGraph::TaskCompletion completion;
+            RhiSubmitEvent rhiCompletion;
+            bool rhiDispatched = false;
             bool usesRecordedParallelBatch = false;
             bool supportsOrderedWorkUnitSubmission = false;
             bool parallelRecordingReady = false;
             bool parallelTranslationReady = false;
             bool framePrepared = false;
             bool frameRetired = false;
+            // Success and abort can meet at retirement; publish CPU completion once.
+            bool cpuRetired = false;
             bool submissionAttempted = false;
             bool submissionSucceeded = true;
             bool presentedAfterSubmitting = false;
@@ -2682,19 +2451,74 @@ namespace NLS::Render::Context
             bool deviceLostDuringSubmit = false;
             bool mustDeferFrameScopedRetirement = false;
             bool mustQuarantineFrameScopedResources = false;
+            bool submitResourcesRetained = false;
             bool presentRequested = false;
             bool presentSignalsFrameFence = false;
+            Render::RHI::NativeHandle uiCompositionSignalSemaphore;
+            uint64_t uiCompositionSignalValue = 0u;
             size_t presentGraphicsBatchIndex = 0u;
             std::string failureReason;
         };
 
         using ThreadedRhiSubmissionExecutionPtr = std::shared_ptr<ThreadedRhiSubmissionExecution>;
+
+        struct RhiFrameExecutionQueue final
+        {
+            static void Enqueue(ThreadedRhiSubmissionExecutionPtr execution)
+            {
+                auto& executor = RhiCommandListExecutor::Get();
+                std::lock_guard lock(executor.m_frameMutex);
+                executor.m_pendingFrames.push_back(std::move(execution));
+            }
+
+            static ThreadedRhiSubmissionExecutionPtr Peek(const DriverImpl& owner)
+            {
+                auto& executor = RhiCommandListExecutor::Get();
+                std::lock_guard lock(executor.m_frameMutex);
+                if (executor.m_pendingFrames.empty() || executor.m_pendingFrames.front()->impl != &owner)
+                    return {};
+                return executor.m_pendingFrames.front();
+            }
+
+            static void Pop(const DriverImpl& owner)
+            {
+                auto& executor = RhiCommandListExecutor::Get();
+                std::lock_guard lock(executor.m_frameMutex);
+                if (!executor.m_pendingFrames.empty() && executor.m_pendingFrames.front()->impl == &owner)
+                    executor.m_pendingFrames.pop_front();
+            }
+
+            static size_t Count(const DriverImpl& owner)
+            {
+                auto& executor = RhiCommandListExecutor::Get();
+                std::lock_guard lock(executor.m_frameMutex);
+                return static_cast<size_t>(std::count_if(executor.m_pendingFrames.begin(),
+                    executor.m_pendingFrames.end(), [&owner](const auto& frame) { return frame->impl == &owner; }));
+            }
+
+            static std::vector<ThreadedRhiSubmissionExecutionPtr> Copy(const DriverImpl& owner)
+            {
+                auto& executor = RhiCommandListExecutor::Get();
+                std::lock_guard lock(executor.m_frameMutex);
+                std::vector<ThreadedRhiSubmissionExecutionPtr> frames;
+                for (const auto& frame : executor.m_pendingFrames)
+                    if (frame->impl == &owner)
+                        frames.push_back(frame);
+                return frames;
+            }
+
+            static std::mutex& RetirementMutex()
+            {
+                return RhiCommandListExecutor::Get().m_frameRetirementMutex;
+            }
+        };
     }
 
     namespace
     {
         using Detail::ThreadedRhiSubmissionExecution;
         using Detail::ThreadedRhiSubmissionExecutionPtr;
+        using Detail::ThreadedSwapchainAcquisition;
 
 
 
@@ -2714,6 +2538,54 @@ namespace NLS::Render::Context
                         ? reason
                         : "Parallel command translation failed");
             }
+        }
+
+        RhiCommandListRecorder::PreviousStateResolver ResolvePreviousFrameResourceStates(
+            DriverImpl& impl, const RHI::RHIFrameContext& frame)
+        {
+            std::vector<std::pair<uint64_t, std::shared_ptr<RHI::ResourceStateTracker>>> previousFrames;
+            {
+                for (const auto& execution : Detail::RhiFrameExecutionQueue::Copy(impl))
+                {
+                    const auto* previous = execution->frameContext;
+                    if (previous != nullptr && previous != &frame && previous->frameIndex < frame.frameIndex &&
+                        previous->resourceStateTracker != nullptr)
+                        previousFrames.emplace_back(previous->frameIndex, previous->resourceStateTracker);
+                }
+            }
+            std::sort(previousFrames.begin(), previousFrames.end(),
+                [](const auto& lhs, const auto& rhs) { return lhs.first > rhs.first; });
+            // Native state only describes submitted work. Recording the next frame
+            // must also account for earlier lists waiting for ordered submission.
+            return [previousFrames = std::move(previousFrames)](RHI::RHIBarrierDesc& barriers)
+            {
+                for (auto& barrier : barriers.bufferBarriers)
+                {
+                    if (barrier.before != RHI::ResourceState::Unknown)
+                        continue;
+                    for (const auto& previous : previousFrames)
+                        if (const auto state = previous.second->GetBufferState(barrier.buffer))
+                        {
+                            barrier.before = state->state;
+                            barrier.sourceStageMask = state->stageMask;
+                            barrier.sourceAccessMask = state->accessMask;
+                            break;
+                        }
+                }
+                for (auto& barrier : barriers.textureBarriers)
+                {
+                    if (barrier.before != RHI::ResourceState::Unknown)
+                        continue;
+                    for (const auto& previous : previousFrames)
+                        if (const auto state = previous.second->GetTextureState(barrier.texture, barrier.subresourceRange))
+                        {
+                            barrier.before = state->state;
+                            barrier.sourceStageMask = state->stageMask;
+                            barrier.sourceAccessMask = state->accessMask;
+                            break;
+                        }
+                }
+            };
         }
 
         RecordedParallelCommandWorkUnit RecordSingleParallelCommandWorkUnit(
@@ -2757,15 +2629,61 @@ namespace NLS::Render::Context
             }
 
             const auto* passProfileScopeName = Detail::ResolvePassProfileScopeName(passInput);
-            auto commandBuffer = frameContext.parallelCommandBuffers[resourceIndex];
-            if (commandBuffer == nullptr)
+            auto nativeCommandBuffer = frameContext.parallelCommandBuffers[resourceIndex];
+            if (nativeCommandBuffer == nullptr)
             {
                 Detail::LogSkippedPass(renderScenePackage, passInput, "Reusable parallel command buffer is null");
                 MarkRecordedParallelCommandWorkUnitFailure(recordedWorkUnit, "Reusable parallel command buffer is null");
                 return recordedWorkUnit;
             }
 
+            auto commands = std::make_shared<RhiCommandList>();
+            commands->SetDebugName(workUnit.debugName);
+            commands->SetQueueType(passInput.queueType);
+            commands->SetSignalFence(frameContext.frameFence);
+            std::unique_ptr<RhiCommandListRecorder> releaseRecorder;
+            auto commandBuffer = std::make_shared<RhiCommandListRecorder>(
+                *commands, *nativeCommandBuffer, frameContext.resourceStateTracker,
+                [&](const RHI::RHIBarrierDesc& barriers) -> RHI::RHICommandRecordingResult
+                {
+                    if (releaseRecorder == nullptr)
+                    {
+                        recordedWorkUnit.queueRelease = std::make_unique<RecordedParallelCommandWorkUnit>();
+                        auto& release = *recordedWorkUnit.queueRelease;
+                        release.workUnit.commandInput.queueType = RHI::QueueType::Graphics;
+                        release.commandPool = impl.explicitDevice->CreateCommandPool(
+                            RHI::QueueType::Graphics, workUnit.debugName + "::QueueReleasePool");
+                        release.commandBuffer = release.commandPool != nullptr
+                            ? release.commandPool->CreateCommandBuffer(workUnit.debugName + "::QueueRelease") : nullptr;
+                        if (release.commandBuffer == nullptr)
+                            return { RHI::RHICommandRecordingStatusCode::BackendFailure,
+                                "Graphics queue release command resource creation failed" };
+                        release.commands = std::make_shared<RhiCommandList>();
+                        release.commands->SetDebugName(workUnit.debugName + "::QueueRelease");
+                        release.commands->SetSignalFence(frameContext.frameFence);
+                        releaseRecorder = std::make_unique<RhiCommandListRecorder>(
+                            *release.commands, *release.commandBuffer, frameContext.resourceStateTracker,
+                            RhiCommandListRecorder::QueueReleaseFunction {}, ResolvePreviousFrameResourceStates(impl, frameContext));
+                        releaseRecorder->Begin();
+                    }
+                    return releaseRecorder->BarrierChecked(barriers);
+                }, ResolvePreviousFrameResourceStates(impl, frameContext));
+            recordedWorkUnit.commandPool = commandPool;
+            recordedWorkUnit.commandBuffer = nativeCommandBuffer;
+            recordedWorkUnit.commands = commands;
             commandBuffer->Begin();
+            if (!isUiOverlayPass)
+            {
+                const auto visibilityInput = Detail::BuildDependencyVisibilityPassInput(
+                    workUnit, workUnit.incomingDependencyEdges);
+                if (Detail::HasResourceVisibilityTransitions(visibilityInput) &&
+                    !Detail::RecordResourceVisibilityTransitions(*commandBuffer, visibilityInput, &frameContext))
+                {
+                    MarkRecordedParallelCommandWorkUnitFailure(recordedWorkUnit, "Dependency visibility planning failed");
+                    commandBuffer->End();
+                    return recordedWorkUnit;
+                }
+            }
             if (passInput.kind == RenderPassCommandKind::Compute)
             {
                 NLS_PROFILE_NAMED_SCOPE(passProfileScopeName);
@@ -2775,6 +2693,11 @@ namespace NLS::Render::Context
                     passInput.computeDispatchInputs,
                     false);
                 commandBuffer->EndGpuProfileScope();
+                if (releaseRecorder != nullptr)
+                {
+                    releaseRecorder->End();
+                    recordedWorkUnit.queueRelease->wasRecorded = true;
+                }
                 if (recordedDispatchCount == 0u)
                 {
                     if (!passInput.computeDispatchInputs.empty())
@@ -2788,7 +2711,7 @@ namespace NLS::Render::Context
                     commandBuffer->End();
 
                 recordedWorkUnit.commandPool = commandPool;
-                recordedWorkUnit.commandBuffer = commandBuffer;
+                recordedWorkUnit.commandBuffer = nativeCommandBuffer;
                 recordedWorkUnit.recordedPassCount = 1u;
                 recordedWorkUnit.recordedComputeDispatchCount = recordedDispatchCount;
                 recordedWorkUnit.wasRecorded = true;
@@ -2947,7 +2870,7 @@ namespace NLS::Render::Context
                 commandBuffer->End();
 
             recordedWorkUnit.commandPool = commandPool;
-            recordedWorkUnit.commandBuffer = commandBuffer;
+            recordedWorkUnit.commandBuffer = nativeCommandBuffer;
             recordedWorkUnit.recordedPassCount = 1u;
             recordedWorkUnit.recordedDrawCount = recordedDrawCount;
             recordedWorkUnit.wasRecorded = true;
@@ -3184,82 +3107,6 @@ namespace NLS::Render::Context
             return std::min(eligibleCount, workerBudget);
         }
 
-        bool RecordParallelEligibleWorkUnitsWithTaskGraph(
-            RecordedParallelCommandBufferBatch& batch,
-            DriverImpl& impl,
-            Render::RHI::RHIFrameContext& frameContext,
-            const RenderScenePackage& renderScenePackage,
-            const std::vector<ParallelCommandWorkUnit>& workUnits,
-            const std::vector<size_t>& parallelEligibleIndices,
-            const size_t frameContextIndex)
-        {
-            if (parallelEligibleIndices.empty())
-                return true;
-            if (impl.taskGraph == nullptr || !impl.taskGraph->IsStarted())
-                return false;
-
-            std::vector<std::atomic_bool> workUnitCompleted(parallelEligibleIndices.size());
-            for (auto& completed : workUnitCompleted)
-                completed.store(false, std::memory_order_relaxed);
-
-            std::vector<NLS::Base::TaskGraph::TaskHandle> handles;
-            handles.reserve(parallelEligibleIndices.size());
-            for (size_t eligibleIndex = 0u; eligibleIndex < parallelEligibleIndices.size(); ++eligibleIndex)
-            {
-                const auto workUnitIndex = parallelEligibleIndices[eligibleIndex];
-                NLS::Base::TaskGraph::TaskDesc desc;
-                desc.function = [&batch,
-                                 &impl,
-                                 &frameContext,
-                                 &renderScenePackage,
-                                 &workUnits,
-                                 &workUnitCompleted,
-                                 workUnitIndex,
-                                 eligibleIndex,
-                                 frameContextIndex]
-                {
-                    // Runs on a TaskGraph worker, so keep the scope visible in traces.
-                    NLS_PROFILE_NAMED_SCOPE("RhiThreadCoordinator::RecordParallelCommandWorkUnit");
-                    batch.recordedWorkUnits[workUnitIndex] = RecordSingleParallelCommandWorkUnit(
-                        impl,
-                        frameContext,
-                        renderScenePackage,
-                        workUnits[workUnitIndex],
-                        frameContextIndex);
-                    workUnitCompleted[eligibleIndex].store(true, std::memory_order_release);
-                };
-                desc.targetThread = NLS::Base::TaskGraph::NamedThread::Any;
-                desc.priority = NLS::Base::TaskGraph::TaskPriority::High;
-                desc.debugName = "RhiThreadCoordinator::RecordParallelCommandWorkUnits";
-                handles.push_back(impl.taskGraph->Submit(std::move(desc)));
-                if (!handles.back().IsValid())
-                {
-                    for (const auto pendingHandle : handles)
-                    {
-                        if (pendingHandle.IsValid())
-                            (void)impl.taskGraph->Wait(pendingHandle);
-                    }
-                    return false;
-                }
-            }
-
-            bool allSucceeded = true;
-            for (const auto handle : handles)
-            {
-                const auto status = impl.taskGraph->Wait(handle);
-                allSucceeded = allSucceeded &&
-                    status == NLS::Base::TaskGraph::TaskStatus::Succeeded;
-            }
-            const bool allWorkUnitsCompleted = std::all_of(
-                workUnitCompleted.begin(),
-                workUnitCompleted.end(),
-                [](const std::atomic_bool& completed)
-                {
-                    return completed.load(std::memory_order_acquire);
-                });
-            return allSucceeded && allWorkUnitsCompleted;
-        }
-
         bool RecordInRenderPassChildWorkUnitsWithTaskGraph(
             RecordedParallelCommandBufferBatch& batch,
             DriverImpl& impl,
@@ -3291,7 +3138,7 @@ namespace NLS::Render::Context
                                  &workUnitCompleted,
                                  workUnitIndex]
                 {
-                    NLS_PROFILE_NAMED_SCOPE("RhiThreadCoordinator::RecordInRenderPassChildCommandWorkUnit");
+                    NLS_PROFILE_NAMED_SCOPE("RhiCommandListExecutor::RecordInRenderPassChildCommandWorkUnit");
                     batch.recordedWorkUnits[workUnitIndex] = RecordSingleInRenderPassChildWorkUnit(
                         impl,
                         frameContext,
@@ -3302,7 +3149,7 @@ namespace NLS::Render::Context
                 };
                 desc.targetThread = NLS::Base::TaskGraph::NamedThread::Any;
                 desc.priority = NLS::Base::TaskGraph::TaskPriority::High;
-                desc.debugName = "RhiThreadCoordinator::RecordInRenderPassChildCommandWorkUnits";
+                desc.debugName = "RhiCommandListExecutor::RecordInRenderPassChildCommandWorkUnits";
                 handles.push_back(impl.taskGraph->Submit(std::move(desc)));
                 if (!handles.back().IsValid())
                 {
@@ -3337,22 +3184,22 @@ namespace NLS::Render::Context
             Render::RHI::RHIFrameContext& frameContext,
             const RenderScenePackage& renderScenePackage,
             const std::vector<ParallelCommandWorkUnit>& workUnits,
-            const size_t frameContextIndex)
+            const size_t frameContextIndex,
+            const ThreadedRhiSubmissionExecutionPtr& execution)
         {
             RecordedParallelCommandBufferBatch batch;
             if (impl.explicitDevice == nullptr)
                 return batch;
 
+            if (frameContext.resourceStateTracker == nullptr)
+                frameContext.resourceStateTracker = Render::RHI::CreateDefaultResourceStateTracker();
+
             batch.recordedWorkUnits.resize(workUnits.size());
             std::vector<size_t> workUnitResourceIndices;
             workUnitResourceIndices.reserve(workUnits.size());
-            std::vector<size_t> parallelEligibleIndices;
-            parallelEligibleIndices.reserve(workUnits.size());
             for (size_t index = 0; index < workUnits.size(); ++index)
             {
                 workUnitResourceIndices.push_back(index);
-                if (workUnits[index].eligibleForParallelRecording)
-                    parallelEligibleIndices.push_back(index);
             }
 
             if (!workUnitResourceIndices.empty() &&
@@ -3372,64 +3219,84 @@ namespace NLS::Render::Context
                 return batch;
             }
 
-            const auto workerCount = ResolveParallelRecordingWorkerCount(impl, workUnits);
-            if (!parallelEligibleIndices.empty())
-            {
-                if (workerCount > 1u && impl.taskGraph != nullptr && impl.taskGraph->IsStarted())
+            // Resolve shared state in GPU submission order before any native
+            // command buffer is touched by a translate worker.
+            std::stable_sort(workUnitResourceIndices.begin(), workUnitResourceIndices.end(),
+                [&workUnits](const size_t lhs, const size_t rhs)
                 {
-                    const bool scheduledParallelJobs = RecordParallelEligibleWorkUnitsWithTaskGraph(
-                        batch,
-                        impl,
-                        frameContext,
-                        renderScenePackage,
-                        workUnits,
-                        parallelEligibleIndices,
-                        frameContextIndex);
-                    if (scheduledParallelJobs)
-                    {
-                        batch.parallelWorkerCountUsed = workerCount;
-                        batch.usedParallelRecording = true;
-                    }
-                    else
-                    {
-                        for (const auto workUnitIndex : parallelEligibleIndices)
-                        {
-                            batch.recordedWorkUnits[workUnitIndex] = RecordSingleParallelCommandWorkUnit(
-                                impl,
-                                frameContext,
-                                renderScenePackage,
-                                workUnits[workUnitIndex],
-                                frameContextIndex);
-                        }
-                        batch.parallelWorkerCountUsed = 1u;
-                    }
-                }
-                else
-                {
-                    for (const auto workUnitIndex : parallelEligibleIndices)
-                    {
-                        batch.recordedWorkUnits[workUnitIndex] = RecordSingleParallelCommandWorkUnit(
-                            impl,
-                            frameContext,
-                            renderScenePackage,
-                            workUnits[workUnitIndex],
-                            frameContextIndex);
-                    }
-                    batch.parallelWorkerCountUsed = 1u;
-                }
-            }
+                    return workUnits[lhs].submissionOrder < workUnits[rhs].submissionOrder;
+                });
 
-            for (size_t index = 0; index < workUnits.size(); ++index)
+            // Split at the first work unit that consumes the acquired backbuffer.
+            // Everything before that boundary is view-independent, so it records
+            // while the ordered lane is still draining the previous frame's
+            // submit/Present. The acquisition is resolved at the boundary and the
+            // trailing swapchain batch is recorded afterwards, which keeps the
+            // recording order - and therefore the barrier commits - unchanged.
+            const size_t swapchainBatchBegin =
+                Detail::FindFirstSwapchainDependentWorkUnitPosition(
+                    workUnits, workUnitResourceIndices);
+            const auto recordParallelWorkUnit = [&](const size_t index)
             {
-                if (workUnits[index].eligibleForParallelRecording)
-                    continue;
-
                 batch.recordedWorkUnits[index] = RecordSingleParallelCommandWorkUnit(
                     impl,
                     frameContext,
                     renderScenePackage,
                     workUnits[index],
                     frameContextIndex);
+            };
+            for (size_t orderedIndex = 0u; orderedIndex < swapchainBatchBegin; ++orderedIndex)
+            {
+                recordParallelWorkUnit(workUnitResourceIndices[orderedIndex]);
+            }
+
+            if (swapchainBatchBegin < workUnitResourceIndices.size() &&
+                !Detail::ResolveThreadedSwapchainAcquisition(execution))
+            {
+                for (size_t orderedIndex = swapchainBatchBegin;
+                     orderedIndex < workUnitResourceIndices.size();
+                     ++orderedIndex)
+                {
+                    MarkRecordedParallelCommandWorkUnitFailure(
+                        batch.recordedWorkUnits[workUnitResourceIndices[orderedIndex]],
+                        "swapchain acquisition failed");
+                }
+                return batch;
+            }
+
+            for (size_t orderedIndex = swapchainBatchBegin;
+                 orderedIndex < workUnitResourceIndices.size();
+                 ++orderedIndex)
+            {
+                recordParallelWorkUnit(workUnitResourceIndices[orderedIndex]);
+            }
+
+            const auto extraction = Render::FrameGraph::BuildExtractionVisibilityPassInput(renderScenePackage);
+            if (Detail::HasResourceVisibilityTransitions(extraction))
+            {
+                batch.postPassTransitions.emplace();
+                auto& post = *batch.postPassTransitions;
+                post.commandPool = impl.explicitDevice->CreateCommandPool(
+                    Render::RHI::QueueType::Graphics, "FrameExtractionPool");
+                post.commandBuffer = post.commandPool != nullptr
+                    ? post.commandPool->CreateCommandBuffer("FrameExtraction") : nullptr;
+                if (post.commandBuffer == nullptr)
+                {
+                    MarkRecordedParallelCommandWorkUnitFailure(post, "Post-pass command resource creation failed");
+                }
+                else
+                {
+                    post.commands = std::make_shared<RhiCommandList>();
+                    post.commands->SetDebugName("FrameExtraction");
+                    post.commands->SetSignalFence(frameContext.frameFence);
+                    RhiCommandListRecorder recorder(*post.commands, *post.commandBuffer, frameContext.resourceStateTracker,
+                        RhiCommandListRecorder::QueueReleaseFunction {}, ResolvePreviousFrameResourceStates(impl, frameContext));
+                    recorder.Begin();
+                    post.wasRecorded = Detail::RecordResourceVisibilityTransitions(recorder, extraction, &frameContext);
+                    recorder.End();
+                    if (!post.wasRecorded)
+                        MarkRecordedParallelCommandWorkUnitFailure(post, "Post-pass transition planning failed");
+                }
             }
 
             for (const auto& recordedWorkUnit : batch.recordedWorkUnits)
@@ -4038,7 +3905,8 @@ namespace NLS::Render::Context
             const std::vector<ParallelCommandWorkUnit>& workUnits,
             Detail::AsyncComputeSubmitPlan* submitPlan,
             RhiSubmissionFrame* submissionFrame,
-            const size_t frameContextIndex)
+            const size_t frameContextIndex,
+            const ThreadedRhiSubmissionExecutionPtr& execution)
         {
             if (submitPlan == nullptr ||
                 submissionFrame == nullptr ||
@@ -4050,6 +3918,18 @@ namespace NLS::Render::Context
             bool recordedAnyCommand = false;
             bool recordedChildCommandGroup = false;
             bool recordedSerialWorkUnit = false;
+            // The acquisition is resolved lazily at the first work unit that
+            // consumes the backbuffer. Earlier view-independent work units record
+            // while the ordered lane is still draining the previous frame.
+            bool swapchainAcquisitionResolved = false;
+            const auto ensureSwapchainAcquisition =
+                [&execution, &swapchainAcquisitionResolved]()
+                {
+                    if (swapchainAcquisitionResolved)
+                        return true;
+                    swapchainAcquisitionResolved = true;
+                    return Detail::ResolveThreadedSwapchainAcquisition(execution);
+                };
             std::vector<std::shared_ptr<Render::RHI::RHICommandPool>> childCommandPoolKeepAlive;
             std::vector<std::shared_ptr<Render::RHI::RHICommandBuffer>> childCommandBufferKeepAlive;
             for (size_t workUnitIndex = 0u; workUnitIndex < workUnits.size();)
@@ -4057,6 +3937,8 @@ namespace NLS::Render::Context
                 const auto& workUnit = workUnits[workUnitIndex];
                 if (!workUnit.usesInRenderPassChildCommandRecording)
                 {
+                    if (workUnit.commandInput.targetsSwapchain && !ensureSwapchainAcquisition())
+                        return false;
                     const auto result = RecordWorkUnitOnMainCommandBuffer(
                         impl,
                         frameContext,
@@ -4082,6 +3964,13 @@ namespace NLS::Render::Context
                     childGroup.push_back(workUnits[workUnitIndex]);
                     ++workUnitIndex;
                 }
+
+                const bool childGroupTargetsSwapchain =
+                    sourcePassIndex < renderScenePackage.passCommandInputs.size() &&
+                    renderScenePackage.passCommandInputs[static_cast<size_t>(sourcePassIndex)]
+                        .targetsSwapchain;
+                if (childGroupTargetsSwapchain && !ensureSwapchainAcquisition())
+                    return false;
 
                 auto childGroupResult = RecordInRenderPassChildCommandGroup(
                     impl,
@@ -4177,6 +4066,7 @@ namespace NLS::Render::Context
 
                 Detail::ThreadedQueueSubmissionBatch batch;
                 batch.queueType = Render::RHI::QueueType::Graphics;
+                batch.consumesSwapchainImage = renderScenePackage.targetsSwapchain;
                 if (frameContext.commandPool != nullptr)
                     batch.commandPools.push_back(frameContext.commandPool);
                 batch.commandPools.insert(
@@ -4187,6 +4077,9 @@ namespace NLS::Render::Context
                 batch.childCommandBuffers = std::move(childCommandBufferKeepAlive);
                 submitPlan->batches.push_back(std::move(batch));
             }
+
+            if (renderScenePackage.targetsSwapchain && !ensureSwapchainAcquisition())
+                return false;
 
             return true;
         }
@@ -4207,6 +4100,8 @@ namespace NLS::Render::Context
                 Detail::BuildQueueDependencySourceOrders(incomingDependencyEdges);
             submission.incomingDependencyEdges = std::move(incomingDependencyEdges);
             submission.requiresDependencyVisibility = requiresDependencyVisibility;
+            submission.targetsSwapchain =
+                recordedWorkUnit.workUnit.commandInput.targetsSwapchain;
             submission.commandPool = recordedWorkUnit.commandPool;
             submission.commandBuffer = recordedWorkUnit.commandBuffer;
             return submission;
@@ -4250,116 +4145,8 @@ namespace NLS::Render::Context
             return true;
         }
 
-        bool RecordResourceVisibilityBatch(
-            DriverImpl& impl,
-            const RenderScenePackage& renderScenePackage,
-            const ParallelCommandWorkUnit& workUnit,
-            const RenderPassCommandInput& visibilityInput,
-            std::vector<WorkUnitDependencyEdge> incomingDependencyEdges,
-            TranslatedParallelCommandBufferBatch& batch)
-        {
-            if (impl.explicitDevice == nullptr ||
-                !Detail::HasResourceVisibilityTransitions(visibilityInput))
-            {
-                return false;
-            }
 
-            auto commandPool = impl.explicitDevice->CreateCommandPool(
-                visibilityInput.queueType,
-                "ThreadedVisibilityTransitionPool" + std::to_string(renderScenePackage.frameId));
-            if (commandPool == nullptr)
-                return false;
-
-            auto commandBuffer = commandPool->CreateCommandBuffer(
-                "ThreadedVisibilityTransitions" + std::to_string(renderScenePackage.frameId));
-            if (commandBuffer == nullptr)
-                return false;
-
-            commandBuffer->Begin();
-            auto* frameContext = GetCurrentFrameContext(impl);
-            const bool recordedTransitions = Detail::RecordResourceVisibilityTransitions(
-                *commandBuffer,
-                visibilityInput,
-                frameContext);
-            if (!recordedTransitions)
-            {
-                if (commandBuffer->IsRecording())
-                    commandBuffer->End();
-                return false;
-            }
-
-            if (commandBuffer->IsRecording())
-                commandBuffer->End();
-
-            Detail::ThreadedCommandSubmissionUnit submission;
-            submission.submissionOrder = workUnit.submissionOrder;
-            submission.queueType = visibilityInput.queueType;
-            submission.queueDependencyPolicy = visibilityInput.queueDependencyPolicy;
-            submission.dependencySourceSubmissionOrder =
-                Detail::ResolveImplicitDependencySourceSubmissionOrder(
-                    workUnit,
-                    incomingDependencyEdges);
-            submission.queueDependencySourceSubmissionOrders =
-                Detail::BuildQueueDependencySourceOrders(incomingDependencyEdges);
-            submission.incomingDependencyEdges = std::move(incomingDependencyEdges);
-            submission.requiresDependencyVisibility = visibilityInput.requiresDependencyVisibility;
-            submission.commandPool = std::move(commandPool);
-            submission.commandBuffer = std::move(commandBuffer);
-            batch.submissions.push_back(std::move(submission));
-            return true;
-        }
-
-        bool RecordPostPassTransitionBatch(
-            DriverImpl& impl,
-            const RenderPassCommandInput& extractionVisibilityInput,
-            TranslatedParallelCommandBufferBatch& batch)
-        {
-            if (impl.explicitDevice == nullptr ||
-                !Detail::HasResourceVisibilityTransitions(extractionVisibilityInput))
-            {
-                return false;
-            }
-
-            auto commandPool = impl.explicitDevice->CreateCommandPool(
-                Render::RHI::QueueType::Graphics,
-                "ThreadedPostPassPool" + std::string(extractionVisibilityInput.debugName));
-            if (commandPool == nullptr)
-                return false;
-
-            auto commandBuffer = commandPool->CreateCommandBuffer(
-                "ThreadedPostPassTransitions" + extractionVisibilityInput.debugName);
-            if (commandBuffer == nullptr)
-                return false;
-
-            commandBuffer->Begin();
-            auto* frameContext = GetCurrentFrameContext(impl);
-            const bool recordedTransitions = Detail::RecordResourceVisibilityTransitions(
-                *commandBuffer,
-                extractionVisibilityInput,
-                frameContext);
-            if (!recordedTransitions)
-            {
-                if (commandBuffer->IsRecording())
-                    commandBuffer->End();
-                return false;
-            }
-
-            if (commandBuffer->IsRecording())
-                commandBuffer->End();
-
-            Detail::ThreadedCommandSubmissionUnit submission;
-            submission.submissionOrder = std::numeric_limits<uint64_t>::max();
-            submission.queueType = Render::RHI::QueueType::Graphics;
-            submission.queueDependencyPolicy = QueueDependencyPolicy::Previous;
-            submission.commandPool = std::move(commandPool);
-            submission.commandBuffer = std::move(commandBuffer);
-            batch.submissions.push_back(std::move(submission));
-            return true;
-        }
-
-        TranslatedParallelCommandBufferBatch TranslateRecordedParallelCommandWorkUnits(
-            DriverImpl& impl,
-            const RenderScenePackage& renderScenePackage,
+        TranslatedParallelCommandBufferBatch BuildPreparedCommandSubmissionUnits(
             RecordedParallelCommandBufferBatch& recordedBatch)
         {
             TranslatedParallelCommandBufferBatch translatedBatch;
@@ -4424,49 +4211,18 @@ namespace NLS::Render::Context
                     {
                         return edge.resourceKind == ThreadedDependencyResourceKind::None;
                     });
-                const auto visibilityInput = Detail::BuildDependencyVisibilityPassInput(
-                    recordedWorkUnit->workUnit,
-                    resourceDependencyEdges);
-                const bool needsVisibilityBatch =
-                    Detail::HasResourceVisibilityTransitions(visibilityInput);
-                bool recordedVisibilityBatch = false;
-                if (needsVisibilityBatch)
-                {
-                    flushPendingTranslatedUnits();
-                    recordedVisibilityBatch = RecordResourceVisibilityBatch(
-                        impl,
-                        renderScenePackage,
-                        recordedWorkUnit->workUnit,
-                        visibilityInput,
-                        resourceDependencyEdges,
-                        translatedBatch);
-                    if (!recordedVisibilityBatch)
-                    {
-                        MarkTranslatedParallelCommandFailure(
-                            translatedBatch,
-                            recordedWorkUnit,
-                            "Dependency visibility transition recording failed");
-                        continue;
-                    }
-                }
-
                 const auto dependencySourceSubmissionOrder =
                     !controlDependencyEdges.empty()
                         ? std::optional<uint64_t>(controlDependencyEdges.front().sourceWorkUnitIndex)
                         : Detail::ResolveImplicitDependencySourceWorkUnitIndex(
                             recordedWorkUnit->workUnit);
                 const bool requiresDependencyVisibility =
-                    !recordedVisibilityBatch &&
                     Detail::ResolveImplicitRequiresDependencyVisibility(
                         recordedWorkUnit->workUnit);
                 auto targetDependencyEdges = std::move(controlDependencyEdges);
-                if (!recordedVisibilityBatch)
-                {
-                    targetDependencyEdges.insert(
-                        targetDependencyEdges.end(),
-                        std::make_move_iterator(resourceDependencyEdges.begin()),
-                        std::make_move_iterator(resourceDependencyEdges.end()));
-                }
+                targetDependencyEdges.insert(
+                    targetDependencyEdges.end(),
+                    resourceDependencyEdges.begin(), resourceDependencyEdges.end());
 
                 if (recordedWorkUnit->workUnit.eligibleForParallelTranslation)
                 {
@@ -4490,18 +4246,75 @@ namespace NLS::Render::Context
             }
 
             flushPendingTranslatedUnits();
-            const auto extractionVisibilityInput =
-                Render::FrameGraph::BuildExtractionVisibilityPassInput(renderScenePackage);
-            if (Detail::HasResourceVisibilityTransitions(extractionVisibilityInput) &&
-                !RecordPostPassTransitionBatch(
-                    impl,
-                    extractionVisibilityInput,
-                    translatedBatch))
+            if (recordedBatch.postPassTransitions.has_value())
             {
-                MarkTranslatedParallelCommandFailure(
-                    translatedBatch,
-                    nullptr,
-                    "Post-pass transition recording failed");
+                auto& post = *recordedBatch.postPassTransitions;
+                if (post.recordingFailed)
+                    translatedBatch.commandRecordingFailureReasons.push_back(post.failureReason);
+                else if (post.wasRecorded)
+                {
+                    Detail::ThreadedCommandSubmissionUnit submission;
+                    submission.submissionOrder = std::numeric_limits<uint64_t>::max();
+                    submission.queueType = Render::RHI::QueueType::Graphics;
+                    submission.queueDependencyPolicy = QueueDependencyPolicy::Previous;
+                    submission.commandPool = post.commandPool;
+                    submission.commandBuffer = post.commandBuffer;
+                    translatedBatch.submissions.push_back(std::move(submission));
+                }
+            }
+            if (std::any_of(orderedRecordedWorkUnits.begin(), orderedRecordedWorkUnits.end(),
+                [](const auto* unit) { return unit->queueRelease != nullptr && unit->queueRelease->wasRecorded; }))
+            {
+                std::vector<Detail::ThreadedCommandSubmissionUnit> submissions;
+                std::unordered_map<uint64_t, uint64_t> remappedOrders;
+                std::unordered_map<uint64_t, uint64_t> releaseOrders;
+                std::unordered_set<RHI::RHICommandBuffer*> releaseBuffers;
+                for (auto& submission : translatedBatch.submissions)
+                {
+                    const auto unit = std::find_if(orderedRecordedWorkUnits.begin(), orderedRecordedWorkUnits.end(),
+                        [&](const auto* recorded) { return recorded->workUnit.submissionOrder == submission.submissionOrder; });
+                    if (unit != orderedRecordedWorkUnits.end() && (*unit)->queueRelease != nullptr &&
+                        (*unit)->queueRelease->wasRecorded)
+                    {
+                        const auto& release = *(*unit)->queueRelease;
+                        Detail::ThreadedCommandSubmissionUnit prerequisite;
+                        prerequisite.submissionOrder = submissions.size();
+                        prerequisite.queueType = RHI::QueueType::Graphics;
+                        prerequisite.queueDependencyPolicy = QueueDependencyPolicy::LastCompute;
+                        prerequisite.commandPool = release.commandPool;
+                        prerequisite.commandBuffer = release.commandBuffer;
+                        releaseBuffers.insert(release.commandBuffer.get());
+                        releaseOrders.emplace(submission.submissionOrder, prerequisite.submissionOrder);
+                        submissions.push_back(std::move(prerequisite));
+                    }
+                    remappedOrders.emplace(submission.submissionOrder, submissions.size());
+                    submissions.push_back(std::move(submission));
+                }
+                for (auto& submission : submissions)
+                {
+                    // Release lists already have their final order and wait for the
+                    // previous Compute batch; consumers also wait for that release.
+                    if (releaseBuffers.find(submission.commandBuffer.get()) != releaseBuffers.end())
+                        continue;
+                    const auto oldOrder = submission.submissionOrder;
+                    submission.submissionOrder = remappedOrders.at(oldOrder);
+                    if (submission.dependencySourceSubmissionOrder.has_value())
+                    {
+                        const auto source = remappedOrders.find(*submission.dependencySourceSubmissionOrder);
+                        submission.dependencySourceSubmissionOrder = source != remappedOrders.end()
+                            ? std::optional<uint64_t>(source->second) : std::nullopt;
+                    }
+                    std::erase_if(submission.queueDependencySourceSubmissionOrders,
+                        [&](const auto source) { return remappedOrders.find(source) == remappedOrders.end(); });
+                    for (auto& source : submission.queueDependencySourceSubmissionOrders)
+                        source = remappedOrders.at(source);
+                    if (const auto release = releaseOrders.find(oldOrder); release != releaseOrders.end())
+                    {
+                        submission.queueDependencySourceSubmissionOrders.push_back(release->second);
+                        submission.queueDependencyPolicy = QueueDependencyPolicy::Previous;
+                    }
+                }
+                translatedBatch.submissions = std::move(submissions);
             }
             return translatedBatch;
         }
@@ -4513,16 +4326,33 @@ namespace NLS::Render::Context
         const size_t frameContextIndex,
         RhiSubmissionFrame* submissionFrame,
         Render::RHI::ResourceStateTrackerStats* preResetTrackerStats,
-        Render::RHI::DescriptorAllocatorStats* descriptorStats)
+        Render::RHI::DescriptorAllocatorStats* descriptorStats,
+        uint64_t* resourceLeaseGeneration,
+        const std::shared_ptr<Detail::RhiFrameQueueOperationTelemetry>& queueTelemetry,
+        const std::shared_ptr<Detail::ThreadedSwapchainAcquisition>& swapchainAcquisition)
     {
         NLS_PROFILE_SCOPE();
-        if (impl.explicitDevice == nullptr || impl.frameContexts.empty())
+        if (impl.explicitDevice == nullptr || impl.GetFrameContextCount() == 0u)
+        {
+            // Silent rejection here makes a blanket "every later frame failed"
+            // cascade impossible to attribute, so each precondition names itself.
+            NLS_LOG_WARNING(
+                std::string("RhiCommandListExecutor::BeginThreadedRhiFrame rejected: ") +
+                (impl.explicitDevice == nullptr ? "no explicit device" : "empty frame context ring"));
             return nullptr;
+        }
         if (impl.deviceLostDetected.load(std::memory_order_acquire) ||
             impl.unsafeGpuWorkQuarantined.load(std::memory_order_acquire))
+        {
+            NLS_LOG_WARNING(
+                std::string("RhiCommandListExecutor::BeginThreadedRhiFrame rejected: ") +
+                (impl.deviceLostDetected.load(std::memory_order_acquire)
+                    ? "device lost: " + impl.deviceLostReason
+                    : "unsafe GPU work quarantined: " + impl.unsafeGpuWorkQuarantineReason));
             return nullptr;
+        }
 
-        if (frameContextIndex >= impl.frameContexts.size())
+        if (frameContextIndex >= impl.GetFrameContextCount())
         {
             if (submissionFrame != nullptr)
             {
@@ -4532,8 +4362,8 @@ namespace NLS::Render::Context
             return nullptr;
         }
 
-        auto& frameContext = impl.frameContexts[frameContextIndex];
-        ResetCurrentFrameQueueOperationTelemetry(impl);
+        auto& frameContext = impl.GetFrameContext(frameContextIndex);
+        ResetFrameQueueOperationTelemetry(impl, queueTelemetry);
 
         if (submissionFrame != nullptr)
         {
@@ -4549,19 +4379,42 @@ namespace NLS::Render::Context
                 graphicsQueue.get() != computeQueue.get();
         }
 
-        if (frameContext.frameFence != nullptr)
+        std::shared_ptr<Render::RHI::RHIFence> retirementFence;
+        {
+            std::lock_guard retirementLock(impl.frameResourceRetirementMutex);
+            const auto* slot = impl.frameResourceSlots->PeekSlot(frameContextIndex);
+            if (slot == nullptr || slot->quarantined)
+                return nullptr;
+            retirementFence = slot->gpuFence;
+        }
+        if (retirementFence != nullptr)
         {
             NLS_PROFILE_NAMED_SCOPE("ThreadedRhiFrame::WaitReusableFrameFence");
             if (!WaitFrameFenceWithDriverPolicy(
                 impl,
-                frameContext.frameFence,
-                "RhiThreadCoordinator::BeginThreadedRhiFrame"))
+                retirementFence,
+                "RhiCommandListExecutor::BeginThreadedRhiFrame",
+                queueTelemetry))
             {
                 return nullptr;
             }
             Detail::ReleaseDeferredThreadedFrameScopedResourcesAfterFence(impl, frameContext, frameContextIndex);
         }
-        frameContext.frameIndex = static_cast<uint64_t>(impl.currentFrameIndex);
+        // Admission may already have reclaimed the slot. Release executor owners
+        // before its reusable fence object is reset for the next GPU submission.
+        (void)RhiCommandListExecutor::Get().ReleaseRetiredBatches();
+        {
+            std::lock_guard retirementLock(impl.frameResourceRetirementMutex);
+            auto* slot = impl.frameResourceSlots->PeekSlot(frameContextIndex);
+            if (slot == nullptr || slot->quarantined || slot->retirementPending)
+                return nullptr;
+            if ((!slot->inFlight || slot->gpuFence != nullptr) &&
+                impl.frameResourceSlots->AcquireSlot(frameContextIndex) == nullptr)
+                return nullptr;
+            if (resourceLeaseGeneration != nullptr)
+                *resourceLeaseGeneration = slot->leaseGeneration;
+        }
+        frameContext.frameIndex = impl.nextRhiFrameIndex.fetch_add(1u, std::memory_order_relaxed);
         if (frameContext.imageAcquiredSemaphore != nullptr)
             frameContext.imageAcquiredSemaphore->Reset();
         if (frameContext.renderFinishedSemaphore != nullptr)
@@ -4625,12 +4478,12 @@ namespace NLS::Render::Context
             NLS_PROFILE_NAMED_SCOPE("ThreadedRhiFrame::BeginDescriptorAllocatorFrame");
             if (submissionFrame != nullptr)
                 submissionFrame->usedDescriptorAllocator = true;
-            frameContext.descriptorAllocator->BeginFrame(impl.currentFrameIndex);
+            frameContext.descriptorAllocator->BeginFrame(frameContext.frameIndex);
             if (descriptorStats != nullptr)
                 *descriptorStats = frameContext.descriptorAllocator->GetStats();
         }
         if (frameContext.uploadContext != nullptr)
-            frameContext.uploadContext->BeginFrame(impl.currentFrameIndex);
+            frameContext.uploadContext->BeginFrame(frameContext.frameIndex);
         if (frameContext.computeFinishedSemaphore != nullptr)
             frameContext.computeFinishedSemaphore->Reset();
 
@@ -4641,17 +4494,98 @@ namespace NLS::Render::Context
         frameContext.explicitReadbackTextureGeneration = 0u;
         if (renderScenePackage.targetsSwapchain && impl.explicitSwapchain != nullptr)
         {
-            std::optional<Render::RHI::RHIAcquiredImage> acquiredImage;
+            if (swapchainAcquisition != nullptr)
             {
-                NLS_PROFILE_NAMED_SCOPE("ThreadedRhiFrame::AcquireNextImage");
-                acquiredImage = impl.explicitSwapchain->AcquireNextImage(
-                    frameContext.imageAcquiredSemaphore,
-                    frameContext.frameFence);
+                // Enqueue now and bind the view at the first consumer. The ordered
+                // lane can process the acquisition while this frame still builds
+                // work units and prepares command resources, instead of stalling in
+                // the lane here before any of that work has run.
+                auto acquisition = swapchainAcquisition;
+                acquisition->laneOperation = RhiCommandListExecutor::Get().EnqueueOnSubmitLane(
+                    "RHIFrame::AcquireSwapchainImage",
+                    [acquisition, frameContextPtr = &frameContext, implPtr = &impl]
+                    {
+                        NLS_PROFILE_NAMED_SCOPE("ThreadedRhiFrame::AcquireNextImage");
+                        // The swapchain can be rebuilt between enqueue and execution: a
+                        // client resize or a surface-driven recreation (present returned
+                        // VK_ERROR_OUT_OF_DATE_KHR) destroys the handle this frame was
+                        // published against. Acquire from whatever the driver owns now so
+                        // the lane never touches a destroyed swapchain.
+                        const auto swapchain = implPtr->explicitSwapchain;
+                        if (swapchain == nullptr)
+                        {
+                            RHI::RHIQueueOperationResult result;
+                            result.code = RHI::RHIQueueOperationStatusCode::InvalidArgument;
+                            result.message = "swapchain is unavailable for image acquisition";
+                            return result;
+                        }
+                        const auto acquiredImage = swapchain->AcquireNextImage(
+                            frameContextPtr->imageAcquiredSemaphore,
+                            frameContextPtr->frameFence);
+                        if (acquiredImage.has_value())
+                        {
+                            acquisition->imageIndex = acquiredImage->imageIndex;
+                            acquisition->backbufferView =
+                                swapchain->GetBackbufferView(acquiredImage->imageIndex);
+                            acquisition->hasImage = true;
+                            return RHI::RHIQueueOperationResult {};
+                        }
+                        // No image means the swapchain the acquire ran against no longer
+                        // matched the surface. Reporting success here silently produced a
+                        // null backbuffer view later, so fail the frame with the real
+                        // reason and let the resize path rebuild the swapchain.
+                        RHI::RHIQueueOperationResult result;
+                        result.code = RHI::RHIQueueOperationStatusCode::SwapchainOutOfDate;
+                        result.message = "swapchain image acquisition returned no image";
+                        return result;
+                    });
+                acquisition->enqueued = true;
+                frameContext.explicitReadbackTexture =
+                    Render::FrameGraph::ResolveFrameReadbackTexture(&renderScenePackage, &frameContext);
+                frameContext.explicitReadbackTextureGeneration =
+                    Render::FrameGraph::ResolveFrameReadbackTextureGeneration(&renderScenePackage, &frameContext);
+                if (impl.renderDocCaptureController != nullptr)
+                {
+                    impl.renderDocCaptureController->OnPreFrame(
+                        renderScenePackage.targetsSwapchain,
+                        Render::FrameGraph::HasExternalSceneOutput(renderScenePackage));
+                }
+                return &frameContext;
+            }
+
+            std::optional<Render::RHI::RHIAcquiredImage> acquiredImage;
+            std::shared_ptr<Render::RHI::RHITextureView> backbufferView;
+            // DX12's current image advances at Present. Acquire shares the FIFO
+            // with earlier submissions and presents before workers use its view.
+            const auto acquireResult = RhiCommandListExecutor::Get().RunOnSubmitLane(
+                "RHIFrame::AcquireSwapchainImage",
+                [&, swapchain = impl.explicitSwapchain]
+                {
+                    NLS_PROFILE_NAMED_SCOPE("ThreadedRhiFrame::AcquireNextImage");
+                    acquiredImage = swapchain->AcquireNextImage(
+                        frameContext.imageAcquiredSemaphore,
+                        frameContext.frameFence);
+                    if (acquiredImage.has_value())
+                        backbufferView = swapchain->GetBackbufferView(acquiredImage->imageIndex);
+                    return Render::RHI::RHIQueueOperationResult {};
+                });
+            if (!RecordQueueOperationResult(
+                impl, acquireResult, "RHIFrame::AcquireSwapchainImage", queueTelemetry))
+            {
+                MarkCommandRecordingFailure(submissionFrame, acquireResult.message.c_str());
+                if (acquireResult.mayHaveQueuedGpuWork)
+                    MarkQueuedGpuWorkWithoutRetirementFence(
+                        impl, "RHIFrame::AcquireSwapchainImage", acquireResult, queueTelemetry);
+                else
+                {
+                    Detail::AsyncComputeSubmitPlan emptyPlan;
+                    FinalizeThreadedRhiFrameContext(impl, frameContext, emptyPlan);
+                }
+                return nullptr;
             }
             frameContext.hasAcquiredSwapchainImage = acquiredImage.has_value();
             frameContext.swapchainImageIndex = acquiredImage.has_value() ? acquiredImage->imageIndex : 0u;
-            if (acquiredImage.has_value())
-                frameContext.swapchainBackbufferView = impl.explicitSwapchain->GetBackbufferView(frameContext.swapchainImageIndex);
+            frameContext.swapchainBackbufferView = std::move(backbufferView);
             if (frameContext.swapchainBackbufferView != nullptr)
             {
                 SeedAcquiredSwapchainBackbufferState(frameContext);
@@ -4677,6 +4611,109 @@ namespace NLS::Render::Context
         return &frameContext;
     }
 
+    bool Detail::ResolveThreadedSwapchainAcquisition(
+        const ThreadedRhiSubmissionExecutionPtr& execution)
+    {
+        if (execution == nullptr || execution->swapchainAcquisition == nullptr)
+            return true;
+
+        ThreadedSwapchainAcquisition& acquisition = *execution->swapchainAcquisition;
+        if (!acquisition.enqueued || acquisition.resolved)
+            return true;
+
+        // Mark first: this helper must wait on the lane operation at most once,
+        // even when the frame is aborted from a different path.
+        acquisition.resolved = true;
+        if (execution->frameContext == nullptr || execution->impl == nullptr)
+            return true;
+
+        DriverImpl& impl = *execution->impl;
+        Render::RHI::RHIFrameContext& frameContext = *execution->frameContext;
+        NLS_PROFILE_NAMED_SCOPE("ThreadedRhiFrame::ResolveSwapchainAcquisition");
+        const auto laneResult = RhiCommandListExecutor::Get().WaitForSubmitLaneOperation(
+            acquisition.laneOperation, "RHIFrame::AcquireSwapchainImage");
+
+        // The frame was published against a swapchain that stopped matching the
+        // surface - a synchronous window resize, or a rebuild that landed while this
+        // acquisition was already queued. There is no backbuffer to render into, so
+        // the frame is dropped instead of failed: no queue operation failed, no
+        // rendering work was recorded, and the rebuild is requested so the next frame
+        // publishes against a swapchain that matches the surface again.
+        if (laneResult.RequiresSwapchainRecreation())
+        {
+            if (!impl.hasPendingSwapchainResize.load(std::memory_order_acquire))
+            {
+                impl.pendingSwapchainResizeKeepsCurrentSize.store(true, std::memory_order_release);
+                impl.hasPendingSwapchainResize.store(true, std::memory_order_release);
+            }
+            execution->submissionFrame.droppedForSwapchainRecreation = true;
+            if (execution->failureReason.empty())
+            {
+                execution->failureReason = laneResult.message.empty()
+                    ? std::string { "swapchain image acquisition lost the swapchain to a resize" }
+                    : laneResult.message;
+            }
+            if (execution->framePrepared)
+            {
+                Detail::AsyncComputeSubmitPlan emptyPlan;
+                FinalizeThreadedRhiFrameContext(impl, frameContext, emptyPlan);
+                execution->framePrepared = false;
+            }
+            NLS_LOG_INFO(
+                "[Driver] Dropped threaded frame " +
+                std::to_string(execution->renderScenePackage.frameId) +
+                " because the swapchain no longer matches the surface; the next frame "
+                "publishes against the rebuilt swapchain");
+            return false;
+        }
+
+        if (!RecordQueueOperationResult(
+                impl, laneResult, "RHIFrame::AcquireSwapchainImage", execution->queueTelemetry))
+        {
+            MarkCommandRecordingFailure(
+                &execution->submissionFrame, laneResult.message.c_str());
+            if (laneResult.mayHaveQueuedGpuWork)
+            {
+                MarkQueuedGpuWorkWithoutRetirementFence(
+                    impl,
+                    "RHIFrame::AcquireSwapchainImage",
+                    laneResult,
+                    execution->queueTelemetry);
+            }
+            else if (execution->framePrepared)
+            {
+                Detail::AsyncComputeSubmitPlan emptyPlan;
+                FinalizeThreadedRhiFrameContext(impl, frameContext, emptyPlan);
+                execution->framePrepared = false;
+            }
+            if (execution->failureReason.empty())
+            {
+                execution->failureReason = laneResult.message.empty()
+                    ? std::string { "RHIFrame::AcquireSwapchainImage failed" }
+                    : laneResult.message;
+            }
+            return false;
+        }
+
+        frameContext.hasAcquiredSwapchainImage = acquisition.hasImage;
+        frameContext.swapchainImageIndex = acquisition.hasImage ? acquisition.imageIndex : 0u;
+        frameContext.swapchainBackbufferView = acquisition.backbufferView;
+        if (frameContext.swapchainBackbufferView != nullptr)
+        {
+            SeedAcquiredSwapchainBackbufferState(frameContext);
+            EnsureSwapchainDepthStencilAttachment(
+                impl,
+                frameContext,
+                execution->renderScenePackage.renderWidth,
+                execution->renderScenePackage.renderHeight);
+        }
+        frameContext.explicitReadbackTexture = Render::FrameGraph::ResolveFrameReadbackTexture(
+            &execution->renderScenePackage, &frameContext);
+        frameContext.explicitReadbackTextureGeneration = Render::FrameGraph::ResolveFrameReadbackTextureGeneration(
+            &execution->renderScenePackage, &frameContext);
+        return true;
+    }
+
     void Detail::ReleaseRetiredUiTextureViewsForCompletedFrame(
         DriverImpl& impl,
         const uint64_t completedFrameId)
@@ -4686,13 +4723,6 @@ namespace NLS::Render::Context
 
         impl.uiOverlayRenderer.ReleaseRetiredResourcesUpTo(completedFrameId);
         impl.uiTextureRegistry.ReleaseRetiredTextureViewsUpTo(completedFrameId);
-    }
-
-    void Detail::ReleaseRetiredUiTextureViewsForCompletedUiFrame(
-        DriverImpl& impl,
-        const uint64_t fallbackCompletedFrameId)
-    {
-        ReleaseRetiredUiTextureViewsForCompletedFrame(impl, fallbackCompletedFrameId);
     }
 
     size_t Detail::RecordPendingUiRgba8TextureUploads(
@@ -5405,7 +5435,7 @@ namespace NLS::Render::Context
     }
 
     void RecordThreadedRhiSubmissionWork(const ThreadedRhiSubmissionExecutionPtr& execution);
-    void TranslateThreadedRhiSubmissionWork(const ThreadedRhiSubmissionExecutionPtr& execution);
+    void PrepareThreadedRhiSubmitPlan(const ThreadedRhiSubmissionExecutionPtr& execution);
     void QueueSubmitThreadedRhiSubmission(const ThreadedRhiSubmissionExecutionPtr& execution);
     void PresentThreadedRhiSubmission(const ThreadedRhiSubmissionExecutionPtr& execution);
     void ReadbackThreadedRhiSubmission(const ThreadedRhiSubmissionExecutionPtr& execution);
@@ -5478,27 +5508,12 @@ namespace NLS::Render::Context
                 !packageContainsInRenderPassChildWorkUnits ||
                 inRenderPassChildCommandRecordingReady ||
                 packageContainsNonChildOrderedSlicedWorkUnits;
-            const bool packageRequiresOrderedScheduling =
-                renderScenePackage.hasAsyncComputeWorkload ||
-                packageContainsInRenderPassChildWorkUnits ||
-                std::any_of(
-                    renderScenePackage.parallelCommandWorkUnits.begin(),
-                    renderScenePackage.parallelCommandWorkUnits.end(),
-                    [](const ParallelCommandWorkUnit& workUnit)
-                    {
-                        return workUnit.commandInput.kind == RenderPassCommandKind::Compute ||
-                            workUnit.commandInput.queueType == Render::RHI::QueueType::Compute ||
-                            workUnit.commandInput.requiresDependencyVisibility ||
-                            !workUnit.incomingDependencyEdges.empty();
-                    });
             const bool allowOrderedSlicedSubmission =
                 supportsOrderedWorkUnitSubmission &&
                 packageContainsOrderedSlicedWorkUnits &&
                 canPreserveOrderedPathWithChildFallback;
             const bool useOrderedWorkUnitPath =
                 supportsOrderedWorkUnitSubmission &&
-                (frameContext.resourceStateTracker == nullptr ||
-                    packageRequiresOrderedScheduling) &&
                 canPreserveOrderedPathWithChildFallback;
             if (!supportsOrderedWorkUnitSubmission)
             {
@@ -5517,12 +5532,23 @@ namespace NLS::Render::Context
                         ? "in-render-pass child command recording unavailable; using unsliced passCommandInputs"
                         : "ordered sliced submission unavailable; using unsliced passCommandInputs");
             }
-            const auto workUnits = Detail::BuildParallelCommandWorkUnits(
+            auto workUnits = Detail::BuildParallelCommandWorkUnits(
                 renderScenePackage,
                 useOrderedWorkUnitPath ? parallelRecordingReady : false,
                 useOrderedWorkUnitPath ? parallelTranslationReady : false,
                 allowOrderedSlicedSubmission,
                 inRenderPassChildCommandRecordingReady);
+            // Native list types are fixed when pools are created. Resolve the
+            // queue once before recording, including when async compute is gated.
+            auto graphicsQueue = impl.explicitDevice->GetQueue(RHI::QueueType::Graphics);
+            auto computeQueue = impl.explicitDevice->GetQueue(RHI::QueueType::Compute);
+            const bool useComputeQueue = Render::Settings::SupportsAsyncComputeFoundation(
+                impl.explicitDevice->GetCapabilities()) &&
+                graphicsQueue != nullptr && computeQueue != nullptr && graphicsQueue != computeQueue;
+            if (!useComputeQueue)
+                for (auto& unit : workUnits)
+                    if (unit.commandInput.queueType == RHI::QueueType::Compute)
+                        unit.commandInput.queueType = RHI::QueueType::Graphics;
             submissionFrame->parallelDrawCommandBatches = BuildParallelDrawCommandBatchMetadata(workUnits);
             const bool workUnitsContainInRenderPassChildRecording =
                 std::any_of(
@@ -5544,7 +5570,8 @@ namespace NLS::Render::Context
                     workUnits,
                     submitPlan,
                     submissionFrame,
-                    frameContextIndex);
+                    frameContextIndex,
+                    execution);
                 if (!recordedOrderedChildStream)
                 {
                     if (!HasCommandRecordingFailure(submissionFrame))
@@ -5562,18 +5589,29 @@ namespace NLS::Render::Context
                     frameContext,
                     renderScenePackage,
                     workUnits,
-                    frameContextIndex);
-                // Failure aggregation happens in the TranslateWorkUnits node so it
-                // observes both record-stage and translation-stage failures.
-                // Translation is its own graph node: the recorded command buffers
-                // are handed to the TranslateWorkUnits stage so recording can retire
-                // before translation starts.
+                    frameContextIndex,
+                    execution);
+                // Workers replay the closed lists after ordered state preparation.
                 execution->recordedParallelBatch = std::move(recordedBatch);
                 execution->usesRecordedParallelBatch = true;
             }
             else
             {
                 bool recordedAnyCommand = false;
+                // The acquisition stays unresolved until a pass actually binds the
+                // backbuffer, so view-independent work units record while the
+                // ordered lane is still draining the previous frame. Presentation
+                // still needs the image, so a swapchain frame resolves it before
+                // the submit plan closes.
+                bool swapchainAcquisitionResolved = false;
+                const auto ensureSwapchainAcquisition =
+                    [&execution, &swapchainAcquisitionResolved]()
+                    {
+                        if (swapchainAcquisitionResolved)
+                            return true;
+                        swapchainAcquisitionResolved = true;
+                        return Detail::ResolveThreadedSwapchainAcquisition(execution);
+                    };
                 const auto beginMainCommandBufferIfNeeded = [&frameContext, &recordedAnyCommand]()
                 {
                     if (frameContext.commandBuffer == nullptr)
@@ -5656,6 +5694,9 @@ namespace NLS::Render::Context
                             }
                         }
                     }
+
+                    if (passInput.targetsSwapchain && !ensureSwapchainAcquisition())
+                        return;
 
                     if (passInput.targetsSwapchain &&
                         frameContext.swapchainBackbufferView == nullptr)
@@ -5806,6 +5847,9 @@ namespace NLS::Render::Context
                     submissionFrame->recordedWorkUnitCount += 1u;
                 }
 
+                if (renderScenePackage.targetsSwapchain && !ensureSwapchainAcquisition())
+                    return;
+
                 submissionFrame->usedParallelCommandPath = false;
                 submissionFrame->parallelRecordingWorkerCount = 0u;
                 submissionFrame->translatedWorkUnitCount = 0u;
@@ -5865,16 +5909,21 @@ namespace NLS::Render::Context
             !HasCommandRecordingFailure(submissionFrame))
         {
             frameContext.commandBuffer->Begin();
-            if (frameContext.commandBuffer->IsRecording())
-                frameContext.commandBuffer->End();
+            if (!frameContext.commandBuffer->IsRecording())
+            {
+                MarkCommandRecordingFailure(submissionFrame, "Empty swapchain command buffer failed to begin");
+                return;
+            }
+            frameContext.commandBuffer->End();
             Detail::ThreadedQueueSubmissionBatch batch;
             batch.queueType = Render::RHI::QueueType::Graphics;
+            batch.consumesSwapchainImage = renderScenePackage.targetsSwapchain;
             batch.commandBuffers.push_back(frameContext.commandBuffer);
             submitPlan->batches.push_back(std::move(batch));
         }
     }
 
-    void TranslateThreadedRhiSubmissionWork(const ThreadedRhiSubmissionExecutionPtr& execution)
+    void PrepareThreadedRhiSubmitPlan(const ThreadedRhiSubmissionExecutionPtr& execution)
     {
         NLS_PROFILE_SCOPE();
         if (execution == nullptr || !execution->usesRecordedParallelBatch)
@@ -5886,14 +5935,10 @@ namespace NLS::Render::Context
 
         DriverImpl& impl = *execution->impl;
         Render::RHI::RHIFrameContext& frameContext = *execution->frameContext;
-        const RenderScenePackage& renderScenePackage = execution->renderScenePackage;
         Detail::AsyncComputeSubmitPlan& submitPlan = execution->submitPlan;
         RhiSubmissionFrame& submissionFrame = execution->submissionFrame;
 
-        const auto translatedBatch = TranslateRecordedParallelCommandWorkUnits(
-            impl,
-            renderScenePackage,
-            execution->recordedParallelBatch);
+        const auto translatedBatch = BuildPreparedCommandSubmissionUnits(execution->recordedParallelBatch);
         // Record-stage and translation-stage failures are aggregated together after
         // translation, so a failed visibility batch still marks the submission.
         MarkParallelCommandRecordingFailures(&submissionFrame, execution->recordedParallelBatch);
@@ -5907,6 +5952,8 @@ namespace NLS::Render::Context
             impl,
             frameContext,
             translatedBatch.submissions);
+        if (!submitPlan.failureDiagnostic.empty())
+            MarkCommandRecordingFailure(&submissionFrame, submitPlan.failureDiagnostic.c_str());
         submissionFrame.recordedPassCount = translatedBatch.recordedPassCount;
         submissionFrame.recordedDrawCount = translatedBatch.recordedDrawCount;
         submissionFrame.recordedWorkUnitCount = translatedBatch.recordedWorkUnitCount;
@@ -5953,11 +6000,15 @@ namespace NLS::Render::Context
             execution->preResetTrackerStats,
             &execution->descriptorStats,
             submitPlan,
-            submissionFrame))
+            submissionFrame,
+            execution->queueTelemetry))
         {
             execution->submissionSucceeded = false;
             execution->failureReason =
-                "RHI submission telemetry completion failed before queue submission";
+                "RHI frame contains no recorded offscreen pass; plannedPasses=" +
+                std::to_string(renderScenePackage.passCommandInputs.size()) +
+                " visibleDraws=" + std::to_string(renderScenePackage.visibleDrawCount);
+            MarkCommandRecordingFailure(submissionFrame, execution->failureReason.c_str());
             return;
         }
 
@@ -5988,6 +6039,7 @@ namespace NLS::Render::Context
 
         size_t firstGraphicsBatchIndex = submitPlan.batches.size();
         size_t lastGraphicsBatchIndex = submitPlan.batches.size();
+        size_t firstSwapchainConsumingBatchIndex = submitPlan.batches.size();
         for (size_t batchIndex = 0u; batchIndex < submitPlan.batches.size(); ++batchIndex)
         {
             if (submitPlan.batches[batchIndex].queueType != Render::RHI::QueueType::Graphics)
@@ -5995,8 +6047,18 @@ namespace NLS::Render::Context
 
             if (firstGraphicsBatchIndex == submitPlan.batches.size())
                 firstGraphicsBatchIndex = batchIndex;
+            if (firstSwapchainConsumingBatchIndex == submitPlan.batches.size() &&
+                submitPlan.batches[batchIndex].consumesSwapchainImage)
+                firstSwapchainConsumingBatchIndex = batchIndex;
             lastGraphicsBatchIndex = batchIndex;
         }
+        // The acquired image has to be waited on by the submit that first touches
+        // it. If the plan split the offscreen work from the swapchain work, that is
+        // the swapchain batch, not the first graphics batch.
+        const size_t acquireWaitBatchIndex =
+            firstSwapchainConsumingBatchIndex != submitPlan.batches.size()
+                ? firstSwapchainConsumingBatchIndex
+                : firstGraphicsBatchIndex;
 
         for (size_t batchIndex = 0u; batchIndex < submitPlan.batches.size(); ++batchIndex)
         {
@@ -6013,7 +6075,7 @@ namespace NLS::Render::Context
             submitDesc.waitSemaphores = batch.waitSemaphores;
             submitDesc.signalSemaphores = batch.signalSemaphores;
 
-            if (batchIndex == firstGraphicsBatchIndex &&
+            if (batchIndex == acquireWaitBatchIndex &&
                 frameContext.hasAcquiredSwapchainImage &&
                 frameContext.imageAcquiredSemaphore != nullptr)
             {
@@ -6049,8 +6111,24 @@ namespace NLS::Render::Context
                 execution->frameFenceResetForSubmission ||
                 submitDesc.signalFence != nullptr;
             {
-                NLS_PROFILE_NAMED_SCOPE("ThreadedRhiFrame::QueueSubmitChecked");
-                const auto submitResult = queue->SubmitChecked(submitDesc);
+                const auto submitResult = RhiCommandListExecutor::Get().SubmitNative(queue, submitDesc);
+                if (submitResult.Succeeded() && execution->usesRecordedParallelBatch)
+                {
+                    const auto& recorded = execution->recordedParallelBatch;
+                    for (const auto& buffer : submitDesc.commandBuffers)
+                    {
+                        for (const auto& unit : recorded.recordedWorkUnits)
+                        {
+                            if (unit.commandBuffer == buffer && unit.commands != nullptr)
+                                unit.commands->CommitResourceStates(*buffer);
+                            if (unit.queueRelease != nullptr && unit.queueRelease->commandBuffer == buffer)
+                                unit.queueRelease->commands->CommitResourceStates(*buffer);
+                        }
+                        if (recorded.postPassTransitions.has_value() &&
+                            recorded.postPassTransitions->commandBuffer == buffer)
+                            recorded.postPassTransitions->commands->CommitResourceStates(*buffer);
+                    }
+                }
                 if (submitDesc.signalFence != nullptr &&
                     submitResult.frameFenceSignalQueued)
                 {
@@ -6063,7 +6141,8 @@ namespace NLS::Render::Context
                 const bool submitted = RecordQueueOperationResult(
                     impl,
                     submitResult,
-                    "RhiThreadCoordinator::SubmitCompiledExecution");
+                    "RhiCommandListExecutor::SubmitCompiledExecution",
+                    execution->queueTelemetry);
                 if (submitted &&
                     hasExternalSceneOutput &&
                     signalRenderFinished)
@@ -6073,12 +6152,12 @@ namespace NLS::Render::Context
                 if (!submitted)
                 {
                     execution->submissionSucceeded = false;
+                    execution->failureReason = submitResult.message;
                     break;
                 }
             }
 
-            // Present is its own graph node. Recording the request here keeps the
-            // submit loop free of presentation work.
+            // Present follows all queue submissions through the executor's lane.
             if (execution->submissionSucceeded && shouldPresentAfterThisBatch)
             {
                 execution->presentRequested = true;
@@ -6086,10 +6165,6 @@ namespace NLS::Render::Context
                 execution->presentSignalsFrameFence = signalFrameFenceOnPresent;
             }
         }
-
-        if (submissionFrame != nullptr)
-            submissionFrame->retirementFenceWaited = false;
-
 
         if (submissionFrame != nullptr)
             submissionFrame->retirementFenceWaited = false;
@@ -6105,6 +6180,18 @@ namespace NLS::Render::Context
         DriverImpl& impl = *execution->impl;
         Render::RHI::RHIFrameContext& frameContext = *execution->frameContext;
 
+        // The acquired image belongs to this frame until Present transfers ownership.
+        BeginPostSubmitTextureReadbacks(impl, execution->renderScenePackage, frameContext,
+            execution->submissionSucceeded, execution->queueTelemetry);
+        if (impl.deviceLostDetected.load(std::memory_order_acquire) ||
+            impl.unsafeGpuWorkQuarantined.load(std::memory_order_acquire))
+        {
+            execution->submissionSucceeded = false;
+            execution->deviceLostDuringSubmit = impl.deviceLostDetected.load(std::memory_order_acquire);
+            execution->failureReason = "pre-present texture readback lost the device or quarantined GPU work";
+            return;
+        }
+
         NLS_PROFILE_NAMED_SCOPE("ThreadedRhiFrame::Present");
         if (impl.renderDocCaptureController != nullptr)
             impl.renderDocCaptureController->OnPrePresent();
@@ -6116,29 +6203,36 @@ namespace NLS::Render::Context
             presentDesc.waitSemaphores.push_back(frameContext.renderFinishedSemaphore);
         if (execution->presentSignalsFrameFence)
             presentDesc.signalFence = frameContext.frameFence;
+        presentDesc.uiSignalSemaphore = execution->uiCompositionSignalSemaphore;
+        presentDesc.uiSignalValue = execution->uiCompositionSignalValue;
         execution->frameFenceResetForSubmission =
             execution->frameFenceResetForSubmission ||
             presentDesc.signalFence != nullptr;
 
         bool presented = false;
         {
-            NLS_PROFILE_NAMED_SCOPE("ThreadedRhiFrame::QueuePresentChecked");
             auto graphicsQueue = impl.explicitDevice != nullptr
                 ? impl.explicitDevice->GetQueue(Render::RHI::QueueType::Graphics)
                 : nullptr;
             if (graphicsQueue == nullptr)
                 return;
-            const auto presentResult = graphicsQueue->PresentChecked(presentDesc);
+            const auto presentResult = RhiCommandListExecutor::Get().PresentNative(graphicsQueue, presentDesc);
             if (presentDesc.signalFence != nullptr && presentResult.frameFenceSignalQueued)
                 execution->frameFenceSignalMayHaveBeenQueued = true;
             execution->deviceLostDuringSubmit |=
                 presentResult.code == Render::RHI::RHIQueueOperationStatusCode::DeviceLost;
             execution->submittedGpuWorkMayNeedFenceConfirmation |= presentResult.Succeeded() ||
                 presentResult.mayHaveQueuedGpuWork;
-            presented = RecordQueueOperationResult(
-                impl,
-                presentResult,
-                "RhiThreadCoordinator::Present");
+                presented = RecordQueueOperationResult(
+                    impl,
+                    presentResult,
+                    "RhiCommandListExecutor::Present",
+                    execution->queueTelemetry,
+                    // A present that reports an out-of-date swapchain still retires the
+                    // frame: its GPU work is queued and the swapchain is rebuilt next.
+                    true);
+            if (!presented)
+                execution->failureReason = presentResult.message;
         }
 
         if (impl.renderDocCaptureController != nullptr)
@@ -6146,7 +6240,70 @@ namespace NLS::Render::Context
 
         execution->presentedAfterSubmitting = presented;
         if (presented == false)
+        {
             execution->submissionSucceeded = false;
+        }
+    }
+
+    void PreserveThreadedRhiSubmissionResources(const ThreadedRhiSubmissionExecutionPtr& execution)
+    {
+        if (execution == nullptr || execution->frameContext == nullptr)
+            return;
+
+        DriverImpl& impl = *execution->impl;
+        const bool mustDeferRetirement =
+            execution->submittedGpuWorkMayNeedFenceConfirmation &&
+            execution->frameFenceSignalMayHaveBeenQueued &&
+            execution->frameContext->frameFence != nullptr &&
+            !execution->deviceLostDuringSubmit;
+        const bool mustQuarantineResources =
+            execution->submittedGpuWorkMayNeedFenceConfirmation && !mustDeferRetirement;
+
+        if ((mustDeferRetirement || mustQuarantineResources) && !execution->submitResourcesRetained)
+        {
+            RetainThreadedSubmitPlanResourcesUntilNextFence(
+                impl, execution->frameContextIndex, execution->submitPlan);
+            {
+                std::lock_guard lock(impl.frameResourceRetirementMutex);
+                if (mustQuarantineResources)
+                    impl.frameResourceSlots->QuarantineSlot(execution->frameContextIndex);
+                auto& keepAlive = impl.frameResourceSlots->PeekSlot(execution->frameContextIndex)->ownedResources;
+                for (const auto& unit : execution->recordedParallelBatch.recordedWorkUnits)
+                {
+                    if (unit.wasRecorded && unit.commands != nullptr)
+                        keepAlive.push_back(unit.commands);
+                    if (unit.queueRelease != nullptr && unit.queueRelease->wasRecorded)
+                        keepAlive.push_back(unit.queueRelease->commands);
+                }
+                const auto& post = execution->recordedParallelBatch.postPassTransitions;
+                if (post.has_value() && post->wasRecorded && post->commands != nullptr)
+                    keepAlive.push_back(post->commands);
+                for (const auto& request : execution->renderScenePackage.postSubmitTextureReadbacks)
+                {
+                    if (request.texture != nullptr)
+                        keepAlive.push_back(request.texture);
+                    if (request.destinationKeepAlive != nullptr)
+                        keepAlive.push_back(request.destinationKeepAlive);
+                    if (request.state != nullptr)
+                        keepAlive.push_back(request.state);
+                }
+            }
+            execution->submitResourcesRetained = true;
+        }
+        if (mustQuarantineResources && !execution->mustQuarantineFrameScopedResources)
+        {
+            Render::RHI::RHIQueueOperationResult quarantineResult;
+            quarantineResult.mayHaveQueuedGpuWork = true;
+            quarantineResult.message = "threaded submit has no reliable frame retirement fence";
+            MarkQueuedGpuWorkWithoutRetirementFence(
+                impl,
+                "RhiCommandListExecutor::Readback",
+                quarantineResult,
+                execution->queueTelemetry);
+        }
+        execution->mustDeferFrameScopedRetirement = mustDeferRetirement;
+        execution->mustQuarantineFrameScopedResources = mustQuarantineResources;
+        execution->submissionFrame.deferredFrameScopedRetirement = mustDeferRetirement;
     }
 
     void ReadbackThreadedRhiSubmission(const ThreadedRhiSubmissionExecutionPtr& execution)
@@ -6160,36 +6317,10 @@ namespace NLS::Render::Context
 
         // The retirement fence decision runs after Present, because a swapchain
         // frame signals its retirement fence from the present operation.
-        Render::RHI::RHIFrameContext& frameContext = *execution->frameContext;
-        const size_t frameContextIndex = execution->frameContextIndex;
-        Detail::AsyncComputeSubmitPlan& submitPlan = execution->submitPlan;
-        bool mustDeferRetirement = execution->submittedGpuWorkMayNeedFenceConfirmation;
-        if (mustDeferRetirement)
-            mustDeferRetirement = execution->frameFenceSignalMayHaveBeenQueued;
-        if (mustDeferRetirement)
-            mustDeferRetirement = frameContext.frameFence == nullptr ? false : true;
-        if (mustDeferRetirement)
-            mustDeferRetirement = execution->deviceLostDuringSubmit == false;
-        bool mustQuarantineResources = execution->submittedGpuWorkMayNeedFenceConfirmation;
-        if (mustQuarantineResources)
-            mustQuarantineResources = execution->frameFenceSignalMayHaveBeenQueued == false;
-        execution->mustDeferFrameScopedRetirement = mustDeferRetirement;
-        execution->mustQuarantineFrameScopedResources = mustQuarantineResources;
-        if (mustDeferRetirement)
-            RetainThreadedSubmitPlanResourcesUntilNextFence(impl, frameContextIndex, submitPlan);
-        if (mustQuarantineResources)
-        {
-            Render::RHI::RHIQueueOperationResult quarantineResult;
-            quarantineResult.mayHaveQueuedGpuWork = true;
-            quarantineResult.message = "threaded submit did not queue a frame retirement fence";
-            MarkQueuedGpuWorkWithoutRetirementFence(
-                impl,
-                "RhiThreadCoordinator::Readback",
-                quarantineResult);
-        }
+        PreserveThreadedRhiSubmissionResources(execution);
 
         const bool recordingSucceeded = HasCommandRecordingFailure(&submissionFrame) == false;
-        CopyDriverQueueTelemetryToSubmissionFrame(impl, submissionFrame);
+        CopyDriverQueueTelemetryToSubmissionFrame(impl, submissionFrame, execution->queueTelemetry);
         submissionFrame.deferredFrameScopedRetirement =
             execution->mustDeferFrameScopedRetirement;
         submissionFrame.submittedSuccessfully =
@@ -6202,11 +6333,138 @@ namespace NLS::Render::Context
             renderScenePackage,
             submissionFrame.submittedSuccessfully,
             execution->submitPlan.lastComputeQueueCompletionSemaphore,
-            execution->submitPlan.usedDedicatedComputeQueueSubmission);
-        BeginPostSubmitTextureReadbacks(
-            impl,
-            renderScenePackage,
-            submissionFrame.submittedSuccessfully);
+            execution->submitPlan.usedDedicatedComputeQueueSubmission,
+            execution->queueTelemetry);
+        if (!renderScenePackage.targetsSwapchain)
+        {
+            BeginPostSubmitTextureReadbacks(
+                impl,
+                renderScenePackage,
+                *execution->frameContext,
+                submissionFrame.submittedSuccessfully,
+                execution->queueTelemetry);
+        }
+    }
+
+    // CPU completion updates diagnostics; resource reuse still requires the GPU fence.
+    void CompleteRhiFrameExecution(
+        const ThreadedRhiSubmissionExecutionPtr& execution)
+    {
+        if (execution == nullptr || execution->impl == nullptr)
+            return;
+        if (execution->driver == nullptr)
+            return;
+        if (execution->cpuRetired)
+            return;
+        execution->cpuRetired = true;
+
+        DriverImpl& impl = *execution->impl;
+        const size_t frameContextIndex = execution->frameContextIndex;
+        if (!execution->submissionFrame.submittedSuccessfully)
+        {
+            // A frame dropped because the swapchain moved under it is expected output
+            // of a resize, not a defect: report it at info level so a real failure in
+            // the same run is still the only warning an operator sees.
+            const std::string message =
+                std::string(execution->submissionFrame.droppedForSwapchainRecreation
+                    ? "[Driver] Dropped threaded frame frameId="
+                    : "[Driver] Failed threaded frame frameId=") +
+                std::to_string(execution->submissionFrame.frameId) +
+                " plannedPasses=" + std::to_string(execution->renderScenePackage.passCommandInputs.size()) +
+                " recordedPasses=" + std::to_string(execution->submissionFrame.recordedPassCount) +
+                " visibleDraws=" + std::to_string(execution->renderScenePackage.visibleDrawCount) +
+                " reason=" + execution->submissionFrame.lastCommandRecordingFailure;
+            if (execution->submissionFrame.droppedForSwapchainRecreation)
+                NLS_LOG_INFO(message);
+            else
+                NLS_LOG_WARNING(message);
+        }
+#if defined(NLS_ENABLE_TEST_HOOKS)
+        if (impl.rhiFrameObserver)
+            impl.rhiFrameObserver(execution->submissionFrame);
+#endif
+        {
+            std::lock_guard lock(impl.frameTelemetryMutex);
+            auto& telemetry = impl.frameTelemetry;
+            const auto& frame = execution->submissionFrame;
+            if (frame.submittedSuccessfully && frame.currentFrameQueueOperationFailureCount == 0u &&
+                !frame.deviceLostDetected)
+            {
+                telemetry.latestRetiredFrameId = (std::max)(telemetry.latestRetiredFrameId, frame.frameId);
+                ++telemetry.successfullyRetiredFrameCount;
+            }
+            else if (frame.droppedForSwapchainRecreation)
+            {
+                telemetry.latestDroppedForSwapchainRecreationFrameId =
+                    (std::max)(telemetry.latestDroppedForSwapchainRecreationFrameId, frame.frameId);
+                ++telemetry.droppedForSwapchainRecreationFrameCount;
+            }
+            else
+            {
+                telemetry.latestFailedRetiredFrameId = (std::max)(telemetry.latestFailedRetiredFrameId, frame.frameId);
+                ++telemetry.failedRetiredFrameCount;
+            }
+            telemetry.renderSceneAttribution = RenderSceneAttribution::RendererPrepared;
+            telemetry.rhiSubmissionAttribution = execution->attribution;
+            telemetry.descriptorMainlineActive = frame.usedDescriptorAllocator;
+            telemetry.transientLifetimeMainlineActive = frame.usedResourceStateTracker;
+            telemetry.retirementMainlineActive = frame.retirementFenceWaited || frame.deferredFrameScopedRetirement;
+            telemetry.pipelineMainlineActive = frame.pipelineMainlineActive;
+            telemetry.descriptorBypassCount = frame.usedDescriptorAllocator ? 0u : 1u;
+            telemetry.transientLifetimeBypassCount = frame.usedResourceStateTracker ? 0u : 1u;
+            telemetry.retirementBypassCount = telemetry.retirementMainlineActive ? 0u : 1u;
+            telemetry.pipelineBypassCount = frame.pipelineBypassCount;
+            telemetry.transientTextureRegistrationCount = frame.transientTextureRegistrationCount;
+            telemetry.transientBufferRegistrationCount = frame.transientBufferRegistrationCount;
+            telemetry.retiredTransientTextureCount = frame.retiredTransientTextureCount;
+            telemetry.retiredTransientBufferCount = frame.retiredTransientBufferCount;
+            telemetry.descriptorTransientPeak = frame.descriptorTransientPeak;
+            telemetry.descriptorAllocationFailures = frame.descriptorAllocationFailures;
+            telemetry.pipelineCacheGraphicsHits = frame.pipelineCacheGraphicsHits;
+            telemetry.pipelineCacheGraphicsMisses = frame.pipelineCacheGraphicsMisses;
+            telemetry.pipelineCacheGraphicsStores = frame.pipelineCacheGraphicsStores;
+            telemetry.pipelineCacheGraphicsEntries = frame.pipelineCacheGraphicsEntries;
+            telemetry.pipelineCacheComputeHits = frame.pipelineCacheComputeHits;
+            telemetry.pipelineCacheComputeMisses = frame.pipelineCacheComputeMisses;
+            telemetry.pipelineCacheComputeStores = frame.pipelineCacheComputeStores;
+            telemetry.pipelineCacheComputeEntries = frame.pipelineCacheComputeEntries;
+            telemetry.parallelCommandWorkUnitCount = frame.recordedWorkUnitCount;
+            telemetry.parallelRecordingWorkerCount = frame.parallelRecordingWorkerCount;
+            telemetry.parallelFallbackReason = frame.parallelFallbackReason;
+            telemetry.queueOperationFailureCount = frame.queueOperationFailureCount;
+            telemetry.lastQueueOperationFailure = frame.lastQueueOperationFailure;
+            telemetry.currentFrameQueueOperationFailureCount = frame.currentFrameQueueOperationFailureCount;
+            telemetry.currentFrameLastQueueOperationFailure = frame.currentFrameLastQueueOperationFailure;
+            telemetry.deviceLostDetected = frame.deviceLostDetected;
+            telemetry.deviceLostReason = frame.deviceLostReason;
+            telemetry.unsafeGpuWorkQuarantined = frame.unsafeGpuWorkQuarantined;
+            telemetry.unsafeGpuWorkQuarantineReason = frame.unsafeGpuWorkQuarantineReason;
+            telemetry.retirementState = Data::FrameRetirementState::Ready;
+        }
+
+        if (impl.frameLatency != nullptr)
+            (void)impl.frameLatency->PollCompletedFrames();
+    }
+
+    void RetireFrameResourceLease(const ThreadedRhiSubmissionExecutionPtr& execution)
+    {
+        DriverImpl& impl = *execution->impl;
+        std::lock_guard retirementLock(impl.frameResourceRetirementMutex);
+        if (impl.frameResourceSlots == nullptr || execution->mustQuarantineFrameScopedResources)
+            return;
+        const auto* resourceSlot = impl.frameResourceSlots->PeekSlot(execution->frameContextIndex);
+        if (resourceSlot == nullptr || !resourceSlot->inFlight || resourceSlot->quarantined ||
+            resourceSlot->leaseGeneration != execution->resourceLeaseGeneration || resourceSlot->gpuFence != nullptr)
+            return;
+        if (execution->mustDeferFrameScopedRetirement && execution->frameContext != nullptr)
+        {
+            auto& slot = *impl.frameResourceSlots->PeekSlot(execution->frameContextIndex);
+            slot.retirementPending = true;
+            slot.uiTextureRetirementFrameId = execution->submissionFrame.uiOverlaySnapshotFrameId;
+            impl.frameResourceSlots->RetireSlot(execution->frameContextIndex, execution->frameContext->frameFence);
+        }
+        else
+            impl.frameResourceSlots->RetireSlot(execution->frameContextIndex, nullptr);
     }
 
     void RetireThreadedRhiSubmission(const ThreadedRhiSubmissionExecutionPtr& execution)
@@ -6240,28 +6498,15 @@ namespace NLS::Render::Context
                         execution->mustQuarantineFrameScopedResources);
             }
             execution->frameRetired = true;
-            if (execution->mustDeferFrameScopedRetirement)
-            {
-                impl.deferredThreadedFrameScopedRetirementFrameContexts.insert(frameContextIndex);
-                if (submissionFrame.uiOverlaySnapshotFrameId != 0u)
-                {
-                    impl.deferredUiTextureRetirementFrameIdsByFrameContext[frameContextIndex] =
-                        submissionFrame.uiOverlaySnapshotFrameId;
-                }
-            }
             Detail::LogCompletedThreadedRhiSubmission(impl, frameContext, submissionFrame);
         }
 
-        // Retire owns the coordinator handoff. It runs on the RHI named thread, which
-        // only pumps its queue, instead of on the producer that scheduled the graph.
-        if (execution->driver == nullptr || impl.threadedLifecycle == nullptr)
-            return;
+        // CPU completion publishes retirement; frame resources keep their GPU fence.
+        CompleteRhiFrameExecution(execution);
+        RetireFrameResourceLease(execution);
 
-        impl.threadedLifecycle->CompleteRhiSubmission(
-            frameContextIndex,
-            submissionFrame,
-            execution->attribution);
-        if (submissionFrame.submittedSuccessfully &&
+        if (execution->driver != nullptr &&
+            submissionFrame.submittedSuccessfully &&
             execution->renderScenePackage.targetsSwapchain &&
             execution->renderScenePackage.uiDrawDataSnapshot != nullptr)
         {
@@ -6271,9 +6516,8 @@ namespace NLS::Render::Context
                 execution->renderScenePackage.uiOverlayPresentationInvalidationGeneration);
         }
 
-        impl.threadedLifecycle->RetireFrame(frameContextIndex);
-
-        if (submissionFrame.submittedSuccessfully &&
+        if (execution->driver != nullptr &&
+            submissionFrame.submittedSuccessfully &&
             !execution->renderScenePackage.targetsSwapchain &&
             execution->renderScenePackage.externalSceneOutputTextureCount > 0u)
         {
@@ -6301,8 +6545,7 @@ namespace NLS::Render::Context
         if (execution != nullptr && execution->failureReason.empty())
             execution->failureReason = std::move(reason);
 
-        // Throwing fails this node and cancels every dependent node, which is how
-        // cancellation reaches the graph's TaskCompletion.
+        // Stop subsequent operations; the producer performs the failed retirement.
         throw ThreadedRhiSubmissionStageAbort {};
     }
 
@@ -6311,25 +6554,188 @@ namespace NLS::Render::Context
         if (execution == nullptr)
             return;
 
+        // An enqueued acquisition still executes on the ordered lane even when the
+        // frame fails earlier. Consume it here so the swapchain semaphore signal and
+        // the lane's result are retired with this frame instead of leaking forward.
+        (void)Detail::ResolveThreadedSwapchainAcquisition(execution);
+
         DriverImpl& impl = *execution->impl;
         RhiSubmissionFrame& submissionFrame = execution->submissionFrame;
         const std::string reason = execution->failureReason.empty()
             ? std::string("threaded RHI submission stage failed")
             : execution->failureReason;
         submissionFrame.submittedSuccessfully = false;
-        CopyDriverQueueTelemetryToSubmissionFrame(impl, submissionFrame);
-        FailPostSubmitTextureReadbacks(execution->renderScenePackage, reason.c_str());
+        submissionFrame.recordedVisibleWork = false;
+        MarkCommandRecordingFailure(&submissionFrame, reason.c_str());
+        CopyDriverQueueTelemetryToSubmissionFrame(impl, submissionFrame, execution->queueTelemetry);
+        FailPostSubmitReadbacks(execution->renderScenePackage, reason.c_str());
         if (execution->framePrepared &&
             execution->frameContext != nullptr &&
             execution->frameRetired == false)
         {
+            PreserveThreadedRhiSubmissionResources(execution);
             FinalizeThreadedRhiFrameContext(
                 impl,
                 *execution->frameContext,
-                execution->submitPlan);
+                execution->submitPlan,
+                execution->mustDeferFrameScopedRetirement ||
+                    execution->mustQuarantineFrameScopedResources);
             execution->frameRetired = true;
         }
+
+        // A failed or cancelled frame still owns a lifecycle slot. Without
+        // this hand-off the slot stays at `RhiSubmitting` forever, so the frame is
+        // never reusable and every later drain burns its whole watchdog.
+        CompleteRhiFrameExecution(execution);
+        RetireFrameResourceLease(execution);
+        Detail::NotifyThreadedWorkers(impl);
         NLS_LOG_WARNING(("[Driver] Threaded RHI submission aborted: " + reason).c_str());
+    }
+
+    bool DispatchPreparedRhiBatch(const ThreadedRhiSubmissionExecutionPtr& execution)
+    {
+        DriverImpl& impl = *execution->impl;
+
+        // Normally the recording step already bound the backbuffer. This covers the
+        // paths that record no pass at all: without it the frame would silently skip
+        // Present while its acquisition had already been consumed from the lane.
+        if (execution->renderScenePackage.targetsSwapchain &&
+            !Detail::ResolveThreadedSwapchainAcquisition(execution))
+        {
+            return false;
+        }
+
+        if (execution->frameContext == nullptr ||
+            !Detail::CompleteThreadedRhiSubmissionTelemetry(
+                impl, *execution->frameContext, execution->renderScenePackage,
+                execution->preResetTrackerStats, &execution->descriptorStats,
+                execution->submitPlan, &execution->submissionFrame,
+                execution->queueTelemetry))
+        {
+            execution->failureReason = "RHI frame contains no recorded offscreen pass";
+            return false;
+        }
+        std::vector<RecordedParallelCommandWorkUnit*> units;
+        for (auto& unit : execution->recordedParallelBatch.recordedWorkUnits)
+            if (unit.wasRecorded && unit.commands != nullptr)
+                units.push_back(&unit);
+        std::stable_sort(units.begin(), units.end(), [](const auto* lhs, const auto* rhs)
+            { return lhs->workUnit.submissionOrder < rhs->workUnit.submissionOrder; });
+        std::vector<RecordedParallelCommandWorkUnit*> orderedUnits;
+        for (auto* unit : units)
+        {
+            if (unit->queueRelease != nullptr && unit->queueRelease->wasRecorded)
+                orderedUnits.push_back(unit->queueRelease.get());
+            orderedUnits.push_back(unit);
+        }
+        units = std::move(orderedUnits);
+        if (auto& post = execution->recordedParallelBatch.postPassTransitions;
+            post.has_value() && post->wasRecorded && post->commands != nullptr)
+            units.push_back(&*post);
+
+        RhiCommandListBatch batch;
+        batch.debugName = "RenderFrame::" + std::to_string(execution->renderScenePackage.frameId);
+        batch.parallelTranslation = execution->parallelTranslationReady || execution->parallelRecordingReady;
+        batch.commitResourceStates = false;
+        batch.submitSignalsFences = false;
+        batch.retirementFence = execution->frameContext->frameFence;
+        batch.onComplete = [execution] { Detail::NotifyThreadedWorkers(*execution->impl); };
+        batch.requestsPresent = execution->renderScenePackage.targetsSwapchain &&
+            execution->frameContext != nullptr && execution->frameContext->hasAcquiredSwapchainImage;
+        for (const auto* unit : units)
+            batch.commandLists.push_back(unit->commands);
+        batch.acquireCommandBuffer = [execution, units](const size_t index, RHI::QueueType, uint64_t)
+        {
+            auto* unit = units.at(index);
+            if ((unit->workUnit.eligibleForParallelRecording || unit->workUnit.eligibleForParallelTranslation) &&
+                execution->impl->taskGraph != nullptr && execution->impl->taskGraph->IsWorkerThread())
+                unit->translationThreadId = std::this_thread::get_id();
+            return unit->commandBuffer;
+        };
+        batch.submit = [execution, units](const auto&)
+        {
+            std::unordered_set<std::thread::id> workers;
+            for (const auto* unit : units)
+                if (unit->translationThreadId != std::thread::id{})
+                    workers.insert(unit->translationThreadId);
+            auto& frame = execution->submissionFrame;
+            if (execution->usesRecordedParallelBatch)
+            {
+                frame.parallelRecordingWorkerCount = static_cast<uint32_t>(workers.size());
+                frame.usedParallelCommandPath = !workers.empty() || frame.usedTranslationMerge;
+                frame.usedSerialCommandPath = !frame.usedParallelCommandPath;
+            }
+            QueueSubmitThreadedRhiSubmission(execution);
+            RHI::RHIQueueOperationResult result;
+            if (!execution->submissionSucceeded)
+            {
+                result.code = execution->deviceLostDuringSubmit
+                    ? RHI::RHIQueueOperationStatusCode::DeviceLost : RHI::RHIQueueOperationStatusCode::BackendFailure;
+                result.message = execution->failureReason.empty()
+                    ? execution->submissionFrame.currentFrameLastQueueOperationFailure : execution->failureReason;
+            }
+            result.mayHaveQueuedGpuWork = execution->submittedGpuWorkMayNeedFenceConfirmation;
+            result.frameFenceSignalQueued = execution->frameFenceSignalMayHaveBeenQueued;
+            return result;
+        };
+        batch.present = [execution](const auto&)
+        {
+            PresentThreadedRhiSubmission(execution);
+            RHI::RHIQueueOperationResult result;
+            if (!execution->submissionSucceeded)
+            {
+                result.code = execution->deviceLostDuringSubmit
+                    ? RHI::RHIQueueOperationStatusCode::DeviceLost : RHI::RHIQueueOperationStatusCode::BackendFailure;
+                result.message = execution->failureReason;
+            }
+            result.mayHaveQueuedGpuWork = execution->submittedGpuWorkMayNeedFenceConfirmation;
+            result.frameFenceSignalQueued = execution->frameFenceSignalMayHaveBeenQueued;
+            return result;
+        };
+        execution->rhiDispatched = RhiCommandListExecutor::Get().DispatchBatch(
+            std::move(batch), &execution->rhiCompletion);
+        if (!execution->rhiDispatched)
+            execution->failureReason = execution->rhiCompletion.GetDiagnostic();
+        Detail::NotifyThreadedWorkers(impl);
+        return execution->rhiDispatched;
+    }
+
+    void WaitForRhiBatch(const ThreadedRhiSubmissionExecutionPtr& execution)
+    {
+        while (execution->rhiDispatched && !execution->rhiCompletion.IsComplete())
+        {
+            if (execution->impl->taskGraph != nullptr)
+                (void)execution->impl->taskGraph->PumpCurrentThread(1u);
+            (void)execution->rhiCompletion.WaitFor(std::chrono::milliseconds(1));
+        }
+    }
+
+    void CompletePreparedRhiFrame(const ThreadedRhiSubmissionExecutionPtr& execution)
+    {
+        if (!execution->rhiDispatched || !execution->rhiCompletion.Succeeded())
+        {
+            if (execution->failureReason.empty() && execution->rhiDispatched)
+                execution->failureReason = execution->rhiCompletion.GetDiagnostic();
+            AbortThreadedRhiSubmission(execution);
+            return;
+        }
+        const char* phase = "Readback";
+        try
+        {
+            ReadbackThreadedRhiSubmission(execution);
+            phase = "Retire";
+            RetireThreadedRhiSubmission(execution);
+        }
+        catch (const std::exception& error)
+        {
+            execution->failureReason = std::string(phase) + ": " + error.what();
+            AbortThreadedRhiSubmission(execution);
+        }
+        catch (...)
+        {
+            execution->failureReason = std::string(phase) + ": unknown exception";
+            AbortThreadedRhiSubmission(execution);
+        }
     }
 
     void Detail::ExecuteThreadedSubmitPlan(
@@ -6340,8 +6746,7 @@ namespace NLS::Render::Context
         RhiSubmissionFrame* submissionFrame,
         const size_t frameContextIndex)
     {
-        // Compatibility entry point for callers that own an already recorded plan:
-        // it runs the same queue submit, present, readback and retire stages inline.
+        // Already recorded native plans enter the same executor FIFO.
         auto execution = std::make_shared<ThreadedRhiSubmissionExecution>();
         execution->impl = &impl;
         execution->frameContextIndex = frameContextIndex;
@@ -6349,20 +6754,18 @@ namespace NLS::Render::Context
         execution->renderScenePackage = renderScenePackage;
         execution->submitPlan = submitPlan;
         execution->framePrepared = true;
+        {
+            std::lock_guard retirementLock(impl.frameResourceRetirementMutex);
+            if (impl.frameResourceSlots != nullptr)
+                if (const auto* slot = impl.frameResourceSlots->PeekSlot(frameContextIndex))
+                    execution->resourceLeaseGeneration = slot->leaseGeneration;
+        }
         if (submissionFrame != nullptr)
             execution->submissionFrame = *submissionFrame;
 
-        try
-        {
-            QueueSubmitThreadedRhiSubmission(execution);
-            PresentThreadedRhiSubmission(execution);
-            ReadbackThreadedRhiSubmission(execution);
-            RetireThreadedRhiSubmission(execution);
-        }
-        catch (const ThreadedRhiSubmissionStageAbort&)
-        {
-            AbortThreadedRhiSubmission(execution);
-        }
+        (void)DispatchPreparedRhiBatch(execution);
+        WaitForRhiBatch(execution);
+        CompletePreparedRhiFrame(execution);
 
         submitPlan = execution->submitPlan;
         if (submissionFrame != nullptr)
@@ -6372,21 +6775,36 @@ namespace NLS::Render::Context
     {
         struct ScheduledThreadedRhiSubmission
         {
-            RhiSubmissionGraphSchedule schedule;
             bool scheduled = false;
             bool executedInline = false;
             bool inlineSucceeded = false;
         };
 
-        /**
-         * Fills frame metadata and resolves the capability combination before the graph
-         * is built, keeping the stage nodes free of scheduling decisions.
-         */
+        /** Resolves frame metadata and native translation capabilities. */
         void PrepareThreadedRhiSubmissionExecution(
             DriverImpl& impl,
             const ThreadedRhiSubmissionExecutionPtr& execution)
         {
             const RenderScenePackage& renderScenePackage = execution->renderScenePackage;
+            {
+                std::lock_guard retirementLock(impl.frameResourceRetirementMutex);
+                if (impl.frameResourceSlots != nullptr)
+                    if (const auto* slot = impl.frameResourceSlots->PeekSlot(execution->frameContextIndex);
+                        slot != nullptr && slot->inFlight && slot->gpuFence == nullptr)
+                        execution->resourceLeaseGeneration = slot->leaseGeneration;
+            }
+            // Consume once on the render lane; a later frame cannot overwrite
+            // the signal that this submission's Present must wait for.
+            {
+                std::lock_guard lock(impl.uiCompositionSignalMutex);
+                if (renderScenePackage.targetsSwapchain)
+                {
+                    execution->uiCompositionSignalSemaphore = impl.uiRenderFinishedSemaphore;
+                    execution->uiCompositionSignalValue = impl.uiRenderFinishedValue;
+                }
+                impl.uiRenderFinishedSemaphore = {};
+                impl.uiRenderFinishedValue = 0u;
+            }
             const auto externalOutputSummary =
                 Render::FrameGraph::BuildExternalSceneOutputSummary(renderScenePackage);
             RhiSubmissionFrame& submissionFrame = execution->submissionFrame;
@@ -6408,24 +6826,75 @@ namespace NLS::Render::Context
                 impl.explicitDevice->GetCapabilities()
                     .GetFeature(Render::RHI::RHIDeviceFeature::ParallelCommandTranslation)
                     .supported;
-            const bool resourceStateTrackerActive =
-                execution->frameContextIndex < impl.frameContexts.size() &&
-                impl.frameContexts[execution->frameContextIndex].resourceStateTracker != nullptr;
             execution->supportsOrderedWorkUnitSubmission =
                 ShouldUseOrderedParallelCommandSubmissionForPackage(impl, renderScenePackage);
             execution->parallelRecordingReady =
                 execution->supportsOrderedWorkUnitSubmission &&
-                parallelCommandRecordingSupported &&
-                resourceStateTrackerActive == false;
+                parallelCommandRecordingSupported;
             execution->parallelTranslationReady =
                 execution->supportsOrderedWorkUnitSubmission &&
                 parallelCommandTranslationSupported;
         }
 
-        /**
-         * Builds the six stage nodes. Returns an invalid schedule when the graph could
-         * not be submitted; inline mode runs the same stages on the calling thread.
-         */
+        bool ExecutePreparedRhiFrame(
+            const ThreadedRhiSubmissionExecutionPtr& execution)
+        {
+            const char* phase = "Prepare";
+            try
+            {
+                auto* frameContext = Detail::BeginThreadedRhiFrame(
+                    *execution->impl,
+                    execution->renderScenePackage,
+                    execution->frameContextIndex,
+                    &execution->submissionFrame,
+                    &execution->preResetTrackerStats,
+                    &execution->descriptorStats,
+                    &execution->resourceLeaseGeneration,
+                    execution->queueTelemetry,
+                    execution->swapchainAcquisition);
+                if (frameContext == nullptr)
+                {
+                    execution->submissionSucceeded = false;
+                    execution->failureReason =
+                        "RHI frame could not begin its frame context";
+                    CopyDriverQueueTelemetryToSubmissionFrame(
+                        *execution->impl,
+                        execution->submissionFrame,
+                        execution->queueTelemetry);
+                    MarkCommandRecordingFailure(
+                        &execution->submissionFrame,
+                        "threaded RHI frame could not begin its frame context");
+                }
+                else
+                {
+                    execution->frameContext = frameContext;
+                    execution->framePrepared = true;
+                    RecordThreadedRhiSubmissionWork(execution);
+                }
+                PrepareThreadedRhiSubmitPlan(execution);
+                if (HasCommandRecordingFailure(&execution->submissionFrame))
+                {
+                    execution->failureReason = execution->submissionFrame.lastCommandRecordingFailure;
+                    return false;
+                }
+                phase = "Dispatch";
+                return DispatchPreparedRhiBatch(execution);
+            }
+            catch (const ThreadedRhiSubmissionStageAbort&)
+            {
+                return false;
+            }
+            catch (const std::exception& error)
+            {
+                execution->failureReason = std::string(phase) + ": " + error.what();
+            }
+            catch (...)
+            {
+                execution->failureReason = std::string(phase) + ": unknown exception";
+            }
+            return false;
+        }
+
         ScheduledThreadedRhiSubmission ScheduleThreadedRhiSubmission(
             DriverImpl& impl,
             const ThreadedRhiSubmissionExecutionPtr& execution)
@@ -6434,75 +6903,28 @@ namespace NLS::Render::Context
             if (execution == nullptr)
                 return result;
 
-            RhiSubmissionStageCallbacks callbacks;
-            callbacks.recordWorkUnits = [execution]
+            if (RenderingThreadSystem::IsInRenderingThread() ||
+                !impl.renderingThreads.IsInitialized() || impl.renderingThreads.IsSuspended())
             {
-                auto* frameContext = Detail::BeginThreadedRhiFrame(
-                    *execution->impl,
-                    execution->renderScenePackage,
-                    execution->frameContextIndex,
-                    &execution->submissionFrame,
-                    &execution->preResetTrackerStats,
-                    &execution->descriptorStats);
-                if (frameContext == nullptr)
-                {
-                    // Soft failure: the remaining nodes stay no-ops but the retire node
-                    // still hands the frame back to the lifecycle, matching the
-                    // pre-graph behaviour where this path returned a failed frame.
-                    execution->submissionSucceeded = false;
-                    execution->failureReason =
-                        "threaded frame could not begin before post-submit texture readback";
-                    CopyDriverQueueTelemetryToSubmissionFrame(
-                        *execution->impl,
-                        execution->submissionFrame);
-                    return;
-                }
-                execution->frameContext = frameContext;
-                execution->framePrepared = true;
-                RecordThreadedRhiSubmissionWork(execution);
-            };
-            callbacks.translateWorkUnits = [execution]
-            {
-                TranslateThreadedRhiSubmissionWork(execution);
-            };
-            callbacks.queueSubmit = [execution]
-            {
-                QueueSubmitThreadedRhiSubmission(execution);
-            };
-            callbacks.present = [execution]
-            {
-                PresentThreadedRhiSubmission(execution);
-            };
-            callbacks.readback = [execution]
-            {
-                ReadbackThreadedRhiSubmission(execution);
-            };
-            callbacks.retire = [execution]
-            {
-                RetireThreadedRhiSubmission(execution);
-            };
-
-            RhiSubmissionGraphConfig graphConfig;
-            graphConfig.parallelRecordWorkUnits = execution->parallelRecordingReady;
-            graphConfig.parallelTranslateWorkUnits = execution->parallelTranslationReady;
-
-            if (impl.taskGraph != nullptr && impl.taskGraph->IsStarted())
-            {
-                result.schedule = RhiSubmissionGraph::Schedule(
-                    *impl.taskGraph,
-                    graphConfig,
-                    std::move(callbacks));
-                result.scheduled =
-                    result.schedule.IsValid() && result.schedule.completion.IsValid();
-                if (result.scheduled)
-                    execution->completion = result.schedule.completion;
+                result.inlineSucceeded = ExecutePreparedRhiFrame(execution);
+                result.executedInline = true;
                 return result;
             }
+            if (impl.taskGraph == nullptr || !impl.taskGraph->IsStarted())
+                return result;
 
-            result.inlineSucceeded =
-                RhiSubmissionGraph::ExecuteInline(callbacks) ==
-                NLS::Base::TaskGraph::TaskStatus::Succeeded;
-            result.executedInline = true;
+            const auto handle = impl.taskGraph->Submit(
+                [execution]
+                {
+                    if (!ExecutePreparedRhiFrame(execution))
+                        throw ThreadedRhiSubmissionStageAbort {};
+                },
+                NLS::Base::TaskGraph::NamedThread::Render,
+                NLS::Base::TaskGraph::TaskPriority::High,
+                "RenderThread::DispatchRhiFrame");
+            execution->completion = impl.taskGraph->GetCompletion(handle);
+            result.scheduled = handle.IsValid() && execution->completion.IsValid();
+            impl.taskGraph->WakeNamedThread(NLS::Base::TaskGraph::NamedThread::Render);
             return result;
         }
     }
@@ -6525,6 +6947,11 @@ namespace NLS::Render::Context
         {
             if (!scheduled.inlineSucceeded)
                 AbortThreadedRhiSubmission(execution);
+            else
+            {
+                WaitForRhiBatch(execution);
+                CompletePreparedRhiFrame(execution);
+            }
             return std::move(execution->submissionFrame);
         }
         if (!scheduled.scheduled)
@@ -6533,10 +6960,15 @@ namespace NLS::Render::Context
             return std::move(execution->submissionFrame);
         }
 
-        if (RhiSubmissionGraph::WaitForCompletion(*impl.taskGraph, scheduled.schedule) !=
+        if (execution->completion.Wait() !=
             NLS::Base::TaskGraph::TaskStatus::Succeeded)
         {
             AbortThreadedRhiSubmission(execution);
+        }
+        else
+        {
+            WaitForRhiBatch(execution);
+            CompletePreparedRhiFrame(execution);
         }
         return std::move(execution->submissionFrame);
     }
@@ -6548,7 +6980,8 @@ namespace NLS::Render::Context
         const Render::RHI::ResourceStateTrackerStats& preResetTrackerStats,
         Render::RHI::DescriptorAllocatorStats* descriptorStats,
         const AsyncComputeSubmitPlan& submitPlan,
-        RhiSubmissionFrame* submissionFrame)
+        RhiSubmissionFrame* submissionFrame,
+        const std::shared_ptr<Detail::RhiFrameQueueOperationTelemetry>& queueTelemetry)
     {
         if (submissionFrame == nullptr)
             return false;
@@ -6562,7 +6995,7 @@ namespace NLS::Render::Context
             submissionFrame->usedAsyncComputeQueueSubmission
                 ? AsyncComputeDisposition::Submitted
                 : ResolveThreadedAsyncComputeDisposition(impl, renderScenePackage);
-        CopyDriverQueueTelemetryToSubmissionFrame(impl, *submissionFrame);
+        CopyDriverQueueTelemetryToSubmissionFrame(impl, *submissionFrame, queueTelemetry);
 
         if (impl.pipelineCache != nullptr)
         {
@@ -6619,7 +7052,31 @@ namespace NLS::Render::Context
             NLS_LOG_WARNING(message.c_str());
         }
 
-        return !(submissionFrame->recordedPassCount == 0u && submissionFrame->offscreenOnly);
+        const bool expectsOffscreenPass = !renderScenePackage.passCommandInputs.empty() ||
+            !renderScenePackage.recordedDrawCommands.empty() || renderScenePackage.visibleDrawCount != 0u;
+        return !(submissionFrame->recordedPassCount == 0u && submissionFrame->offscreenOnly &&
+            expectsOffscreenPass);
+    }
+
+    void Detail::ReleaseUnsubmittedFrameResourceLease(
+        DriverImpl& impl, const size_t slotIndex, const uint64_t leaseGeneration, const uint64_t latencyFrameId)
+    {
+        bool released = false;
+        {
+            std::lock_guard retirementLock(impl.frameResourceRetirementMutex);
+            if (impl.frameResourceSlots != nullptr)
+            {
+                const auto* slot = impl.frameResourceSlots->PeekSlot(slotIndex);
+                if (slot != nullptr && slot->inFlight && slot->leaseGeneration == leaseGeneration &&
+                    slot->gpuFence == nullptr && !slot->quarantined)
+                {
+                    impl.frameResourceSlots->RetireSlot(slotIndex, nullptr);
+                    released = true;
+                }
+            }
+        }
+        if (released && latencyFrameId != 0u && impl.frameLatency != nullptr)
+            (void)impl.frameLatency->CancelFrame(latencyFrameId);
     }
 
     bool Detail::ReleaseDeferredThreadedFrameScopedResourcesAfterFence(
@@ -6627,50 +7084,46 @@ namespace NLS::Render::Context
         Render::RHI::RHIFrameContext& frameContext,
         const size_t frameContextIndex)
     {
-        if (impl.retainedThreadedSubmitResourceKeepAliveByFrameContext.size() < impl.frameContexts.size())
-            impl.retainedThreadedSubmitResourceKeepAliveByFrameContext.resize(impl.frameContexts.size());
-
-        const bool hadDeferredFrameScopedRetirement =
-            impl.deferredThreadedFrameScopedRetirementFrameContexts.erase(frameContextIndex) != 0u;
-        if (!hadDeferredFrameScopedRetirement)
+        std::lock_guard lock(impl.frameResourceRetirementMutex);
+        if (impl.unsafeGpuWorkQuarantined.load(std::memory_order_acquire) ||
+            impl.frameResourceSlots == nullptr)
             return false;
 
-        if (frameContextIndex < impl.retainedThreadedSubmitResourceKeepAliveByFrameContext.size())
-            impl.retainedThreadedSubmitResourceKeepAliveByFrameContext[frameContextIndex].clear();
-
-        const uint64_t completedFrameIndex = frameContext.frameIndex;
-        if (frameContext.descriptorAllocator != nullptr)
-        {
-            NLS_PROFILE_NAMED_SCOPE("ThreadedRhiFrame::ReleaseDeferredDescriptorAllocatorFrame");
-            frameContext.descriptorAllocator->EndFrame(completedFrameIndex);
-        }
-        if (frameContext.uploadContext != nullptr)
-        {
-            NLS_PROFILE_NAMED_SCOPE("ThreadedRhiFrame::ReleaseDeferredUploadContextFrame");
-            frameContext.uploadContext->EndFrame(completedFrameIndex);
-        }
-        if (frameContext.resourceStateTracker != nullptr)
-        {
-            NLS_PROFILE_NAMED_SCOPE("ThreadedRhiFrame::ReleaseDeferredTransientResources");
-            frameContext.resourceStateTracker->RetireTransientResources(std::numeric_limits<uint64_t>::max());
-        }
-        const auto deferredUiTextureFrameId =
-            impl.deferredUiTextureRetirementFrameIdsByFrameContext.find(frameContextIndex);
-        if (deferredUiTextureFrameId != impl.deferredUiTextureRetirementFrameIdsByFrameContext.end())
-        {
-            ReleaseRetiredUiTextureViewsForCompletedFrame(impl, deferredUiTextureFrameId->second);
-            impl.deferredUiTextureRetirementFrameIdsByFrameContext.erase(deferredUiTextureFrameId);
-        }
-        return true;
+        const auto* slot = impl.frameResourceSlots->PeekSlot(frameContextIndex);
+        if (slot == nullptr || slot->quarantined || !slot->retirementPending ||
+            slot->gpuFence == nullptr || !slot->gpuFence->IsSignaled())
+            return false;
+        return impl.frameResourceSlots->ReclaimSlot(frameContextIndex,
+            [&impl, &frameContext](FrameResourceSlot& slot)
+            {
+                const uint64_t completedFrameIndex = frameContext.frameIndex;
+                if (frameContext.descriptorAllocator != nullptr)
+                {
+                    NLS_PROFILE_NAMED_SCOPE("ThreadedRhiFrame::ReleaseDeferredDescriptorAllocatorFrame");
+                    frameContext.descriptorAllocator->EndFrame(completedFrameIndex);
+                }
+                if (frameContext.uploadContext != nullptr)
+                {
+                    NLS_PROFILE_NAMED_SCOPE("ThreadedRhiFrame::ReleaseDeferredUploadContextFrame");
+                    frameContext.uploadContext->EndFrame(completedFrameIndex);
+                }
+                if (frameContext.resourceStateTracker != nullptr)
+                {
+                    NLS_PROFILE_NAMED_SCOPE("ThreadedRhiFrame::ReleaseDeferredTransientResources");
+                    frameContext.resourceStateTracker->RetireTransientResources(std::numeric_limits<uint64_t>::max());
+                }
+                if (slot.uiTextureRetirementFrameId != 0u)
+                    ReleaseRetiredUiTextureViewsForCompletedFrame(impl, slot.uiTextureRetirementFrameId);
+            });
     }
 
     void Detail::ReleaseDeferredThreadedFrameScopedResourcesAfterFence(DriverImpl& impl)
     {
-        for (size_t frameContextIndex = 0u; frameContextIndex < impl.frameContexts.size(); ++frameContextIndex)
+        for (size_t frameContextIndex = 0u; frameContextIndex < impl.GetFrameContextCount(); ++frameContextIndex)
         {
             ReleaseDeferredThreadedFrameScopedResourcesAfterFence(
                 impl,
-                impl.frameContexts[frameContextIndex],
+                impl.GetFrameContext(frameContextIndex),
                 frameContextIndex);
         }
     }
@@ -6695,393 +7148,234 @@ namespace NLS::Render::Context
         }
     }
 
-    bool RhiThreadCoordinator::CanBeginStandaloneExplicitFrame(const Driver& driver)
-    {
-        return driver.m_impl != nullptr &&
-            CanBeginStandaloneExplicitFrameForImpl(*driver.m_impl);
-    }
-
-    bool RhiThreadCoordinator::BeginStandaloneExplicitFrame(Driver& driver, const bool acquireSwapchainImage)
-    {
-        NLS_PROFILE_SCOPE();
-        NLS_ASSERT(driver.m_impl->explicitDevice != nullptr, "Explicit RHI is not enabled for this driver.");
-        NLS_ASSERT(!driver.m_impl->frameContexts.empty(), "Explicit RHI frame contexts were not initialized.");
-        NLS_ASSERT(!driver.m_impl->explicitFrameActive, "Cannot begin a new explicit frame while another one is still active.");
-
-        if (!CanBeginStandaloneExplicitFrameForImpl(*driver.m_impl))
-            return false;
-
-        driver.m_impl->standaloneFrameSubmissionLock =
-            std::unique_lock<std::timed_mutex>(driver.m_impl->threadedRhiSubmissionMutex, std::defer_lock);
-        if (!driver.m_impl->standaloneFrameSubmissionLock.try_lock())
-            return false;
-
-        auto& frameContext = driver.m_impl->frameContexts[driver.m_impl->currentFrameIndex % driver.m_impl->frameContexts.size()];
-        ResetCurrentFrameQueueOperationTelemetry(*driver.m_impl);
-        if (frameContext.frameFence != nullptr)
-        {
-            NLS_PROFILE_NAMED_SCOPE("StandaloneRhiFrame::WaitReusableFrameFence");
-            if (!WaitFrameFenceWithDriverPolicy(
-                *driver.m_impl,
-                frameContext.frameFence,
-                "RhiThreadCoordinator::BeginStandaloneExplicitFrame"))
-            {
-                driver.m_impl->standaloneFrameSubmissionLock.unlock();
-                return false;
-            }
-            Detail::ReleaseDeferredThreadedFrameScopedResourcesAfterFence(
-                *driver.m_impl,
-                frameContext,
-                driver.m_impl->currentFrameIndex % driver.m_impl->frameContexts.size());
-        }
-        // Standalone explicit rendering has no threaded RHI worker. Process
-        // runtime mesh uploads on the owning rendering thread before recording
-        // the next frame.
-        (void)Detail::RecordPendingMeshRuntimeUploads(*driver.m_impl);
-        frameContext.frameIndex = static_cast<uint64_t>(driver.m_impl->currentFrameIndex);
-        if (frameContext.imageAcquiredSemaphore != nullptr)
-            frameContext.imageAcquiredSemaphore->Reset();
-        if (frameContext.renderFinishedSemaphore != nullptr)
-            frameContext.renderFinishedSemaphore->Reset();
-        ClearSceneToUiWaitSemaphoreForFrame(*driver.m_impl, frameContext);
-        if (frameContext.commandPool != nullptr)
-            frameContext.commandPool->Reset();
-        if (frameContext.commandBuffer != nullptr)
-            frameContext.commandBuffer->Reset();
-        if (frameContext.resourceStateTracker != nullptr)
-        {
-            frameContext.resourceStateTracker->RetireTransientResources(std::numeric_limits<uint64_t>::max());
-            frameContext.resourceStateTracker->Reset();
-            frameContext.resourceStateTracker->BeginFrame(driver.m_impl->currentFrameIndex);
-        }
-        if (frameContext.descriptorAllocator != nullptr)
-            frameContext.descriptorAllocator->BeginFrame(driver.m_impl->currentFrameIndex);
-        if (frameContext.uploadContext != nullptr)
-            frameContext.uploadContext->BeginFrame(driver.m_impl->currentFrameIndex);
-
-        frameContext.hasAcquiredSwapchainImage = false;
-        frameContext.uploadBytesReserved = 0u;
-        frameContext.swapchainBackbufferView = nullptr;
-        frameContext.explicitReadbackTexture = nullptr;
-        frameContext.explicitReadbackTextureGeneration = 0u;
-        driver.m_impl->standalonePostSubmitBufferReadbacks.clear();
-        if (acquireSwapchainImage && driver.m_impl->explicitSwapchain != nullptr)
-        {
-            std::optional<Render::RHI::RHIAcquiredImage> acquiredImage;
-            {
-                NLS_PROFILE_NAMED_SCOPE("StandaloneRhiFrame::AcquireNextImage");
-                acquiredImage = driver.m_impl->explicitSwapchain->AcquireNextImage(
-                    frameContext.imageAcquiredSemaphore,
-                    frameContext.frameFence);
-            }
-            frameContext.hasAcquiredSwapchainImage = acquiredImage.has_value();
-            frameContext.swapchainImageIndex = acquiredImage.has_value() ? acquiredImage->imageIndex : 0u;
-            if (acquiredImage.has_value())
-                frameContext.swapchainBackbufferView = driver.m_impl->explicitSwapchain->GetBackbufferView(frameContext.swapchainImageIndex);
-            if (frameContext.swapchainBackbufferView != nullptr)
-            {
-                SeedAcquiredSwapchainBackbufferState(frameContext);
-                const auto& swapchainDesc = driver.m_impl->explicitSwapchain->GetDesc();
-                EnsureSwapchainDepthStencilAttachment(
-                    *driver.m_impl,
-                    frameContext,
-                    swapchainDesc.width,
-                    swapchainDesc.height);
-            }
-        }
-        frameContext.explicitReadbackTexture =
-            Render::FrameGraph::ResolveFrameReadbackTexture(nullptr, &frameContext);
-        frameContext.explicitReadbackTextureGeneration =
-            Render::FrameGraph::ResolveFrameReadbackTextureGeneration(nullptr, &frameContext);
-
-        if (driver.m_impl->renderDocCaptureController != nullptr)
-            driver.m_impl->renderDocCaptureController->OnPreFrame(acquireSwapchainImage);
-
-        if (frameContext.commandBuffer != nullptr)
-            frameContext.commandBuffer->Begin();
-
-        if (frameContext.commandBuffer != nullptr && frameContext.commandBuffer->IsRecording())
-            (void)Detail::RecordPendingTextureRuntimeUploads(
-                *driver.m_impl,
-                frameContext,
-                *frameContext.commandBuffer);
-        driver.m_impl->explicitFrameActive = true;
-        return true;
-    }
-
-    void RhiThreadCoordinator::EndStandaloneExplicitFrame(Driver& driver, const bool presentSwapchain)
-    {
-        NLS_PROFILE_SCOPE();
-        if (driver.m_impl->explicitDevice == nullptr || driver.m_impl->frameContexts.empty() || !driver.m_impl->explicitFrameActive)
-        {
-            if (driver.m_impl != nullptr && driver.m_impl->standaloneFrameSubmissionLock.owns_lock())
-                driver.m_impl->standaloneFrameSubmissionLock.unlock();
-            return;
-        }
-
-        auto& frameContext = driver.m_impl->frameContexts[driver.m_impl->currentFrameIndex % driver.m_impl->frameContexts.size()];
-        if (frameContext.commandBuffer != nullptr && frameContext.commandBuffer->IsRecording())
-            frameContext.commandBuffer->End();
-
-        const bool willPresentSwapchain =
-            presentSwapchain &&
-            frameContext.hasAcquiredSwapchainImage &&
-            driver.m_impl->explicitSwapchain != nullptr;
-        const auto submitDesc = BuildStandaloneGraphicsSubmitDesc(
-            frameContext,
-            true,
-            !willPresentSwapchain);
-
-        auto queue = driver.m_impl->explicitDevice->GetQueue(Render::RHI::QueueType::Graphics);
-        Render::RHI::RHIQueueOperationResult submitResult;
-        bool submitAttempted = false;
-        bool submitted = false;
-        if (queue != nullptr)
-        {
-            submitAttempted = true;
-            submitResult = queue->SubmitChecked(submitDesc);
-            submitted = RecordQueueOperationResult(
-                *driver.m_impl,
-                submitResult,
-                "RhiThreadCoordinator::EndStandaloneExplicitFrame::Submit");
-            if (submitted &&
-                !presentSwapchain &&
-                frameContext.renderFinishedSemaphore != nullptr)
-            {
-                PublishSceneToUiWaitSemaphore(*driver.m_impl, frameContext);
-            }
-            else
-            {
-                ClearSceneToUiWaitSemaphoreForFrame(*driver.m_impl, frameContext);
-            }
-            if (submitted && willPresentSwapchain)
-            {
-                const auto presentResult = PresentSwapchainFrame(
-                    *driver.m_impl,
-                    *queue,
-                    frameContext,
-                    true,
-                    true);
-                RecordQueueOperationResult(
-                    *driver.m_impl,
-                    presentResult,
-                    "RhiThreadCoordinator::EndStandaloneExplicitFrame::Present");
-                submitResult.mayHaveQueuedGpuWork =
-                    submitResult.mayHaveQueuedGpuWork ||
-                    presentResult.Succeeded() ||
-                    presentResult.mayHaveQueuedGpuWork;
-                submitResult.frameFenceSignalQueued =
-                    submitResult.frameFenceSignalQueued ||
-                    presentResult.frameFenceSignalQueued;
-                if (presentResult.code == Render::RHI::RHIQueueOperationStatusCode::DeviceLost)
-                    submitResult.code = Render::RHI::RHIQueueOperationStatusCode::DeviceLost;
-                driver.ApplyPendingSwapchainResize();
-            }
-        }
-        else
-        {
-            ClearSceneToUiWaitSemaphoreForFrame(*driver.m_impl, frameContext);
-        }
-        RenderScenePackage standalonePostSubmitReadbacks;
-        standalonePostSubmitReadbacks.postSubmitBufferReadbacks =
-            std::move(driver.m_impl->standalonePostSubmitBufferReadbacks);
-        driver.m_impl->standalonePostSubmitBufferReadbacks.clear();
-        const bool frameSubmittedSuccessfully =
-            submitted &&
-            driver.m_impl->currentFrameQueueOperationFailureCount == 0u &&
-            !driver.m_impl->deviceLostDetected.load(std::memory_order_acquire);
-        BeginPostSubmitBufferReadbacks(
-            *driver.m_impl,
-            standalonePostSubmitReadbacks,
-            frameSubmittedSuccessfully,
-            nullptr,
-            false);
-        ClearUICompositionSignal(*driver.m_impl);
-        const auto frameContextIndex = driver.m_impl->frameContexts.empty()
-            ? 0u
-            : static_cast<size_t>(driver.m_impl->currentFrameIndex % driver.m_impl->frameContexts.size());
-        const bool deferFrameScopedRetirement =
-            ShouldDeferFrameScopedRetirementAfterSubmit(submitResult, submitAttempted);
-        bool quarantinedFrameScopedResources = false;
-        if (deferFrameScopedRetirement)
-        {
-            DeferStandaloneFrameScopedRetirementAfterSubmit(
-                *driver.m_impl,
-                frameContextIndex,
-                frameContext,
-                submitDesc);
-        }
-        else if (SubmitMayHaveQueuedGpuWorkWithoutRetirementFence(submitResult, submitAttempted))
-        {
-            RetainStandaloneSubmitResourcesUntilNextFence(
-                *driver.m_impl,
-                frameContextIndex,
-                frameContext,
-                submitDesc);
-            MarkQueuedGpuWorkWithoutRetirementFence(
-                *driver.m_impl,
-                "RhiThreadCoordinator::EndStandaloneExplicitFrame::Submit",
-                submitResult);
-            quarantinedFrameScopedResources = true;
-        }
-
-        if (!deferFrameScopedRetirement && !quarantinedFrameScopedResources && frameContext.descriptorAllocator != nullptr)
-            frameContext.descriptorAllocator->EndFrame(driver.m_impl->currentFrameIndex);
-        if (!deferFrameScopedRetirement && !quarantinedFrameScopedResources && frameContext.uploadContext != nullptr)
-            frameContext.uploadContext->EndFrame(driver.m_impl->currentFrameIndex);
-
-        if (driver.m_impl->renderDocCaptureController != nullptr)
-        {
-            const bool outputMayBePresentedLater =
-                submitted &&
-                !presentSwapchain &&
-                frameContext.renderFinishedSemaphore != nullptr;
-            driver.m_impl->renderDocCaptureController->OnPostFrame(
-                willPresentSwapchain,
-                outputMayBePresentedLater);
-        }
-
-        Detail::RememberCompletedReadbackTexture(
-            *driver.m_impl,
-            frameContext.explicitReadbackTexture,
-            frameContext.explicitReadbackTextureGeneration);
-        ++driver.m_impl->currentFrameIndex;
-        driver.m_impl->explicitFrameActive = false;
-        if (driver.m_impl->standaloneFrameSubmissionLock.owns_lock())
-            driver.m_impl->standaloneFrameSubmissionLock.unlock();
-    }
-
     namespace
     {
-        bool ProducerLaneOwnedByCurrentThread(const DriverImpl& impl)
-        {
-            return impl.threadedRhiProducerLaneHeld.load(std::memory_order_acquire) &&
-                impl.threadedRhiProducerThreadId == std::this_thread::get_id();
-        }
-
         /**
-         * Takes the producer lane. Only the owning thread ever touches the stored
-         * unique_lock, so the lane can be released on a later tick without unlocking a
-         * mutex from a foreign thread.
+         * Serializes the claim/prepare/hand-off window of frame production.
+         *
+         * The lock is a local object owned by the calling thread for exactly one
+         * production step. It is never stored back into the driver, so another thread
+         * cannot clear this thread's ownership and two producers cannot overwrite each
+         * other's lock. Frames still overlap because the gate is released as soon as
+         * the executor owns the work: per-slot reuse is gated by the
+         * FrameResourceRing's GPU fence inside BeginThreadedRhiFrame, not by this gate.
+         *
+         * A blocking acquisition keeps the previous dispatch contract for the render
+         * thread; the synchronous drain and the swapchain resize use try_lock so they
+         * can defer instead of stalling a producer.
          */
-        bool AcquireProducerLane(DriverImpl& impl, const bool waitForAvailability)
+        class ScopedThreadedProductionGate final
         {
-            if (ProducerLaneOwnedByCurrentThread(impl))
-                return true;
-            if (impl.threadedRhiProducerLaneHeld.load(std::memory_order_acquire))
-                return false;
-
-            impl.threadedRhiProducerLane =
-                std::unique_lock<std::timed_mutex>(impl.threadedRhiSubmissionMutex, std::defer_lock);
-            const bool locked = waitForAvailability
-                ? (impl.threadedRhiProducerLane.lock(), true)
-                : impl.threadedRhiProducerLane.try_lock();
-            if (!locked)
+        public:
+            ScopedThreadedProductionGate(DriverImpl& impl, const bool waitForAvailability)
+                : m_lock(impl.threadedRhiSubmissionMutex, std::defer_lock)
             {
-                impl.threadedRhiProducerLane = {};
-                return false;
+                if (waitForAvailability)
+                {
+                    m_lock.lock();
+                    m_held = true;
+                }
+                else
+                {
+                    m_held = m_lock.try_lock();
+                }
             }
 
-            impl.threadedRhiProducerThreadId = std::this_thread::get_id();
-            impl.threadedRhiProducerLaneHeld.store(true, std::memory_order_release);
-            return true;
-        }
+            [[nodiscard]] bool IsHeld() const { return m_held; }
 
-        void ReleaseProducerLane(DriverImpl& impl)
-        {
-            if (!ProducerLaneOwnedByCurrentThread(impl))
-                return;
-
-            impl.threadedRhiProducerLaneHeld.store(false, std::memory_order_release);
-            impl.threadedRhiProducerThreadId = {};
-            if (impl.threadedRhiProducerLane.owns_lock())
-                impl.threadedRhiProducerLane.unlock();
-            impl.threadedRhiProducerLane = {};
-        }
+        private:
+            std::unique_lock<std::timed_mutex> m_lock;
+            bool m_held = false;
+        };
 
         bool HasPendingMeshRuntimeUploads(const DriverImpl& impl)
         {
             return impl.meshRuntimeUploadRequestedCount.load(std::memory_order_acquire) >
                 impl.meshRuntimeUploadRecordedCount.load(std::memory_order_acquire);
         }
-    }
 
-    bool RhiThreadCoordinator::TryScheduleNextThreadedSubmission(
-        Driver& driver,
-        const RhiSubmissionAttribution attribution)
-    {
-        NLS_PROFILE_SCOPE();
-        DriverImpl& impl = *driver.m_impl;
-        if (impl.threadedLifecycle == nullptr)
-            return false;
-        if (impl.pendingThreadedRhiSubmission != nullptr ||
-            impl.pendingIdleMeshUploadCompletion.IsValid())
+        void EnqueuePendingThreadedSubmission(
+            ThreadedRhiSubmissionExecutionPtr execution)
         {
-            return false;
+            Detail::RhiFrameExecutionQueue::Enqueue(std::move(execution));
         }
 
-        if (attribution == RhiSubmissionAttribution::Worker &&
-            IsUiStandaloneFramePending(impl))
+        ThreadedRhiSubmissionExecutionPtr PeekPendingThreadedSubmission(DriverImpl& impl)
         {
-            return false;
+            return Detail::RhiFrameExecutionQueue::Peek(impl);
         }
 
-        if (!AcquireProducerLane(impl, attribution == RhiSubmissionAttribution::Worker))
-            return false;
-
-        if (attribution == RhiSubmissionAttribution::Worker &&
-            IsUiStandaloneFramePending(impl))
+        void PopPendingThreadedSubmission(DriverImpl& impl)
         {
-            ReleaseProducerLane(impl);
-            return false;
+            Detail::RhiFrameExecutionQueue::Pop(impl);
         }
 
-        size_t slotIndex = 0u;
-        RenderScenePackage renderScenePackage;
-        if (!Detail::TryBeginNextRhiFrameExecution(
-            *impl.threadedLifecycle,
-            &slotIndex,
-            &renderScenePackage))
+        size_t GetPendingThreadedSubmissionCount(const DriverImpl& impl)
         {
-            ReleaseProducerLane(impl);
-            return false;
+            return Detail::RhiFrameExecutionQueue::Count(impl);
         }
 
-        auto execution = std::make_shared<ThreadedRhiSubmissionExecution>();
-        execution->driver = &driver;
-        execution->impl = &impl;
-        execution->frameContextIndex = slotIndex;
-        execution->attribution = attribution;
-        execution->renderScenePackage = std::move(renderScenePackage);
-        PrepareThreadedRhiSubmissionExecution(impl, execution);
-
-        const auto scheduled = ScheduleThreadedRhiSubmission(impl, execution);
-        if (scheduled.executedInline)
+        /**
+         * True once the execution's CPU stage and its executor completion are both
+         * terminal. Retirement stays FIFO so readback and lifecycle hand-off keep
+         * the executor's submission order.
+         */
+        bool IsThreadedSubmissionReadyToRetire(
+            const ThreadedRhiSubmissionExecutionPtr& execution)
         {
-            if (!scheduled.inlineSucceeded)
-                AbortThreadedRhiSubmission(execution);
-            ReleaseProducerLane(impl);
+            if (execution == nullptr)
+                return true;
+            if (execution->completion.IsValid() && !execution->completion.IsComplete())
+                return false;
+            if (execution->rhiDispatched && !execution->rhiCompletion.IsComplete())
+                return false;
             return true;
         }
-        if (!scheduled.scheduled)
+
+        /** Retires every ready execution from the head of the in-flight queue. */
+        size_t RetireCompletedThreadedSubmissions(DriverImpl& impl)
         {
-            AbortThreadedRhiSubmission(execution);
-            ReleaseProducerLane(impl);
-            return false;
+            std::lock_guard retirementLock(Detail::RhiFrameExecutionQueue::RetirementMutex());
+            size_t retired = 0u;
+            for (;;)
+            {
+                auto execution = PeekPendingThreadedSubmission(impl);
+                if (execution == nullptr || !IsThreadedSubmissionReadyToRetire(execution))
+                    break;
+
+                const bool failedPreparation =
+                    execution->completion.IsValid() &&
+                    execution->completion.GetStatus() != NLS::Base::TaskGraph::TaskStatus::Succeeded;
+                if (failedPreparation)
+                {
+                    // A cancelled dispatch still owns the frame context, so the
+                    // abort path performs the slot hand-off before it is released.
+                    AbortThreadedRhiSubmission(execution);
+                }
+                else
+                {
+                    CompletePreparedRhiFrame(execution);
+                }
+                (void)PopPendingThreadedSubmission(impl);
+                ++retired;
+            }
+
+            if (retired != 0u && impl.taskGraph != nullptr)
+                (void)impl.taskGraph->ReleaseTerminalTaskPayloads();
+            return retired;
         }
 
-        impl.pendingThreadedRhiSubmission = std::move(execution);
-        // Wake the RHI worker so it pumps the stage graph instead of waiting for a
-        // frame-level notification that now arrives only after retirement.
-        Detail::NotifyThreadedWorkers(impl);
-        return true;
+        bool ScheduleClaimedRhiFrame(
+            Driver& driver, DriverImpl& impl, const size_t slotIndex,
+            RenderScenePackage renderScenePackage, const RhiSubmissionAttribution attribution)
+        {
+            auto execution = std::make_shared<ThreadedRhiSubmissionExecution>();
+            execution->driver = &driver;
+            execution->impl = &impl;
+            execution->frameContextIndex = slotIndex;
+            execution->attribution = attribution;
+            execution->renderScenePackage = std::move(renderScenePackage);
+            {
+                std::lock_guard lock(impl.frameResourceRetirementMutex);
+                if (impl.frameResourceSlots != nullptr)
+                    if (auto* slot = impl.frameResourceSlots->PeekSlot(slotIndex); slot != nullptr && slot->inFlight)
+                        slot->streamingDependencyPins = execution->renderScenePackage.streamingDependencyPins;
+            }
+            // Frames dispatched through the render lane acquire their swapchain
+            // image asynchronously; the synchronous helper keeps the old path.
+            execution->swapchainAcquisition = std::make_shared<ThreadedSwapchainAcquisition>();
+            PrepareThreadedRhiSubmissionExecution(impl, execution);
+
+            const auto scheduled = ScheduleThreadedRhiSubmission(impl, execution);
+            if (scheduled.executedInline)
+            {
+                if (!scheduled.inlineSucceeded)
+                {
+                    AbortThreadedRhiSubmission(execution);
+                    return true;
+                }
+                EnqueuePendingThreadedSubmission(std::move(execution));
+                // Preserve the synchronous contract: a frame whose executor work
+                // already completed retires now instead of waiting for a later tick.
+                (void)RetireCompletedThreadedSubmissions(impl);
+                return true;
+            }
+            if (!scheduled.scheduled)
+            {
+                AbortThreadedRhiSubmission(execution);
+                return false;
+            }
+
+            EnqueuePendingThreadedSubmission(std::move(execution));
+            (void)RetireCompletedThreadedSubmissions(impl);
+            Detail::NotifyThreadedWorkers(impl);
+            return true;
+        }
     }
 
-    bool RhiThreadCoordinator::TryScheduleIdleMeshRuntimeUploads(Driver& driver)
+    size_t Detail::GetPendingCpuFrameCount(const DriverImpl& impl)
+    {
+        size_t count = static_cast<size_t>(impl.pendingRenderFrameCommands.load(std::memory_order_acquire));
+        count += Detail::RhiFrameExecutionQueue::Count(impl);
+        return count;
+    }
+
+    bool Detail::HasPendingSwapchainFrame(const DriverImpl& impl)
+    {
+        if (impl.pendingSwapchainRenderCommands.load(std::memory_order_acquire) != 0u)
+            return true;
+        {
+            const auto frames = Detail::RhiFrameExecutionQueue::Copy(impl);
+            if (std::any_of(frames.begin(), frames.end(),
+                [](const auto& execution) { return execution->renderScenePackage.targetsSwapchain; }))
+                return true;
+        }
+        return false;
+    }
+
+    std::vector<uint64_t> Detail::CollectPendingStreamingDependencyPins(const DriverImpl& impl)
+    {
+        std::vector<uint64_t> pins;
+        {
+            std::lock_guard lock(impl.frameResourceRetirementMutex);
+            if (impl.frameResourceSlots != nullptr)
+                for (size_t index = 0u; index < impl.frameResourceSlots->GetSlotCount(); ++index)
+                {
+                    const auto* slot = impl.frameResourceSlots->PeekSlot(index);
+                    pins.insert(pins.end(), slot->streamingDependencyPins.begin(), slot->streamingDependencyPins.end());
+                }
+        }
+        {
+            for (const auto& execution : Detail::RhiFrameExecutionQueue::Copy(impl))
+                pins.insert(pins.end(), execution->renderScenePackage.streamingDependencyPins.begin(),
+                    execution->renderScenePackage.streamingDependencyPins.end());
+        }
+        std::sort(pins.begin(), pins.end());
+        pins.erase(std::unique(pins.begin(), pins.end()), pins.end());
+        return pins;
+    }
+
+    bool RhiCommandListExecutor::DispatchRenderFrame(Driver& driver, const size_t slotIndex,
+        RenderScenePackage renderScenePackage)
+    {
+        DriverImpl& impl = *driver.m_impl;
+        // Dispatch must finish inside the main-pipe command, so a following fence
+        // captures this frame's sequence even while its translation is pending.
+        // Earlier frames are deliberately left in flight: the in-flight queue and
+        // the executor's ordered submit lane provide the ordering, not a full wait.
+        ScopedThreadedProductionGate productionGate(impl, true);
+        const bool scheduled = ScheduleClaimedRhiFrame(driver, impl, slotIndex,
+            std::move(renderScenePackage),
+            RenderingThreadSystem::IsInRenderingThread()
+                ? RhiSubmissionAttribution::Worker : RhiSubmissionAttribution::SynchronousDrain);
+        return scheduled;
+    }
+
+    bool RhiCommandListExecutor::TryScheduleIdleMeshRuntimeUploads(Driver& driver)
     {
         NLS_PROFILE_SCOPE();
         DriverImpl& impl = *driver.m_impl;
-        if (impl.threadedLifecycle == nullptr ||
+        if (impl.frameResourceSlots == nullptr ||
             impl.explicitDevice == nullptr ||
             impl.deviceLostDetected.load(std::memory_order_acquire) ||
             impl.unsafeGpuWorkQuarantined.load(std::memory_order_acquire) ||
@@ -7090,92 +7384,74 @@ namespace NLS::Render::Context
         {
             return false;
         }
-        if (impl.pendingThreadedRhiSubmission != nullptr ||
+        if (GetPendingThreadedSubmissionCount(impl) != 0u ||
             impl.pendingIdleMeshUploadCompletion.IsValid())
-        {
             return false;
-        }
-        if (IsUiStandaloneFramePending(impl) || !HasPendingMeshRuntimeUploads(impl))
-            return false;
-        if (!AcquireProducerLane(impl, false))
+        if (!HasPendingMeshRuntimeUploads(impl))
             return false;
 
-        // Uploads stay on the RHI named thread, but as graph work it pumps rather than
-        // as an inline call inside the RHI worker loop.
+        const auto uploadLane = impl.rhiThreadMode == Render::Settings::RhiThreadMode::DedicatedThread
+            ? NLS::Base::TaskGraph::NamedThread::Rhi
+            : (impl.rhiThreadMode == Render::Settings::RhiThreadMode::Tasks
+                ? NLS::Base::TaskGraph::NamedThread::Any
+                : NLS::Base::TaskGraph::NamedThread::Render);
         DriverImpl* const implPtr = &impl;
+        // The idle upload only moves parsed CPU payloads between the driver's own
+        // queues; it never touches the device or a frame context, so it needs no
+        // production gate and must not serialize frame preparation.
         const auto handle = impl.taskGraph->Submit(
             [implPtr]
             {
-                NLS_PROFILE_NAMED_SCOPE("RhiThreadCoordinator::RecordIdleMeshRuntimeUploads");
+                RenderingThreadSystem::ScopedRhiLaneScope laneScope;
+                NLS_PROFILE_NAMED_SCOPE("RhiCommandListExecutor::RecordIdleMeshRuntimeUploads");
                 (void)Detail::RecordPendingMeshRuntimeUploads(*implPtr, false);
             },
-            NLS::Base::TaskGraph::NamedThread::Rhi,
+            uploadLane,
             NLS::Base::TaskGraph::TaskPriority::High,
-            "RhiThreadCoordinator::RecordIdleMeshRuntimeUploads");
+            "RhiCommandListExecutor::RecordIdleMeshRuntimeUploads");
         if (!handle.IsValid())
-        {
-            ReleaseProducerLane(impl);
             return false;
-        }
 
         impl.pendingIdleMeshUploadTask = handle;
         impl.pendingIdleMeshUploadCompletion = impl.taskGraph->GetCompletion(handle);
-        impl.taskGraph->WakeNamedThread(NLS::Base::TaskGraph::NamedThread::Rhi);
+        if (uploadLane != NLS::Base::TaskGraph::NamedThread::Any)
+            impl.taskGraph->WakeNamedThread(uploadLane);
         Detail::NotifyThreadedWorkers(impl);
         return true;
     }
 
-    void RhiThreadCoordinator::FinalizeThreadedSubmissionProduction(
+    bool RhiCommandListExecutor::FinalizeThreadedSubmissionProduction(
         Driver& driver,
         const bool applyPendingSwapchainResize)
     {
         DriverImpl& impl = *driver.m_impl;
-        if (!ProducerLaneOwnedByCurrentThread(impl))
-            return;
 
-        bool released = false;
-        if (impl.pendingThreadedRhiSubmission != nullptr)
+        // Retire every frame whose CPU stage and executor completion are terminal.
+        // A frame that is still translating or submitting stays queued, so the next
+        // render command can prepare without waiting for this one.
+        const size_t retiredSubmissions = RetireCompletedThreadedSubmissions(impl);
+
+        bool idleUploadFinished = false;
+        if (impl.pendingIdleMeshUploadCompletion.IsValid() &&
+            impl.pendingIdleMeshUploadCompletion.IsComplete())
         {
-            if (impl.pendingThreadedRhiSubmission->completion.IsComplete())
-            {
-                if (impl.pendingThreadedRhiSubmission->completion.GetStatus() !=
-                    NLS::Base::TaskGraph::TaskStatus::Succeeded)
-                {
-                    // A cancelled stage chain still owns the frame context, so the
-                    // producer performs the abort handoff before releasing the lane.
-                    AbortThreadedRhiSubmission(impl.pendingThreadedRhiSubmission);
-                }
-                impl.pendingThreadedRhiSubmission.reset();
-                released = true;
-            }
-        }
-        else if (impl.pendingIdleMeshUploadCompletion.IsValid())
-        {
-            if (impl.pendingIdleMeshUploadCompletion.IsComplete())
-            {
-                impl.pendingIdleMeshUploadTask = {};
-                impl.pendingIdleMeshUploadCompletion = {};
-                released = true;
-            }
+            impl.pendingIdleMeshUploadTask = {};
+            impl.pendingIdleMeshUploadCompletion = {};
+            if (impl.taskGraph != nullptr)
+                (void)impl.taskGraph->ReleaseTerminalTaskPayloads();
+            idleUploadFinished = true;
         }
 
-        if (!released)
-            return;
-
-        // Completed node closures are recycled so per-frame graphs stay bounded.
-        if (impl.taskGraph != nullptr)
-            (void)impl.taskGraph->ReleaseTerminalTaskPayloads();
-
-        ReleaseProducerLane(impl);
-        if (applyPendingSwapchainResize)
+        // Match the pre-overlap contract: the tick only applies a pending resize
+        // when it observed a producer hand-off, instead of retrying every idle tick.
+        if (applyPendingSwapchainResize && (retiredSubmissions != 0u || idleUploadFinished))
             driver.ApplyPendingSwapchainResize();
+        return retiredSubmissions != 0u || idleUploadFinished;
     }
 
-    void RhiThreadCoordinator::DrainProducerOwnedThreadedSubmission(Driver& driver)
+    void RhiCommandListExecutor::DrainProducerOwnedThreadedSubmission(Driver& driver)
     {
         DriverImpl& impl = *driver.m_impl;
-        if (!ProducerLaneOwnedByCurrentThread(impl))
-            return;
 
         const auto waitForCompletion = [&impl](NLS::Base::TaskGraph::TaskCompletion completion)
         {
@@ -7192,80 +7468,39 @@ namespace NLS::Render::Context
             }
         };
 
-        if (impl.pendingThreadedRhiSubmission != nullptr)
-            waitForCompletion(impl.pendingThreadedRhiSubmission->completion);
-        else if (impl.pendingIdleMeshUploadCompletion.IsValid())
+        // Drain in dispatch order. A later frame must never retire before an
+        // earlier one, because readback and slot hand-off follow submission order.
+        for (;;)
+        {
+            auto execution = PeekPendingThreadedSubmission(impl);
+            if (execution == nullptr)
+                break;
+
+            waitForCompletion(execution->completion);
+            WaitForRhiBatch(execution);
+            if (RetireCompletedThreadedSubmissions(impl) == 0u)
+            {
+                // The head did not reach a terminal state; leaving it queued is
+                // safer than spinning here without a progress guarantee.
+                break;
+            }
+        }
+
+        if (impl.pendingIdleMeshUploadCompletion.IsValid() &&
+            !impl.pendingIdleMeshUploadCompletion.IsComplete())
             waitForCompletion(impl.pendingIdleMeshUploadCompletion);
 
-        FinalizeThreadedSubmissionProduction(driver, false);
-    }
-
-    bool RhiThreadCoordinator::TryExecuteNextThreadedSubmission(
-        Driver& driver,
-        const RhiSubmissionAttribution attribution,
-        const bool applyPendingSwapchainResize)
-    {
-        NLS_PROFILE_SCOPE();
-        if (driver.m_impl->threadedLifecycle == nullptr)
-            return false;
-
-        if (!TryScheduleNextThreadedSubmission(driver, attribution))
-            return false;
-
-        // This thread owns the producer lane, so it also waits for the stage chain to
-        // retire before releasing the lane.
-        DrainProducerOwnedThreadedSubmission(driver);
-
-        if (applyPendingSwapchainResize)
-            driver.ApplyPendingSwapchainResize();
-        return true;
-    }
-
-    bool RhiThreadCoordinator::TryProcessPendingMeshRuntimeUploads(Driver& driver)
-    {
-        NLS_PROFILE_SCOPE();
-        if (driver.m_impl == nullptr ||
-            driver.m_impl->threadedLifecycle == nullptr ||
-            driver.m_impl->explicitDevice == nullptr ||
-            driver.m_impl->deviceLostDetected.load(std::memory_order_acquire) ||
-            driver.m_impl->unsafeGpuWorkQuarantined.load(std::memory_order_acquire))
+        (void)RetireCompletedThreadedSubmissions(impl);
+        if (impl.pendingIdleMeshUploadCompletion.IsValid() &&
+            impl.pendingIdleMeshUploadCompletion.IsComplete())
         {
-            return false;
+            impl.pendingIdleMeshUploadTask = {};
+            impl.pendingIdleMeshUploadCompletion = {};
         }
-
-        if (IsUiStandaloneFramePending(*driver.m_impl))
-            return false;
-
-        std::unique_lock<std::timed_mutex> submissionLock(
-            driver.m_impl->threadedRhiSubmissionMutex,
-            std::defer_lock);
-        if (!submissionLock.try_lock())
-            return false;
-        if (IsUiStandaloneFramePending(*driver.m_impl))
-            return false;
-
-        driver.m_impl->meshRuntimeUploadRhiIdleTickCount.fetch_add(1u, std::memory_order_relaxed);
-        return Detail::RecordPendingMeshRuntimeUploads(*driver.m_impl, false) != 0u;
     }
 
-    bool RhiThreadCoordinator::DrainPendingThreadedSubmissions(
-        Driver& driver,
-        const RhiSubmissionAttribution attribution,
-        const bool applyPendingSwapchainResize)
-    {
-        NLS_PROFILE_SCOPE();
-        bool progressed = false;
-        while (TryExecuteNextThreadedSubmission(
-            driver,
-            attribution,
-            applyPendingSwapchainResize))
-        {
-            progressed = true;
-        }
-        return progressed;
-    }
 
-    void RhiThreadCoordinator::ReadPixels(
+    void RhiCommandListExecutor::ReadPixels(
         const Driver& driver,
         const uint32_t x,
         const uint32_t y,
@@ -7278,10 +7513,10 @@ namespace NLS::Render::Context
         NLS_PROFILE_SCOPE();
         const auto result = ReadPixelsChecked(driver, x, y, width, height, format, type, data);
         if (!result.Succeeded())
-            NLS_LOG_WARNING("RhiThreadCoordinator::ReadPixels failed: " + result.message);
+            NLS_LOG_WARNING("RhiCommandListExecutor::ReadPixels failed: " + result.message);
     }
 
-    void RhiThreadCoordinator::ReadPixels(
+    void RhiCommandListExecutor::ReadPixels(
         const Driver& driver,
         const std::shared_ptr<Render::RHI::RHITexture>& texture,
         const uint32_t x,
@@ -7295,10 +7530,10 @@ namespace NLS::Render::Context
         NLS_PROFILE_SCOPE();
         const auto result = ReadPixelsChecked(driver, texture, x, y, width, height, format, type, data);
         if (!result.Succeeded())
-            NLS_LOG_WARNING("RhiThreadCoordinator::ReadPixels failed: " + result.message);
+            NLS_LOG_WARNING("RhiCommandListExecutor::ReadPixels failed: " + result.message);
     }
 
-    Render::RHI::RHIReadbackResult RhiThreadCoordinator::ReadPixelsChecked(
+    Render::RHI::RHIReadbackResult RhiCommandListExecutor::ReadPixelsChecked(
         const Driver& driver,
         const uint32_t x,
         const uint32_t y,
@@ -7330,7 +7565,7 @@ namespace NLS::Render::Context
             MarkReadbackDeviceLostIfNeeded(
                 *driver.m_impl,
                 completedResult,
-                "RhiThreadCoordinator::ReadPixelsChecked");
+                "RhiCommandListExecutor::ReadPixelsChecked");
         }
         else
         {
@@ -7339,7 +7574,7 @@ namespace NLS::Render::Context
         return completedResult;
     }
 
-    Render::RHI::RHIReadbackResult RhiThreadCoordinator::ReadPixelsChecked(
+    Render::RHI::RHIReadbackResult RhiCommandListExecutor::ReadPixelsChecked(
         const Driver& driver,
         const std::shared_ptr<Render::RHI::RHITexture>& texture,
         const uint32_t x,
@@ -7372,7 +7607,7 @@ namespace NLS::Render::Context
             MarkReadbackDeviceLostIfNeeded(
                 *driver.m_impl,
                 completedResult,
-                "RhiThreadCoordinator::ReadPixelsChecked");
+                "RhiCommandListExecutor::ReadPixelsChecked");
         }
         else
         {
@@ -7381,7 +7616,7 @@ namespace NLS::Render::Context
         return completedResult;
     }
 
-    Render::RHI::RHIReadbackResult RhiThreadCoordinator::BeginReadPixels(
+    Render::RHI::RHIReadbackResult RhiCommandListExecutor::BeginReadPixels(
         const Driver& driver,
         const uint32_t x,
         const uint32_t y,
@@ -7403,30 +7638,19 @@ namespace NLS::Render::Context
             };
         }
 
-        const auto texture = DriverRendererAccess::ResolveReadbackTexture(driver);
-        if (texture == nullptr)
-            return {
-                Render::RHI::RHIReadbackStatusCode::InvalidArgument,
-                "no active explicit readback source is available"
-            };
-
-        auto result = driver.m_impl->explicitDevice->BeginReadPixels(
-            texture,
-            x,
-            y,
-            width,
-            height,
-            format,
-            type,
-            data);
-        MarkReadbackDeviceLostIfNeeded(
-            *driver.m_impl,
-            result,
-            "RhiThreadCoordinator::BeginReadPixels");
-        return result;
+        return RunRenderOrderedReadback(*driver.m_impl, [&driver, x, y, width, height, format, type, data]
+        {
+            const auto texture = DriverRendererAccess::ResolveReadbackTexture(driver);
+            if (texture == nullptr)
+                return RHI::RHIReadbackResult {
+                    RHI::RHIReadbackStatusCode::InvalidArgument,
+                    "no active explicit readback source is available"
+                };
+            return BeginReadPixels(driver, texture, x, y, width, height, format, type, data);
+        });
     }
 
-    Render::RHI::RHIReadbackResult RhiThreadCoordinator::BeginReadPixels(
+    Render::RHI::RHIReadbackResult RhiCommandListExecutor::BeginReadPixels(
         const Driver& driver,
         const std::shared_ptr<Render::RHI::RHITexture>& texture,
         const uint32_t x,
@@ -7452,23 +7676,51 @@ namespace NLS::Render::Context
         if (texture == nullptr)
             return { Render::RHI::RHIReadbackStatusCode::InvalidArgument, "explicit readback source is unavailable" };
 
-        auto result = driver.m_impl->explicitDevice->BeginReadPixels(
-            texture,
-            x,
-            y,
-            width,
-            height,
-            format,
-            type,
-            data);
+        if (!RenderingThreadSystem::IsInRenderingThread() && !RenderingThreadSystem::IsInRhiThread())
+            return RunRenderOrderedReadback(*driver.m_impl,
+                [&driver, texture, x, y, width, height, format, type, data]
+                { return BeginReadPixels(driver, texture, x, y, width, height, format, type, data); });
+
+        Render::RHI::RHIReadbackResult result {
+            Render::RHI::RHIReadbackStatusCode::BackendFailure,
+            "texture readback was not dispatched"
+        };
+        const auto device = driver.m_impl->explicitDevice;
+        const auto laneResult = RhiCommandListExecutor::Get().RunOnSubmitLane(
+            "RhiCommandListExecutor::BeginReadPixels",
+            [device, texture, x, y, width, height, format, type, data, &result]
+            {
+                result = device->BeginReadPixels(texture, x, y, width, height, format, type, data);
+                // Format/input errors terminate only this request. Device loss
+                // also cancels every later submission in the executor.
+                if (IsDeviceLostReadbackFailure(result))
+                    return Render::RHI::RHIQueueOperationResult {
+                        Render::RHI::RHIQueueOperationStatusCode::DeviceLost, result.message
+                    };
+                return Render::RHI::RHIQueueOperationResult {};
+            });
+        if (!laneResult.Succeeded())
+        {
+            if (!IsDeviceLostReadbackFailure(result))
+                result = { Render::RHI::RHIReadbackStatusCode::BackendFailure, laneResult.message };
+            if (laneResult.mayHaveQueuedGpuWork && !laneResult.frameFenceSignalQueued)
+            {
+                {
+                    std::lock_guard lock(driver.m_impl->frameResourceRetirementMutex);
+                    driver.m_impl->unfencedReadbackResources.push_back(texture);
+                }
+                MarkQueuedGpuWorkWithoutRetirementFence(
+                    *driver.m_impl, "RhiCommandListExecutor::BeginReadPixels", laneResult);
+            }
+        }
         MarkReadbackDeviceLostIfNeeded(
             *driver.m_impl,
             result,
-            "RhiThreadCoordinator::BeginReadPixels");
+            "RhiCommandListExecutor::BeginReadPixels");
         return result;
     }
 
-    Render::RHI::RHIReadbackResult RhiThreadCoordinator::PollReadbackCompletion(
+    Render::RHI::RHIReadbackResult RhiCommandListExecutor::PollReadbackCompletion(
         const Driver& driver,
         const Render::RHI::RHIReadbackResult& readback)
     {
@@ -7498,7 +7750,7 @@ namespace NLS::Render::Context
             MarkReadbackDeviceLostIfNeeded(
                 *driver.m_impl,
                 completedResult,
-                "RhiThreadCoordinator::PollReadbackCompletion");
+                "RhiCommandListExecutor::PollReadbackCompletion");
         }
         else
         {
@@ -7507,56 +7759,8 @@ namespace NLS::Render::Context
         return completedResult;
     }
 
-    bool RhiThreadCoordinator::PrepareUIRender(Driver& driver)
-    {
-        NLS_PROFILE_SCOPE();
-        if (driver.m_impl->explicitDevice == nullptr)
-            return false;
 
-        const auto overlayFeature =
-            Render::RHI::GetUIOverlayFrameGraphFeature(driver.m_impl->explicitDevice.get());
-        if (overlayFeature.supported)
-        {
-            return driver.m_impl->explicitSwapchain != nullptr;
-        }
-
-        if (driver.m_impl->threadedLifecycle != nullptr)
-        {
-            if (HasInFlightThreadedSwapchainFrame(*driver.m_impl))
-                return false;
-        }
-
-        std::optional<ScopedUiStandaloneFrameRequest> uiFrameRequest;
-        if (!driver.m_impl->explicitFrameActive && driver.m_impl->explicitSwapchain != nullptr)
-        {
-            if (driver.m_impl->frameContexts.empty())
-                return false;
-
-            uiFrameRequest.emplace(*driver.m_impl);
-            uiFrameRequest->KeepPending();
-            {
-                NLS_PROFILE_NAMED_SCOPE("RhiThreadCoordinator::BeginStandaloneUiExplicitFrame");
-                if (!BeginStandaloneUiExplicitFrame(*driver.m_impl))
-                    return false;
-            }
-        }
-
-        auto* uiBridgeDevice = driver.m_impl->explicitDevice->GetUIBridgeDevice();
-        if (uiBridgeDevice == nullptr)
-            return true;
-
-        {
-            NLS_PROFILE_NAMED_SCOPE("RHIUIBridgeDevice::PrepareUIRender");
-            const bool prepared = uiBridgeDevice->PrepareUIRender();
-            if (!prepared && !driver.m_impl->uiStandaloneFrameActive)
-            {
-                ClearUiStandaloneFramePending(*driver.m_impl, true);
-            }
-            return prepared;
-        }
-    }
-
-    void RhiThreadCoordinator::PresentSwapchain(Driver& driver)
+    void RhiCommandListExecutor::PresentSwapchain(Driver& driver)
     {
         NLS_PROFILE_SCOPE();
         auto& impl = *driver.m_impl;
@@ -7565,12 +7769,14 @@ namespace NLS::Render::Context
         {
             const auto overlayFeature =
                 Render::RHI::GetUIOverlayFrameGraphFeature(impl.explicitDevice.get());
-            if (overlayFeature.supported && impl.threadedLifecycle != nullptr)
+            if (overlayFeature.supported && impl.frameResourceSlots != nullptr)
             {
                 const auto& swapchainDesc = impl.explicitSwapchain->GetDesc();
-                if (!HasInFlightThreadedSwapchainFrame(impl))
+                // A queued scene command still consumes the pending UI snapshot.
+                // Earlier captured UI frames use the ordered lane independently.
+                if (impl.pendingUiSnapshotConsumerCommands.load(std::memory_order_acquire) == 0u)
                 {
-                    NLS_PROFILE_NAMED_SCOPE("RhiThreadCoordinator::TryPublishUiOnlyFrameNonBlocking");
+                    NLS_PROFILE_NAMED_SCOPE("RhiCommandListExecutor::TryPublishUiOnlyFrameNonBlocking");
                     (void)DriverUIAccess::PublishUiOnlyFrame(
                         driver,
                         swapchainDesc.width,
@@ -7586,18 +7792,7 @@ namespace NLS::Render::Context
         }
 
         {
-            NLS_PROFILE_NAMED_SCOPE("RhiThreadCoordinator::PresentStandaloneUiFrame");
-            if (PresentStandaloneUiFrame(impl))
-            {
-                NLS_PROFILE_NAMED_SCOPE("RhiThreadCoordinator::ApplyResizeAfterUiPresent");
-                ClearUiStandaloneFramePending(impl, true);
-                driver.ApplyPendingSwapchainResize();
-                return;
-            }
-        }
-
-        {
-            NLS_PROFILE_NAMED_SCOPE("RhiThreadCoordinator::ApplyPendingSwapchainResize");
+            NLS_PROFILE_NAMED_SCOPE("RhiCommandListExecutor::ApplyPendingSwapchainResize");
             driver.ApplyPendingSwapchainResize();
         }
     }

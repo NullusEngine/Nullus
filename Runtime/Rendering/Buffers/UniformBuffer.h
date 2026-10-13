@@ -11,8 +11,43 @@ namespace NLS::Render::Resources
 {
 }
 
+namespace NLS::Render::RHI
+{
+class RHIDevice;
+}
+
 namespace NLS::Render::Buffers
 {
+struct ExplicitUniformBufferSnapshot
+{
+    std::shared_ptr<RHI::RHIBuffer> buffer;
+    uint64_t offset = 0u;
+    bool createdBuffer = false;
+};
+
+// Pages are append-only and owned by the captured bindings, never by a reusable frame slot.
+class NLS_RENDER_API ScopedUniformBufferSnapshotBatch
+{
+public:
+    ScopedUniformBufferSnapshotBatch();
+    ~ScopedUniformBufferSnapshotBatch();
+    ScopedUniformBufferSnapshotBatch(const ScopedUniformBufferSnapshotBatch&) = delete;
+    ScopedUniformBufferSnapshotBatch& operator=(const ScopedUniformBufferSnapshotBatch&) = delete;
+
+private:
+    friend class UniformBuffer;
+    ExplicitUniformBufferSnapshot Allocate(
+        const std::shared_ptr<RHI::RHIDevice>& device,
+        const std::vector<uint8_t>& data,
+        const std::string& debugName);
+
+    ScopedUniformBufferSnapshotBatch* m_previous = nullptr;
+    std::shared_ptr<RHI::RHIDevice> m_device;
+    std::shared_ptr<RHI::RHIBuffer> m_page;
+    uint64_t m_cursor = 0u;
+    bool m_failed = false;
+};
+
 /**
  * Backend-neutral uniform-buffer wrapper over the formal RHI surface.
  */
@@ -54,10 +89,19 @@ public:
     void SetSubData(const T& p_data, std::reference_wrapper<size_t> p_offsetInOut);
 
     void SetRawData(const void* p_data, uint32_t size, size_t p_offset = 0);
+    ExplicitUniformBufferSnapshot CreateExplicitSnapshot(const std::string& debugName = {}) const;
     std::shared_ptr<RHI::RHIBuffer> CreateExplicitSnapshotBuffer(const std::string& debugName = {}) const;
 
     const std::shared_ptr<RHI::RHIBuffer>& GetBufferHandle() const { return m_explicitBuffer; }
     const std::shared_ptr<RHI::RHIBuffer>& GetExplicitRHIBufferHandle() const { return GetBufferHandle(); }
+    /**
+     * CPU-side copy of the buffer contents.
+     *
+     * Callers that copy the current value into their own ring have to read the
+     * bytes the last SetSubData stored; there is no readback path from the GPU
+     * buffer, and a snapshot buffer per write is what the ring exists to avoid.
+     */
+    const std::vector<uint8_t>& GetShadowData() const { return m_shadowData; }
 
 private:
     void _SetSubData(const void* p_data, uint32_t size, size_t p_offset);

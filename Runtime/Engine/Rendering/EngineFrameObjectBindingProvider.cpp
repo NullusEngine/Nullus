@@ -8,6 +8,7 @@
 #include <Rendering/Core/CompositeRenderer.h>
 #include <Rendering/RHI/BindingPointMap.h>
 #include <Rendering/Context/DriverAccess.h>
+#include <Rendering/Context/RenderingThreadSystem.h>
 #include <Rendering/Data/DrawableInstanceCount.h>
 #include <Rendering/Data/ObjectDataLimits.h>
 #include <Rendering/Resources/Material.h>
@@ -26,6 +27,10 @@ namespace
     constexpr uint32_t kObjectDataSlotShrinkIdleFrameCount = 3u;
     constexpr size_t kIndexedObjectDataShaderSupportCacheMaxEntries = 1024u;
     constexpr size_t kInlineObjectSlotCount = 8u;
+    // Constant-buffer views have to be aligned; 256 is the strictest of the
+    // supported backends (D3D12), so one stride serves all of them.
+    constexpr uint64_t kLegacyObjectConstantsBlockStride = 256u;
+    constexpr size_t kInitialLegacyObjectConstantsBlockCapacity = 512u;
 
     class SmallObjectSlotBuffer final
     {
@@ -93,6 +98,7 @@ namespace
     thread_local std::unordered_map<
         const NLS::Engine::Rendering::EngineFrameObjectBindingProvider*,
         std::optional<size_t>> g_threadResolvedCaptureFrameSlots;
+
 }
 
 namespace NLS::Engine::Rendering
@@ -143,6 +149,12 @@ NLS::Render::Core::FrameObjectBindingProvider::PreparationState& EngineFrameObje
 bool EngineFrameObjectBindingProvider::TryReservePreparedFrameResourcesUntil(
     const std::chrono::steady_clock::time_point retirementDeadline)
 {
+    return ReservePreparedFrameResources(retirementDeadline);
+}
+
+bool EngineFrameObjectBindingProvider::ReservePreparedFrameResources(
+    const std::optional<std::chrono::steady_clock::time_point> retirementDeadline)
+{
     {
         std::lock_guard lock(m_stateMutex);
         if (m_preparedFrameObjectDataSlotUnavailable)
@@ -166,8 +178,11 @@ bool EngineFrameObjectBindingProvider::TryReservePreparedFrameResourcesUntil(
     }
 
     // Retirement may require a capture on another thread. Never wait holding provider state.
-    const auto slot = NLS::Render::Context::DriverRendererAccess::ReserveReusableFrameContextSlotIndexForPreparedPublication(
-        m_renderer.GetDriver(), retirementDeadline);
+    const auto slot = retirementDeadline.has_value()
+        ? NLS::Render::Context::DriverRendererAccess::ReserveReusableFrameContextSlotIndexForPreparedPublication(
+            m_renderer.GetDriver(), *retirementDeadline)
+        : NLS::Render::Context::DriverRendererAccess::ReserveReusableFrameContextSlotIndexForPreparedPublication(
+            m_renderer.GetDriver());
     std::lock_guard lock(m_stateMutex);
     if (!slot.has_value())
     {
@@ -226,7 +241,7 @@ void EngineFrameObjectBindingProvider::ResetObjectDataSlotForTesting(const size_
 #endif
 
 void EngineFrameObjectBindingProvider::PrepareRenderScenePackage(
-    const NLS::Render::Context::FrameSnapshot&,
+    const NLS::Render::Context::RenderFramePacket&,
     NLS::Render::Context::RenderScenePackage& package) const
 {
     package.frameDataReady = true;
@@ -291,22 +306,31 @@ void EngineFrameObjectBindingProvider::OnBeginFrame(const NLS::Render::Data::Fra
     append(time);
     append(transposedNoTranslation);
     m_pendingFrameConstantsDirty.store(true, std::memory_order_release);
-    if (const auto activeSlot = NLS::Render::Context::DriverRendererAccess::GetActiveFrameContextSlotIndex(m_renderer.GetDriver());
-        activeSlot.has_value())
-        CaptureStateForSlot(*activeSlot);
+    auto captureSlot = NLS::Render::Context::DriverRendererAccess::GetActiveFrameContextSlotIndex(m_renderer.GetDriver());
+#if defined(NLS_ENABLE_TEST_HOOKS)
+    if (m_activeObjectDataSlotIndexForTesting.has_value())
+        captureSlot = m_activeObjectDataSlotIndexForTesting;
+#endif
+    if (!captureSlot.has_value() && NLS::Render::Context::RenderingThreadSystem::IsInGameThread())
+        captureSlot = NLS::Render::Context::DriverRendererAccess::GetReservedFrameContextSlotIndex(m_renderer.GetDriver());
+    if (captureSlot.has_value())
+    {
+        // Game helpers and subsequent render capture append to the same frame's allocations.
+        g_threadResolvedCaptureFrameSlots[this] = *captureSlot;
+        CaptureStateForSlot(*captureSlot);
+    }
 }
 
 void EngineFrameObjectBindingProvider::OnEndFrame()
 {
+    ReleaseStalePreparedObjectDataSlotReservation();
     g_threadBoundCaptureFrameSlots.erase(this);
     g_threadResolvedCaptureFrameSlots[this] = std::nullopt;
 }
 
 bool EngineFrameObjectBindingProvider::OnTryReservePreparedFrameResources()
 {
-    return TryReservePreparedFrameResourcesUntil(
-        std::chrono::steady_clock::now() +
-        NLS::Render::Context::DriverRendererAccess::GetThreadedPublishRetirementWait(m_renderer.GetDriver()));
+    return ReservePreparedFrameResources(std::nullopt);
 }
 
 void EngineFrameObjectBindingProvider::OnReleaseReservedPreparedFrameResources()
@@ -439,6 +463,11 @@ bool EngineFrameObjectBindingProvider::OnCapturePreparedObjectBindingSet(
     if (!captureState.currentDrawPrepared)
         return false;
 
+    const auto* descriptor = drawable.TryGetDescriptor<NLS::Render::Data::DrawableObjectDescriptor>();
+    const bool requiresImmutableBinding = descriptor != nullptr && descriptor->requiresImmutableObjectBinding;
+    if (requiresImmutableBinding && captureState.currentDrawUsesIndexedObjectData)
+        return false;
+
     ObjectDataFrameSlot* indexedObjectDataSlot = nullptr;
     std::shared_ptr<NLS::Render::RHI::RHIBindingSet> objectBindingSet;
     if (captureState.currentDrawUsesIndexedObjectData)
@@ -451,7 +480,9 @@ bool EngineFrameObjectBindingProvider::OnCapturePreparedObjectBindingSet(
     }
     else
     {
-        RefreshExplicitLegacyObjectBindingSet();
+        RefreshExplicitLegacyObjectBindingSet(requiresImmutableBinding);
+        if (requiresImmutableBinding && !captureState.legacyObjectBindingImmutable)
+            return false;
         objectBindingSet = captureState.legacyObjectBindingSet;
     }
 
@@ -475,6 +506,8 @@ bool EngineFrameObjectBindingProvider::OnCapturePreparedObjectBindingSet(
     outBindings.usesObjectIndex = captureState.currentDrawUsesIndexedObjectData &&
         captureState.currentDrawObjectConstants.objectIndex !=
             NLS::Render::Data::DrawableObjectDescriptor::kInvalidObjectIndex;
+    outBindings.objectBindingImmutable = !captureState.currentDrawUsesIndexedObjectData &&
+        captureState.legacyObjectBindingImmutable;
     return true;
 }
 
@@ -486,6 +519,9 @@ void EngineFrameObjectBindingProvider::RefreshExplicitFrameBindingSet()
     if (!captureState.frameBindingSetDirty)
         return;
 
+    std::optional<NLS::Render::Context::ScopedFrameResourceContext> frameResources;
+    if (const auto slot = ResolveActiveObjectDataSlotIndex(); slot.has_value())
+        frameResources.emplace(m_renderer.GetDriver(), *slot);
     NLS::Render::Core::ABaseRenderer::ExplicitUniformBufferBindingDesc bindingDesc;
     bindingDesc.set = NLS::Render::RHI::BindingPointMap::kFrameDescriptorSet;
     bindingDesc.registerSpace = NLS::Render::RHI::BindingPointMap::kFrameBindingSpace;
@@ -505,14 +541,18 @@ void EngineFrameObjectBindingProvider::RefreshExplicitFrameBindingSet()
     captureState.frameBindingSetDirty = false;
 }
 
-void EngineFrameObjectBindingProvider::RefreshExplicitLegacyObjectBindingSet()
+void EngineFrameObjectBindingProvider::RefreshExplicitLegacyObjectBindingSet(const bool requiresImmutableBinding)
 {
     if (!IsFramePrepared())
         InvalidateObjectDataDeviceCachesIfNeeded();
     auto& captureState = ActiveCaptureState();
-    if (!captureState.legacyObjectBindingSetDirty)
+    if (!captureState.legacyObjectBindingSetDirty &&
+        (!requiresImmutableBinding || captureState.legacyObjectBindingImmutable))
         return;
 
+    std::optional<NLS::Render::Context::ScopedFrameResourceContext> frameResources;
+    if (const auto slot = ResolveActiveObjectDataSlotIndex(); slot.has_value())
+        frameResources.emplace(m_renderer.GetDriver(), *slot);
     NLS::Render::Core::ABaseRenderer::ExplicitUniformBufferBindingDesc bindingDesc;
     bindingDesc.set = NLS::Render::RHI::BindingPointMap::kObjectDescriptorSet;
     bindingDesc.registerSpace = NLS::Render::RHI::BindingPointMap::kObjectBindingSpace;
@@ -525,7 +565,73 @@ void EngineFrameObjectBindingProvider::RefreshExplicitLegacyObjectBindingSet()
     bindingDesc.stageMask = NLS::Render::RHI::ShaderStageMask::AllGraphics;
 
     auto& writeBuffer = captureState.useAltObjectBuffer ? *captureState.objectConstantsAltBuffer : *captureState.objectConstantsBuffer;
-    auto newBindingSet = m_renderer.CreateExplicitUniformBufferBindingSet(writeBuffer, bindingDesc);
+    // The layout is the same for every draw in the run, so it is resolved once per
+    // device instead of once per draw: resolving composes a cache key string and
+    // takes the renderer's cache mutex.
+    if (m_legacyObjectDataBindingLayoutDeviceIdentity != m_cachedObjectDataDeviceIdentity ||
+        m_legacyObjectDataBindingLayout == nullptr)
+    {
+        m_legacyObjectDataBindingLayout = m_renderer.ResolveExplicitUniformBufferBindingLayout(bindingDesc);
+        m_legacyObjectDataBindingLayoutDeviceIdentity = m_cachedObjectDataDeviceIdentity;
+    }
+
+    // Append this draw's constants to the slot's ring and bind that block, instead
+    // of allocating a dedicated snapshot buffer per draw. The ring lives as long as
+    // the frame slot, so the fence that makes the slot reusable is what makes these
+    // blocks safe to overwrite again.
+    std::shared_ptr<NLS::Render::RHI::RHIBindingSet> newBindingSet;
+    captureState.legacyObjectBindingImmutable = false;
+    const auto slotIndex = ResolveActiveObjectDataSlotIndex();
+    const auto& shadow = writeBuffer.GetShadowData();
+    if (!requiresImmutableBinding && slotIndex.has_value() && slotIndex.value() < m_objectDataSlots.size() &&
+        shadow.size() >= bindingDesc.range)
+    {
+        auto& objectDataSlot = m_objectDataSlots[slotIndex.value()];
+        if (EnsureLegacyObjectConstantsCapacity(
+                objectDataSlot, objectDataSlot.legacyObjectConstantsCursor + 1u))
+        {
+            const auto blockIndex = objectDataSlot.legacyObjectConstantsCursor;
+            const auto byteOffset = static_cast<uint64_t>(blockIndex) * kLegacyObjectConstantsBlockStride;
+            NLS::Render::RHI::RHIBufferUploadDesc uploadDesc;
+            uploadDesc.data = shadow.data();
+            uploadDesc.dataSize = static_cast<uint64_t>(bindingDesc.range);
+            uploadDesc.destinationOffset = byteOffset;
+            uploadDesc.debugName = "EngineLegacyObjectConstantsBlock";
+            bool uploaded = false;
+            uploaded = objectDataSlot.legacyObjectConstantsBuffer->UpdateData(uploadDesc).Succeeded();
+            if (uploaded)
+            {
+                ++objectDataSlot.legacyObjectConstantsCursor;
+                m_legacyObjectConstantsRingHitCount.fetch_add(1u, std::memory_order_relaxed);
+                // The slot's GPU fence protects both the block and its immutable binding.
+                if (objectDataSlot.legacyObjectConstantsBindings.size() <= blockIndex)
+                    objectDataSlot.legacyObjectConstantsBindings.resize(blockIndex + 1u);
+                auto& binding = objectDataSlot.legacyObjectConstantsBindings[blockIndex];
+                if (binding == nullptr)
+                {
+                    binding = m_renderer.CreateExplicitUniformBufferBindingSetWithLayout(
+                        m_legacyObjectDataBindingLayout,
+                        objectDataSlot.legacyObjectConstantsBuffer,
+                        byteOffset,
+                        bindingDesc.range,
+                        bindingDesc);
+                }
+                newBindingSet = binding;
+            }
+        }
+    }
+
+    if (newBindingSet == nullptr)
+    {
+        // The ring is an optimisation, not a requirement: a device that cannot give
+        // us one still has to render the frame.
+        if (!requiresImmutableBinding)
+            m_legacyObjectConstantsRingFallbackCount.fetch_add(1u, std::memory_order_relaxed);
+        newBindingSet = m_renderer.CreateExplicitUniformBufferBindingSet(writeBuffer, bindingDesc);
+        captureState.legacyObjectBindingImmutable = newBindingSet != nullptr &&
+            !newBindingSet->GetDesc().entries.empty() &&
+            newBindingSet->GetDesc().entries.front().buffer != writeBuffer.GetExplicitRHIBufferHandle();
+    }
 
     captureState.deferredLegacyObjectBindingSet = std::move(captureState.legacyObjectBindingSet);
     captureState.legacyObjectBindingSet = std::move(newBindingSet);
@@ -540,6 +646,15 @@ std::optional<size_t> EngineFrameObjectBindingProvider::ResolveActiveObjectDataS
         boundIt != g_threadBoundCaptureFrameSlots.end())
     {
         const auto slotIndex = boundIt->second;
+        if (m_objectDataSlots.size() <= slotIndex)
+            m_objectDataSlots.resize(slotIndex + 1u);
+        return slotIndex;
+    }
+
+    if (const auto resolved = g_threadResolvedCaptureFrameSlots.find(this);
+        resolved != g_threadResolvedCaptureFrameSlots.end() && resolved->second.has_value())
+    {
+        const auto slotIndex = *resolved->second;
         if (m_objectDataSlots.size() <= slotIndex)
             m_objectDataSlots.resize(slotIndex + 1u);
         return slotIndex;
@@ -593,6 +708,57 @@ std::optional<size_t> EngineFrameObjectBindingProvider::ResolveActiveObjectDataS
     return m_activeObjectDataSlotIndex;
 }
 
+bool EngineFrameObjectBindingProvider::EnsureLegacyObjectConstantsCapacity(
+    ObjectDataFrameSlot& slot,
+    const size_t requiredBlockCount)
+{
+    const auto& device = m_explicitDevice;
+    if (device == nullptr || requiredBlockCount == 0u)
+        return false;
+
+    const auto deviceIdentity = device->GetCacheIdentity();
+    if (slot.legacyObjectConstantsDeviceIdentity != 0u &&
+        slot.legacyObjectConstantsDeviceIdentity != deviceIdentity)
+    {
+        slot.legacyObjectConstantsBindings.clear();
+        slot.legacyObjectConstantsBuffer.reset();
+        slot.legacyObjectConstantsCapacity = 0u;
+        slot.legacyObjectConstantsCursor = 0u;
+        slot.legacyObjectConstantsDeviceIdentity = 0u;
+    }
+
+    if (slot.legacyObjectConstantsBuffer != nullptr &&
+        slot.legacyObjectConstantsCapacity >= requiredBlockCount)
+    {
+        return true;
+    }
+
+    auto newCapacity = slot.legacyObjectConstantsCapacity != 0u
+        ? slot.legacyObjectConstantsCapacity
+        : kInitialLegacyObjectConstantsBlockCapacity;
+    while (newCapacity < requiredBlockCount)
+    {
+        if (newCapacity > (std::numeric_limits<size_t>::max)() / 2u)
+            return false;
+        newCapacity *= 2u;
+    }
+
+    NLS::Render::RHI::RHIBufferDesc bufferDesc;
+    bufferDesc.size = static_cast<uint64_t>(newCapacity) * kLegacyObjectConstantsBlockStride;
+    bufferDesc.usage = NLS::Render::RHI::BufferUsageFlags::Uniform;
+    bufferDesc.memoryUsage = NLS::Render::RHI::MemoryUsage::CPUToGPU;
+    bufferDesc.debugName = "EngineLegacyObjectConstantsRing";
+    auto buffer = device->CreateBuffer(bufferDesc);
+    if (buffer == nullptr)
+        return false;
+
+    slot.legacyObjectConstantsBindings.clear();
+    slot.legacyObjectConstantsBuffer = std::move(buffer);
+    slot.legacyObjectConstantsDeviceIdentity = deviceIdentity;
+    slot.legacyObjectConstantsCapacity = newCapacity;
+    slot.legacyObjectConstantsCursor = 0u;
+    return true;
+}
 EngineFrameObjectBindingProvider::ObjectDataFrameSlot* EngineFrameObjectBindingProvider::ResolveActiveObjectDataSlot()
 {
     const auto slotIndex = ResolveActiveObjectDataSlotIndex();
@@ -626,6 +792,11 @@ void EngineFrameObjectBindingProvider::ResetObjectDataSlot(ObjectDataFrameSlot& 
     slot.indirectBuffer.reset();
     slot.bindingSet.reset();
     slot.deferredBindingSet.reset();
+    slot.legacyObjectConstantsBindings.clear();
+    slot.legacyObjectConstantsBuffer.reset();
+    slot.legacyObjectConstantsDeviceIdentity = 0u;
+    slot.legacyObjectConstantsCapacity = 0u;
+    slot.legacyObjectConstantsCursor = 0u;
     slot.deviceIdentity = 0u;
     slot.objectDataShadow = {};
     slot.objectDataSourceShadow = {};
@@ -839,6 +1010,8 @@ std::function<void(size_t)> EngineFrameObjectBindingProvider::FreezeCaptureFrame
             slot.explicitObjectPhysicalSlots.clear();
             slot.nextTransientObjectIndex = 0u;
             slot.nextTransientIndirectionIndex = 0u;
+            // New frame: the ring contents belong to the retired frame.
+            slot.legacyObjectConstantsCursor = 0u;
             slot.usedThisFrame = false;
             slot.deferredBindingSet.reset();
         }
@@ -889,6 +1062,8 @@ EngineFrameObjectBindingProvider::CaptureStateForSlot(const size_t slotIndex)
             slot.explicitObjectPhysicalSlots.clear();
             slot.nextTransientObjectIndex = 0u;
             slot.nextTransientIndirectionIndex = 0u;
+            // New frame: the ring contents belong to the retired frame.
+            slot.legacyObjectConstantsCursor = 0u;
             slot.usedThisFrame = false;
             slot.deferredBindingSet.reset();
         }
@@ -906,13 +1081,16 @@ void EngineFrameObjectBindingProvider::ResetCaptureStateBindings(FrameCaptureSta
     captureState.lastFrameGeneration = 0u;
     captureState.frameBindingSetDirty = true;
     captureState.legacyObjectBindingSetDirty = true;
+    captureState.legacyObjectBindingImmutable = false;
 }
 
 void EngineFrameObjectBindingProvider::ActivateCaptureStateForCurrentFrame(FrameCaptureState& captureState)
 {
     const auto frameGeneration = m_frameGeneration.load(std::memory_order_acquire);
     if (captureState.lastFrameGeneration == frameGeneration && captureState.frameConstants != nullptr)
+    {
         return;
+    }
 
     if (captureState.frameConstants == nullptr)
     {
@@ -1110,6 +1288,9 @@ std::shared_ptr<NLS::Render::RHI::RHIBindingSet> EngineFrameObjectBindingProvide
         });
     }
 
+    std::optional<NLS::Render::Context::ScopedFrameResourceContext> frameResources;
+    if (const auto slotIndex = ResolveActiveObjectDataSlotIndex(); slotIndex.has_value())
+        frameResources.emplace(m_renderer.GetDriver(), *slotIndex);
     auto newBindingSet = NLS::Render::Context::DriverRendererAccess::CreateExplicitBindingSet(
         m_renderer.GetDriver(),
         bindingSetDesc,

@@ -1,5 +1,6 @@
 #pragma once
 
+#include <mutex>
 #include <optional>
 
 #include "Rendering/Data/FrameInfo.h"
@@ -46,11 +47,24 @@ public:
         const NLS::Render::Context::ThreadedFrameTelemetry& telemetry,
         Data::FrameInfo& frameInfo);
 
-    const Data::FrameInfo& GetFrameInfo() const;
-    const Data::FrameInfo& GetCumulativeFrameInfo() const;
+    /**
+     * Returns a copy rather than a reference.
+     *
+     * Recording and reading legitimately happen on different threads: the
+     * threaded prepared builder records draw and material telemetry on the render
+     * thread while the editor panel reads the same counters on the game thread.
+     * A reference into mutex-protected storage cannot be handed out safely, so the
+     * accessors copy under the lock instead.
+     */
+    [[nodiscard]] Data::FrameInfo GetFrameInfo() const;
+    [[nodiscard]] Data::FrameInfo GetCumulativeFrameInfo() const;
     bool IsFrameInfoValid() const;
 
 private:
+    // Guards every member below. All public methods lock for their whole body;
+    // they are flat (none calls another public method), so a non-recursive mutex
+    // is sufficient.
+    mutable std::mutex m_statsMutex;
     bool m_isFrameInfoValid = true;
     Data::FrameInfo m_frameInfo;
     Data::FrameInfo m_cumulativeFrameInfo;

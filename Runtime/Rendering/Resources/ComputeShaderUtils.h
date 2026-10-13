@@ -4,7 +4,7 @@
 #include <memory>
 #include <string_view>
 
-#include "Rendering/Context/ThreadedRenderingLifecycle.h"
+#include "Rendering/Context/RenderScenePackage.h"
 #include "Rendering/RHI/Core/RHIDevice.h"
 #include "Rendering/RHI/Utils/PipelineCache/PipelineCache.h"
 #include "Rendering/Resources/Shader.h"

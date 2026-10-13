@@ -85,8 +85,6 @@ TEST(EditorSettingsPersistenceTests, ReadsLaunchOptionsPersistedByPreviousEditor
 
     ASSERT_TRUE(legacy.verticalSynchronization.has_value());
     EXPECT_FALSE(*legacy.verticalSynchronization);
-    ASSERT_TRUE(legacy.threadedRendering.has_value());
-    EXPECT_FALSE(*legacy.threadedRendering);
     ASSERT_TRUE(legacy.renderDocStartupCaptureFrames.has_value());
     EXPECT_EQ(*legacy.renderDocStartupCaptureFrames, 180);
 
@@ -100,7 +98,6 @@ TEST(EditorSettingsPersistenceTests, MissingLegacyLaunchOptionsStayEmpty)
 
     const auto legacy = NLS::Editor::Settings::EditorSettingsPersistence::ReadLegacyLaunchOptionValues(path);
     EXPECT_FALSE(legacy.verticalSynchronization.has_value());
-    EXPECT_FALSE(legacy.threadedRendering.has_value());
     EXPECT_FALSE(legacy.renderDocStartupCaptureFrames.has_value());
 }
 

@@ -5,11 +5,13 @@
 #include <filesystem>
 #include <fstream>
 #include <iterator>
+#include <thread>
 #include <vector>
 
 #include <Windows.h>
 
 #include "Rendering/RHI/Backends/DX12/DX12Device.h"
+#include "Rendering/Context/RhiCommandListExecutor.h"
 #include "Rendering/RHI/Backends/DX12/DX12ExplicitDeviceFactory.h"
 #include "Rendering/RHI/Backends/DX12/DX12ReadbackUtils.h"
 #include "Rendering/RHI/Backends/DX12/DX12Resource.h"
@@ -19,6 +21,22 @@
 
 namespace
 {
+    class ScopedReadbackSubmitLane final
+    {
+    public:
+        ScopedReadbackSubmitLane()
+        {
+            auto& executor = NLS::Render::Context::RhiCommandListExecutor::Get();
+            executor.ResetForTesting();
+            executor.Initialize(NLS::Render::Context::RhiThreadMode::None, {});
+        }
+        ~ScopedReadbackSubmitLane()
+        {
+            auto& executor = NLS::Render::Context::RhiCommandListExecutor::Get();
+            executor.Shutdown();
+            executor.ResetForTesting();
+        }
+    };
     class TestTexture final : public NLS::Render::RHI::RHITexture
     {
     public:
@@ -188,6 +206,7 @@ TEST(DX12ReadbackUtilsTests, ZeroNanosecondTimeoutMeansInfiniteWait)
 
 TEST(DX12ReadbackUtilsTests, ReusesDeviceOwnedInitialUploadCommandObjectsAcrossSequentialTextures)
 {
+    ScopedReadbackSubmitLane submitLane;
     const auto resources = NLS::Render::Backend::CreateDX12DeviceResources(false);
     if (!resources.IsValid())
     {
@@ -233,6 +252,7 @@ TEST(DX12ReadbackUtilsTests, ReusesDeviceOwnedInitialUploadCommandObjectsAcrossS
 
 TEST(DX12ReadbackUtilsTests, PollingCompletedAsyncReadbackFinalizesAndAllowsNextReadback)
 {
+    ScopedReadbackSubmitLane submitLane;
     const auto resources = NLS::Render::Backend::CreateDX12DeviceResources(false);
     if (!resources.IsValid())
     {
@@ -304,6 +324,7 @@ TEST(DX12ReadbackUtilsTests, PollingCompletedAsyncReadbackFinalizesAndAllowsNext
 
 TEST(DX12ReadbackUtilsTests, AllowsThreeConcurrentAsyncReadbacksBeforeApplyingBackpressure)
 {
+    ScopedReadbackSubmitLane submitLane;
     const auto resources = NLS::Render::Backend::CreateDX12DeviceResources(false);
     if (!resources.IsValid())
     {
@@ -398,6 +419,7 @@ TEST(DX12ReadbackUtilsTests, AllowsThreeConcurrentAsyncReadbacksBeforeApplyingBa
 
 TEST(DX12ReadbackUtilsTests, DroppingAsyncReadbackCompletionKeepsResourcesUntilFenceRetires)
 {
+    ScopedReadbackSubmitLane submitLane;
     const auto resources = NLS::Render::Backend::CreateDX12DeviceResources(false);
     if (!resources.IsValid())
     {
@@ -617,6 +639,7 @@ TEST(DX12ReadbackUtilsTests, BufferReadbackGuardsRangeOverflowAndLateDeviceLoss)
 
 TEST(DX12ReadbackUtilsTests, PollingCompletedAsyncBufferReadbackCopiesGpuBufferBytes)
 {
+    ScopedReadbackSubmitLane submitLane;
     const auto resources = NLS::Render::Backend::CreateDX12DeviceResources(false);
     if (!resources.IsValid())
     {
@@ -684,6 +707,7 @@ TEST(DX12ReadbackUtilsTests, PollingCompletedAsyncBufferReadbackCopiesGpuBufferB
 
 TEST(DX12ReadbackUtilsTests, InitialBufferUploadBatchPreservesEveryGpuBuffer)
 {
+    ScopedReadbackSubmitLane submitLane;
     const auto resources = NLS::Render::Backend::CreateDX12DeviceResources(false);
     if (!resources.IsValid())
         GTEST_SKIP() << "DX12 device unavailable on this test machine";
@@ -762,6 +786,7 @@ TEST(DX12ReadbackUtilsTests, InitialBufferUploadBatchPreservesEveryGpuBuffer)
 
 TEST(DX12ReadbackUtilsTests, InitialBufferUploadBatchRejectsOverflowWithoutSubmitting)
 {
+    ScopedReadbackSubmitLane submitLane;
     const auto resources = NLS::Render::Backend::CreateDX12DeviceResources(false);
     if (!resources.IsValid())
         GTEST_SKIP() << "DX12 device unavailable on this test machine";
@@ -790,5 +815,59 @@ TEST(DX12ReadbackUtilsTests, InitialBufferUploadBatchRejectsOverflowWithoutSubmi
     ASSERT_TRUE(device->BeginInitialBufferUploadBatch({sizeof(value)}));
     ASSERT_NE(device->CreateBuffer(desc, upload), nullptr);
     EXPECT_TRUE(device->EndInitialBufferUploadBatch());
+}
+
+TEST(DX12ReadbackUtilsTests, SubmittedUploadOwnersSurviveWorkerExitAndDeviceShutdownDrainsThem)
+{
+    ScopedReadbackSubmitLane submitLane;
+    const auto resources = NLS::Render::Backend::CreateDX12DeviceResources(false);
+    if (!resources.IsValid())
+        GTEST_SKIP() << "DX12 device unavailable on this test machine";
+
+    auto device = NLS::Render::Backend::CreateNativeDX12ExplicitDevice(
+        resources.device.Get(), resources.graphicsQueue.Get(), resources.computeQueue.Get(),
+        resources.factory.Get(), resources.adapter.Get(), resources.capabilities,
+        resources.vendor, resources.hardware);
+    ASSERT_NE(device, nullptr);
+    EXPECT_EQ(NLS::Render::Backend::GetPendingDX12InitialUploadStagingBytes(resources.device.Get()), 0u);
+
+    const std::array<uint32_t, 4u> values{12u, 34u, 56u, 78u};
+    NLS::Render::RHI::RHIBufferDesc desc;
+    desc.size = sizeof(values);
+    desc.usage = NLS::Render::RHI::BufferUsageFlags::CopySrc;
+    desc.memoryUsage = NLS::Render::RHI::MemoryUsage::GPUOnly;
+    NLS::Render::RHI::RHIBufferUploadDesc upload;
+    upload.data = values.data();
+    upload.dataSize = sizeof(values);
+    std::shared_ptr<NLS::Render::RHI::RHIBuffer> buffer;
+    std::thread worker([&]
+    {
+        ASSERT_TRUE(device->BeginInitialBufferUploadBatch({sizeof(values)}));
+        buffer = device->CreateBuffer(desc, upload);
+        ASSERT_NE(buffer, nullptr);
+        ASSERT_TRUE(device->EndInitialBufferUploadBatch());
+    });
+    worker.join();
+    ASSERT_NE(buffer, nullptr);
+    EXPECT_TRUE(device->HasPendingInitialUploads());
+    EXPECT_EQ(NLS::Render::Backend::GetPendingDX12InitialUploadStagingBytes(resources.device.Get()), sizeof(values));
+
+    std::array<uint32_t, 4u> received{};
+    NLS::Render::RHI::DX12::DX12ReadbackContext readback;
+    NLS::Render::RHI::RHIBufferReadbackDesc readDesc;
+    readDesc.source = buffer;
+    readDesc.sourceState = NLS::Render::RHI::ResourceState::CopySrc;
+    readDesc.size = sizeof(received);
+    readDesc.data = received.data();
+    auto result = readback.BeginBuffer(resources.device.Get(), resources.graphicsQueue.Get(), readDesc);
+    ASSERT_TRUE(result.Succeeded()) << result.message;
+    ASSERT_NE(result.completion, nullptr);
+    const auto status = result.completion->Wait(5'000'000'000ull);
+    ASSERT_EQ(status.code, NLS::Render::RHI::RHICompletionStatusCode::Success) << status.message;
+    EXPECT_EQ(received, values);
+
+    device.reset();
+    EXPECT_FALSE(NLS::Render::Backend::HasPendingDX12InitialUploads(resources.device.Get()));
+    EXPECT_EQ(NLS::Render::Backend::GetPendingDX12InitialUploadStagingBytes(resources.device.Get()), 0u);
 }
 #endif

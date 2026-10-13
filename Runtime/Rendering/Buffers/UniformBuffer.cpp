@@ -10,6 +10,10 @@ namespace NLS::Render::Buffers
 {
 namespace
 {
+	thread_local ScopedUniformBufferSnapshotBatch* g_snapshotBatch = nullptr;
+	constexpr uint64_t kSnapshotPageSize = 64u * 1024u;
+	constexpr uint64_t kSnapshotAlignment = 256u;
+
 	void UpdateShadowData(std::vector<uint8_t>& shadowData, size_t bufferSize, const void* data, uint32_t size, size_t offset)
 	{
 		if (data == nullptr || size == 0)
@@ -29,6 +33,62 @@ namespace
 			return nullptr;
 		return NLS::Render::Context::DriverRendererAccess::GetExplicitDevice(*driver);
 	}
+}
+
+ScopedUniformBufferSnapshotBatch::ScopedUniformBufferSnapshotBatch()
+    : m_previous(g_snapshotBatch), m_device(TryGetExplicitDevice())
+{
+    g_snapshotBatch = this;
+}
+
+ScopedUniformBufferSnapshotBatch::~ScopedUniformBufferSnapshotBatch()
+{
+    g_snapshotBatch = m_previous;
+}
+
+ExplicitUniformBufferSnapshot ScopedUniformBufferSnapshotBatch::Allocate(
+    const std::shared_ptr<RHI::RHIDevice>& device,
+    const std::vector<uint8_t>& data,
+    const std::string& debugName)
+{
+    if (m_failed || device == nullptr || device != m_device || data.empty() || data.size() > kSnapshotPageSize)
+        return {};
+
+    const auto allocationSize = (static_cast<uint64_t>(data.size()) + kSnapshotAlignment - 1u) &
+        ~(kSnapshotAlignment - 1u);
+    bool createdBuffer = false;
+    if (m_page == nullptr || allocationSize > kSnapshotPageSize - m_cursor)
+    {
+        RHI::RHIBufferDesc desc;
+        desc.size = kSnapshotPageSize;
+        desc.usage = RHI::BufferUsageFlags::Uniform;
+        desc.memoryUsage = RHI::MemoryUsage::CPUToGPU;
+        desc.debugName = "ImmutableUniformSnapshotPage";
+        m_page = device->CreateBuffer(desc);
+        m_cursor = 0u;
+        createdBuffer = true;
+        if (m_page == nullptr)
+        {
+            m_failed = true;
+            return {};
+        }
+    }
+
+    RHI::RHIBufferUploadDesc uploadDesc;
+    uploadDesc.data = data.data();
+    uploadDesc.dataSize = data.size();
+    uploadDesc.destinationOffset = m_cursor;
+    uploadDesc.debugName = debugName;
+    if (!m_page->UpdateData(uploadDesc).Succeeded())
+    {
+        m_failed = true;
+        m_page.reset();
+        return {};
+    }
+
+    ExplicitUniformBufferSnapshot snapshot{ m_page, m_cursor, createdBuffer };
+    m_cursor += allocationSize;
+    return snapshot;
 }
 
 UniformBuffer::UniformBuffer(
@@ -76,6 +136,19 @@ void UniformBuffer::_SetSubData(const void* p_data, uint32_t size, std::referenc
 void UniformBuffer::SetRawData(const void* p_data, uint32_t size, size_t p_offset)
 {
     _SetSubData(p_data, size, p_offset);
+}
+
+ExplicitUniformBufferSnapshot UniformBuffer::CreateExplicitSnapshot(const std::string& debugName) const
+{
+    if (g_snapshotBatch != nullptr)
+    {
+        auto snapshot = g_snapshotBatch->Allocate(TryGetExplicitDevice(), m_shadowData, debugName);
+        if (snapshot.buffer != nullptr)
+            return snapshot;
+    }
+    auto buffer = CreateExplicitSnapshotBuffer(debugName);
+    const bool createdBuffer = buffer != nullptr;
+    return { std::move(buffer), 0u, createdBuffer };
 }
 
 std::shared_ptr<NLS::Render::RHI::RHIBuffer> UniformBuffer::CreateExplicitSnapshotBuffer(const std::string& debugName) const

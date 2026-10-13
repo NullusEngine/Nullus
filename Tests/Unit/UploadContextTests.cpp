@@ -1,6 +1,7 @@
 #include <gtest/gtest.h>
 
 #if defined(_WIN32)
+#include "Rendering/Context/RhiCommandListExecutor.h"
 #include "Rendering/RHI/Backends/DX12/DX12Device.h"
 #include "Rendering/RHI/Backends/DX12/DX12ExplicitDeviceFactory.h"
 #include "Rendering/RHI/Backends/DX12/DX12Resource.h"
@@ -1171,6 +1172,21 @@ TEST(UploadContextTests, BackendUploadContextDoesNotRecordPartialBatchWhenStagin
 #if defined(_WIN32)
 TEST(UploadContextTests, DX12BackendUploadContextRecordsRealBackendWork)
 {
+    using namespace NLS::Render::Context;
+    struct ScopedUploadSubmitLane final
+    {
+        ScopedUploadSubmitLane()
+        {
+            RhiCommandListExecutor::Get().Initialize(RhiThreadMode::None, {}, nullptr, this);
+        }
+        ~ScopedUploadSubmitLane()
+        {
+            RhiCommandListExecutor::Get().Shutdown(
+                RhiFlushFlags::Dispatch | RhiFlushFlags::Translate | RhiFlushFlags::Submit, this);
+        }
+    } lane;
+    auto& executor = RhiCommandListExecutor::Get();
+    const auto initialSequence = executor.GetDispatchedSequence();
     const auto resources = NLS::Render::Backend::CreateDX12DeviceResources(false);
     if (!resources.IsValid())
     {
@@ -1187,6 +1203,10 @@ TEST(UploadContextTests, DX12BackendUploadContextRecordsRealBackendWork)
         resources.vendor,
         resources.hardware);
     ASSERT_NE(device, nullptr);
+    EXPECT_FALSE(executor.HasFailed()) << executor.GetFailureDiagnostic();
+    EXPECT_EQ(executor.GetOwner(), &lane);
+    EXPECT_EQ(executor.GetDispatchedSequence(), initialSequence + 2u);
+    EXPECT_EQ(executor.GetSubmitSequence(), initialSequence + 2u);
 
     auto commandPool = device->CreateCommandPool(NLS::Render::RHI::QueueType::Graphics, "DX12UploadContextPool");
     ASSERT_NE(commandPool, nullptr);

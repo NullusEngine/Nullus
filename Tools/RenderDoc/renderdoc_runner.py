@@ -33,7 +33,6 @@ def parse_args() -> argparse.Namespace:
         help="Explicit capture directory. Defaults to the selected project's Logs/RenderDoc directory.",
     )
     parser.add_argument("--capture-after-frames", type=int, default=120)
-    parser.add_argument("--threaded-rendering", action="store_true", help="Pass --threaded-rendering to the launched app.")
     parser.add_argument(
         "--app-arg",
         action="append",
@@ -345,8 +344,6 @@ def main() -> int:
     launch_env["NLS_RENDERDOC_AUTO_OPEN"] = "1" if args.open_capture_ui else "0"
 
     command = [str(executable_path), "--backend", args.backend]
-    if args.threaded_rendering:
-        command.append("--threaded-rendering")
     command.extend(args.app_arg)
     if launch_project_path is not None:
         command.append(str(launch_project_path))

@@ -9,6 +9,7 @@
 #include <dxgi.h>
 
 #include "Debug/Logger.h"
+#include "Rendering/Context/RhiCommandListExecutor.h"
 #include "Rendering/RHI/Backends/DX12/DX12QueueSynchronization.h"
 
 Profiler gProfiler;
@@ -227,6 +228,19 @@ static bool WaitForGpuProfilerFenceValue(ID3D12Fence* fence, uint64 fenceValue)
 
 void GPUProfiler::Initialize(ID3D12Device* pDevice, Span<ID3D12CommandQueue*> queues, uint32 frameLatency)
 {
+	const auto result = NLS::Render::Context::RhiCommandListExecutor::Get().RunBackendOperation(
+		"GPUProfiler::Initialize",
+		[&]
+		{
+			InitializeOnSubmitLane(pDevice, queues, frameLatency);
+			return NLS::Render::RHI::RHIQueueOperationResult{};
+		});
+	if (!result.Succeeded())
+		NLS_LOG_ERROR(result.message);
+}
+
+void GPUProfiler::InitializeOnSubmitLane(ID3D12Device* pDevice, Span<ID3D12CommandQueue*> queues, uint32 frameLatency)
+{
 	std::lock_guard lock(m_StateLock);
 
 	gAssert(frameLatency >= 1, "Frame Latency must be at least 1");
@@ -325,8 +339,21 @@ void GPUProfiler::Initialize(ID3D12Device* pDevice, Span<ID3D12CommandQueue*> qu
 
 bool GPUProfiler::Shutdown()
 {
-	std::lock_guard lock(m_StateLock);
-	return ShutdownUnlocked();
+	{
+		std::lock_guard lock(m_StateLock);
+		if (!m_IsInitialized)
+			return true;
+	}
+	bool released = false;
+	const auto result = NLS::Render::Context::RhiCommandListExecutor::Get().RunBackendOperation(
+		"GPUProfiler::Shutdown",
+		[&]
+		{
+			std::lock_guard lock(m_StateLock);
+			released = ShutdownUnlocked();
+			return NLS::Render::RHI::RHIQueueOperationResult{};
+		});
+	return result.Succeeded() && released;
 }
 
 bool GPUProfiler::ShutdownUnlocked()
@@ -598,6 +625,24 @@ bool GPUProfiler::PrepareFrameSlotForReuseUnlocked(uint32 frameIndex, bool waitF
 
 // Process the last frame and advance to the next
 void GPUProfiler::Tick()
+{
+	{
+		std::lock_guard lock(m_StateLock);
+		if (!m_IsInitialized)
+			return;
+	}
+	const auto result = NLS::Render::Context::RhiCommandListExecutor::Get().RunBackendOperation(
+		"GPUProfiler::Tick",
+		[this]
+		{
+			TickOnSubmitLane();
+			return NLS::Render::RHI::RHIQueueOperationResult{};
+		});
+	if (!result.Succeeded())
+		NLS_LOG_ERROR(result.message);
+}
+
+void GPUProfiler::TickOnSubmitLane()
 {
 	std::lock_guard lock(m_StateLock);
 
@@ -936,12 +981,9 @@ bool GPUProfiler::QueryHeap::DrainQueue(ID3D12CommandQueue* pQueue)
 		return false;
 
 	const uint64 fenceValue = std::max({ m_LastSubmittedFence, m_LastCompletedFence, m_LastDrainFence }) + 1u;
-	const HRESULT hr = [&]()
-	{
-		NLS::Render::RHI::DX12::ScopedDX12QueueLock queueLock(pQueue);
-		return pQueue->Signal(m_pResolveFence.Get(), fenceValue);
-	}();
-	if (FAILED(hr))
+	const auto submission = NLS::Render::RHI::DX12::SubmitDX12CommandLists(
+		pQueue, {}, m_pResolveFence.Get(), fenceValue, "GPUProfiler::DrainQueue");
+	if (!submission.Succeeded())
 		return false;
 
 	m_LastDrainFence = fenceValue;
@@ -1007,19 +1049,15 @@ bool GPUProfiler::QueryHeap::Resolve(uint32 frameIndex)
 	m_CommandListOpen = false;
 	ID3D12CommandList* pCmdLists[] = { m_pCommandList.Get() };
 	m_LastSubmittedFence = TimelineProfilerDetail::GetGpuProfilerResolveFenceValue(frameIndex);
+	const auto submission = NLS::Render::RHI::DX12::SubmitDX12CommandLists(
+		m_pResolveQueue.Get(), pCmdLists, m_pResolveFence.Get(), m_LastSubmittedFence,
+		"GPUProfiler::QueryHeap::Resolve");
+	if (!submission.Succeeded())
 	{
-		NLS::Render::RHI::DX12::ScopedDX12QueueLock queueLock(m_pResolveQueue.Get());
-		m_pResolveQueue->ExecuteCommandLists(1, pCmdLists);
-		const HRESULT signalHr = m_pResolveQueue->Signal(m_pResolveFence.Get(), m_LastSubmittedFence);
-		if (FAILED(signalHr))
-		{
-			NLS_LOG_ERROR(
-				"GPUProfiler::QueryHeap::Resolve: resolve fence signal failed after ExecuteCommandLists hr=" +
-				std::to_string(signalHr) +
-				" value=" + std::to_string(m_LastSubmittedFence));
-			m_HasUnfencedSubmittedWork = true;
-			return false;
-		}
+		NLS_LOG_ERROR(submission.operation.message +
+			" value=" + std::to_string(m_LastSubmittedFence));
+		m_HasUnfencedSubmittedWork = submission.operation.mayHaveQueuedGpuWork;
+		return false;
 	}
 	return true;
 }

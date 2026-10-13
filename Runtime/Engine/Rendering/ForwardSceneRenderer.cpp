@@ -117,7 +117,8 @@ namespace NLS::Engine::Rendering
 		if (!IsFrameActive())
 			return result;
 
-		auto drawables = ParseScene();
+		auto drawables = ParseScene(
+			NLS::Render::FrameGraph::FreezeFrameDescriptor(frameDescriptor));
 		result.totalDrawCount =
 			drawables.opaques.size() +
 			drawables.decals.size() +
@@ -199,6 +200,30 @@ namespace NLS::Engine::Rendering
 		return result;
 	}
 
+	bool ForwardSceneRenderer::TryPublishThreadedFrame()
+	{
+		if (m_skipThreadedFramePublish)
+		{
+			// No prepared builder was published for this frame, so there is nothing
+			// for the render thread to resolve. Reporting the failure keeps the
+			// lifecycle from holding a slot for a frame that will never be drawn.
+			return false;
+		}
+
+		return BaseSceneRenderer::TryPublishThreadedFrame();
+	}
+
+		NLS::Render::Context::RenderSceneBuildCommand ForwardSceneRenderer::BuildRenderSceneCommand(
+			const NLS::Render::Context::RenderFramePacket& packet)
+		{
+			if (m_pendingSceneFrameInput != nullptr)
+			{
+				*m_pendingSceneFrameInput = packet;
+				*m_pendingHelperDrawCommands = std::move(m_threadedRecordedDrawCommands);
+			}
+			return BaseSceneRenderer::BuildRenderSceneCommand(packet);
+		}
+
 	void ForwardSceneRenderer::BeginSceneFrame(
 		const NLS::Render::Data::FrameDescriptor& p_frameDescriptor,
 		bool backgroundPreview)
@@ -211,54 +236,114 @@ namespace NLS::Engine::Rendering
 			BaseSceneRenderer::BeginFrame(p_frameDescriptor);
 		if (!IsFrameActive())
 			return;
-			auto drawablesPtr = std::make_shared<AllDrawables>(ParseScene());
-			auto& drawables = *drawablesPtr;
-			auto preparedBuilderDrawables = drawablesPtr;
-			const bool hasSkyboxTexture = !drawables.skyboxes.empty();
-
-		const bool usesThreadedRendering =
-			NLS::Render::Context::DriverRendererAccess::IsThreadedRenderingEnabled(m_driver);
+		// Cleared per frame: a refusal on one frame must not suppress the next.
+		m_skipThreadedFramePublish = false;
+			m_pendingSceneFrameInput.reset();
+		m_pendingHelperDrawCommands.reset();
 		auto threadedCaptureOutput =
 			std::make_shared<std::vector<NLS::Render::Context::RecordedDrawCommandInput>>();
 
-		auto pendingFrameSnapshot = BuildFrameSnapshot(p_frameDescriptor);
-		if (pendingFrameSnapshot.has_value())
+		// Owns its camera. CaptureExternalSceneOutputSnapshot keeps the live camera
+		// pointer, which work running on the render thread would then read while the
+		// game thread advances the next frame.
+		auto frozenFrame =
+			NLS::Render::FrameGraph::FreezeFrameDescriptor(p_frameDescriptor);
+
+		// Game-thread half of the parse: it captures which scenes this frame renders
+		// and collects each one's proxy update batch. The resolve half - apply,
+		// rebuild, gather, sort - is the expensive part, and in threaded mode it runs
+		// on the render thread inside the prepared builder so it shares that thread
+		// with the frame it produces.
+		// Shared, not a local: the dropper below keeps a reference so a dropped frame
+		// can still release its claims after this scope ends.
+		auto parseInput = std::make_shared<SceneParseInput>(BeginSceneParse(frozenFrame));
+		// Built through the renderer so the dropper observes this renderer's
+		// liveness token: a builder the driver retains past renderer destruction
+		// must not call back through a dangling pointer.
+		SceneParseCaptureDropper parseDropper = MakeSceneParseCaptureDropper(parseInput);
+
+		if (parseInput->captureRefused)
 		{
-			RefreshFrameSnapshotVisibility(pendingFrameSnapshot.value(), drawables);
-			SetPendingFrameSnapshot(pendingFrameSnapshot.value());
+			// The game thread is at least one frame ahead of the render thread and
+			// the render scene refused the new capture, so this frame describes no
+			// scene. Publishing it would present an empty frame; dropping it keeps
+			// the last good frame on screen. The dropper below releases the claims
+			// this frame did obtain.
+			m_skipThreadedFramePublish = true;
+			if (ShouldLogSceneRendererDiagnostics(m_driver))
+			{
+				NLS_LOG_WARNING(
+					"[ForwardSceneRenderer] Dropping threaded frame: the render scene "
+					"refused a new capture because the previous one is still outstanding.");
+			}
+			return;
 		}
 
-		NLS::Render::Context::RenderScenePackage scenePackage;
-		if (!usesThreadedRendering && pendingFrameSnapshot.has_value())
-			scenePackage = BuildRenderScenePackage(pendingFrameSnapshot.value());
-
-		if (ShouldLogSceneRendererDiagnostics(m_driver))
+		auto pendingPacket = BuildRenderFramePacket(p_frameDescriptor);
+		if (pendingPacket.has_value())
 		{
-			NLS_LOG_INFO(
-				"[ForwardSceneRenderer] Parsed scene drawables: opaque=" + std::to_string(drawables.opaques.size()) +
-				", decal=" + std::to_string(drawables.decals.size()) +
-				", transparent=" + std::to_string(drawables.transparents.size()) +
-				", skybox=" + std::to_string(drawables.skyboxes.size()));
+			SetPendingRenderFramePacket(pendingPacket.value());
 		}
-		AddDescriptor<ForwardSceneDescriptor>({ std::move(drawablesPtr), scenePackage, hasSkyboxTexture });
 
-		if (usesThreadedRendering && pendingFrameSnapshot.has_value())
+		AddDescriptor<ForwardSceneDescriptor>({ nullptr, false });
+
+		if (pendingPacket.has_value())
 		{
-			auto snapshot = pendingFrameSnapshot.value();
-			auto externalOutputFrameDescriptor =
-				NLS::Render::FrameGraph::CaptureExternalSceneOutputSnapshot(p_frameDescriptor);
-			auto lightGridContext = BuildLightGridCompileContext(hasSkyboxTexture);
-			SetPendingPreparedRenderSceneBuilder(
+				m_pendingSceneFrameInput = std::make_shared<NLS::Render::Context::RenderFramePacket>(
+					pendingPacket.value());
+			m_pendingHelperDrawCommands = std::make_shared<std::vector<NLS::Render::Context::RecordedDrawCommandInput>>();
+			SetPendingRenderSceneCommand(
 				[this,
+				 basePipelineState = CreatePipelineState(),
 				 bindCaptureFrame = GetFrameObjectBindingProvider()->FreezeCaptureFrame(),
-				 snapshot = std::move(snapshot),
-				 drawables = std::move(preparedBuilderDrawables),
+					 frameInput = m_pendingSceneFrameInput,
+				 helperCommands = m_pendingHelperDrawCommands,
+			 parseInput = std::move(parseInput),
+				parseDropper = std::move(parseDropper),
 				 recordedDrawCommands = threadedCaptureOutput,
-				 externalOutputFrameDescriptor = std::move(externalOutputFrameDescriptor),
-				 lightGridContext = std::move(lightGridContext)](const size_t lifecycleSlotIndex) mutable
+			 frozenFrame = std::move(frozenFrame)](const size_t lifecycleSlotIndex) mutable
 				{
+					const auto& packet = *frameInput;
+					NLS::Render::Context::RenderSceneBuildData snapshot;
+					snapshot.visibleHelperDrawCount = static_cast<uint64_t>(helperCommands->size());
+					snapshot.recordedDrawCommands = std::move(*helperCommands);
+					PreparedFrameScope preparedFrameScope(*this, frozenFrame.descriptor, basePipelineState);
+						std::optional<NLS::Render::Context::ScopedFrameResourceContext> frameResources;
+						if (NLS::Render::Context::DriverRendererAccess::GetFrameContextSlotCount(m_driver) != 0u)
+							frameResources.emplace(m_driver, lifecycleSlotIndex);
 					CaptureFrameSlotScope captureFrameSlotScope(GetFrameObjectBindingProvider(), lifecycleSlotIndex, bindCaptureFrame);
 					SetActivePreparedPassBindingSet(BaseSceneRenderer::GetPreparedPassBindingSetPlaceholder());
+
+				// Resolve half of the parse, on this thread: apply the captured proxy
+				// batches, rebuild the primitive index, gather and sort. Running here
+				// means the expensive part of the frame shares a thread with the
+				// frame it produces, and the game thread only paid for the capture.
+				auto drawables = std::make_shared<AllDrawables>(ResolveSceneParse(*parseInput, frozenFrame));
+				// Resolved: the claims are released, so the dropper must not apply the
+				// batch a second time when this builder is eventually discarded.
+				parseDropper.MarkResolved();
+				RefreshFrameBuildMetadata(snapshot);
+				const bool hasSkyboxTexture = !drawables->skyboxes.empty();
+
+				// Built here rather than on the game thread: this reads the lighting
+				// provider's published snapshot, which the resolve above has just
+				// refreshed, so the light grid sees this frame's lighting. It also
+				// depends on whether the resolved scene has a skybox, which is only
+				// known once the drawables exist.
+				const auto lightGridCapture = CaptureLightGridFrameInputs(hasSkyboxTexture);
+				const auto lightGridContext =
+					BuildLightGridCompileContext(frozenFrame, lightGridCapture);
+
+				if (ShouldLogSceneRendererDiagnostics(m_driver))
+				{
+					NLS_LOG_INFO(
+						"[ForwardSceneRenderer] Resolved scene drawables: opaque=" +
+						std::to_string(drawables->opaques.size()) +
+						", decal=" + std::to_string(drawables->decals.size()) +
+						", transparent=" + std::to_string(drawables->transparents.size()) +
+						", skybox=" + std::to_string(drawables->skyboxes.size()));
+				}
+
 					const auto opaquePso = CreateSceneDefaultPipelineState(*this);
 					const auto skyboxPso = CreateSceneSkyboxPipelineState(*this);
 					uint64_t opaqueDrawCount = 0u;
@@ -317,17 +402,26 @@ namespace NLS::Engine::Rendering
 					snapshot.visibleDecalDrawCount = decalDrawCount;
 					snapshot.visibleSkyboxDrawCount = skyboxDrawCount;
 					snapshot.visibleTransparentDrawCount = transparentDrawCount;
-					snapshot.recordedDrawCommands = *recordedDrawCommands;
+					// The rendered draw list is this frame's largest payload and the
+					// builder holds its only remaining owner, so both hops move instead
+					// of copying the whole command vector twice.
+						auto helperDrawCommands = std::move(snapshot.recordedDrawCommands);
+						snapshot.recordedDrawCommands = std::move(*recordedDrawCommands);
+						for (auto& command : helperDrawCommands)
+							snapshot.recordedDrawCommands.push_back(std::move(command));
+					recordedDrawCommands->clear();
 
-					auto package = BuildSnapshotOwnedRenderScenePackage(
-						snapshot,
-						SnapshotRenderScenePackageBuildMode::SkipDefaultPassInputs);
+					auto package = NLS::Render::Context::BuildRenderScenePackage(
+						packet,
+						std::move(snapshot),
+						NLS::Render::Context::RenderScenePackageBuildMode::SkipDefaultPassInputs);
 					NLS::Render::FrameGraph::CompileAndApplyPreparedForwardLightGridSceneExecution(
 						package,
 						lightGridContext);
 					NLS::Render::FrameGraph::FinalizePreparedForwardScenePackage(
 						package,
-						externalOutputFrameDescriptor);
+						frozenFrame.descriptor);
+						NLS::Render::Context::DriverRendererAccess::PrepareSwapchainSceneOutput(m_driver, package);
 					return package;
 				});
 		}
@@ -336,73 +430,7 @@ namespace NLS::Engine::Rendering
 	void ForwardSceneRenderer::DrawFrame()
 	{
 		NLS_PROFILE_SCOPE();
-		const bool usesThreadedRendering =
-			NLS::Render::Context::DriverRendererAccess::IsThreadedRenderingEnabled(m_driver);
-
-		// In threaded rendering mode, the Game Thread only captured immutable per-draw inputs.
-		// Render-scene package assembly now happens later through the prepared builder path.
-		if (!usesThreadedRendering)
-		{
-			const auto& frame = GetFrameDescriptor();
-			FrameGraph frameGraph;
-			NLS::Render::FrameGraph::ReserveForwardSceneGraph(frameGraph, frame);
-			FrameGraphBlackboard blackboard;
-			const auto& scene = GetDescriptor<ForwardSceneDescriptor>();
-			const auto lightGridContext = BuildLightGridCompileContext(scene.hasSkyboxTexture);
-			const auto preparedGraph = NLS::Render::FrameGraph::PrepareForwardSceneGraph(
-				frameGraph,
-				blackboard,
-				lightGridContext);
-			SetActivePreparedPassBindingSet(lightGridContext.graphicsPassBindingSet);
-
-			NLS::Render::FrameGraph::ExecutePreparedForwardSceneGraph(
-				frameGraph,
-				preparedGraph,
-				{
-					[this](const auto& beginDesc) -> bool
-					{
-						return BeginOutputRenderPass(
-							beginDesc.renderWidth,
-							beginDesc.renderHeight,
-							beginDesc.clearColor,
-							beginDesc.clearDepth,
-							beginDesc.clearStencil,
-							beginDesc.clearValue);
-					},
-					[this](const NLS::Render::FrameGraph::CompiledThreadedRenderSceneGraphPass& compiledPass)
-					{
-						const auto kind = compiledPass.metadata.commandKind;
-						const auto pipelineState = NLS::Render::FrameGraph::GetForwardScenePassPipelineKind(kind) ==
-								NLS::Render::FrameGraph::ForwardScenePassPipelineKind::Skybox
-							? CreateSceneSkyboxPipelineState(*this)
-							: CreateSceneDefaultPipelineState(*this);
-						ExecuteCompiledGraphPass(kind, pipelineState);
-					},
-					[this](bool startedRenderPass, const auto& endDesc)
-					{
-						(void)endDesc;
-						EndOutputRenderPass(startedRenderPass);
-					}
-				});
-
-			frameGraph.compile();
-			auto executionContext = CreateFrameGraphExecutionContext();
-			frameGraph.execute(&executionContext, &executionContext);
-			SetActivePreparedPassBindingSet(nullptr);
-		}
-
 		DrawRegisteredPasses();
-
-		if (usesThreadedRendering)
-		{
-			const auto& scene = GetDescriptor<ForwardSceneDescriptor>();
-			auto pendingFrameSnapshot = BuildFrameSnapshot(m_frameDescriptor);
-			if (pendingFrameSnapshot.has_value())
-			{
-				RefreshFrameSnapshotVisibility(pendingFrameSnapshot.value(), *scene.drawables);
-				SetPendingFrameSnapshot(pendingFrameSnapshot.value());
-			}
-		}
 	}
 
 	void ForwardSceneRenderer::DrawOpaques(NLS::Render::Data::PipelineState pso)

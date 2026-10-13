@@ -6,6 +6,7 @@
 
 #include <Debug/Logger.h>
 #include "SceneSystem/Scene.h"
+#include "Rendering/SceneRenderStoreRegistry.h"
 #include "GameObject.h"
 #include "Profiling/PerformanceStageStats.h"
 using namespace NLS;
@@ -78,6 +79,7 @@ Scene::~Scene()
 	m_gameobject.clear();
     m_fastAccessComponents = {};
     m_fastAccessComponentsValid = false;
+    NLS::Engine::Rendering::SceneRenderStoreRegistry::Release(this);
 }
 
 void Scene::Play()

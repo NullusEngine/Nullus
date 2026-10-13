@@ -96,3 +96,7 @@ vc140.pdb
 Tools/Dotnet/.cli-home/
 Tools/MetaParser/ThirdParty/LocalNuget/*.nupkg
 Managed/**/*.csproj.user
+
+# Native tool build outputs
+Tools/StackDump/StackDump.exe
+Tools/StackDump/*.obj

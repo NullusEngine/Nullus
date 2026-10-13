@@ -40,7 +40,11 @@ wizard.project_settings,Project settings,项目设置
 launch_options.title,Launch Options...,启动选项...
 launch_options.description,These options are applied when the editor or game starts. They need a restart, so they live here instead of the editor settings.,这些选项在编辑器或游戏启动时生效，需要重启才能更改，因此放在启动器而不是编辑器设置里。
 launch_options.vsync,Vertical Synchronization,垂直同步
-launch_options.threaded_rendering,Threaded Rendering,多线程渲染
+launch_options.rhi_thread_mode,RHI Thread Mode,RHI 线程模式
+launch_options.rhi_backend_default,Backend Default,后端默认
+launch_options.rhi_none,None,渲染线程执行
+launch_options.rhi_dedicated_thread,Dedicated Thread,独立 RHI 线程
+launch_options.rhi_tasks,Tasks,工作线程任务
 launch_options.renderdoc_capture_frames,RenderDoc Startup Capture Frames,RenderDoc 启动抓帧帧数
 launch_options.save,Save,保存
 launch_options.save_failed,Could not write the project launch options.,无法写入项目启动选项。

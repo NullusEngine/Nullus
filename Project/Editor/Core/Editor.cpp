@@ -18,6 +18,7 @@
 #include <vector>
 #include <Debug/Logger.h>
 #include <Rendering/Context/DriverAccess.h>
+#include <Rendering/Context/RenderingThreadSystem.h>
 #include <UI/UIManager.h>
 #include <Assets/ArtifactLoadTelemetry.h>
 #include "Scripting/EditorScriptHost.h"
@@ -1244,6 +1245,7 @@ void Editor::Core::Editor::SetupUI()
 
 void Editor::Core::Editor::PreUpdate()
 {
+    (void)NLS::Render::Context::RenderingThreadSystem::PumpGameThreadTasks(64u);
     static_cast<void>(m_undoService.DrainPendingCompletions());
     RefreshProfilerRecordingState();
     NLS_PROFILE_SCOPE();
@@ -1671,12 +1673,12 @@ std::pair<uint16_t, uint16_t> Editor::Core::Editor::GetCameraPerformanceViewSafe
     return GetSceneViewSafeSize();
 }
 
-const Render::Data::FrameInfo& Editor::Core::Editor::GetSceneViewCumulativeFrameInfo() const
+Render::Data::FrameInfo Editor::Core::Editor::GetSceneViewCumulativeFrameInfo() const
 {
     return m_panelsManager.GetPanelAs<Panels::SceneView>("Scene View").GetRenderer().GetCumulativeFrameInfo();
 }
 
-const Render::Data::FrameInfo& Editor::Core::Editor::GetCameraPerformanceViewCumulativeFrameInfo() const
+Render::Data::FrameInfo Editor::Core::Editor::GetCameraPerformanceViewCumulativeFrameInfo() const
 {
     if (ResolveValidationFocusTarget(m_context.GetDiagnosticsSettings().editorValidationFocusView) ==
         ValidationFocusTarget::GameView)

@@ -41,6 +41,16 @@ namespace
     constexpr auto kUiTexturePreviousFrameOrStatic =
         NLS::Render::UI::UiTextureSynchronizationScope::PreviousFrameOrStatic;
 
+    class TestUiFrameFence final : public NLS::Render::RHI::RHIFence
+    {
+    public:
+        std::string_view GetDebugName() const override { return "TestUiFrameFence"; }
+        bool IsSignaled() const override { return signaled; }
+        void Reset() override { signaled = false; }
+        bool Wait(uint64_t) override { return signaled; }
+        bool signaled = true;
+    };
+
     class TestUiOverlayCommandBuffer final : public NLS::Render::RHI::RHICommandBuffer
     {
     public:
@@ -703,9 +713,9 @@ namespace
     }
 }
 
-TEST(RHIUiOverlayPassTests, OverlayPassIdentityIsDeclaredInThreadedLifecycle)
+TEST(RHIUiOverlayPassTests, OverlayPassIdentityIsDeclaredInRenderScenePackage)
 {
-    const auto source = ReadSourceText(RepoPath("Runtime/Rendering/Context/ThreadedRenderingLifecycle.h"));
+    const auto source = ReadSourceText(RepoPath("Runtime/Rendering/Context/RenderScenePackage.h"));
 
     EXPECT_NE(source.find("UIOverlay"), std::string::npos)
         << "RenderPassCommandKind must expose UIOverlay for the migrated UI pass.";
@@ -876,15 +886,16 @@ TEST(RHIUiOverlayPassTests, ApplyingExecutionPlanIncludesUiOverlayInDrawCommandC
 
 TEST(RHIUiOverlayPassTests, VisibleUiSnapshotAppendsFinalOverlayPassAfterScenePass)
 {
-    NLS::Render::Context::FrameSnapshot frameSnapshot;
+    NLS::Render::Context::RenderFramePacket frameSnapshot;
     frameSnapshot.frameId = 34u;
     frameSnapshot.targetsSwapchain = true;
     frameSnapshot.renderWidth = 1280u;
     frameSnapshot.renderHeight = 720u;
-    frameSnapshot.visibleOpaqueDrawCount = 2u;
-    frameSnapshot.recordedDrawCommands.resize(2u);
+    NLS::Render::Context::RenderSceneBuildData scene;
+    scene.visibleOpaqueDrawCount = 2u;
+    scene.recordedDrawCommands.resize(2u);
 
-    auto package = NLS::Render::Context::BuildSnapshotOwnedRenderScenePackage(frameSnapshot);
+    auto package = NLS::Render::Context::BuildRenderScenePackage(frameSnapshot, std::move(scene));
     ASSERT_EQ(package.passCommandInputs.size(), 1u);
     EXPECT_EQ(package.passCommandInputs.front().kind, NLS::Render::Context::RenderPassCommandKind::Opaque);
 
@@ -926,15 +937,16 @@ TEST(RHIUiOverlayPassTests, VisibleUiSnapshotAppendsFinalOverlayPassAfterScenePa
 
 TEST(RHIUiOverlayPassTests, EmptyUiSnapshotDoesNotAppendOverlayPass)
 {
-    NLS::Render::Context::FrameSnapshot frameSnapshot;
+    NLS::Render::Context::RenderFramePacket frameSnapshot;
     frameSnapshot.frameId = 35u;
     frameSnapshot.targetsSwapchain = true;
     frameSnapshot.renderWidth = 1280u;
     frameSnapshot.renderHeight = 720u;
-    frameSnapshot.visibleOpaqueDrawCount = 1u;
-    frameSnapshot.recordedDrawCommands.resize(1u);
+    NLS::Render::Context::RenderSceneBuildData scene;
+    scene.visibleOpaqueDrawCount = 1u;
+    scene.recordedDrawCommands.resize(1u);
 
-    auto package = NLS::Render::Context::BuildSnapshotOwnedRenderScenePackage(frameSnapshot);
+    auto package = NLS::Render::Context::BuildRenderScenePackage(frameSnapshot, std::move(scene));
     auto snapshot = std::make_shared<NLS::Render::UI::UiDrawDataSnapshot>();
     snapshot->frameId = 35u;
     snapshot->hasVisibleDraws = false;
@@ -947,14 +959,15 @@ TEST(RHIUiOverlayPassTests, EmptyUiSnapshotDoesNotAppendOverlayPass)
 
 TEST(RHIUiOverlayPassTests, OffscreenPackageDoesNotConsumeUiOverlaySnapshot)
 {
-    NLS::Render::Context::FrameSnapshot frameSnapshot;
+    NLS::Render::Context::RenderFramePacket frameSnapshot;
     frameSnapshot.frameId = 116u;
     frameSnapshot.targetsSwapchain = false;
     frameSnapshot.renderWidth = 128u;
     frameSnapshot.renderHeight = 72u;
-    frameSnapshot.visibleOpaqueDrawCount = 1u;
+    NLS::Render::Context::RenderSceneBuildData scene;
+    scene.visibleOpaqueDrawCount = 1u;
 
-    auto package = NLS::Render::Context::BuildSnapshotOwnedRenderScenePackage(frameSnapshot);
+    auto package = NLS::Render::Context::BuildRenderScenePackage(frameSnapshot, std::move(scene));
     auto snapshot = std::make_shared<NLS::Render::UI::UiDrawDataSnapshot>();
     snapshot->frameId = 117u;
     snapshot->hasVisibleDraws = true;
@@ -982,15 +995,16 @@ TEST(RHIUiOverlayPassTests, OffscreenPackageDoesNotConsumeUiOverlaySnapshot)
 
 TEST(RHIUiOverlayPassTests, UiOverlayPassDeclaresSwapchainAccessPresentTransitionAndDependencyEdge)
 {
-    NLS::Render::Context::FrameSnapshot frameSnapshot;
+    NLS::Render::Context::RenderFramePacket frameSnapshot;
     frameSnapshot.frameId = 41u;
     frameSnapshot.targetsSwapchain = true;
     frameSnapshot.renderWidth = 640u;
     frameSnapshot.renderHeight = 360u;
-    frameSnapshot.visibleOpaqueDrawCount = 1u;
-    frameSnapshot.recordedDrawCommands.resize(1u);
+    NLS::Render::Context::RenderSceneBuildData scene;
+    scene.visibleOpaqueDrawCount = 1u;
+    scene.recordedDrawCommands.resize(1u);
 
-    auto package = NLS::Render::Context::BuildSnapshotOwnedRenderScenePackage(frameSnapshot);
+    auto package = NLS::Render::Context::BuildRenderScenePackage(frameSnapshot, std::move(scene));
     auto snapshot = std::make_shared<NLS::Render::UI::UiDrawDataSnapshot>();
     snapshot->frameId = 41u;
     snapshot->hasVisibleDraws = true;
@@ -1048,15 +1062,16 @@ TEST(RHIUiOverlayPassTests, UiOverlayPassDeclaresSwapchainAccessPresentTransitio
 
 TEST(RHIUiOverlayPassTests, UiOverlayDependencyEdgeUsesSceneSwapchainWriterWhenScenePassHasMultipleTextureAccesses)
 {
-    NLS::Render::Context::FrameSnapshot frameSnapshot;
+    NLS::Render::Context::RenderFramePacket frameSnapshot;
     frameSnapshot.frameId = 42u;
     frameSnapshot.targetsSwapchain = true;
     frameSnapshot.renderWidth = 640u;
     frameSnapshot.renderHeight = 360u;
-    frameSnapshot.visibleOpaqueDrawCount = 1u;
-    frameSnapshot.recordedDrawCommands.resize(1u);
+    NLS::Render::Context::RenderSceneBuildData scene;
+    scene.visibleOpaqueDrawCount = 1u;
+    scene.recordedDrawCommands.resize(1u);
 
-    auto package = NLS::Render::Context::BuildSnapshotOwnedRenderScenePackage(frameSnapshot);
+    auto package = NLS::Render::Context::BuildRenderScenePackage(frameSnapshot, std::move(scene));
     ASSERT_EQ(package.passCommandInputs.size(), 1u);
     auto& scenePass = package.passCommandInputs[0];
     NLS::Render::Context::TextureResourceAccess sampledAccess;
@@ -1088,15 +1103,16 @@ TEST(RHIUiOverlayPassTests, UiOverlayDependencyEdgeUsesSceneSwapchainWriterWhenS
 
 TEST(RHIUiOverlayPassTests, UiOverlayPassDoesNotDeclareNullDynamicVertexIndexBufferResources)
 {
-    NLS::Render::Context::FrameSnapshot frameSnapshot;
+    NLS::Render::Context::RenderFramePacket frameSnapshot;
     frameSnapshot.frameId = 43u;
     frameSnapshot.targetsSwapchain = true;
     frameSnapshot.renderWidth = 640u;
     frameSnapshot.renderHeight = 360u;
-    frameSnapshot.visibleOpaqueDrawCount = 1u;
-    frameSnapshot.recordedDrawCommands.resize(1u);
+    NLS::Render::Context::RenderSceneBuildData scene;
+    scene.visibleOpaqueDrawCount = 1u;
+    scene.recordedDrawCommands.resize(1u);
 
-    auto package = NLS::Render::Context::BuildSnapshotOwnedRenderScenePackage(frameSnapshot);
+    auto package = NLS::Render::Context::BuildRenderScenePackage(frameSnapshot, std::move(scene));
     auto snapshot = std::make_shared<NLS::Render::UI::UiDrawDataSnapshot>();
     snapshot->frameId = 43u;
     snapshot->hasVisibleDraws = true;
@@ -1181,15 +1197,15 @@ TEST(RHIUiOverlayPassTests, PreparedSceneFrameBuilderConsumesPendingUiSnapshotWh
     const auto source = ReadSourceText(RepoPath("Runtime/Rendering/Context/Driver.cpp"));
 
     const auto functionBody = source.substr(
-        source.find("bool DriverRendererAccess::TryPublishPreparedFrameBuilder"),
-        source.find("bool DriverRendererAccess::QueueStandalonePostSubmitBufferReadback") -
-            source.find("bool DriverRendererAccess::TryPublishPreparedFrameBuilder"));
+        source.find("bool DriverRendererAccess::TryEnqueueRenderFrame"),
+        source.find("void DriverRendererAccess::CancelBackgroundPreviewPublicationRequest") -
+            source.find("bool DriverRendererAccess::TryEnqueueRenderFrame"));
 
     const auto builderWrap = functionBody.find("originalRenderSceneBuilder = std::move(renderSceneBuilder)");
     const auto generation = functionBody.find("consumedUiSnapshotGeneration", builderWrap);
     const auto consume = functionBody.find("DriverUIAccess::ConsumePendingUiDrawDataSnapshot(", generation);
     const auto attach = functionBody.find("AttachUiOverlaySnapshotToRenderScenePackage(package, uiSnapshot)", consume);
-    const auto publish = functionBody.find("RenderThreadCoordinator::TryPublishPreparedFrameBuilder", attach);
+    const auto publish = functionBody.find("RenderThreadCoordinator::TryEnqueueRenderFrame", attach);
 
     ASSERT_NE(builderWrap, std::string::npos);
     ASSERT_NE(generation, std::string::npos);
@@ -1207,15 +1223,15 @@ TEST(RHIUiOverlayPassTests, PreparedSceneFrameBuilderRestoresUiSnapshotWhenPacka
     const auto source = ReadSourceText(RepoPath("Runtime/Rendering/Context/Driver.cpp"));
 
     const auto functionBody = source.substr(
-        source.find("bool DriverRendererAccess::TryPublishPreparedFrameBuilder"),
-        source.find("bool DriverRendererAccess::QueueStandalonePostSubmitBufferReadback") -
-            source.find("bool DriverRendererAccess::TryPublishPreparedFrameBuilder"));
+        source.find("bool DriverRendererAccess::TryEnqueueRenderFrame"),
+        source.find("void DriverRendererAccess::CancelBackgroundPreviewPublicationRequest") -
+            source.find("bool DriverRendererAccess::TryEnqueueRenderFrame"));
 
     const auto consume = functionBody.find("DriverUIAccess::ConsumePendingUiDrawDataSnapshot(");
     const auto attach = functionBody.find("AttachUiOverlaySnapshotToRenderScenePackage(package, uiSnapshot)", consume);
     const auto restore = functionBody.find("DriverUIAccess::RestoreConsumedUiDrawDataSnapshotIfUnchanged(", attach);
     const auto generation = functionBody.find("consumedUiSnapshotGeneration", restore);
-    const auto publish = functionBody.find("RenderThreadCoordinator::TryPublishPreparedFrameBuilder", attach);
+    const auto publish = functionBody.find("RenderThreadCoordinator::TryEnqueueRenderFrame", attach);
 
     ASSERT_NE(consume, std::string::npos);
     ASSERT_NE(attach, std::string::npos);
@@ -1380,8 +1396,10 @@ TEST(RHIUiOverlayPassTests, DeferredFrameScopedCleanupReleasesRetiredUiTextureVi
 
     auto& frameContext = NLS::Render::Context::DriverTestAccess::EnsureFrameContext(driver, 0u);
     frameContext.frameIndex = 11u;
-    impl->deferredThreadedFrameScopedRetirementFrameContexts.insert(0u);
-    impl->deferredUiTextureRetirementFrameIdsByFrameContext[0u] = 11u;
+    frameContext.frameFence = std::make_shared<TestUiFrameFence>();
+    impl->frameResourceSlots->RetireSlot(0u, frameContext.frameFence);
+    impl->frameResourceSlots->PeekSlot(0u)->retirementPending = true;
+    impl->frameResourceSlots->PeekSlot(0u)->uiTextureRetirementFrameId = 11u;
 
     EXPECT_TRUE(NLS::Render::Context::Detail::ReleaseDeferredThreadedFrameScopedResourcesAfterFence(
         *impl,
@@ -1474,11 +1492,11 @@ TEST(RHIUiOverlayPassTests, UncompletedPublishedUiSnapshotDoesNotRetireOnUnrelat
     NLS::Render::Context::DriverUIAccess::ReleaseUiTextureView(driver, textureView);
     ASSERT_EQ(impl->uiTextureRegistry.GetEntryCountForTesting(), 1u);
 
-    NLS::Render::Context::Detail::ReleaseRetiredUiTextureViewsForCompletedUiFrame(*impl, 18u);
+    NLS::Render::Context::Detail::ReleaseRetiredUiTextureViewsForCompletedFrame(*impl, 18u);
 
     EXPECT_EQ(impl->uiTextureRegistry.GetEntryCountForTesting(), 1u);
 
-    NLS::Render::Context::Detail::ReleaseRetiredUiTextureViewsForCompletedUiFrame(*impl, 19u);
+    NLS::Render::Context::Detail::ReleaseRetiredUiTextureViewsForCompletedFrame(*impl, 19u);
 
     EXPECT_EQ(impl->uiTextureRegistry.GetEntryCountForTesting(), 0u);
 #else
@@ -1486,13 +1504,13 @@ TEST(RHIUiOverlayPassTests, UncompletedPublishedUiSnapshotDoesNotRetireOnUnrelat
 #endif
 }
 
-TEST(RHIUiOverlayPassTests, StandaloneFrameCompletionPathsDoNotAdvanceUiTextureRetirementWatermark)
+TEST(RHIUiOverlayPassTests, UiFrameCompletionDoesNotAdvanceGpuRetirementWatermark)
 {
-    const auto source = ReadSourceText(RepoPath("Runtime/Rendering/Context/RhiThreadCoordinator.cpp"));
+    const auto source = ReadSourceText(RepoPath("Runtime/Rendering/Context/RhiCommandListExecutorFrame.cpp"));
 
-    const auto finalizeStart = source.find("bool FinalizeStandaloneUiFrame");
+    const auto finalizeStart = source.find("void FinalizeThreadedRhiFrameContext");
     ASSERT_NE(finalizeStart, std::string::npos);
-    const auto finalizeEnd = source.find("void FinalizeThreadedRhiFrameContext", finalizeStart);
+    const auto finalizeEnd = source.find("bool ShouldDeferFrameScopedRetirementAfterSubmit", finalizeStart);
     ASSERT_NE(finalizeEnd, std::string::npos);
     const auto finalizeBody = source.substr(finalizeStart, finalizeEnd - finalizeStart);
     EXPECT_EQ(
@@ -1505,20 +1523,6 @@ TEST(RHIUiOverlayPassTests, StandaloneFrameCompletionPathsDoNotAdvanceUiTextureR
         finalizeBody.find("ReleaseRetiredTextureViewsUpTo"),
         std::string::npos);
 
-    const auto explicitStart = source.find("void RhiThreadCoordinator::EndStandaloneExplicitFrame");
-    ASSERT_NE(explicitStart, std::string::npos);
-    const auto explicitEnd = source.find("bool RhiThreadCoordinator::TryExecuteNextThreadedSubmission", explicitStart);
-    ASSERT_NE(explicitEnd, std::string::npos);
-    const auto explicitBody = source.substr(explicitStart, explicitEnd - explicitStart);
-    EXPECT_EQ(
-        explicitBody.find("ReleaseRetiredUiTextureViewsForCompletedUiFrame"),
-        std::string::npos);
-    EXPECT_EQ(
-        explicitBody.find("ReleaseRetiredUiTextureViewsForCompletedFrame"),
-        std::string::npos);
-    EXPECT_EQ(
-        explicitBody.find("ReleaseRetiredTextureViewsUpTo"),
-        std::string::npos);
 }
 
 TEST(RHIUiOverlayPassTests, UIOverlayFallbackPassNameUsesFrameGraphIdentity)
@@ -2047,7 +2051,7 @@ TEST(RHIUiOverlayPassTests, OverlayRendererRecordsRegisteredTextureShaderReadVis
     ASSERT_EQ(resources.registeredTextureViews.size(), 1u);
     EXPECT_EQ(resources.registeredTextureViews[0], registeredTextureView);
 
-    const auto source = ReadSourceText(RepoPath("Runtime/Rendering/Context/RhiThreadCoordinator.cpp"));
+    const auto source = ReadSourceText(RepoPath("Runtime/Rendering/Context/RhiCommandListExecutorFrame.cpp"));
     const auto appendAccesses = source.find("AppendUiOverlayPreparedResourceAccesses(");
     const auto readTransition = source.find("MakeUiOverlayTextureReadTransition(");
     ASSERT_NE(appendAccesses, std::string::npos);
@@ -2086,7 +2090,7 @@ TEST(RHIUiOverlayPassTests, OverlayRendererRequiresFontAtlasUploadVisibilityOnly
 
 TEST(RHIUiOverlayPassTests, RhiThreadUiOverlayPassInputAddsPreparedConcreteResourcesBeforeBeginPass)
 {
-    const auto source = ReadSourceText(RepoPath("Runtime/Rendering/Context/RhiThreadCoordinator.cpp"));
+    const auto source = ReadSourceText(RepoPath("Runtime/Rendering/Context/RhiCommandListExecutorFrame.cpp"));
     const auto appendAccesses = source.find("AppendUiOverlayPreparedResourceAccesses(");
     const auto prepareInput = source.find("std::optional<RenderPassCommandInput> PrepareUiOverlayPassInput(");
     ASSERT_NE(appendAccesses, std::string::npos);
@@ -2138,7 +2142,7 @@ TEST(RHIUiOverlayPassTests, RhiThreadUiOverlayPassInputAddsPreparedConcreteResou
 
 TEST(RHIUiOverlayPassTests, RhiThreadUiOverlayPassInputMaterializesSwapchainBackbufferBeforeVisibility)
 {
-    const auto source = ReadSourceText(RepoPath("Runtime/Rendering/Context/RhiThreadCoordinator.cpp"));
+    const auto source = ReadSourceText(RepoPath("Runtime/Rendering/Context/RhiCommandListExecutorFrame.cpp"));
     const auto materializeFunction = source.find("MaterializeUiOverlaySwapchainResourceAccesses(");
     const auto materializeEdgesFunction = source.find("MaterializeUiOverlayDependencyEdges(");
     const auto prepareInput = source.find("std::optional<RenderPassCommandInput> PrepareUiOverlayPassInput(");

@@ -19,6 +19,17 @@ namespace NLS::Render::Settings
     struct NLS_RENDER_API EngineDiagnosticsSettings
     {
         bool logRenderDrawPath = false;
+        /**
+         * Emits one profiler zone per replayed RHI command.
+         *
+         * Off by default. Each zone copies the profiler's destination list,
+         * allocates its name and source-function strings and takes the global
+         * profiler lock, so a normal frame - which replays thousands of bind and
+         * draw commands - would pay more for the instrumentation than for the
+         * commands it measures. Turn it on only to attribute cost to individual
+         * commands on an otherwise idle frame.
+         */
+        bool profileEveryRhiCommand = false;
         bool diagSkipSkyboxDraw = false;
         bool logMaterialBindings = false;
         bool dx12LogMessages = false;

@@ -24,7 +24,7 @@
 #include "Profiling/Profiler.h"
 #include "Rendering/Context/Driver.h"
 #include "Rendering/Context/DriverAccess.h"
-#include "Rendering/Context/ThreadedRenderingLifecycle.h"
+#include "Rendering/Context/RenderScenePackage.h"
 #include "Rendering/Core/CompositeRenderer.h"
 #include "Rendering/Geometry/Vertex.h"
 #include "Rendering/RHI/Core/RHICommand.h"
@@ -1089,7 +1089,7 @@ TEST(PanelWindowHookTests, FrameInfoPanelFormatsSuppliedRenderViewSnapshot)
     panel.UpdateForFrameInfo("Stats View", frameInfo);
 
     ExpectFrameInfoRow(panel, "Status", "Target View", "Stats View");
-    ExpectFrameInfoRow(panel, "Status", "Frame State", "Direct -> Direct -> Direct", "InFlight 0, Blocked 0");
+    ExpectFrameInfoRow(panel, "Status", "Frame State", "Direct -> Direct", "InFlight 0, Blocked 0");
     ExpectFrameInfoRow(panel, "Status", "Safety", "Device OK", "Unsafe GPU work quarantined");
     ExpectFrameInfoRow(panel, "Verdict", "Bottleneck", "Draw Submission", "Submitted 3 of 10 raw draws");
     ExpectFrameInfoRow(panel, "Verdict", "Occlusion", "No Data", "Large-scene occlusion telemetry unavailable");
@@ -1377,6 +1377,12 @@ TEST(PanelWindowHookTests, FrameInfoPanelExcludesEditorUiPanelDrawMetrics)
         EXPECT_EQ(row.value.find("Panel Draw"), std::string::npos) << row.value;
         EXPECT_EQ(row.note.find("Panel Draw"), std::string::npos) << row.note;
     }
+
+    // This fixture is the only one in the suite that does not drive a frame, so
+    // its static driver would otherwise keep a render-thread registration for the
+    // rest of the binary. The process-wide registration is what makes a later
+    // FlushRenderingCommands wait for a drain nobody can run.
+    driver->ShutdownThreadedRendering();
 }
 
 TEST(PanelWindowHookTests, EditorCreatesFrameInfoAsDockableRenderStatsWindow)
@@ -1525,7 +1531,7 @@ TEST(PanelWindowHookTests, FrameInfoPanelDisplaysEmptySnapshotWithoutRendererAcc
     panel.RefreshForView(&view);
 
     ExpectFrameInfoRow(panel, "Status", "Target View", "Probe View");
-    ExpectFrameInfoRow(panel, "Status", "Frame State", "Direct -> Direct -> Direct", "InFlight 0, Blocked 0");
+    ExpectFrameInfoRow(panel, "Status", "Frame State", "Direct -> Direct", "InFlight 0, Blocked 0");
     ExpectFrameInfoRow(panel, "Render Load", "Submitted Draws", "0", "Raw 0, Groups 0, Largest 0, Dropped 0");
     ExpectFrameInfoRow(panel, "Inputs", "Opaque Drawables", "0");
     ExpectFrameInfoRow(panel, "Inputs", "Transparent Drawables", "0");
@@ -1565,22 +1571,19 @@ TEST(PanelWindowHookTests, FrameInfoPanelRefreshDoesNotCreateTargetViewRenderer)
     ExpectFrameInfoRow(panel, "Debug", "ParseScene Calls", "0");
 }
 
-TEST(PanelWindowHookTests, FrameInfoPanelRefreshReturnsWhenLifecycleTelemetryIsBusy)
+TEST(PanelWindowHookTests, FrameInfoPanelRefreshReturnsWhenFrameTelemetryIsBusy)
 {
 #if defined(NLS_ENABLE_TEST_HOOKS)
     NLS::Render::Settings::DriverSettings settings;
     settings.graphicsBackend = NLS::Render::Settings::EGraphicsBackend::NONE;
     settings.enableExplicitRHI = false;
-    settings.enableThreadedRendering = true;
-    settings.threadedFrameSlotCount = 1u;
+    settings.framesInFlight = 1u;
 
     auto driver = std::make_unique<NLS::Render::Context::Driver>(settings);
     NLS::Core::ServiceLocator::Provide(*driver);
     NLS::Render::Context::DriverTestAccess::PauseThreadedRenderingWorkers(*driver);
 
-    auto* lifecycle = NLS::Render::Context::DriverTestAccess::GetThreadedRenderingLifecycle(*driver);
-    ASSERT_NE(lifecycle, nullptr);
-    ASSERT_TRUE(NLS::Render::Context::ThreadedRenderingLifecycleTestAccess::TryLockTelemetry(*lifecycle));
+    ASSERT_TRUE(NLS::Render::Context::DriverTestAccess::TryLockFrameTelemetry(*driver));
 
     SnapshotProbeView view("Probe View", *driver);
     view.RenderForTest();
@@ -1595,7 +1598,7 @@ TEST(PanelWindowHookTests, FrameInfoPanelRefreshReturnsWhenLifecycleTelemetryIsB
 
     const auto status = updateFuture.wait_for(std::chrono::milliseconds(200));
 
-    NLS::Render::Context::ThreadedRenderingLifecycleTestAccess::UnlockTelemetry(*lifecycle);
+    NLS::Render::Context::DriverTestAccess::UnlockFrameTelemetry(*driver);
 
     ASSERT_EQ(status, std::future_status::ready);
     updateFuture.get();
@@ -1608,26 +1611,23 @@ TEST(PanelWindowHookTests, FrameInfoPanelRefreshReturnsWhenLifecycleTelemetryIsB
     ExpectFrameInfoRow(panel, "Debug", "Snapshot Buffers", "5");
     ExpectFrameInfoRow(panel, "Debug", "ParseScene Calls", "1");
 #else
-    GTEST_SKIP() << "NLS_ENABLE_TEST_HOOKS is required to lock lifecycle telemetry in this test.";
+    GTEST_SKIP() << "NLS_ENABLE_TEST_HOOKS is required to lock frame telemetry in this test.";
 #endif
 }
 
-TEST(PanelWindowHookTests, FrameInfoTelemetryReadReturnsImmediatelyWhenLifecycleTelemetryIsBusy)
+TEST(PanelWindowHookTests, FrameInfoTelemetryReadReturnsImmediatelyWhenFrameTelemetryIsBusy)
 {
 #if defined(NLS_ENABLE_TEST_HOOKS)
     NLS::Render::Settings::DriverSettings settings;
     settings.graphicsBackend = NLS::Render::Settings::EGraphicsBackend::NONE;
     settings.enableExplicitRHI = false;
-    settings.enableThreadedRendering = true;
-    settings.threadedFrameSlotCount = 1u;
+    settings.framesInFlight = 1u;
 
     static auto driver = std::make_unique<NLS::Render::Context::Driver>(settings);
     NLS::Core::ServiceLocator::Provide(*driver);
     NLS::Render::Context::DriverTestAccess::PauseThreadedRenderingWorkers(*driver);
 
-    auto* lifecycle = NLS::Render::Context::DriverTestAccess::GetThreadedRenderingLifecycle(*driver);
-    ASSERT_NE(lifecycle, nullptr);
-    ASSERT_TRUE(NLS::Render::Context::ThreadedRenderingLifecycleTestAccess::TryLockTelemetry(*lifecycle));
+    ASSERT_TRUE(NLS::Render::Context::DriverTestAccess::TryLockFrameTelemetry(*driver));
 
     auto telemetryFuture = std::async(
         std::launch::async,
@@ -1638,31 +1638,28 @@ TEST(PanelWindowHookTests, FrameInfoTelemetryReadReturnsImmediatelyWhenLifecycle
 
     const auto status = telemetryFuture.wait_for(std::chrono::milliseconds(200));
 
-    NLS::Render::Context::ThreadedRenderingLifecycleTestAccess::UnlockTelemetry(*lifecycle);
+    NLS::Render::Context::DriverTestAccess::UnlockFrameTelemetry(*driver);
 
     ASSERT_EQ(status, std::future_status::ready);
     EXPECT_FALSE(telemetryFuture.get().has_value());
 #else
-    GTEST_SKIP() << "NLS_ENABLE_TEST_HOOKS is required to lock lifecycle telemetry in this test.";
+    GTEST_SKIP() << "NLS_ENABLE_TEST_HOOKS is required to lock frame telemetry in this test.";
 #endif
 }
 
-TEST(PanelWindowHookTests, CompositeRendererGetFrameInfoDoesNotBlockWhenLifecycleTelemetryIsBusy)
+TEST(PanelWindowHookTests, CompositeRendererGetFrameInfoDoesNotBlockWhenFrameTelemetryIsBusy)
 {
 #if defined(NLS_ENABLE_TEST_HOOKS)
     NLS::Render::Settings::DriverSettings settings;
     settings.graphicsBackend = NLS::Render::Settings::EGraphicsBackend::NONE;
     settings.enableExplicitRHI = false;
-    settings.enableThreadedRendering = true;
-    settings.threadedFrameSlotCount = 1u;
+    settings.framesInFlight = 1u;
 
     auto driver = std::make_unique<NLS::Render::Context::Driver>(settings);
     NLS::Core::ServiceLocator::Provide(*driver);
     NLS::Render::Context::DriverTestAccess::PauseThreadedRenderingWorkers(*driver);
 
-    auto* lifecycle = NLS::Render::Context::DriverTestAccess::GetThreadedRenderingLifecycle(*driver);
-    ASSERT_NE(lifecycle, nullptr);
-    ASSERT_TRUE(NLS::Render::Context::ThreadedRenderingLifecycleTestAccess::TryLockTelemetry(*lifecycle));
+    ASSERT_TRUE(NLS::Render::Context::DriverTestAccess::TryLockFrameTelemetry(*driver));
 
     auto renderer = std::make_unique<StatsOnlyRenderer>(*driver);
     renderer->ResetFrameStatistics();
@@ -1677,13 +1674,13 @@ TEST(PanelWindowHookTests, CompositeRendererGetFrameInfoDoesNotBlockWhenLifecycl
 
     const auto status = frameInfoFuture.wait_for(std::chrono::milliseconds(200));
 
-    NLS::Render::Context::ThreadedRenderingLifecycleTestAccess::UnlockTelemetry(*lifecycle);
+    NLS::Render::Context::DriverTestAccess::UnlockFrameTelemetry(*driver);
 
     ASSERT_EQ(status, std::future_status::ready);
     EXPECT_EQ(frameInfoFuture.get(), 0u);
     EXPECT_TRUE(renderer->IsFrameInfoValid());
 #else
-    GTEST_SKIP() << "NLS_ENABLE_TEST_HOOKS is required to lock lifecycle telemetry in this test.";
+    GTEST_SKIP() << "NLS_ENABLE_TEST_HOOKS is required to lock frame telemetry in this test.";
 #endif
 }
 
@@ -1693,15 +1690,11 @@ TEST(PanelWindowHookTests, CompositeRendererGetFrameInfoDoesNotRefreshThreadedTe
     NLS::Render::Settings::DriverSettings settings;
     settings.graphicsBackend = NLS::Render::Settings::EGraphicsBackend::NONE;
     settings.enableExplicitRHI = false;
-    settings.enableThreadedRendering = true;
-    settings.threadedFrameSlotCount = 1u;
+    settings.framesInFlight = 1u;
 
     auto driver = std::make_unique<NLS::Render::Context::Driver>(settings);
     NLS::Core::ServiceLocator::Provide(*driver);
     NLS::Render::Context::DriverTestAccess::PauseThreadedRenderingWorkers(*driver);
-
-    auto* lifecycle = NLS::Render::Context::DriverTestAccess::GetThreadedRenderingLifecycle(*driver);
-    ASSERT_NE(lifecycle, nullptr);
 
     auto renderer = std::make_unique<StatsOnlyRenderer>(*driver);
     renderer->ResetFrameStatistics();
@@ -1709,36 +1702,34 @@ TEST(PanelWindowHookTests, CompositeRendererGetFrameInfoDoesNotRefreshThreadedTe
     ASSERT_TRUE(renderer->IsFrameInfoValid());
     EXPECT_EQ(renderer->GetFrameInfo().inFlightFrameCount, 0u);
 
-    NLS::Render::Context::FrameSnapshot snapshot;
+    NLS::Render::Context::RenderFramePacket snapshot;
     snapshot.frameId = 77u;
     snapshot.renderWidth = 64u;
     snapshot.renderHeight = 64u;
-    ASSERT_TRUE(lifecycle->TryPublishFrameSnapshot(snapshot));
+    ASSERT_TRUE(NLS::Render::Context::DriverRendererAccess::TryEnqueueRenderFrame(
+        *driver, snapshot, [](size_t) { return NLS::Render::Context::RenderScenePackage{}; }));
 
     const auto telemetry = NLS::Render::Context::DriverRendererAccess::GetThreadedFrameTelemetry(*driver);
     ASSERT_EQ(telemetry.inFlightFrameCount, 1u);
     EXPECT_EQ(renderer->GetFrameInfo().inFlightFrameCount, 0u);
 #else
-    GTEST_SKIP() << "NLS_ENABLE_TEST_HOOKS is required to publish lifecycle telemetry in this test.";
+    GTEST_SKIP() << "NLS_ENABLE_TEST_HOOKS is required to pause rendering in this test.";
 #endif
 }
 
-TEST(PanelWindowHookTests, AViewRenderReturnsWhenLifecycleTelemetryIsBusy)
+TEST(PanelWindowHookTests, AViewRenderReturnsWhenFrameTelemetryIsBusy)
 {
 #if defined(NLS_ENABLE_TEST_HOOKS)
     NLS::Render::Settings::DriverSettings settings;
     settings.graphicsBackend = NLS::Render::Settings::EGraphicsBackend::NONE;
     settings.enableExplicitRHI = false;
-    settings.enableThreadedRendering = true;
-    settings.threadedFrameSlotCount = 1u;
+    settings.framesInFlight = 1u;
 
     auto driver = std::make_unique<NLS::Render::Context::Driver>(settings);
     NLS::Core::ServiceLocator::Provide(*driver);
     NLS::Render::Context::DriverTestAccess::PauseThreadedRenderingWorkers(*driver);
 
-    auto* lifecycle = NLS::Render::Context::DriverTestAccess::GetThreadedRenderingLifecycle(*driver);
-    ASSERT_NE(lifecycle, nullptr);
-    ASSERT_TRUE(NLS::Render::Context::ThreadedRenderingLifecycleTestAccess::TryLockTelemetry(*lifecycle));
+    ASSERT_TRUE(NLS::Render::Context::DriverTestAccess::TryLockFrameTelemetry(*driver));
 
     SnapshotProbeView view("Probe View", *driver);
     auto renderFuture = std::async(
@@ -1751,12 +1742,12 @@ TEST(PanelWindowHookTests, AViewRenderReturnsWhenLifecycleTelemetryIsBusy)
 
     const auto status = renderFuture.wait_for(std::chrono::milliseconds(200));
 
-    NLS::Render::Context::ThreadedRenderingLifecycleTestAccess::UnlockTelemetry(*lifecycle);
+    NLS::Render::Context::DriverTestAccess::UnlockFrameTelemetry(*driver);
 
     ASSERT_EQ(status, std::future_status::ready);
     EXPECT_TRUE(renderFuture.get());
 #else
-    GTEST_SKIP() << "NLS_ENABLE_TEST_HOOKS is required to lock lifecycle telemetry in this test.";
+    GTEST_SKIP() << "NLS_ENABLE_TEST_HOOKS is required to lock frame telemetry in this test.";
 #endif
 }
 
@@ -1766,8 +1757,7 @@ TEST(PanelWindowHookTests, AViewSnapshotUsesPostRenderDrainTelemetry)
     NLS::Render::Settings::DriverSettings settings;
     settings.graphicsBackend = NLS::Render::Settings::EGraphicsBackend::NONE;
     settings.enableExplicitRHI = false;
-    settings.enableThreadedRendering = true;
-    settings.threadedFrameSlotCount = 1u;
+    settings.framesInFlight = 1u;
 
     auto driver = std::make_unique<NLS::Render::Context::Driver>(settings);
     NLS::Core::ServiceLocator::Provide(*driver);
@@ -1783,7 +1773,6 @@ TEST(PanelWindowHookTests, AViewSnapshotUsesPostRenderDrainTelemetry)
     const auto& snapshot = view.GetLastRenderedFrameInfoSnapshot();
     ASSERT_TRUE(snapshot.has_value());
     EXPECT_EQ(snapshot->inFlightFrameCount, 0u);
-    EXPECT_EQ(snapshot->stageSummary, NLS::Render::Data::ThreadedFrameStageSummary::Retired);
     EXPECT_EQ(snapshot->retirementState, NLS::Render::Data::FrameRetirementState::Ready);
 #else
     GTEST_SKIP() << "NLS_ENABLE_TEST_HOOKS is required to pause threaded rendering workers in this test.";
@@ -1796,8 +1785,7 @@ TEST(PanelWindowHookTests, AViewResizeDefersWhenThreadedTelemetryIsBusy)
     NLS::Render::Settings::DriverSettings settings;
     settings.graphicsBackend = NLS::Render::Settings::EGraphicsBackend::NONE;
     settings.enableExplicitRHI = false;
-    settings.enableThreadedRendering = true;
-    settings.threadedFrameSlotCount = 1u;
+    settings.framesInFlight = 1u;
 
     auto driver = std::make_unique<NLS::Render::Context::Driver>(settings);
     NLS::Core::ServiceLocator::Provide(*driver);
@@ -1805,13 +1793,12 @@ TEST(PanelWindowHookTests, AViewResizeDefersWhenThreadedTelemetryIsBusy)
 
     SnapshotProbeView view("Probe View", *driver);
     view.SetRequiresRetiredFrameConsumptionForTest(true);
+    view.SetRequiresImmediateRetiredFrameReadbackForTest(true);
     view.ApplyResolvedViewSizeForTest(32u, 32u);
     const std::pair<uint16_t, uint16_t> originalSize { 32u, 32u };
     ASSERT_EQ(view.GetResolvedViewSizeForTest(), originalSize);
 
-    auto* lifecycle = NLS::Render::Context::DriverTestAccess::GetThreadedRenderingLifecycle(*driver);
-    ASSERT_NE(lifecycle, nullptr);
-    ASSERT_TRUE(NLS::Render::Context::ThreadedRenderingLifecycleTestAccess::TryLockTelemetry(*lifecycle));
+    ASSERT_TRUE(NLS::Render::Context::DriverTestAccess::TryLockFrameTelemetry(*driver));
 
     auto resizeFuture = std::async(
         std::launch::async,
@@ -1840,14 +1827,14 @@ TEST(PanelWindowHookTests, AViewResizeDefersWhenThreadedTelemetryIsBusy)
 
     const auto status = resizeFuture.wait_for(std::chrono::milliseconds(200));
 
-    NLS::Render::Context::ThreadedRenderingLifecycleTestAccess::UnlockTelemetry(*lifecycle);
+    NLS::Render::Context::DriverTestAccess::UnlockFrameTelemetry(*driver);
 
     ASSERT_EQ(status, std::future_status::ready);
     EXPECT_EQ(resizeFuture.get(), originalSize);
     ASSERT_TRUE(view.GetPendingResolvedViewSizeForTest().has_value());
     EXPECT_NE(view.GetPendingResolvedViewSizeForTest().value(), originalSize);
 #else
-    GTEST_SKIP() << "NLS_ENABLE_TEST_HOOKS is required to lock lifecycle telemetry in this test.";
+    GTEST_SKIP() << "NLS_ENABLE_TEST_HOOKS is required to lock frame telemetry in this test.";
 #endif
 }
 
@@ -1857,8 +1844,7 @@ TEST(PanelWindowHookTests, AViewApplyResolvedSizeDefersWhenThreadedTelemetryIsBu
     NLS::Render::Settings::DriverSettings settings;
     settings.graphicsBackend = NLS::Render::Settings::EGraphicsBackend::NONE;
     settings.enableExplicitRHI = false;
-    settings.enableThreadedRendering = true;
-    settings.threadedFrameSlotCount = 1u;
+    settings.framesInFlight = 1u;
 
     auto driver = std::make_unique<NLS::Render::Context::Driver>(settings);
     NLS::Core::ServiceLocator::Provide(*driver);
@@ -1866,13 +1852,12 @@ TEST(PanelWindowHookTests, AViewApplyResolvedSizeDefersWhenThreadedTelemetryIsBu
 
     SnapshotProbeView view("Probe View", *driver);
     view.SetRequiresRetiredFrameConsumptionForTest(true);
+    view.SetRequiresImmediateRetiredFrameReadbackForTest(true);
     view.ApplyResolvedViewSizeForTest(32u, 32u);
     const std::pair<uint16_t, uint16_t> originalSize { 32u, 32u };
     ASSERT_EQ(view.GetResolvedViewSizeForTest(), originalSize);
 
-    auto* lifecycle = NLS::Render::Context::DriverTestAccess::GetThreadedRenderingLifecycle(*driver);
-    ASSERT_NE(lifecycle, nullptr);
-    ASSERT_TRUE(NLS::Render::Context::ThreadedRenderingLifecycleTestAccess::TryLockTelemetry(*lifecycle));
+    ASSERT_TRUE(NLS::Render::Context::DriverTestAccess::TryLockFrameTelemetry(*driver));
 
     auto resizeFuture = std::async(
         std::launch::async,
@@ -1884,7 +1869,7 @@ TEST(PanelWindowHookTests, AViewApplyResolvedSizeDefersWhenThreadedTelemetryIsBu
 
     const auto status = resizeFuture.wait_for(std::chrono::milliseconds(200));
 
-    NLS::Render::Context::ThreadedRenderingLifecycleTestAccess::UnlockTelemetry(*lifecycle);
+    NLS::Render::Context::DriverTestAccess::UnlockFrameTelemetry(*driver);
 
     ASSERT_EQ(status, std::future_status::ready);
     EXPECT_EQ(resizeFuture.get(), originalSize);
@@ -1892,7 +1877,7 @@ TEST(PanelWindowHookTests, AViewApplyResolvedSizeDefersWhenThreadedTelemetryIsBu
     const std::pair<uint16_t, uint16_t> expectedPendingSize { 64u, 64u };
     EXPECT_EQ(view.GetPendingResolvedViewSizeForTest().value(), expectedPendingSize);
 #else
-    GTEST_SKIP() << "NLS_ENABLE_TEST_HOOKS is required to lock lifecycle telemetry in this test.";
+    GTEST_SKIP() << "NLS_ENABLE_TEST_HOOKS is required to lock frame telemetry in this test.";
 #endif
 }
 
@@ -1948,13 +1933,18 @@ TEST(PanelWindowHookTests, ThreadedFramePublishAdvanceUsesPreviousTelemetryWhenB
         afterTelemetry));
 }
 
-TEST(PanelWindowHookTests, ThreadedPublishWaitsForLifecycleMutexInsteadOfDroppingOnContention)
+TEST(PanelWindowHookTests, RenderCommandPublicationWaitsForFrameTelemetryMutex)
 {
 #if defined(NLS_ENABLE_TEST_HOOKS)
-    NLS::Render::Context::ThreadedRenderingLifecycle lifecycle(1u);
-    ASSERT_TRUE(NLS::Render::Context::ThreadedRenderingLifecycleTestAccess::TryLockTelemetry(lifecycle));
+    NLS::Render::Settings::DriverSettings settings;
+    settings.graphicsBackend = NLS::Render::Settings::EGraphicsBackend::NONE;
+    settings.enableExplicitRHI = false;
+    settings.framesInFlight = 1u;
+    NLS::Render::Context::Driver driver(settings);
+    NLS::Render::Context::DriverTestAccess::PauseThreadedRenderingWorkers(driver);
+    ASSERT_TRUE(NLS::Render::Context::DriverTestAccess::TryLockFrameTelemetry(driver));
 
-    NLS::Render::Context::FrameSnapshot snapshot;
+    NLS::Render::Context::RenderFramePacket snapshot;
     snapshot.frameId = 1u;
     snapshot.renderWidth = 640u;
     snapshot.renderHeight = 480u;
@@ -1963,20 +1953,19 @@ TEST(PanelWindowHookTests, ThreadedPublishWaitsForLifecycleMutexInsteadOfDroppin
         std::launch::async,
         [&]
         {
-            return lifecycle.PublishFrameSnapshot(
-                snapshot,
-                std::chrono::milliseconds(250));
+            return NLS::Render::Context::DriverRendererAccess::TryEnqueueRenderFrame(
+                driver, snapshot, [](size_t) { return NLS::Render::Context::RenderScenePackage{}; });
         });
 
     EXPECT_EQ(publishFuture.wait_for(std::chrono::milliseconds(50)), std::future_status::timeout);
 
-    NLS::Render::Context::ThreadedRenderingLifecycleTestAccess::UnlockTelemetry(lifecycle);
+    NLS::Render::Context::DriverTestAccess::UnlockFrameTelemetry(driver);
 
     ASSERT_EQ(publishFuture.wait_for(std::chrono::milliseconds(500)), std::future_status::ready);
     EXPECT_TRUE(publishFuture.get());
-    EXPECT_EQ(lifecycle.GetPublishedFrameCount(), 1u);
+    EXPECT_EQ(NLS::Render::Context::DriverRendererAccess::GetThreadedFrameTelemetry(driver).publishedFrameCount, 1u);
 #else
-    GTEST_SKIP() << "NLS_ENABLE_TEST_HOOKS is required to lock lifecycle telemetry in this test.";
+    GTEST_SKIP() << "NLS_ENABLE_TEST_HOOKS is required to lock frame telemetry in this test.";
 #endif
 }
 
@@ -2076,10 +2065,9 @@ TEST(PanelWindowHookTests, FrameInfoPanelReadsThreadedPublishDiagnostics)
     NLS::Render::Settings::DriverSettings settings;
     settings.graphicsBackend = NLS::Render::Settings::EGraphicsBackend::NONE;
     settings.enableExplicitRHI = false;
-    settings.enableThreadedRendering = true;
-    settings.threadedFrameSlotCount = 2u;
+    settings.framesInFlight = 2u;
 
-    static auto driver = std::make_unique<NLS::Render::Context::Driver>(settings);
+    auto driver = std::make_unique<NLS::Render::Context::Driver>(settings);
     NLS::Core::ServiceLocator::Provide(*driver);
     NLS::Render::Context::DriverTestAccess::PauseThreadedRenderingWorkers(*driver);
 
@@ -2097,7 +2085,9 @@ TEST(PanelWindowHookTests, FrameInfoPanelReadsThreadedPublishDiagnostics)
     const auto frameInfo = renderer.GetFrameInfo();
     panel.UpdateForFrameInfo("Threaded View", frameInfo);
 
-    ExpectFrameInfoRow(panel, "Status", "Frame State", "Logic -> Open -> Pending", "InFlight 1, Blocked 0");
+    ExpectFrameInfoRow(panel, "Status", "Frame State", "Open -> Pending", "InFlight 1, Blocked 0");
+    ASSERT_TRUE(NLS::Render::Context::DriverRendererAccess::TryDrainThreadedRendering(*driver, false));
+    NLS::Core::ServiceLocator::Remove<NLS::Render::Context::Driver>();
 }
 
 TEST(PanelWindowHookTests, FrameInfoPanelRefreshesThreadedDiagnosticsAfterFrameRetirement)
@@ -2105,10 +2095,9 @@ TEST(PanelWindowHookTests, FrameInfoPanelRefreshesThreadedDiagnosticsAfterFrameR
     NLS::Render::Settings::DriverSettings settings;
     settings.graphicsBackend = NLS::Render::Settings::EGraphicsBackend::NONE;
     settings.enableExplicitRHI = false;
-    settings.enableThreadedRendering = true;
-    settings.threadedFrameSlotCount = 1u;
+    settings.framesInFlight = 1u;
 
-    static auto driver = std::make_unique<NLS::Render::Context::Driver>(settings);
+    auto driver = std::make_unique<NLS::Render::Context::Driver>(settings);
     NLS::Core::ServiceLocator::Provide(*driver);
 
     StatsOnlyRenderer renderer(*driver);
@@ -2121,20 +2110,22 @@ TEST(PanelWindowHookTests, FrameInfoPanelRefreshesThreadedDiagnosticsAfterFrameR
     renderer.BeginFrame(frameDescriptor);
     renderer.EndFrame();
 
-    const auto* lifecycle = NLS::Render::Context::DriverTestAccess::GetThreadedRenderingLifecycle(*driver);
-    ASSERT_NE(lifecycle, nullptr);
-
+    bool retired = false;
     for (int attempt = 0; attempt < 100; ++attempt)
     {
-        const auto* slot = lifecycle->PeekSlot(0u);
-        if (slot != nullptr && slot->stage == NLS::Render::Context::ThreadedFrameStage::Retired)
+        const auto telemetry = NLS::Render::Context::DriverRendererAccess::TryGetThreadedFrameTelemetry(*driver);
+        if (telemetry.has_value() && telemetry->inFlightFrameCount == 0u &&
+            telemetry->retirementState == NLS::Render::Data::FrameRetirementState::Ready)
+        {
+            retired = true;
             break;
+        }
         std::this_thread::sleep_for(std::chrono::milliseconds(2));
     }
+    ASSERT_TRUE(retired);
 
     const auto telemetry = NLS::Render::Context::DriverRendererAccess::GetThreadedFrameTelemetry(*driver);
     ASSERT_EQ(telemetry.inFlightFrameCount, 0u);
-    ASSERT_EQ(telemetry.stageSummary, NLS::Render::Data::ThreadedFrameStageSummary::Retired);
     ASSERT_EQ(telemetry.retirementState, NLS::Render::Data::FrameRetirementState::Ready);
 
     NLS::Render::Core::RendererStats stats;
@@ -2145,7 +2136,8 @@ TEST(PanelWindowHookTests, FrameInfoPanelRefreshesThreadedDiagnosticsAfterFrameR
     NLS::Editor::Panels::FrameInfo panel("Frame Info", true, {});
     panel.UpdateForFrameInfo("Threaded View", stats.GetFrameInfo());
 
-    ExpectFrameInfoRow(panel, "Status", "Frame State", "Retired -> Open -> Ready", "InFlight 0, Blocked 0");
+    ExpectFrameInfoRow(panel, "Status", "Frame State", "Open -> Ready", "InFlight 0, Blocked 0");
+    NLS::Core::ServiceLocator::Remove<NLS::Render::Context::Driver>();
 }
 
 TEST(PanelWindowHookTests, AViewStaticFrameCacheSkipsRendererSubmissionWhenViewIsUnchanged)
@@ -2289,9 +2281,9 @@ TEST(PanelWindowHookTests, RetirementAwareRenderPolicyDrainsOnlyForImmediateRead
         true));
 }
 
-TEST(PanelWindowHookTests, RetirementAwareRenderPolicyDrainsAfterViewResize)
+TEST(PanelWindowHookTests, TexturePresentationDoesNotDrainAfterViewResize)
 {
-    EXPECT_TRUE(NLS::Editor::Panels::ShouldDrainAfterRetirementAwareViewRender(
+    EXPECT_FALSE(NLS::Editor::Panels::ShouldDrainAfterRetirementAwareViewRender(
         true,
         false,
         true));
@@ -2311,12 +2303,39 @@ TEST(PanelWindowHookTests, RetirementAwareRenderPolicyDoesNotDrainInitialResizeW
         false,
         false));
 
-    EXPECT_TRUE(NLS::Editor::Panels::ShouldDrainAfterRetirementAwareViewRender(
+    EXPECT_FALSE(NLS::Editor::Panels::ShouldDrainAfterRetirementAwareViewRender(
         true,
         false,
         true,
         false,
         true));
+}
+
+TEST(PanelWindowHookTests, TextureViewResizesWhileEarlierFramesRemainInFlight)
+{
+    using namespace NLS::Render;
+    Settings::DriverSettings settings;
+    settings.graphicsBackend = Settings::EGraphicsBackend::NONE;
+    settings.enableExplicitRHI = false;
+    settings.framesInFlight = 2u;
+    Context::Driver driver(settings);
+    NLS::Core::ServiceLocator::Provide(driver);
+    Context::DriverTestAccess::PauseThreadedRenderingWorkers(driver);
+    {
+        SnapshotProbeView view("Resize Probe", driver);
+        view.SetRequiresRetiredFrameConsumptionForTest(true);
+        view.ApplyResolvedViewSizeForTest(32u, 32u);
+        Context::RenderFramePacket packet;
+        packet.frameId = 1u;
+        ASSERT_TRUE(Context::DriverRendererAccess::TryEnqueueRenderFrame(driver, packet,
+            [](size_t) { return Context::RenderScenePackage {}; }));
+        ASSERT_EQ(Context::DriverRendererAccess::GetThreadedFrameTelemetry(driver).inFlightFrameCount, 1u);
+        view.ApplyResolvedViewSizeForTest(96u, 64u);
+        EXPECT_EQ(view.GetResolvedViewSizeForTest(), (std::pair<uint16_t, uint16_t> {96u, 64u}));
+        EXPECT_FALSE(view.GetPendingResolvedViewSizeForTest().has_value());
+        EXPECT_EQ(Context::DriverRendererAccess::GetThreadedFrameTelemetry(driver).inFlightFrameCount, 1u);
+    }
+    NLS::Core::ServiceLocator::Remove<Context::Driver>();
 }
 
 TEST(PanelWindowHookTests, RetirementAwareRenderPolicyDrainsOnlyForExplicitSynchronizationNeeds)
@@ -2424,14 +2443,14 @@ TEST(PanelWindowHookTests, SceneViewBlocksCameraInputDuringTextEntryEvenInsideVi
         false));
 }
 
-TEST(PanelWindowHookTests, SceneViewRetainsExplicitReadbackAndResizeDrains)
+TEST(PanelWindowHookTests, SceneViewRetainsReadbackSynchronizationWithoutResizeDrain)
 {
     EXPECT_TRUE(NLS::Editor::Panels::ShouldDrainAfterRetirementAwareViewRender(
         true,
         true,
         false));
 
-    EXPECT_TRUE(NLS::Editor::Panels::ShouldDrainAfterRetirementAwareViewRender(
+    EXPECT_FALSE(NLS::Editor::Panels::ShouldDrainAfterRetirementAwareViewRender(
         true,
         false,
         true,

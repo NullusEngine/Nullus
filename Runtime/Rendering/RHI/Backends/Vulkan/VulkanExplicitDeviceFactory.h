@@ -61,4 +61,8 @@ namespace NLS::Render::Backend
 
 	// Direct creation - creates Vulkan Tier A device without IRenderDevice
 	NLS_RENDER_API std::shared_ptr<NLS::Render::RHI::RHIDevice> CreateVulkanRhiDevice(void* platformWindow);
+
+#if defined(NLS_ENABLE_TEST_HOOKS)
+	NLS_RENDER_API uint64_t GetVulkanValidationErrorCountForTesting();
+#endif
 }

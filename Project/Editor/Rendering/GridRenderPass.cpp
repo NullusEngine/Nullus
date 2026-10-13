@@ -9,6 +9,7 @@
 
 #include "Core/EditorResources.h"
 #include "Core/EditorActions.h"
+#include "Rendering/EditorHelperLifecycle.h"
 #include "Rendering/EditorPipelineStatePresets.h"
 #include "Rendering/GridRenderPass.h"
 #include "Settings/EditorSettings.h"
@@ -237,7 +238,7 @@ std::optional<NLS::Render::Context::RenderPassCommandInput> Editor::Rendering::G
     bool canReuseCachedCommands =
         m_threadedCommandCacheKey.has_value() &&
         *m_threadedCommandCacheKey == cacheKey &&
-        !m_cachedThreadedDrawCommands.empty();
+        CanCacheEditorDrawCommands(m_cachedThreadedDrawCommands);
     if (canReuseCachedCommands)
     {
         std::shared_ptr<NLS::Render::RHI::RHIBindingSet> currentFrameBindingSet;
@@ -267,10 +268,18 @@ std::optional<NLS::Render::Context::RenderPassCommandInput> Editor::Rendering::G
             model,
             passInput.recordedDrawCommands);
 
-        m_cachedThreadedDrawCommands = passInput.recordedDrawCommands;
-        for (auto& drawCommand : m_cachedThreadedDrawCommands)
-            drawCommand.frameBindingSet.reset();
-        m_threadedCommandCacheKey = cacheKey;
+        if (CanCacheEditorDrawCommands(passInput.recordedDrawCommands))
+        {
+            m_cachedThreadedDrawCommands = passInput.recordedDrawCommands;
+            for (auto& drawCommand : m_cachedThreadedDrawCommands)
+                drawCommand.frameBindingSet.reset();
+            m_threadedCommandCacheKey = cacheKey;
+        }
+        else
+        {
+            m_threadedCommandCacheKey.reset();
+            m_cachedThreadedDrawCommands.clear();
+        }
     }
 
     passInput.drawCount = static_cast<uint64_t>(passInput.recordedDrawCommands.size());

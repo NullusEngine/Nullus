@@ -12,7 +12,7 @@
 #include <string_view>
 #include <vector>
 
-#include "Rendering/Context/ThreadedRenderingLifecycle.h"
+#include "Rendering/Context/RenderScenePackage.h"
 #include "Rendering/Core/RenderClearValues.h"
 #include "Rendering/Data/FrameDescriptor.h"
 

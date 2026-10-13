@@ -6351,7 +6351,7 @@ TEST(AssetBrowserPresentationTests, ThumbnailLatencyTelemetryIsWiredToPreviewDec
 {
     const auto thumbnailService = ReadSourceText(RepoPath("Project/Editor/Assets/AssetThumbnailService.cpp"));
     const auto assetBrowser = ReadSourceText(RepoPath("Project/Editor/Panels/AssetBrowser.cpp"));
-    const auto rhiThreadCoordinator = ReadSourceText(RepoPath("Runtime/Rendering/Context/RhiThreadCoordinator.cpp"));
+    const auto rhiThreadCoordinator = ReadSourceText(RepoPath("Runtime/Rendering/Context/RhiCommandListExecutorFrame.cpp"));
     const auto editorCore = ReadSourceText(RepoPath("Project/Editor/Core/Editor.cpp"));
 
     EXPECT_NE(
@@ -6876,11 +6876,13 @@ TEST(AssetBrowserPresentationTests, ThumbnailForwardBackgroundPreviewUsesThreade
         << "Background previews still need the non-owning global-frame entrypoint.";
     EXPECT_EQ(beginFrameBody.find("!m_backgroundPreviewFrame"), std::string::npos)
         << "A threaded driver cannot execute direct Forward draws without an active explicit frame context.";
-    EXPECT_NE(beginFrameBody.find("DriverRendererAccess::IsThreadedRenderingEnabled(m_driver)"), std::string::npos)
-        << "Background previews must capture immutable GPU draw commands for the renderer thread.";
+    EXPECT_NE(beginFrameBody.find("FreezeFrameDescriptor"), std::string::npos);
+    EXPECT_NE(beginFrameBody.find("SetPendingRenderSceneCommand"), std::string::npos)
+        << "Background previews must enqueue their scene preparation on the render thread.";
     EXPECT_EQ(drawFrameBody.find("!m_backgroundPreviewFrame"), std::string::npos)
         << "DrawFrame must use the same threaded execution decision as BeginSceneFrame.";
-    EXPECT_NE(drawFrameBody.find("DriverRendererAccess::IsThreadedRenderingEnabled(m_driver)"), std::string::npos);
+    EXPECT_EQ(drawFrameBody.find("ExecutePreparedForwardSceneGraph"), std::string::npos);
+    EXPECT_NE(drawFrameBody.find("DrawRegisteredPasses"), std::string::npos);
 }
 
 TEST(AssetBrowserPresentationTests, ThumbnailGenerationStopsStartingWorkWhenEditorWindowIsClosing)
@@ -7724,7 +7726,7 @@ TEST(AssetBrowserPresentationTests, CachedGpuThumbnailPreservesPreviewSrgbSampli
     const auto previewRenderer = ReadSourceText(
         RepoPath("Project/Editor/Assets/EditorThumbnailPreviewRenderer.cpp"));
     const auto rhiThreadCoordinator = ReadSourceText(
-        RepoPath("Runtime/Rendering/Context/RhiThreadCoordinator.cpp"));
+        RepoPath("Runtime/Rendering/Context/RhiCommandListExecutorFrame.cpp"));
 
     const auto colorSpaceBody = ExtractFunctionBody(
         assetBrowser,

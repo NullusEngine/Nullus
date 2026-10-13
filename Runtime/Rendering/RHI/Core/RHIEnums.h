@@ -151,6 +151,7 @@ namespace NLS::Render::RHI
         DepthRead = 1u << 8,
         DepthWrite = 1u << 9,
         Present = 1u << 10,
+        ShaderReadNonPixel = 1u << 11,
         GenericRead = CopySrc | VertexBuffer | IndexBuffer | UniformBuffer | ShaderRead
     };
 

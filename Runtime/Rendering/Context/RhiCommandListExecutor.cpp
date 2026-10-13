@@ -381,6 +381,10 @@ namespace NLS::Render::Context
             impl.initialized = false;
             impl.acceptingNative = false;
             releasedTargets = std::move(impl.targets);
+            // A moved-from std::function is only "valid but unspecified", and libc++
+            // may keep a trivially copyable target alive. The member must not retain
+            // device owners after shutdown.
+            impl.targets = {};
             if (releasedTargets.signalGpuFences &&
                 (impl.failed || impl.gpuCompletedSequence < impl.dispatchSequence))
                 impl.quarantinedTargets.push_back(std::move(releasedTargets));

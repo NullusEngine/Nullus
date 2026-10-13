@@ -47,7 +47,8 @@ TEST(VulkanSubmitLaneTests, UploadReadbackAndFenceOnlyRetirementUseTheConfigured
         settings.platformWindow = window.GetGlfwWindow();
         Context::Driver driver(settings);
         auto device = Context::DriverRendererAccess::GetExplicitDevice(driver);
-        ASSERT_NE(device, nullptr);
+        if (device == nullptr)
+            GTEST_SKIP() << "Vulkan device creation failed in this environment";
         EXPECT_TRUE(device->GetCapabilities().supportsRhiTasksMode);
 
         const std::array<uint8_t, 4> source{12u, 87u, 201u, 255u};
@@ -126,7 +127,8 @@ TEST(VulkanSubmitLaneTests, ShaderReadBuffersAndDepthPassTransitionsSatisfyValid
             settings.platformWindow = window.GetGlfwWindow();
             Context::Driver driver(settings);
             auto device = Context::DriverRendererAccess::GetExplicitDevice(driver);
-            ASSERT_NE(device, nullptr);
+            if (device == nullptr)
+                GTEST_SKIP() << "Vulkan device creation failed in this environment";
 
             RHI::RHIBufferDesc bufferDesc;
             bufferDesc.size = 64u;

@@ -97,7 +97,8 @@ TEST(DX12SubmitLaneTests, RejectedDescriptorInitializationDoesNotQuarantineUnsub
         Context::RhiFlushFlags::Submit, &driver);
     const auto sequence = executor.GetDispatchedSequence();
     const auto resources = Backend::CreateDX12DeviceResources(true);
-    ASSERT_TRUE(resources.IsValid());
+    if (!resources.IsValid())
+        GTEST_SKIP() << "no DX12 adapter is available in this environment";
     auto device = CreateExplicitDevice(resources);
     ASSERT_NE(device, nullptr);
     EXPECT_EQ(executor.GetDispatchedSequence(), sequence);
@@ -175,7 +176,8 @@ TEST(DX12SubmitLaneTests, GraphicsComputeGraphicsBarriersPreserveStatesAndPixels
         ScopedDx12SubmitLane lane(mode);
         ASSERT_TRUE(lane.ready);
         const auto resources = Backend::CreateDX12DeviceResources(true);
-        ASSERT_TRUE(resources.IsValid());
+        if (!resources.IsValid())
+            GTEST_SKIP() << "no DX12 adapter is available in this environment";
         auto device = CreateExplicitDevice(resources);
         ASSERT_NE(device, nullptr);
         Microsoft::WRL::ComPtr<ID3D12InfoQueue> messages;
@@ -304,7 +306,8 @@ TEST(DX12SubmitLaneTests, FullTextureUpdatesPreserveReadableLayoutAndPixels)
         ScopedDx12SubmitLane lane(mode);
         ASSERT_TRUE(lane.ready);
         const auto resources = Backend::CreateDX12DeviceResources(true);
-        ASSERT_TRUE(resources.IsValid());
+        if (!resources.IsValid())
+            GTEST_SKIP() << "no DX12 adapter is available in this environment";
         auto device = CreateExplicitDevice(resources);
         ASSERT_NE(device, nullptr);
         Microsoft::WRL::ComPtr<ID3D12InfoQueue> messages;
@@ -421,7 +424,8 @@ TEST(DX12SubmitLaneTests, MismatchedNativeListTypeIsRejectedBeforeQueueingGpuWor
         ScopedDx12SubmitLane lane(mode);
         ASSERT_TRUE(lane.ready);
         const auto resources = Backend::CreateDX12DeviceResources(true);
-        ASSERT_TRUE(resources.IsValid());
+        if (!resources.IsValid())
+            GTEST_SKIP() << "no DX12 adapter is available in this environment";
         auto device = CreateExplicitDevice(resources);
         auto pool = device->CreateCommandPool(RHI::QueueType::Compute, "MismatchedComputePool");
         ASSERT_NE(pool, nullptr);

@@ -3561,7 +3561,12 @@ TEST(EditorLaunchArgsTests, SceneViewSuppressesVisibleTextureRequestsWhileSceneL
         std::string::npos)
         << "Scene-load startup can tolerate unresolved explicit materials in the renderer so mesh-ready objects can appear with a default material.";
 
-    const auto actionsSource = ReadTextFile("Project/Editor/Core/EditorActions.cpp");
+    // Normalise line endings before the multi-line scan below: the checkout may
+    // use CRLF, and source-guards must not depend on the working-copy EOL style.
+    std::string actionsSource = ReadTextFile("Project/Editor/Core/EditorActions.cpp");
+    actionsSource.erase(
+        std::remove(actionsSource.begin(), actionsSource.end(), '\r'),
+        actionsSource.end());
     EXPECT_NE(actionsSource.find("revealed="), std::string::npos)
         << "Scene-load diagnostics should report how many renderer-resource objects have become visible.";
     EXPECT_NE(actionsSource.find(

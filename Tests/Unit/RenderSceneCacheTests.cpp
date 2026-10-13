@@ -3977,8 +3977,20 @@ TEST(RenderSceneCacheTests, SerialAndParallelVisibilityProduceEquivalentQueues)
         visibilityOptions,
         NLS::Engine::Rendering::RenderSceneVisibilityMode::Parallel);
 
+    const bool parallelVisibilityWorkersAvailable =
+        NLS::Base::TaskGraph::GetGlobalTaskGraph().GetWorkerCount() > 1u;
     EXPECT_FALSE(serialSnapshot.usedParallelEvaluation);
-    EXPECT_TRUE(parallelSnapshot.usedParallelEvaluation);
+    if (parallelVisibilityWorkersAvailable)
+    {
+        EXPECT_TRUE(parallelSnapshot.usedParallelEvaluation);
+    }
+    else
+    {
+        // The visibility pass falls back to the serial path when the rendering
+        // budget only exposes one worker, so the equivalence checks below still
+        // apply but parallel evaluation cannot be observed.
+        EXPECT_FALSE(parallelSnapshot.usedParallelEvaluation);
+    }
     EXPECT_EQ(serialSnapshot.primitiveBits, parallelSnapshot.primitiveBits);
     EXPECT_EQ(serialSnapshot.meshBits, parallelSnapshot.meshBits);
     EXPECT_EQ(serialSnapshot.visiblePrimitiveCount, parallelSnapshot.visiblePrimitiveCount);
@@ -3988,9 +4000,12 @@ TEST(RenderSceneCacheTests, SerialAndParallelVisibilityProduceEquivalentQueues)
     EXPECT_EQ(serialQueues.transparents.size(), parallelQueues.transparents.size());
     EXPECT_FALSE(serialQueues.decals.empty());
     EXPECT_FALSE(serialQueues.transparents.empty());
-    EXPECT_GT(
-        renderScene.GetLastLargeSceneTelemetryForTesting().parallelVisibilityTimeNs,
-        0u);
+    if (parallelVisibilityWorkersAvailable)
+    {
+        EXPECT_GT(
+            renderScene.GetLastLargeSceneTelemetryForTesting().parallelVisibilityTimeNs,
+            0u);
+    }
     EXPECT_EQ(ExtractMeshes(serialQueues), ExtractMeshes(parallelQueues));
 }
 

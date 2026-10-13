@@ -1337,12 +1337,26 @@ bool DeferredSceneRenderer::ResolveThreadedSceneCapture(
 	}
 
 	std::shared_ptr<NLS::Render::RHI::RHITextureView>
+	DeferredSceneRenderer::LoadPublishedGBufferDepthView() const
+	{
+		std::lock_guard lock(m_publishedGBufferDepthViewMutex);
+		return m_publishedGBufferDepthView;
+	}
+
+	void DeferredSceneRenderer::StorePublishedGBufferDepthView(
+		std::shared_ptr<NLS::Render::RHI::RHITextureView> view)
+	{
+		std::lock_guard lock(m_publishedGBufferDepthViewMutex);
+		m_publishedGBufferDepthView = std::move(view);
+	}
+
+	std::shared_ptr<NLS::Render::RHI::RHITextureView>
 	DeferredSceneRenderer::GetDeferredPreparedSceneDepthViewForEditorHelpers() const
 	{
 			const auto& frame = GetFrameDescriptor();
 			const auto width = static_cast<uint16_t>(frame.renderWidth);
 			const auto height = static_cast<uint16_t>(frame.renderHeight);
-			auto view = m_publishedGBufferDepthView.load(std::memory_order_acquire);
+			auto view = LoadPublishedGBufferDepthView();
 			if (view != nullptr && TextureResourceMatchesSize(view->GetTexture(), width, height))
 				return view;
 
@@ -1363,7 +1377,7 @@ bool DeferredSceneRenderer::ResolveThreadedSceneCapture(
 				if (!completion.Succeeded())
 					throw std::runtime_error(completion.GetDiagnostic());
 			}
-			return m_publishedGBufferDepthView.load(std::memory_order_acquire);
+			return LoadPublishedGBufferDepthView();
 	}
 
 void DeferredSceneRenderer::BeginFrame(const NLS::Render::Data::FrameDescriptor& p_frameDescriptor)
@@ -1576,7 +1590,7 @@ void DeferredSceneRenderer::DrawFrame()
 			m_gBufferNormalTexture.reset();
 			m_gBufferMaterialTexture.reset();
 			m_gBufferDepthTexture.reset();
-				m_publishedGBufferDepthView.store(nullptr, std::memory_order_release);
+				StorePublishedGBufferDepthView(nullptr);
 			return;
 		}
 
@@ -1603,10 +1617,9 @@ void DeferredSceneRenderer::DrawFrame()
 		for (size_t i = 0u; i < colorWrappers.size(); ++i)
 			*colorWrappers[i] = wrapTexture(colorResources[i]);
 		m_gBufferDepthTexture = wrapTexture(depthResource);
-			m_publishedGBufferDepthView.store(
+			StorePublishedGBufferDepthView(
 				NLS::Render::FrameGraph::CaptureDeferredPreparedSceneResources(
-					BuildDeferredPreparedSceneResourceRequest()).gbufferDepthView,
-				std::memory_order_release);
+					BuildDeferredPreparedSceneResourceRequest()).gbufferDepthView);
 	}
 
 	bool DeferredSceneRenderer::HasDeferredThreadedPipelineResources() const

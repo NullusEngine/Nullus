@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <any>
 #include <array>
+#include <atomic>
 #include <cstdint>
 #include <functional>
 #include <map>

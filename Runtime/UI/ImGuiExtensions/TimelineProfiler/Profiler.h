@@ -27,6 +27,7 @@
 #endif
 
 #include <array>
+#include <algorithm>
 #include <atomic>
 #include <cinttypes>
 #include <cmath>

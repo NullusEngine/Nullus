@@ -1,4 +1,5 @@
 #include "Rendering/Context/RenderCommandFence.h"
+#include <atomic>
 
 #include <thread>
 #include <algorithm>

@@ -1,4 +1,5 @@
 #include <gtest/gtest.h>
+#include <atomic>
 
 #include "Assets/AssetThumbnailCache.h"
 #include "Assets/AssetBrowserPresentation.h"

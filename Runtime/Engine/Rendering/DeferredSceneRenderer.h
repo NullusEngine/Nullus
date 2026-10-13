@@ -220,6 +220,8 @@ namespace NLS::Engine::Rendering
 			bool SelectDeferredLightingVariant();
 			void ReleaseDeferredDecalPipelineResources();
 			void EnsureGBufferTargets(uint16_t width, uint16_t height);
+			std::shared_ptr<NLS::Render::RHI::RHITextureView> LoadPublishedGBufferDepthView() const;
+			void StorePublishedGBufferDepthView(std::shared_ptr<NLS::Render::RHI::RHITextureView> view);
 		bool HasDeferredThreadedPipelineResources() const;
 		bool EnsureHZBTargets(uint16_t width, uint16_t height);
 		bool PrepareHZBOcclusionPrimitiveBuffers(std::span<const SceneOcclusionPrimitivePacket> packets);
@@ -268,7 +270,11 @@ namespace NLS::Engine::Rendering
 		std::unique_ptr<NLS::Render::Resources::Texture2D> m_gBufferNormalTexture;
 		std::unique_ptr<NLS::Render::Resources::Texture2D> m_gBufferMaterialTexture;
 		std::unique_ptr<NLS::Render::Resources::Texture2D> m_gBufferDepthTexture;
-			std::atomic<std::shared_ptr<NLS::Render::RHI::RHITextureView>> m_publishedGBufferDepthView;
+			// libc++ has no std::atomic<std::shared_ptr<T>> specialisation, so the
+			// published view is guarded by a mutex. Loads/stores happen a few times per
+			// frame, where the lock is not measurable.
+			mutable std::mutex m_publishedGBufferDepthViewMutex;
+			std::shared_ptr<NLS::Render::RHI::RHITextureView> m_publishedGBufferDepthView;
 		std::shared_ptr<NLS::Render::RHI::RHITexture> m_hzbTexture;
 		std::shared_ptr<NLS::Render::RHI::RHIBuffer> m_hzbOcclusionPrimitiveInputBuffer;
 		std::shared_ptr<NLS::Render::RHI::RHIBuffer> m_hzbOcclusionPrimitiveResultBuffer;

@@ -3,6 +3,7 @@
 #include <memory>
 #include <vector>
 #include <string>
+#include <functional>
 
 #include "Rendering/RHI/Core/RHIResource.h"
 #include "Rendering/Settings/EAccessSpecifier.h"

@@ -1,5 +1,6 @@
 #include "Core/AssetFileWatcher.h"
 #include "Profiling/Profiler.h"
+#include <atomic>
 
 #include <array>
 #include <chrono>

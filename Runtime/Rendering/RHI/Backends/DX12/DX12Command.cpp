@@ -1824,7 +1824,7 @@ namespace NLS::Render::Backend
 #if defined(_WIN32)
             if (m_commandListType != D3D12_COMMAND_LIST_TYPE_COMPUTE)
                 return release;
-            constexpr auto graphicsOnly = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE |
+            const auto graphicsOnly = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE |
                 D3D12_RESOURCE_STATE_RENDER_TARGET | D3D12_RESOURCE_STATE_DEPTH_READ |
                 D3D12_RESOURCE_STATE_DEPTH_WRITE;
             for (auto transition : desc.bufferBarriers)
@@ -1869,10 +1869,10 @@ namespace NLS::Render::Backend
 		const auto filteredBarrierDesc = FilterBarrierDesc(barrierDesc);
             if (m_commandListType == D3D12_COMMAND_LIST_TYPE_COMPUTE)
             {
-                constexpr auto graphicsOnly = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE |
+                const auto graphicsOnly = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE |
                     D3D12_RESOURCE_STATE_RENDER_TARGET | D3D12_RESOURCE_STATE_DEPTH_READ |
                     D3D12_RESOURCE_STATE_DEPTH_WRITE;
-                const auto invalidState = [](const auto& transition)
+                const auto invalidState = [graphicsOnly](const auto& transition)
                 {
                     return ((ToD3D12ResourceState(transition.before) |
                         ToD3D12ResourceState(transition.after)) & graphicsOnly) != 0u;

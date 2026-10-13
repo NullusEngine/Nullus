@@ -13,6 +13,7 @@
 #include "Guid.h"
 #include "Core/ServiceLocator.h"
 #include "Rendering/Context/Driver.h"
+#include "Rendering/Context/DriverAccess.h"
 #include "Rendering/Core/CompositeRenderer.h"
 #include "Rendering/Debug/DebugDrawPass.h"
 #include "Rendering/Debug/DebugDrawService.h"
@@ -494,9 +495,9 @@ TEST(DebugDrawPassTests, CompositeRendererExecutePassDrawsDebugLinesDuringActive
     settings.framesInFlight = 1u;
 
     static auto driver = std::make_unique<NLS::Render::Context::Driver>(settings);
-    // No render thread: this suite does not exercise threaded frame ownership, so its
-    // fixture driver must not keep a process-wide render thread alive for another suite.
-    driver->ShutdownThreadedRendering();
+    // The composite renderer only begins a frame while the threaded pipeline exists,
+    // so the fixture parks its workers instead of tearing the lane down.
+    NLS::Render::Context::DriverTestAccess::PauseThreadedRenderingWorkers(*driver);
     NLS::Core::ServiceLocator::Provide(*driver);
 
     PassRecordingRenderer renderer(*driver);
@@ -514,6 +515,7 @@ TEST(DebugDrawPassTests, CompositeRendererExecutePassDrawsDebugLinesDuringActive
 
     DebugDrawPass pass(renderer);
     renderer.BeginFrame(frameDescriptor);
+    ASSERT_TRUE(renderer.IsFrameActive());
     renderer.ExecutePass(pass, NLS::Render::Data::PipelineState{});
     renderer.EndFrame();
 

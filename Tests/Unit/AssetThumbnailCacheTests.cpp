@@ -5170,6 +5170,7 @@ TEST(AssetThumbnailCacheTests, GpuPumpPublishesExactlyOnceAfterMixedMeshesBecome
     EXPECT_EQ(EvaluateAssetThumbnailCache(request).status, AssetThumbnailCacheStatus::Fresh);
     EXPECT_EQ(renderer.renderCount, 1u);
 
+    service.Shutdown();
     std::filesystem::remove_all(root);
 }
 
@@ -5226,6 +5227,7 @@ TEST(AssetThumbnailCacheTests, ResourcePendingContinuationSurvivesRepeatedThumbn
     EXPECT_EQ(completed->status, AssetThumbnailServiceStatus::Fresh);
     EXPECT_EQ(service.GetThumbnailState(request), ThumbnailState::Ready);
 
+    service.Shutdown();
     std::filesystem::remove_all(root);
 }
 
@@ -5277,6 +5279,7 @@ TEST(AssetThumbnailCacheTests, ResourcePendingContinuationSurvivesGenerationScop
     ASSERT_TRUE(completed.has_value());
     EXPECT_EQ(completed->status, AssetThumbnailServiceStatus::Fresh);
 
+    service.Shutdown();
     std::filesystem::remove_all(root);
 }
 
@@ -5634,6 +5637,7 @@ TEST(AssetThumbnailCacheTests, VisibleResidentLaneAdvancesBeforeResourcePendingV
     EXPECT_EQ(renderer.pumpKeys[1], "prefab:ResourcePending")
         << "After the resident candidate advances, the resource-pending visible continuation must make progress.";
 
+    service.Shutdown();
     std::filesystem::remove_all(root);
 }
 

@@ -13,10 +13,12 @@ concurrency:
 jobs:
   build:
     runs-on: windows-2022
-    strategy:
-      matrix:
-        configuration: [Debug, Release]
-        platform: [x64]
+    # One Windows job: the shipping Release configuration. Debug coverage on
+    # Windows is not kept in CI; the cross-platform Debug builds still run in the
+    # Linux and macOS workflows.
+    env:
+      NLS_BUILD_CONFIGURATION: Release
+      NLS_BUILD_PLATFORM: x64
     steps:
       - uses: actions/checkout@v4
         timeout-minutes: 15
@@ -129,7 +131,7 @@ jobs:
       - name: Configure
         timeout-minutes: 20
         shell: powershell
-        run: cmake -S . -B build\windows -G "Visual Studio 17 2022" -A ${{ matrix.platform }} -DCMAKE_CONFIGURATION_TYPES=${{ matrix.configuration }} -DNLS_BUILD_TESTS=ON
+        run: cmake -S . -B build\windows -G "Visual Studio 17 2022" -A ${{ env.NLS_BUILD_PLATFORM }} -DCMAKE_CONFIGURATION_TYPES=${{ env.NLS_BUILD_CONFIGURATION }} -DNLS_BUILD_TESTS=ON
 
       - name: Restore MetaParser
         timeout-minutes: 10
@@ -150,14 +152,14 @@ jobs:
         run: |
           $buildArgs = @(
             "--build", "build/windows",
-            "--config", "${{ matrix.configuration }}",
+            "--config", "${{ env.NLS_BUILD_CONFIGURATION }}",
             "--target", "NullusUnitTests", "ReflectionTest",
             "--",
             "/m:1",
-            "/flp:logfile=build_windows_${{ matrix.configuration }}_msbuild.log;verbosity=diagnostic",
-            "/bl:build_windows_${{ matrix.configuration }}.binlog"
+            "/flp:logfile=build_windows_${{ env.NLS_BUILD_CONFIGURATION }}_msbuild.log;verbosity=diagnostic",
+            "/bl:build_windows_${{ env.NLS_BUILD_CONFIGURATION }}.binlog"
           )
-          & cmake @buildArgs *>&1 | Tee-Object -FilePath "build_windows_${{ matrix.configuration }}.log"
+          & cmake @buildArgs *>&1 | Tee-Object -FilePath "build_windows_${{ env.NLS_BUILD_CONFIGURATION }}.log"
           $buildExit = $LASTEXITCODE
           "exit_code=$buildExit" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
           if ($buildExit -ne 0) {
@@ -168,8 +170,8 @@ jobs:
         if: always() && steps.build_step.outputs.exit_code != '0'
         shell: powershell
         run: |
-          $logPath = "build_windows_${{ matrix.configuration }}.log"
-          $msbuildLogPath = "build_windows_${{ matrix.configuration }}_msbuild.log"
+          $logPath = "build_windows_${{ env.NLS_BUILD_CONFIGURATION }}.log"
+          $msbuildLogPath = "build_windows_${{ env.NLS_BUILD_CONFIGURATION }}_msbuild.log"
           if (Test-Path $logPath) {
             Write-Output "::group::Last 200 lines of Windows build log"
             Get-Content $logPath -Tail 200
@@ -187,11 +189,11 @@ jobs:
         if: always() && steps.build_step.outputs.exit_code != '0'
         uses: actions/upload-artifact@v4
         with:
-          name: windows-build-logs-${{ matrix.configuration }}-${{ matrix.platform }}
+          name: windows-build-logs-${{ env.NLS_BUILD_CONFIGURATION }}-${{ env.NLS_BUILD_PLATFORM }}
           path: |
-            build_windows_${{ matrix.configuration }}.log
-            build_windows_${{ matrix.configuration }}_msbuild.log
-            build_windows_${{ matrix.configuration }}.binlog
+            build_windows_${{ env.NLS_BUILD_CONFIGURATION }}.log
+            build_windows_${{ env.NLS_BUILD_CONFIGURATION }}_msbuild.log
+            build_windows_${{ env.NLS_BUILD_CONFIGURATION }}.binlog
 
       - name: Fail on build error
         if: always() && steps.build_step.outputs.exit_code != '0'
@@ -208,11 +210,11 @@ jobs:
         timeout-minutes: 45
         shell: powershell
         run: |
-          Get-ChildItem "build/windows/bin/${{ matrix.configuration }}" | Format-Table -AutoSize
+          Get-ChildItem "build/windows/bin/${{ env.NLS_BUILD_CONFIGURATION }}" | Format-Table -AutoSize
           $unitLog = "nullus_unit_tests.log"
           $reflectionLog = "reflection_test.log"
-          $unitExe = (Resolve-Path "build/windows/bin/${{ matrix.configuration }}/NullusUnitTests.exe").Path
-          $reflectionExe = (Resolve-Path "build/windows/bin/${{ matrix.configuration }}/ReflectionTest.exe").Path
+          $unitExe = (Resolve-Path "build/windows/bin/${{ env.NLS_BUILD_CONFIGURATION }}/NullusUnitTests.exe").Path
+          $reflectionExe = (Resolve-Path "build/windows/bin/${{ env.NLS_BUILD_CONFIGURATION }}/ReflectionTest.exe").Path
           $unitCommand = '"' + $unitExe + '" 2>&1'
           cmd /d /c $unitCommand | Tee-Object -FilePath $unitLog
           $unitExit = $LASTEXITCODE

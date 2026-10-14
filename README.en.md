@@ -34,6 +34,18 @@ Nullus is an evolving C++ 3D engine. It brings a native runtime, project launche
 - **One HLSL workflow**: HLSL is the single maintained shader source. DXIL, SPIR-V, and reflection data are generated from compiled artifacts, while material, pass, and object binding spaces stay consistent.
 - **Large-scene rendering tools**: Visibility collection, cached draw commands, instanced draw merging, static-mesh LOD construction and runtime selection are in place. DX12 HZB occlusion is enabled conservatively according to device capabilities.
 
+### A UE-Aligned Multi-Threaded Rendering Mainline
+
+Rendering follows a command-based thread model: the Game Thread only produces commands, the Render Thread consumes them and builds the frame, and RHI work funnels through one submit entry point per queue type.
+
+- **Named execution lanes**: `RenderingThreadSystem` owns the Game, Render, and RHI logical lanes and exposes `IsInGameThread` / `IsInRenderingThread` / `IsInRhiThread`. The Render and RHI lanes attach to the TaskGraph at startup, and in `Tasks` mode the RHI lane is represented by a TLS execution context rather than a fixed OS thread.
+- **Render Command pipeline**: The main pipe is a strictly FIFO serial queue. Scene-proxy add/update/remove, frame rendering, resize, and resource release all enter the Render Thread through `EnqueueRenderCommand`. The async pipe only carries independent resource preparation, and its dependency event must be merged before a consumer runs.
+- **Three-stage RHI executor**: Dispatch serially accepts work on the Render Thread and assigns the global submission sequence; Translate builds native command buffers in parallel on workers; Submit performs queue submission, cross-queue semaphores, readback, and Present strictly in sequence order.
+- **Selectable RHI lane modes**: The `rhi_thread_mode` project setting offers `none`, `dedicated_thread`, and `tasks`. DX12 and Vulkan default to `tasks`, while Metal stays on `dedicated_thread` until thread ownership and concurrent submission are validated on device. Backends declare support through the `supportsRhiTasksMode` capability; forcing an unsupported combination fails startup with an explicit reason instead of silently falling back.
+- **Frame resources and GPU fences**: A `FrameResourceRing` slot only answers "is the GPU still using these resources?", and a GPU fence decides when it becomes reusable. CPU-side frame latency is managed by `FrameLatencyController` together with the Render / Rhi / Swapchain sync depths of `RenderCommandFence`.
+- **Incremental scenes and a per-frame payload**: The Game Thread no longer copies the full scene every frame. `SceneRenderStore` is the Render-Thread-owned persistent scene data, updated incrementally by commands; each frame only carries a `RenderFramePacket` (camera, views, output targets, and per-frame parameters).
+- **TaskGraph scheduling**: Each worker keeps priority-partitioned local queues, external submissions land in a shared injection queue, and idle workers steal work. `TaskCompletion::Wait()` assists with runnable tasks on workers to avoid nested-wait deadlock, and `RequestCancel` propagates through the dependency graph and wakes every waiter.
+
 ### A Visual Material And ShaderLab Workflow
 
 - **Built-in StandardPBR baseline**: The engine ships a `StandardPBR` ShaderLab asset. Model import connects materials, textures, and sub-assets to the same PBR content path.
@@ -67,7 +79,7 @@ Nullus is an evolving C++ 3D engine. It brings a native runtime, project launche
 
 - A component-based `Scene / SceneManager / GameObject / Component` system.
 - MetaParser code-generated reflection for type registration, the Inspector, object serialization, and the scripting API manifest.
-- A native JobSystem with dependencies, batching, parallel-for scheduling, and background work.
+- A native JobSystem with dependencies, batching, parallel-for scheduling, and background work; rendering scheduling is handled by the priority-aware, named-lane TaskGraph with work stealing.
 - Runtime modules for `Base`, `Core`, `Engine`, `Math`, `Platform`, `Rendering`, `Scripting`, and `UI`; Editor and Game share the same runtime mainline.
 
 ## Project Launcher
@@ -136,6 +148,7 @@ If a host environment reports `MSB6001` because both `Path` and `PATH` exist, us
 ## Learn More
 
 - [Multi-backend RHI architecture](Docs/Rendering/RHIMultiBackendArchitecture.md)
+- [Threaded rendering and the UE 5.7.4 migration](Docs/Rendering/UE574ThreadingMigration.md)
 - [HLSL and resource-binding conventions](Docs/Rendering/ShaderConventions.md)
 - [HZB occlusion validation](Docs/Rendering/HZBOcclusionValidation.md)
 - [C# / Lua scripting API](Docs/Scripting/ScriptingApi.en.md)

@@ -34,6 +34,18 @@ Nullus 是一个持续演进的 C++ 3D 引擎。它将原生运行时、项目�
 - **统一 HLSL 工作流**：HLSL 是唯一维护的着色器源，DXIL、SPIR-V 与反射数据由编译产物生成，材质、Pass 和 Object 的绑定空间保持一致。
 - **面向大场景的渲染优化**：已有可见性收集、绘制命令缓存、实例化合批、静态网格 LOD 构建与运行时选择；DX12 上的 HZB 遮挡剔除按设备能力保守启用。
 
+### 对齐 UE 的多线程渲染主线
+
+渲染采用命令式线程模型：Game Thread 只产生命令，Render Thread 消费命令并构建帧，RHI 工作按队列类型收口到单一提交入口。
+
+- **命名的执行通道**：`RenderingThreadSystem` 管理 Game、Render 与 RHI 三条逻辑通道，并提供 `IsInGameThread` / `IsInRenderingThread` / `IsInRhiThread` 判定；Render 与 RHI 启动后附着到 TaskGraph，Tasks 模式下 RHI 通道由 TLS 执行上下文表示，不依赖固定 OS 线程。
+- **Render Command 管线**：主管是严格 FIFO 的串行队列，场景代理增删改、帧渲染、resize 与资源释放统一通过 `EnqueueRenderCommand` 进入 Render Thread；异步管只承载独立资源准备，并以依赖事件在消费前显式合并。
+- **RHI 三管执行器**：Dispatch 由 Render Thread 串行接收并分配全局 submission sequence；Translate 在 worker 上并行生成原生命令缓冲；Submit 严格按序执行队列提交、跨队列信号量、readback 与 Present。
+- **可切换的 RHI 通道模式**：项目设置 `rhi_thread_mode` 提供 `none`、`dedicated_thread` 与 `tasks` 三种模式。DX12 与 Vulkan 默认 `tasks`，Metal 在完成线程归属与并发提交验证前保持 `dedicated_thread`；后端以 `supportsRhiTasksMode` 能力位声明支持，强制请求不支持的组合会给出明确原因并启动失败，不会静默回退。
+- **帧资源与 GPU 围栏**：`FrameResourceRing` 的槽位只回答“GPU 是否仍在使用这批资源”，复用时机由 GPU fence 决定；CPU 帧延迟由 `FrameLatencyController` 与 `RenderCommandFence` 的 Render / Rhi / Swapchain 三级同步深度共同管理。
+- **增量场景与单帧载荷**：Game Thread 不再每帧复制完整场景。`SceneRenderStore` 是 Render Thread 独占的持久场景数据，由 Game Thread 以命令增量更新；每帧只传递 `RenderFramePacket`（相机、View、输出目标与单帧参数）。
+- **TaskGraph 调度**：每个 worker 维护按优先级划分的本地队列，外部提交进入共享注入队列，空闲 worker 执行 work stealing；`TaskCompletion::Wait()` 在 worker 上协助执行可运行任务以避免嵌套等待死锁，`RequestCancel` 沿依赖图传播并唤醒全部等待者。
+
 ### 可视化的材质与 ShaderLab 工作流
 
 - **内置 StandardPBR 基线**：引擎自带 `StandardPBR` ShaderLab 资源；模型导入会将材质、纹理和子资源接入这一套 PBR 内容链路。
@@ -67,7 +79,7 @@ Nullus 是一个持续演进的 C++ 3D 引擎。它将原生运行时、项目�
 
 - `Scene / SceneManager / GameObject / Component` 组件化场景系统。
 - MetaParser 代码生成反射，驱动类型注册、Inspector、对象序列化和脚本 API 清单。
-- 原生 JobSystem 提供依赖、批处理、并行 for 和后台任务调度。
+- 原生 JobSystem 提供依赖、批处理、并行 for 和后台任务调度；渲染调度由带优先级、命名通道与 work stealing 的 TaskGraph 承担。
 - Runtime 分为 `Base`、`Core`、`Engine`、`Math`、`Platform`、`Rendering`、`Scripting` 与 `UI`，Editor 与 Game 共享运行时主链路。
 
 ## 项目启动器
@@ -136,6 +148,7 @@ cmake --build build --config Debug --target Editor
 ## 深入了解
 
 - [多后端 RHI 架构](Docs/Rendering/RHIMultiBackendArchitecture.md)
+- [多线程渲染与 UE 5.7.4 线程迁移](Docs/Rendering/UE574ThreadingMigration.md)
 - [HLSL 与资源绑定约定](Docs/Rendering/ShaderConventions.md)
 - [HZB 遮挡剔除验证](Docs/Rendering/HZBOcclusionValidation.md)
 - [C# / Lua 脚本 API](Docs/Scripting/ScriptingApi.zh-CN.md)

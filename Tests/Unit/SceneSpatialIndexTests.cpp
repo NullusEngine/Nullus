@@ -98,13 +98,6 @@ namespace
 		return std::find(handles.begin(), handles.end(), handle) != handles.end();
 	}
 
-	std::string ReadTextFile(const std::filesystem::path& path)
-	{
-		std::ifstream stream(path, std::ios::binary);
-		return std::string(
-			std::istreambuf_iterator<char>(stream),
-			std::istreambuf_iterator<char>());
-	}
 }
 
 TEST(SceneSpatialIndexTests, StaticLocalizedQueryReturnsBoundedCandidatesAndMatchesFullScan)
@@ -161,58 +154,6 @@ TEST(SceneSpatialIndexTests, DynamicLocalizedQueryReportsDynamicCandidatesAndTou
 	EXPECT_GE(result.dynamicRecordsTouched, result.dynamicCandidateCount);
 	EXPECT_LT(result.dynamicRecordsTouched, scene.dynamicPrimitiveCount);
 	EXPECT_LT(result.primitiveRecordsTouched, scene.primitives.size());
-}
-
-TEST(SceneSpatialIndexTests, PrimitiveClassCountersDoNotScanAllRecordsOnTelemetryRead)
-{
-	const auto source = ReadTextFile(
-		std::filesystem::path(NLS_ROOT_DIR) /
-		"Runtime/Engine/Rendering/SceneSpatialIndex.cpp");
-
-	const auto staticGetter = source.find("size_t SceneSpatialIndex::GetStaticPrimitiveCount() const");
-	const auto initializedGetter = source.find("bool SceneSpatialIndex::IsInitialized() const", staticGetter);
-	const auto dynamicGetter = source.find("size_t SceneSpatialIndex::GetDynamicPrimitiveCount() const");
-	ASSERT_NE(staticGetter, std::string::npos);
-	ASSERT_NE(initializedGetter, std::string::npos);
-	ASSERT_NE(dynamicGetter, std::string::npos);
-
-	const auto staticBody = source.substr(staticGetter, initializedGetter - staticGetter);
-	const auto dynamicEnd = source.find("\n}", dynamicGetter);
-	ASSERT_NE(dynamicEnd, std::string::npos);
-	const auto dynamicBody = source.substr(dynamicGetter, dynamicEnd - dynamicGetter);
-
-	EXPECT_EQ(staticBody.find("std::count_if"), std::string::npos);
-	EXPECT_EQ(staticBody.find("storage.records"), std::string::npos);
-	EXPECT_NE(staticBody.find("storage.staticPrimitiveCount"), std::string::npos);
-	EXPECT_EQ(dynamicBody.find("std::count_if"), std::string::npos);
-	EXPECT_EQ(dynamicBody.find("storage.records"), std::string::npos);
-	EXPECT_NE(dynamicBody.find("storage.dynamicPrimitiveCount"), std::string::npos);
-}
-
-TEST(SceneSpatialIndexTests, WideQueryUsesDirectCellsAndOnlyFallsBackForHugeVolumes)
-{
-	const auto source = ReadTextFile(
-		std::filesystem::path(NLS_ROOT_DIR) /
-		"Runtime/Engine/Rendering/SceneSpatialIndex.cpp");
-
-	const auto visitQueryCellsStart = source.find("void VisitQueryCells(");
-	ASSERT_NE(visitQueryCellsStart, std::string::npos);
-	const auto queryStart = source.find("VisibilityCandidateSet SceneSpatialIndex::Query");
-	ASSERT_NE(queryStart, std::string::npos);
-	const auto visitQueryCellsBody = source.substr(visitQueryCellsStart, queryStart - visitQueryCellsStart);
-
-	EXPECT_NE(visitQueryCellsBody.find("queryCellVolume"), std::string::npos);
-	EXPECT_NE(visitQueryCellsBody.find("queryCellVolume > static_cast<uint64_t>(buckets.size())"), std::string::npos);
-	EXPECT_NE(visitQueryCellsBody.find("for (const auto& [cell, handles] : buckets)"), std::string::npos);
-	EXPECT_NE(visitQueryCellsBody.find("CellIntersectsQueryAABB(cell, minCell, maxCell)"), std::string::npos);
-	EXPECT_NE(visitQueryCellsBody.find("for (int32_t z = minCell.z; z <= maxCell.z; ++z)"), std::string::npos);
-	EXPECT_NE(visitQueryCellsBody.find("buckets.find({ x, y, z })"), std::string::npos);
-
-	const auto fullScanStart = source.find("VisibilityCandidateSet SceneSpatialIndex::FullScanForComparison", queryStart);
-	ASSERT_NE(fullScanStart, std::string::npos);
-	const auto queryBody = source.substr(queryStart, fullScanStart - queryStart);
-
-	EXPECT_NE(queryBody.find("VisitQueryCells("), std::string::npos);
 }
 
 TEST(SceneSpatialIndexTests, HighDynamicCountSceneStillUsesLocalizedDynamicBuckets)

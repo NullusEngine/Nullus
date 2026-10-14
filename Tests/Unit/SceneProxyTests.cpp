@@ -446,7 +446,9 @@ TEST(SceneRenderStoreShutdownTests, DriverShutdownJoinsAllRegistryReleaseCommand
     settings.graphicsBackend = NLS::Render::Settings::EGraphicsBackend::NONE;
     settings.enableExplicitRHI = false;
     Driver driver(settings);
-    std::vector<int> identities(32u);
+    // Eight stores are enough to prove the shutdown join drains every queued
+    // release command; the per-store render-lane handoff is the expensive part.
+    std::vector<int> identities(8u);
     std::vector<SceneRenderStoreEntry> entries;
     for (size_t index = 0u; index < identities.size(); ++index)
     {

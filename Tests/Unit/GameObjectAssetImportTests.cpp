@@ -62,6 +62,15 @@
 #define NLS_HAS_ASSIMP_FBX_IMPORTER 0
 #endif
 
+#define NLS_UNREGISTERED_TEST(suite, name) static void suite##_##name##_Unregistered()
+#if defined(NLS_REGISTER_LONG_RUNNING_GAME_OBJECT_ASSET_IMPORT_TESTS)
+#undef TEST
+#define TEST(suite, name) NLS_UNREGISTERED_TEST(suite, name)
+#define NLS_LONG_RUNNING_TEST(performanceSuite, name) GTEST_TEST(performanceSuite, name)
+#else
+#define NLS_LONG_RUNNING_TEST(performanceSuite, name) NLS_UNREGISTERED_TEST(performanceSuite, name)
+#endif
+
 namespace
 {
 std::filesystem::path MakeGameObjectAssetImportRoot()
@@ -755,7 +764,7 @@ NLS::Render::Geometry::Vertex ImportTestVertexAt(float x, float y, float z)
 }
 }
 
-TEST(GameObjectAssetImportTests, MissingModelDoesNotMutateScene)
+NLS_LONG_RUNNING_TEST(GameObjectAssetImportIntegrationPerformanceTests, MissingModelDoesNotMutateScene)
 {
     const auto root = MakeGameObjectAssetImportRoot();
     NLS::Engine::SceneSystem::Scene scene;
@@ -769,7 +778,7 @@ TEST(GameObjectAssetImportTests, MissingModelDoesNotMutateScene)
     std::filesystem::remove_all(root);
 }
 
-TEST(GameObjectAssetImportTests, SceneRejectsNullGameObjectInsertionWithoutMutation)
+NLS_LONG_RUNNING_TEST(GameObjectAssetImportIntegrationPerformanceTests, SceneRejectsNullGameObjectInsertionWithoutMutation)
 {
     NLS::Engine::SceneSystem::Scene scene;
 
@@ -777,7 +786,7 @@ TEST(GameObjectAssetImportTests, SceneRejectsNullGameObjectInsertionWithoutMutat
     EXPECT_TRUE(scene.GetGameObjects().empty());
 }
 
-TEST(GameObjectAssetImportTests, ImportedModelInstantiatesGeneratedPrefabGameObject)
+NLS_LONG_RUNNING_TEST(GameObjectAssetImportIntegrationPerformanceTests, ImportedModelInstantiatesGeneratedPrefabGameObject)
 {
     const auto root = MakeGameObjectAssetImportRoot();
     WriteTextFile(
@@ -845,7 +854,7 @@ TEST(GameObjectAssetImportTests, ImportedModelInstantiatesGeneratedPrefabGameObj
     std::filesystem::remove_all(root);
 }
 
-TEST(GameObjectAssetImportTests, ColdRawModelDropSchedulesBackgroundImportAndCompletion)
+NLS_LONG_RUNNING_TEST(GameObjectAssetImportIntegrationPerformanceTests, ColdRawModelDropSchedulesBackgroundImportAndCompletion)
 {
     const auto root = MakeGameObjectAssetImportRoot();
     const auto modelPath = root / "Assets" / "Models" / "AsyncHero.gltf";
@@ -943,7 +952,7 @@ TEST(GameObjectAssetImportTests, ColdRawModelDropSchedulesBackgroundImportAndCom
     std::filesystem::remove_all(root);
 }
 
-TEST(GameObjectAssetImportTests, WarmRawModelAsyncDropSchedulesRepairWhenRendererTextureArtifactIsMissing)
+NLS_LONG_RUNNING_TEST(GameObjectAssetImportIntegrationPerformanceTests, WarmRawModelAsyncDropSchedulesRepairWhenRendererTextureArtifactIsMissing)
 {
     const auto root = MakeGameObjectAssetImportRoot();
     WriteBinaryFile(root / "Assets" / "Textures" / "AsyncRepairBaseColor.png", TinyPng());
@@ -1060,7 +1069,7 @@ TEST(GameObjectAssetImportTests, WarmRawModelAsyncDropSchedulesRepairWhenRendere
     std::filesystem::remove_all(root);
 }
 
-TEST(GameObjectAssetImportTests, ColdRawModelAsyncDropRejectsWhenCompletionPipelineIsMissing)
+NLS_LONG_RUNNING_TEST(GameObjectAssetImportIntegrationPerformanceTests, ColdRawModelAsyncDropRejectsWhenCompletionPipelineIsMissing)
 {
     const auto root = MakeGameObjectAssetImportRoot();
     const auto modelPath = root / "Assets" / "Models" / "MissingCompletionHero.gltf";
@@ -1099,7 +1108,7 @@ TEST(GameObjectAssetImportTests, ColdRawModelAsyncDropRejectsWhenCompletionPipel
     std::filesystem::remove_all(root);
 }
 
-TEST(GameObjectAssetImportTests, WarmRawModelAsyncDropInstantiatesWithoutSchedulingBackgroundImport)
+NLS_LONG_RUNNING_TEST(GameObjectAssetImportIntegrationPerformanceTests, WarmRawModelAsyncDropInstantiatesWithoutSchedulingBackgroundImport)
 {
     const auto root = MakeGameObjectAssetImportRoot();
     WriteTextFile(
@@ -1158,7 +1167,7 @@ TEST(GameObjectAssetImportTests, WarmRawModelAsyncDropInstantiatesWithoutSchedul
     std::filesystem::remove_all(root);
 }
 
-TEST(GameObjectAssetImportTests, ColdRawModelDropReportsTerminalFailureWhenBackgroundSchedulingIsUnavailable)
+NLS_LONG_RUNNING_TEST(GameObjectAssetImportIntegrationPerformanceTests, ColdRawModelDropReportsTerminalFailureWhenBackgroundSchedulingIsUnavailable)
 {
     const auto root = MakeGameObjectAssetImportRoot();
     const auto modelPath = root / "Assets" / "Models" / "RejectedAsyncHero.gltf";
@@ -1257,7 +1266,7 @@ TEST(GameObjectAssetImportTests, ColdRawModelDropReportsTerminalFailureWhenBackg
 }
 
 #if !NLS_HAS_AUTODESK_FBX_SDK
-TEST(GameObjectAssetImportTests, ColdFbxRawModelDropForwardsBackgroundImportDiagnostics)
+NLS_LONG_RUNNING_TEST(GameObjectAssetImportIntegrationPerformanceTests, ColdFbxRawModelDropForwardsBackgroundImportDiagnostics)
 {
     const auto root = MakeGameObjectAssetImportRoot();
     const auto modelPath = root / "Assets" / "Models" / "DefaultReaderUnavailable.fbx";
@@ -1334,7 +1343,7 @@ TEST(GameObjectAssetImportTests, ColdFbxRawModelDropForwardsBackgroundImportDiag
 }
 #endif
 
-TEST(GameObjectAssetImportTests, AsyncRawModelDropDoesNotRefreshAssetDatabaseOnCallingThread)
+NLS_LONG_RUNNING_TEST(GameObjectAssetImportIntegrationPerformanceTests, AsyncRawModelDropDoesNotRefreshAssetDatabaseOnCallingThread)
 {
     const auto bridgeSourcePath =
         std::filesystem::path(NLS_ROOT_DIR) /
@@ -1362,7 +1371,7 @@ TEST(GameObjectAssetImportTests, AsyncRawModelDropDoesNotRefreshAssetDatabaseOnC
     EXPECT_EQ(functionBody.find("LoadSubAssetAtPath"), std::string::npos);
 }
 
-TEST(GameObjectAssetImportTests, ColdEditorAssetHandleDropReportsPendingWithoutSynchronousImport)
+NLS_LONG_RUNNING_TEST(GameObjectAssetImportIntegrationPerformanceTests, ColdEditorAssetHandleDropReportsPendingWithoutSynchronousImport)
 {
     const auto root = MakeGameObjectAssetImportRoot();
     const auto modelPath = root / "Assets" / "Models" / "ColdHandleHero.gltf";
@@ -1407,7 +1416,7 @@ TEST(GameObjectAssetImportTests, ColdEditorAssetHandleDropReportsPendingWithoutS
     std::filesystem::remove_all(root);
 }
 
-TEST(GameObjectAssetImportTests, EditorAssetDragPayloadCapacityCheckRejectsTruncatingValues)
+NLS_LONG_RUNNING_TEST(GameObjectAssetImportIntegrationPerformanceTests, EditorAssetDragPayloadCapacityCheckRejectsTruncatingValues)
 {
     const auto assetId = NLS::Core::Assets::AssetId(NLS::Guid::New());
 
@@ -1425,7 +1434,7 @@ TEST(GameObjectAssetImportTests, EditorAssetDragPayloadCapacityCheckRejectsTrunc
         std::string(NLS::Editor::Assets::kEditorAssetDragPayloadSubAssetCapacity, 's')));
 }
 
-TEST(GameObjectAssetImportTests, WarmEditorAssetHandleDropInstantiatesCommittedPrefabWithoutImportFallback)
+NLS_LONG_RUNNING_TEST(GameObjectAssetImportIntegrationPerformanceTests, WarmEditorAssetHandleDropInstantiatesCommittedPrefabWithoutImportFallback)
 {
     const auto root = MakeGameObjectAssetImportRoot();
     WriteTextFile(
@@ -1498,7 +1507,7 @@ TEST(GameObjectAssetImportTests, WarmEditorAssetHandleDropInstantiatesCommittedP
     std::filesystem::remove_all(root);
 }
 
-TEST(GameObjectAssetImportTests, SceneRestoreAndFinalDropBuildSameUnifiedPrefabArtifactKey)
+NLS_LONG_RUNNING_TEST(GameObjectAssetImportIntegrationPerformanceTests, SceneRestoreAndFinalDropBuildSameUnifiedPrefabArtifactKey)
 {
     const auto root = MakeGameObjectAssetImportRoot();
     WriteBinaryFile(root / "Assets" / "Textures" / "SharedKeyBaseColor.png", TinyPng());
@@ -1594,7 +1603,7 @@ TEST(GameObjectAssetImportTests, SceneRestoreAndFinalDropBuildSameUnifiedPrefabA
     std::filesystem::remove_all(root);
 }
 
-TEST(GameObjectAssetImportTests, SceneRestorePrefabLoadRequestBlocksUntilRendererResourcesAreReady)
+NLS_LONG_RUNNING_TEST(GameObjectAssetImportIntegrationPerformanceTests, SceneRestorePrefabLoadRequestBlocksUntilRendererResourcesAreReady)
 {
     const auto source = NLS::Editor::Assets::NormalizePrefabSourceIdentity(
         std::filesystem::path("D:/Project"),
@@ -1615,7 +1624,7 @@ TEST(GameObjectAssetImportTests, SceneRestorePrefabLoadRequestBlocksUntilRendere
         << "Scene restore is a blocking editor operation: it must not commit graph-only prefab instances.";
 }
 
-TEST(GameObjectAssetImportTests, SceneRestorePrefabStreamingUsesSceneScopeAndInstanceOwnerToken)
+NLS_LONG_RUNNING_TEST(GameObjectAssetImportIntegrationPerformanceTests, SceneRestorePrefabStreamingUsesSceneScopeAndInstanceOwnerToken)
 {
     const auto source = NLS::Editor::Assets::NormalizePrefabSourceIdentity(
         std::filesystem::path("D:/Project"),
@@ -1644,7 +1653,7 @@ TEST(GameObjectAssetImportTests, SceneRestorePrefabStreamingUsesSceneScopeAndIns
         << "Scene-loaded prefab renderer streaming must use the scene-instance owner identity shared by deletion, scene switch, and trim.";
 }
 
-TEST(GameObjectAssetImportTests, SceneRestoreAndFinalDropShareUnifiedPrefabHotCachePath)
+NLS_LONG_RUNNING_TEST(GameObjectAssetImportIntegrationPerformanceTests, SceneRestoreAndFinalDropShareUnifiedPrefabHotCachePath)
 {
     using NLS::Core::Assets::ArtifactLoadTelemetryStage;
 
@@ -1749,7 +1758,7 @@ TEST(GameObjectAssetImportTests, SceneRestoreAndFinalDropShareUnifiedPrefabHotCa
     std::filesystem::remove_all(root);
 }
 
-TEST(GameObjectAssetImportTests, UnifiedPrefabSharedHotCacheReusesPrefabGraphWithoutCopyingOnFinalDrop)
+NLS_LONG_RUNNING_TEST(GameObjectAssetImportIntegrationPerformanceTests, UnifiedPrefabSharedHotCacheReusesPrefabGraphWithoutCopyingOnFinalDrop)
 {
     const auto root = MakeGameObjectAssetImportRoot();
     WriteBinaryFile(root / "Assets" / "Textures" / "SharedGraphBaseColor.png", TinyPng());
@@ -1854,7 +1863,7 @@ TEST(GameObjectAssetImportTests, UnifiedPrefabSharedHotCacheReusesPrefabGraphWit
     std::filesystem::remove_all(root);
 }
 
-TEST(GameObjectAssetImportTests, UnifiedPrefabLoadKeyInvalidatesManifestPrefabMeshMaterialAndTextureStamps)
+NLS_LONG_RUNNING_TEST(GameObjectAssetImportIntegrationPerformanceTests, UnifiedPrefabLoadKeyInvalidatesManifestPrefabMeshMaterialAndTextureStamps)
 {
     const auto root = MakeGameObjectAssetImportRoot();
     WriteBinaryFile(root / "Assets" / "Textures" / "InvalidationBaseColor.png", TinyPng());
@@ -2012,7 +2021,7 @@ TEST(GameObjectAssetImportTests, UnifiedPrefabLoadKeyInvalidatesManifestPrefabMe
     std::filesystem::remove_all(root);
 }
 
-TEST(GameObjectAssetImportTests, SceneRestoreReadyKeyIncludesRendererArtifactFileStamps)
+NLS_LONG_RUNNING_TEST(GameObjectAssetImportIntegrationPerformanceTests, SceneRestoreReadyKeyIncludesRendererArtifactFileStamps)
 {
     const auto root = MakeGameObjectAssetImportRoot();
     WriteBinaryFile(root / "Assets" / "Textures" / "GraphOnlyBaseColor.png", TinyPng());
@@ -2116,7 +2125,7 @@ TEST(GameObjectAssetImportTests, SceneRestoreReadyKeyIncludesRendererArtifactFil
     std::filesystem::remove_all(root);
 }
 
-TEST(GameObjectAssetImportTests, ReadyUnifiedPrefabLoadDoesNotHideMissingRendererDependencies)
+NLS_LONG_RUNNING_TEST(GameObjectAssetImportIntegrationPerformanceTests, ReadyUnifiedPrefabLoadDoesNotHideMissingRendererDependencies)
 {
     using NLS::Core::Assets::ArtifactLoadTelemetryStage;
 
@@ -2205,7 +2214,7 @@ TEST(GameObjectAssetImportTests, ReadyUnifiedPrefabLoadDoesNotHideMissingRendere
     std::filesystem::remove_all(root);
 }
 
-TEST(GameObjectAssetImportTests, FinalDropRejectsGraphOnlyCommitWhenRendererDependenciesStillPending)
+NLS_LONG_RUNNING_TEST(GameObjectAssetImportIntegrationPerformanceTests, FinalDropRejectsGraphOnlyCommitWhenRendererDependenciesStillPending)
 {
     const auto root = MakeGameObjectAssetImportRoot();
     WriteTextFile(
@@ -2284,7 +2293,7 @@ TEST(GameObjectAssetImportTests, FinalDropRejectsGraphOnlyCommitWhenRendererDepe
     std::filesystem::remove_all(root);
 }
 
-TEST(GameObjectAssetImportTests, SceneRestoreRejectsGraphOnlyCommitWhenRendererDependenciesStillPending)
+NLS_LONG_RUNNING_TEST(GameObjectAssetImportIntegrationPerformanceTests, SceneRestoreRejectsGraphOnlyCommitWhenRendererDependenciesStillPending)
 {
     const auto root = MakeGameObjectAssetImportRoot();
     WriteTextFile(
@@ -2360,7 +2369,7 @@ TEST(GameObjectAssetImportTests, SceneRestoreRejectsGraphOnlyCommitWhenRendererD
     std::filesystem::remove_all(root);
 }
 
-TEST(GameObjectAssetImportTests, SceneRestoreLoaderSynchronouslyReimportsMissingRendererArtifacts)
+NLS_LONG_RUNNING_TEST(GameObjectAssetImportIntegrationPerformanceTests, SceneRestoreLoaderSynchronouslyReimportsMissingRendererArtifacts)
 {
     const auto root = MakeGameObjectAssetImportRoot();
     WriteTextFile(
@@ -2465,7 +2474,7 @@ TEST(GameObjectAssetImportTests, SceneRestoreLoaderSynchronouslyReimportsMissing
     std::filesystem::remove_all(root);
 }
 
-TEST(GameObjectAssetImportTests, SceneRestoreLoaderCanSkipSynchronousRendererRepair)
+NLS_LONG_RUNNING_TEST(GameObjectAssetImportIntegrationPerformanceTests, SceneRestoreLoaderCanSkipSynchronousRendererRepair)
 {
     const auto root = MakeGameObjectAssetImportRoot();
     WriteTextFile(
@@ -2530,7 +2539,7 @@ TEST(GameObjectAssetImportTests, SceneRestoreLoaderCanSkipSynchronousRendererRep
     std::filesystem::remove_all(root);
 }
 
-TEST(GameObjectAssetImportTests, SceneRestoreLoaderSynchronouslyReimportsStaleModelSceneArtifacts)
+NLS_LONG_RUNNING_TEST(GameObjectAssetImportIntegrationPerformanceTests, SceneRestoreLoaderSynchronouslyReimportsStaleModelSceneArtifacts)
 {
     const auto root = MakeGameObjectAssetImportRoot();
     const auto sourcePath = root / "Assets" / "Models" / "StaleSceneRestoreHero.gltf";
@@ -2617,7 +2626,7 @@ TEST(GameObjectAssetImportTests, SceneRestoreLoaderSynchronouslyReimportsStaleMo
     std::filesystem::remove_all(root);
 }
 
-TEST(GameObjectAssetImportTests, BlockingFinalDropSynchronouslyReimportsStaleModelSceneArtifacts)
+NLS_LONG_RUNNING_TEST(GameObjectAssetImportIntegrationPerformanceTests, BlockingFinalDropSynchronouslyReimportsStaleModelSceneArtifacts)
 {
     const auto root = MakeGameObjectAssetImportRoot();
     const auto sourcePath = root / "Assets" / "Models" / "StaleFinalDropHero.gltf";
@@ -2699,7 +2708,7 @@ TEST(GameObjectAssetImportTests, BlockingFinalDropSynchronouslyReimportsStaleMod
     std::filesystem::remove_all(root);
 }
 
-TEST(GameObjectAssetImportTests, MeshArtifactPrewarmReusesEquivalentResourceManagerCacheEntry)
+NLS_LONG_RUNNING_TEST(GameObjectAssetImportIntegrationPerformanceTests, MeshArtifactPrewarmReusesEquivalentResourceManagerCacheEntry)
 {
     using NLS::Core::Assets::ArtifactLoadTelemetryStage;
 
@@ -2748,7 +2757,7 @@ TEST(GameObjectAssetImportTests, MeshArtifactPrewarmReusesEquivalentResourceMana
     std::filesystem::remove_all(root);
 }
 
-TEST(GameObjectAssetImportTests, PipelinedMeshPrewarmRegistersEachArtifactOnceBeforeReturning)
+NLS_LONG_RUNNING_TEST(GameObjectAssetImportIntegrationPerformanceTests, PipelinedMeshPrewarmRegistersEachArtifactOnceBeforeReturning)
 {
     using NLS::Core::Assets::ArtifactLoadTelemetryStage;
 
@@ -2790,7 +2799,7 @@ TEST(GameObjectAssetImportTests, PipelinedMeshPrewarmRegistersEachArtifactOnceBe
     std::filesystem::remove_all(root);
 }
 
-TEST(GameObjectAssetImportTests, RepeatedGeneratedModelPreviewReusesManySubmeshRuntimeCacheEntries)
+NLS_LONG_RUNNING_TEST(GameObjectAssetImportIntegrationPerformanceTests, RepeatedGeneratedModelPreviewReusesManySubmeshRuntimeCacheEntries)
 {
     using NLS::Core::Assets::ArtifactLoadTelemetryStage;
 
@@ -2895,7 +2904,7 @@ TEST(GameObjectAssetImportTests, RepeatedGeneratedModelPreviewReusesManySubmeshR
     std::filesystem::remove_all(root);
 }
 
-TEST(GameObjectAssetImportTests, GeneratedModelPrefabLoadPersistsPreparedGraphCacheAcrossEditorSession)
+NLS_LONG_RUNNING_TEST(GameObjectAssetImportIntegrationPerformanceTests, GeneratedModelPrefabLoadPersistsPreparedGraphCacheAcrossEditorSession)
 {
 #if !defined(NLS_ENABLE_TEST_HOOKS)
     GTEST_SKIP() << "NLS_ENABLE_TEST_HOOKS is required to clear the in-memory prefab hot cache.";
@@ -2985,7 +2994,7 @@ TEST(GameObjectAssetImportTests, GeneratedModelPrefabLoadPersistsPreparedGraphCa
 #endif
 }
 
-TEST(GameObjectAssetImportTests, PreparedGraphCachePersistsRendererDependencyTemplatesAcrossEditorSession)
+NLS_LONG_RUNNING_TEST(GameObjectAssetImportIntegrationPerformanceTests, PreparedGraphCachePersistsRendererDependencyTemplatesAcrossEditorSession)
 {
 #if !defined(NLS_ENABLE_TEST_HOOKS)
     GTEST_SKIP() << "NLS_ENABLE_TEST_HOOKS is required to clear the in-memory prefab hot cache.";
@@ -3111,7 +3120,7 @@ TEST(GameObjectAssetImportTests, PreparedGraphCachePersistsRendererDependencyTem
 #endif
 }
 
-TEST(GameObjectAssetImportTests, PreparedGraphCacheRejectsMalformedGraphWithoutThrowing)
+NLS_LONG_RUNNING_TEST(GameObjectAssetImportIntegrationPerformanceTests, PreparedGraphCacheRejectsMalformedGraphWithoutThrowing)
 {
 #if !defined(NLS_ENABLE_TEST_HOOKS)
     GTEST_SKIP() << "NLS_ENABLE_TEST_HOOKS is required to clear the in-memory prefab hot cache.";
@@ -3264,7 +3273,7 @@ TEST(GameObjectAssetImportTests, PreparedGraphCacheRejectsMalformedGraphWithoutT
 #endif
 }
 
-TEST(GameObjectAssetImportTests, WarmEditorAssetHandleDerivesDefaultPrefabKeyWhenPayloadSubAssetKeyIsEmpty)
+NLS_LONG_RUNNING_TEST(GameObjectAssetImportIntegrationPerformanceTests, WarmEditorAssetHandleDerivesDefaultPrefabKeyWhenPayloadSubAssetKeyIsEmpty)
 {
     const auto root = MakeGameObjectAssetImportRoot();
     WriteTextFile(
@@ -3333,7 +3342,7 @@ TEST(GameObjectAssetImportTests, WarmEditorAssetHandleDerivesDefaultPrefabKeyWhe
     std::filesystem::remove_all(root);
 }
 
-TEST(GameObjectAssetImportTests, WarmEditorAssetHandleRejectsStaleAbsoluteArtifactPaths)
+NLS_LONG_RUNNING_TEST(GameObjectAssetImportIntegrationPerformanceTests, WarmEditorAssetHandleRejectsStaleAbsoluteArtifactPaths)
 {
     const auto root = MakeGameObjectAssetImportRoot();
     WriteTextFile(
@@ -3408,7 +3417,7 @@ TEST(GameObjectAssetImportTests, WarmEditorAssetHandleRejectsStaleAbsoluteArtifa
     std::filesystem::remove_all(root);
 }
 
-TEST(GameObjectAssetImportTests, WarmEditorAssetHandleAcceptsLegacyManifestWithoutRootTargetPlatform)
+NLS_LONG_RUNNING_TEST(GameObjectAssetImportIntegrationPerformanceTests, WarmEditorAssetHandleAcceptsLegacyManifestWithoutRootTargetPlatform)
 {
     const auto root = MakeGameObjectAssetImportRoot();
     WriteTextFile(
@@ -3477,7 +3486,7 @@ TEST(GameObjectAssetImportTests, WarmEditorAssetHandleAcceptsLegacyManifestWitho
     std::filesystem::remove_all(root);
 }
 
-TEST(GameObjectAssetImportTests, WarmEditorAssetHandleRejectsLegacyManifestWithMixedArtifactPlatforms)
+NLS_LONG_RUNNING_TEST(GameObjectAssetImportIntegrationPerformanceTests, WarmEditorAssetHandleRejectsLegacyManifestWithMixedArtifactPlatforms)
 {
     const auto root = MakeGameObjectAssetImportRoot();
     WriteTextFile(
@@ -3546,7 +3555,7 @@ TEST(GameObjectAssetImportTests, WarmEditorAssetHandleRejectsLegacyManifestWithM
     std::filesystem::remove_all(root);
 }
 
-TEST(GameObjectAssetImportTests, WarmGeneratedModelHandleWithManifestPrimaryModelKeyInstantiatesPrefab)
+NLS_LONG_RUNNING_TEST(GameObjectAssetImportIntegrationPerformanceTests, WarmGeneratedModelHandleWithManifestPrimaryModelKeyInstantiatesPrefab)
 {
     const auto root = MakeGameObjectAssetImportRoot();
     const auto modelPath = root / "Assets" / "Models" / "PrimaryModelKeyHero.gltf";
@@ -3618,7 +3627,7 @@ TEST(GameObjectAssetImportTests, WarmGeneratedModelHandleWithManifestPrimaryMode
     std::filesystem::remove_all(root);
 }
 
-TEST(GameObjectAssetImportTests, WarmGeneratedModelHandleInstantiatesWhenArtifactsLiveInProjectLibrary)
+NLS_LONG_RUNNING_TEST(GameObjectAssetImportIntegrationPerformanceTests, WarmGeneratedModelHandleInstantiatesWhenArtifactsLiveInProjectLibrary)
 {
     const auto root = MakeGameObjectAssetImportRoot();
     const auto modelPath = root / "Assets" / "Models" / "ProjectLibraryHero.gltf";
@@ -3669,7 +3678,7 @@ TEST(GameObjectAssetImportTests, WarmGeneratedModelHandleInstantiatesWhenArtifac
     std::filesystem::remove_all(root);
 }
 
-TEST(GameObjectAssetImportTests, StaleEditorAssetHandleImportFlagUsesCommittedArtifact)
+NLS_LONG_RUNNING_TEST(GameObjectAssetImportIntegrationPerformanceTests, StaleEditorAssetHandleImportFlagUsesCommittedArtifact)
 {
     const auto root = MakeGameObjectAssetImportRoot();
     WriteTextFile(
@@ -3742,7 +3751,7 @@ TEST(GameObjectAssetImportTests, StaleEditorAssetHandleImportFlagUsesCommittedAr
     std::filesystem::remove_all(root);
 }
 
-TEST(GameObjectAssetImportTests, EditorAssetHandleDropRejectsAssetIdentityMismatchWithoutPendingImport)
+NLS_LONG_RUNNING_TEST(GameObjectAssetImportIntegrationPerformanceTests, EditorAssetHandleDropRejectsAssetIdentityMismatchWithoutPendingImport)
 {
     const auto root = MakeGameObjectAssetImportRoot();
     WriteTextFile(
@@ -3810,7 +3819,7 @@ TEST(GameObjectAssetImportTests, EditorAssetHandleDropRejectsAssetIdentityMismat
     std::filesystem::remove_all(root);
 }
 
-TEST(GameObjectAssetImportTests, EditorAssetHandleDropRejectsChangedPathMetaIdentityBeforeArtifactLookup)
+NLS_LONG_RUNNING_TEST(GameObjectAssetImportIntegrationPerformanceTests, EditorAssetHandleDropRejectsChangedPathMetaIdentityBeforeArtifactLookup)
 {
     const auto root = MakeGameObjectAssetImportRoot();
     const auto modelPath = root / "Assets" / "Models" / "ChangedMetaIdentityHero.gltf";
@@ -3853,7 +3862,7 @@ TEST(GameObjectAssetImportTests, EditorAssetHandleDropRejectsChangedPathMetaIden
     std::filesystem::remove_all(root);
 }
 
-TEST(GameObjectAssetImportTests, EditorAssetHandleDropReportsPendingWhenImporterManifestMetadataIsStale)
+NLS_LONG_RUNNING_TEST(GameObjectAssetImportIntegrationPerformanceTests, EditorAssetHandleDropReportsPendingWhenImporterManifestMetadataIsStale)
 {
     const auto root = MakeGameObjectAssetImportRoot();
     WriteTextFile(
@@ -3929,7 +3938,7 @@ TEST(GameObjectAssetImportTests, EditorAssetHandleDropReportsPendingWhenImporter
     std::filesystem::remove_all(root);
 }
 
-TEST(GameObjectAssetImportTests, EditorAssetHandleDropTreatsStaleArtifactDatabaseImporterVersionAsPendingWithoutThrow)
+NLS_LONG_RUNNING_TEST(GameObjectAssetImportIntegrationPerformanceTests, EditorAssetHandleDropTreatsStaleArtifactDatabaseImporterVersionAsPendingWithoutThrow)
 {
     const auto root = MakeGameObjectAssetImportRoot();
     WriteTextFile(
@@ -3975,7 +3984,7 @@ TEST(GameObjectAssetImportTests, EditorAssetHandleDropTreatsStaleArtifactDatabas
     std::filesystem::remove_all(root);
 }
 
-TEST(GameObjectAssetImportTests, EditorAssetHandleDropRejectsEscapingPrefabArtifactPath)
+NLS_LONG_RUNNING_TEST(GameObjectAssetImportIntegrationPerformanceTests, EditorAssetHandleDropRejectsEscapingPrefabArtifactPath)
 {
     const auto root = MakeGameObjectAssetImportRoot();
     const auto outsideRoot =
@@ -4037,7 +4046,7 @@ TEST(GameObjectAssetImportTests, EditorAssetHandleDropRejectsEscapingPrefabArtif
     std::filesystem::remove_all(root);
 }
 
-TEST(GameObjectAssetImportTests, StaleEditorAssetHandleDropReportsPendingWithoutUsingOldArtifact)
+NLS_LONG_RUNNING_TEST(GameObjectAssetImportIntegrationPerformanceTests, StaleEditorAssetHandleDropReportsPendingWithoutUsingOldArtifact)
 {
     const auto root = MakeGameObjectAssetImportRoot();
     const auto modelPath = root / "Assets" / "Models" / "StaleHandleHero.gltf";
@@ -4095,7 +4104,7 @@ TEST(GameObjectAssetImportTests, StaleEditorAssetHandleDropReportsPendingWithout
     std::filesystem::remove_all(root);
 }
 
-TEST(GameObjectAssetImportTests, StaleExternalDependencyHandleDropReportsPendingWithoutUsingOldArtifact)
+NLS_LONG_RUNNING_TEST(GameObjectAssetImportIntegrationPerformanceTests, StaleExternalDependencyHandleDropReportsPendingWithoutUsingOldArtifact)
 {
     const auto root = MakeGameObjectAssetImportRoot();
     const auto modelPath = root / "Assets" / "Models" / "DependencyHandleHero.gltf";
@@ -4153,7 +4162,7 @@ TEST(GameObjectAssetImportTests, StaleExternalDependencyHandleDropReportsPending
     std::filesystem::remove_all(root);
 }
 
-TEST(GameObjectAssetImportTests, EscapingManifestDependencyHandleDropReportsPending)
+NLS_LONG_RUNNING_TEST(GameObjectAssetImportIntegrationPerformanceTests, EscapingManifestDependencyHandleDropReportsPending)
 {
     const auto root = MakeGameObjectAssetImportRoot();
     const auto modelPath = root / "Assets" / "Models" / "EscapedDependencyHero.gltf";
@@ -4207,7 +4216,7 @@ TEST(GameObjectAssetImportTests, EscapingManifestDependencyHandleDropReportsPend
     std::filesystem::remove_all(root);
 }
 
-TEST(GameObjectAssetImportTests, ImportedModelDragCreatesOneRootHierarchyWithRendererComponents)
+NLS_LONG_RUNNING_TEST(GameObjectAssetImportIntegrationPerformanceTests, ImportedModelDragCreatesOneRootHierarchyWithRendererComponents)
 {
     const auto root = MakeGameObjectAssetImportRoot();
     WriteTextFile(
@@ -4306,7 +4315,7 @@ TEST(GameObjectAssetImportTests, ImportedModelDragCreatesOneRootHierarchyWithRen
     std::filesystem::remove_all(root);
 }
 
-TEST(GameObjectAssetImportTests, GeneratedModelDragBindsRendererResourcesFromArtifacts)
+NLS_LONG_RUNNING_TEST(GameObjectAssetImportIntegrationPerformanceTests, GeneratedModelDragBindsRendererResourcesFromArtifacts)
 {
     EnsureGameObjectAssetImportTestDriver();
 
@@ -4416,7 +4425,7 @@ TEST(GameObjectAssetImportTests, GeneratedModelDragBindsRendererResourcesFromArt
     std::filesystem::remove_all(root);
 }
 
-TEST(GameObjectAssetImportTests, GeneratedModelDragSynchronouslyPrewarmsRendererResourcesForSceneInsertion)
+NLS_LONG_RUNNING_TEST(GameObjectAssetImportIntegrationPerformanceTests, GeneratedModelDragSynchronouslyPrewarmsRendererResourcesForSceneInsertion)
 {
     if (!HasExecutableShaderCompilerForGameObjectImportTests())
         GTEST_SKIP() << "Generated model ShaderLab material prewarm requires an executable DXC compiler.";
@@ -4539,7 +4548,7 @@ TEST(GameObjectAssetImportTests, GeneratedModelDragSynchronouslyPrewarmsRenderer
     std::filesystem::remove_all(root);
 }
 
-TEST(GameObjectAssetImportTests, GeneratedModelSceneRestoreSynchronouslyPrewarmsRuntimeResources)
+NLS_LONG_RUNNING_TEST(GameObjectAssetImportIntegrationPerformanceTests, GeneratedModelSceneRestoreSynchronouslyPrewarmsRuntimeResources)
 {
     if (!HasExecutableShaderCompilerForGameObjectImportTests())
         GTEST_SKIP() << "Generated model ShaderLab material prewarm requires an executable DXC compiler.";
@@ -4693,7 +4702,7 @@ TEST(GameObjectAssetImportTests, GeneratedModelSceneRestoreSynchronouslyPrewarms
     std::filesystem::remove_all(root);
 }
 
-TEST(GameObjectAssetImportTests, GeneratedModelDragSynchronouslyPrewarmsLargeImportedArtifacts)
+NLS_LONG_RUNNING_TEST(GameObjectAssetImportIntegrationPerformanceTests, GeneratedModelDragSynchronouslyPrewarmsLargeImportedArtifacts)
 {
     if (!HasExecutableShaderCompilerForGameObjectImportTests())
         GTEST_SKIP() << "Generated model ShaderLab material prewarm requires an executable DXC compiler.";
@@ -4802,7 +4811,7 @@ TEST(GameObjectAssetImportTests, GeneratedModelDragSynchronouslyPrewarmsLargeImp
     std::filesystem::remove_all(root);
 }
 
-TEST(GameObjectAssetImportTests, CancelledRendererResourcePrewarmCanResumeWithoutCommittingStaleMaterial)
+NLS_LONG_RUNNING_TEST(GameObjectAssetImportIntegrationPerformanceTests, CancelledRendererResourcePrewarmCanResumeWithoutCommittingStaleMaterial)
 {
     const ScopedGameObjectAssetImportJobSystem jobSystem;
     ASSERT_TRUE(jobSystem.IsAvailable());
@@ -4893,7 +4902,7 @@ TEST(GameObjectAssetImportTests, CancelledRendererResourcePrewarmCanResumeWithou
     std::filesystem::remove_all(root);
 }
 
-TEST(GameObjectAssetImportTests, CancelledRendererResourcePrewarmCanResumeWithoutCommittingStaleTexture)
+NLS_LONG_RUNNING_TEST(GameObjectAssetImportIntegrationPerformanceTests, CancelledRendererResourcePrewarmCanResumeWithoutCommittingStaleTexture)
 {
     const ScopedGameObjectAssetImportJobSystem jobSystem;
     ASSERT_TRUE(jobSystem.IsAvailable());
@@ -4970,7 +4979,7 @@ TEST(GameObjectAssetImportTests, CancelledRendererResourcePrewarmCanResumeWithou
     std::filesystem::remove_all(root);
 }
 
-TEST(GameObjectAssetImportTests, BatchedTexturePrewarmRegistersOnlyAfterFenceAndRetriesFailedBatch)
+NLS_LONG_RUNNING_TEST(GameObjectAssetImportIntegrationPerformanceTests, BatchedTexturePrewarmRegistersOnlyAfterFenceAndRetriesFailedBatch)
 {
     auto& driver = EnsureGameObjectAssetImportTestDriver();
     auto explicitDevice = std::make_shared<NLS::Tests::DeterministicTextureRhiDevice>();

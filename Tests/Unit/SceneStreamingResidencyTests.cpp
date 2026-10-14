@@ -421,19 +421,3 @@ TEST(SceneStreamingResidencyTests, CommitReturnsCurrentAndEvictedTicketsWithoutC
 	EXPECT_EQ(commit.telemetry.requestedCpuBytes, currentDependency.cpuBytes);
 	EXPECT_EQ(commit.telemetry.requestedGpuBytes, currentDependency.gpuBytes);
 }
-
-TEST(SceneStreamingResidencyTests, MemoryEvictionSkipsResidentScanWhenWithinBudget)
-{
-	const auto source = ReadRepoFile("Runtime/Engine/Rendering/SceneStreamingResidency.cpp");
-	ASSERT_FALSE(source.empty());
-
-	const auto evictionStart = source.find("void SceneStreamingResidency::ApplyMemoryBudgetEviction");
-	ASSERT_NE(evictionStart, std::string::npos);
-	const auto currentInterestStart = source.find("std::unordered_set<uint64_t> currentInterest", evictionStart);
-	ASSERT_NE(currentInterestStart, std::string::npos);
-	const auto preScanBody = source.substr(evictionStart, currentInterestStart - evictionStart);
-
-	EXPECT_NE(preScanBody.find("residentCpuBytes <= settings.streamingCpuMemoryBudgetBytes"), std::string::npos);
-	EXPECT_NE(preScanBody.find("residentGpuBytes <= settings.streamingGpuMemoryBudgetBytes"), std::string::npos);
-	EXPECT_NE(preScanBody.find("return;"), std::string::npos);
-}

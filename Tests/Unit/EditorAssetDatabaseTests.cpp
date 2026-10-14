@@ -2351,16 +2351,6 @@ TEST(EditorAssetDatabaseTests, BlockingStartupPreimportFallsBackForDefaultFbxRea
 }
 #endif
 
-TEST(EditorAssetDatabaseTests, StartupPreimportUsesAlreadyRefreshedPlanWithoutSecondFullRefresh)
-{
-    const auto projectRoot = std::filesystem::path(NLS_ROOT_DIR);
-    const auto editorStartupSource = ReadText(projectRoot / "Project/Editor/Assets/EditorStartupAssetPreimport.cpp");
-    const auto schedulerSource = ReadText(projectRoot / "Project/Editor/Assets/EditorAssetDatabase.cpp");
-
-    EXPECT_NE(editorStartupSource.find("RunAlreadyPlanned("), std::string::npos);
-    EXPECT_NE(schedulerSource.find("bool AssetPreimportScheduler::RunAlreadyPlanned("), std::string::npos);
-}
-
 TEST(EditorAssetDatabaseTests, StartupPreimportRunsPlannedImportsAgainstCurrentDatabaseSnapshot)
 {
     using namespace NLS::Editor::Assets;

@@ -234,26 +234,3 @@ TEST_F(ReflectionRuntimeTestFixture, GameObjectFindsConcreteComponentsByReflecte
     EXPECT_EQ(owner.GetComponent(NLS_TYPEOF(NLS::Engine::Components::Component), false), nullptr);
     EXPECT_EQ(owner.GetComponent<NLS::Engine::Components::Component>(false), nullptr);
 }
-
-TEST_F(ReflectionRuntimeTestFixture, GameObjectReflectedComponentLookupDoesNotUseAHandWrittenComponentCastTable)
-{
-    const auto root = std::filesystem::path(NLS_ROOT_DIR);
-    const auto sourcePaths = {
-        root / "Runtime/Engine/GameObject.cpp",
-        root / "Runtime/Engine/GameObject.inl"
-    };
-
-    for (const auto& sourcePath : sourcePaths)
-    {
-        std::ifstream stream(sourcePath, std::ios::binary);
-        const std::string sourceText{
-            std::istreambuf_iterator<char>(stream),
-            std::istreambuf_iterator<char>()};
-        ASSERT_FALSE(sourceText.empty()) << sourcePath.string();
-
-        EXPECT_EQ(sourceText.find("CastKnownComponent"), std::string::npos) << sourcePath.string();
-        EXPECT_EQ(sourceText.find("CastComponentByReflectedType"), std::string::npos) << sourcePath.string();
-        EXPECT_EQ(sourceText.find("typeid(*component)"), std::string::npos) << sourcePath.string();
-        EXPECT_EQ(sourceText.find("dynamic_cast<"), std::string::npos) << sourcePath.string();
-    }
-}

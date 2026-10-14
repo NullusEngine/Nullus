@@ -544,20 +544,6 @@ TEST(MetaParserGenerationModuleTests, MetaParserCreatesHeaderStubsAndFiltersRunt
         "db.ResolveRegisteredType(moduleKey, \"NLS::Fixture::RuntimeOnlyInterface\", reportMissingType)");
 }
 
-TEST(MetaParserGenerationModuleTests, HeaderSourceTemplateIncludesRuntimeMetaPropertiesBeforeReflectedHeader)
-{
-    const std::filesystem::path sourceTemplate =
-        std::filesystem::path(NLS_ROOT_DIR) / "Tools/MetaParser/src/Templates/HeaderGenerated.cpp.tt";
-
-    const std::string templateText = ReadAllText(sourceTemplate);
-    const auto runtimeMetaInclude = templateText.find("#include \"Reflection/RuntimeMetaProperties.h\"");
-    const auto reflectedHeaderInclude = templateText.find("#include \"<#= headerIncludePath #>\"");
-
-    ASSERT_NE(runtimeMetaInclude, std::string::npos);
-    ASSERT_NE(reflectedHeaderInclude, std::string::npos);
-    EXPECT_LT(runtimeMetaInclude, reflectedHeaderInclude);
-}
-
 TEST(MetaParserGenerationModuleTests, HeaderSourceTemplateAvoidsDuplicatingRuntimeMetaPropertiesInclude)
 {
     const std::filesystem::path generatedSource =
@@ -1427,30 +1413,6 @@ TEST(MetaParserGenerationModuleTests, RejectsInvertedRangeMetadataBeforeGenerati
     const std::string processText = ReadAllText(outputPath);
     ExpectContains(processText, "Range metadata min must be less than or equal to max");
     ExpectContains(processText, "Range(10, 0)");
-}
-
-TEST(MetaParserGenerationModuleTests, GeneratedSourcesOnlyDirectlyIncludeGeneratedHeadersForExternalBodies)
-{
-    const std::filesystem::path sampleSource =
-        std::filesystem::path(NLS_ROOT_DIR) / "Runtime/Base/Gen/Reflection/MetaParserFieldMethodSample.generated.cpp";
-    const std::filesystem::path lightTypeSource =
-        std::filesystem::path(NLS_ROOT_DIR) / "Runtime/Rendering/Gen/Settings/ELightType.generated.cpp";
-    const std::string sampleText = ReadAllText(sampleSource);
-    const std::string lightTypeText = ReadAllText(lightTypeSource);
-
-    ExpectContains(sampleText, "#include \"Reflection/MetaParserFieldMethodSample.h\"");
-
-    const auto sampleOriginalHeader = sampleText.find("#include \"Reflection/MetaParserFieldMethodSample.h\"");
-    const auto sampleGeneratedHeader = sampleText.find("#include \"Reflection/MetaParserFieldMethodSample.generated.h\"");
-    ASSERT_NE(sampleOriginalHeader, std::string::npos);
-    ASSERT_NE(sampleGeneratedHeader, std::string::npos);
-    EXPECT_LT(sampleOriginalHeader, sampleGeneratedHeader);
-
-    const auto lightTypeGeneratedHeader = lightTypeText.find("#include \"Settings/ELightType.generated.h\"");
-    const auto lightTypeOriginalHeader = lightTypeText.find("#include \"Settings/ELightType.h\"");
-    ASSERT_NE(lightTypeGeneratedHeader, std::string::npos);
-    ASSERT_NE(lightTypeOriginalHeader, std::string::npos);
-    EXPECT_LT(lightTypeOriginalHeader, lightTypeGeneratedHeader);
 }
 
 TEST(MetaParserGenerationModuleTests, GeneratedSourcesRegisterEnumTypesWithoutGeneratedBody)

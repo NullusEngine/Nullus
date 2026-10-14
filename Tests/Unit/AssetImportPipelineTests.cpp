@@ -60,6 +60,15 @@
 #define NLS_HAS_DIRECTXTEX 0
 #endif
 
+#define NLS_UNREGISTERED_TEST(suite, name) static void suite##_##name##_Unregistered()
+#if defined(NLS_REGISTER_LONG_RUNNING_ASSET_IMPORT_PIPELINE_TESTS)
+#undef TEST
+#define TEST(suite, name) NLS_UNREGISTERED_TEST(suite, name)
+#define NLS_LONG_RUNNING_TEST(performanceSuite, name) GTEST_TEST(performanceSuite, name)
+#else
+#define NLS_LONG_RUNNING_TEST(performanceSuite, name) NLS_UNREGISTERED_TEST(performanceSuite, name)
+#endif
+
 namespace
 {
 std::string JoinDiagnosticSummaries(const NLS::Core::Assets::AssetDiagnostics& diagnostics)
@@ -1092,7 +1101,7 @@ private:
 };
 }
 
-TEST(AssetImportPipelineTests, DefaultRegistrySelectsSceneImportersByExtension)
+NLS_LONG_RUNNING_TEST(AssetImportPipelineIntegrationPerformanceTests, DefaultRegistrySelectsSceneImportersByExtension)
 {
     auto registry = NLS::Render::Assets::SceneImporterRegistry::CreateDefault();
     const auto currentModelSceneImporterVersion =
@@ -1121,7 +1130,7 @@ TEST(AssetImportPipelineTests, DefaultRegistrySelectsSceneImportersByExtension)
     EXPECT_EQ(registry.FindImporterForPath("Assets/Textures/Hero.png"), nullptr);
 }
 
-TEST(AssetImportPipelineTests, ModelSceneImporterVersionInvalidatesMaterialTextureSlotArtifacts)
+NLS_LONG_RUNNING_TEST(AssetImportPipelineIntegrationPerformanceTests, ModelSceneImporterVersionInvalidatesMaterialTextureSlotArtifacts)
 {
     EXPECT_GE(
         NLS::Core::Assets::GetCurrentImporterVersion(NLS::Core::Assets::AssetType::ModelScene),
@@ -1129,7 +1138,7 @@ TEST(AssetImportPipelineTests, ModelSceneImporterVersionInvalidatesMaterialTextu
         << "Model material artifacts before importer version 11 can miss ShaderLab texture slots such as _NormalMap.";
 }
 
-TEST(AssetImportPipelineTests, GeneratedSubAssetKeysAreDeterministicAcrossSourceOrder)
+NLS_LONG_RUNNING_TEST(AssetImportPipelineIntegrationPerformanceTests, GeneratedSubAssetKeysAreDeterministicAcrossSourceOrder)
 {
     NLS::Render::Assets::ImportedScene first;
     first.sourceAssetId = NLS::Core::Assets::AssetId(
@@ -1164,7 +1173,7 @@ TEST(AssetImportPipelineTests, GeneratedSubAssetKeysAreDeterministicAcrossSource
     EXPECT_EQ(ExtractKeys(firstRecords), expectedKeys);
 }
 
-TEST(AssetImportPipelineTests, ArtifactManifestSelectsPrimaryArtifactAndFindsSubAssets)
+NLS_LONG_RUNNING_TEST(AssetImportPipelineIntegrationPerformanceTests, ArtifactManifestSelectsPrimaryArtifactAndFindsSubAssets)
 {
     NLS::Core::Assets::ArtifactManifest manifest;
     manifest.sourceAssetId = NLS::Core::Assets::AssetId(
@@ -1208,7 +1217,7 @@ TEST(AssetImportPipelineTests, ArtifactManifestSelectsPrimaryArtifactAndFindsSub
     EXPECT_EQ(manifest.dependencies.front().kind, NLS::Core::Assets::AssetDependencyKind::SourceFileHash);
 }
 
-TEST(AssetImportPipelineTests, ArtifactDatabasePersistsCentralIndexBySourceSubAssetAndStatus)
+NLS_LONG_RUNNING_TEST(AssetImportPipelineIntegrationPerformanceTests, ArtifactDatabasePersistsCentralIndexBySourceSubAssetAndStatus)
 {
     const auto root = std::filesystem::temp_directory_path() /
         ("nullus_artifact_db_" + NLS::Guid::New().ToString());
@@ -1286,7 +1295,7 @@ TEST(AssetImportPipelineTests, ArtifactDatabasePersistsCentralIndexBySourceSubAs
     std::filesystem::remove_all(root);
 }
 
-TEST(AssetImportPipelineTests, ArtifactDatabaseRejectsArtifactPayloadPathsWithSourceExtensions)
+NLS_LONG_RUNNING_TEST(AssetImportPipelineIntegrationPerformanceTests, ArtifactDatabaseRejectsArtifactPayloadPathsWithSourceExtensions)
 {
     using namespace NLS::Core::Assets;
 
@@ -1336,7 +1345,7 @@ TEST(AssetImportPipelineTests, ArtifactDatabaseRejectsArtifactPayloadPathsWithSo
     EXPECT_EQ(database.GetStats().totalRecords, 0u);
 }
 
-TEST(AssetImportPipelineTests, ArtifactDatabaseRejectsExtensionlessSemanticPayloadNames)
+NLS_LONG_RUNNING_TEST(AssetImportPipelineIntegrationPerformanceTests, ArtifactDatabaseRejectsExtensionlessSemanticPayloadNames)
 {
     using namespace NLS::Core::Assets;
 
@@ -1367,7 +1376,7 @@ TEST(AssetImportPipelineTests, ArtifactDatabaseRejectsExtensionlessSemanticPaylo
         << "Artifact payload filenames are content hashes only; type names live in ArtifactDB/importer/container metadata.";
 }
 
-TEST(AssetImportPipelineTests, ArtifactDatabaseUsesMetadataNotBlobExtensionToDistinguishAssetKinds)
+NLS_LONG_RUNNING_TEST(AssetImportPipelineIntegrationPerformanceTests, ArtifactDatabaseUsesMetadataNotBlobExtensionToDistinguishAssetKinds)
 {
     using namespace NLS::Core::Assets;
 
@@ -1432,7 +1441,7 @@ TEST(AssetImportPipelineTests, ArtifactDatabaseUsesMetadataNotBlobExtensionToDis
     EXPECT_EQ(database.GetStats().totalRecords, 2u);
 }
 
-TEST(AssetImportPipelineTests, ArtifactDatabaseLoadDropsArtifactPayloadPathsWithSourceExtensions)
+NLS_LONG_RUNNING_TEST(AssetImportPipelineIntegrationPerformanceTests, ArtifactDatabaseLoadDropsArtifactPayloadPathsWithSourceExtensions)
 {
     using namespace NLS::Core::Assets;
 
@@ -1471,7 +1480,7 @@ TEST(AssetImportPipelineTests, ArtifactDatabaseLoadDropsArtifactPayloadPathsWith
     std::filesystem::remove_all(root);
 }
 
-TEST(AssetImportPipelineTests, ArtifactDatabaseGrowsLmdbMapForLargeProjects)
+NLS_LONG_RUNNING_TEST(AssetImportPipelineIntegrationPerformanceTests, ArtifactDatabaseGrowsLmdbMapForLargeProjects)
 {
     using namespace NLS::Core::Assets;
 
@@ -1517,7 +1526,7 @@ TEST(AssetImportPipelineTests, ArtifactDatabaseGrowsLmdbMapForLargeProjects)
     std::filesystem::remove_all(root);
 }
 
-TEST(AssetImportPipelineTests, ArtifactDatabaseUpsertsUpdateIndexIncrementally)
+NLS_LONG_RUNNING_TEST(AssetImportPipelineIntegrationPerformanceTests, ArtifactDatabaseUpsertsUpdateIndexIncrementally)
 {
     using namespace NLS::Core::Assets;
 
@@ -1556,7 +1565,7 @@ TEST(AssetImportPipelineTests, ArtifactDatabaseUpsertsUpdateIndexIncrementally)
     EXPECT_EQ(database.GetStats().totalRecords, manifestCount);
 }
 
-TEST(AssetImportPipelineTests, ArtifactWriterStagesPayloadsAndCommitsManifestAtomically)
+NLS_LONG_RUNNING_TEST(AssetImportPipelineIntegrationPerformanceTests, ArtifactWriterStagesPayloadsAndCommitsManifestAtomically)
 {
     using namespace NLS::Core::Assets;
 
@@ -1625,7 +1634,7 @@ TEST(AssetImportPipelineTests, ArtifactWriterStagesPayloadsAndCommitsManifestAto
     std::filesystem::remove_all(root);
 }
 
-TEST(AssetImportPipelineTests, ArtifactWriterFileNameDependsOnStoredContentNotRequestedPath)
+NLS_LONG_RUNNING_TEST(AssetImportPipelineIntegrationPerformanceTests, ArtifactWriterFileNameDependsOnStoredContentNotRequestedPath)
 {
     using namespace NLS::Core::Assets;
 
@@ -1678,7 +1687,7 @@ TEST(AssetImportPipelineTests, ArtifactWriterFileNameDependsOnStoredContentNotRe
     std::filesystem::remove_all(root);
 }
 
-TEST(AssetImportPipelineTests, ArtifactWriterCommitsDuplicateContentAddressedPayloadOnce)
+NLS_LONG_RUNNING_TEST(AssetImportPipelineIntegrationPerformanceTests, ArtifactWriterCommitsDuplicateContentAddressedPayloadOnce)
 {
     using namespace NLS::Core::Assets;
 
@@ -1725,7 +1734,7 @@ TEST(AssetImportPipelineTests, ArtifactWriterCommitsDuplicateContentAddressedPay
     std::filesystem::remove_all(root);
 }
 
-TEST(AssetImportPipelineTests, ArtifactWriterSkipsPhysicalCommitWhenContentBlobAlreadyExists)
+NLS_LONG_RUNNING_TEST(AssetImportPipelineIntegrationPerformanceTests, ArtifactWriterSkipsPhysicalCommitWhenContentBlobAlreadyExists)
 {
     using namespace NLS::Core::Assets;
 
@@ -1769,7 +1778,7 @@ TEST(AssetImportPipelineTests, ArtifactWriterSkipsPhysicalCommitWhenContentBlobA
     std::filesystem::remove_all(root);
 }
 
-TEST(AssetImportPipelineTests, ArtifactWriterRewritesSameSizeCorruptContentAddressedBlob)
+NLS_LONG_RUNNING_TEST(AssetImportPipelineIntegrationPerformanceTests, ArtifactWriterRewritesSameSizeCorruptContentAddressedBlob)
 {
     using namespace NLS::Core::Assets;
 
@@ -1818,7 +1827,7 @@ TEST(AssetImportPipelineTests, ArtifactWriterRewritesSameSizeCorruptContentAddre
     std::filesystem::remove_all(root);
 }
 
-TEST(AssetImportPipelineTests, ArtifactWriterReportsWriteAndCommitPerformanceCounters)
+NLS_LONG_RUNNING_TEST(AssetImportPipelineIntegrationPerformanceTests, ArtifactWriterReportsWriteAndCommitPerformanceCounters)
 {
     using namespace NLS::Core::Assets;
     using NLS::Base::Profiling::PerformanceStageDomain;
@@ -1887,7 +1896,7 @@ TEST(AssetImportPipelineTests, ArtifactWriterReportsWriteAndCommitPerformanceCou
     std::filesystem::remove_all(root);
 }
 
-TEST(AssetImportPipelineTests, ArtifactWriterRebuildsStoredPayloadWhenPayloadChanges)
+NLS_LONG_RUNNING_TEST(AssetImportPipelineIntegrationPerformanceTests, ArtifactWriterRebuildsStoredPayloadWhenPayloadChanges)
 {
     using namespace NLS::Core::Assets;
     using NLS::Base::Profiling::PerformanceStageDomain;
@@ -1954,7 +1963,7 @@ TEST(AssetImportPipelineTests, ArtifactWriterRebuildsStoredPayloadWhenPayloadCha
     std::filesystem::remove_all(root);
 }
 
-TEST(AssetImportPipelineTests, ArtifactWriterBypassesStoredPayloadForUnchangedNativePayloads)
+NLS_LONG_RUNNING_TEST(AssetImportPipelineIntegrationPerformanceTests, ArtifactWriterBypassesStoredPayloadForUnchangedNativePayloads)
 {
     using namespace NLS::Core::Assets;
     using NLS::Base::Profiling::PerformanceStageDomain;
@@ -2033,7 +2042,7 @@ TEST(AssetImportPipelineTests, ArtifactWriterBypassesStoredPayloadForUnchangedNa
     std::filesystem::remove_all(root);
 }
 
-TEST(AssetImportPipelineTests, ArtifactWriterRejectsCorruptNativePayloadBeforeReuseBypass)
+NLS_LONG_RUNNING_TEST(AssetImportPipelineIntegrationPerformanceTests, ArtifactWriterRejectsCorruptNativePayloadBeforeReuseBypass)
 {
     using namespace NLS::Core::Assets;
 
@@ -2085,7 +2094,7 @@ TEST(AssetImportPipelineTests, ArtifactWriterRejectsCorruptNativePayloadBeforeRe
     std::filesystem::remove_all(root);
 }
 
-TEST(AssetImportPipelineTests, NativeArtifactContainerViewPreservesValidationAndAvoidsPayloadCopy)
+NLS_LONG_RUNNING_TEST(AssetImportPipelineIntegrationPerformanceTests, NativeArtifactContainerViewPreservesValidationAndAvoidsPayloadCopy)
 {
     using NLS::Core::Assets::ArtifactLoadTelemetryStage;
     using NLS::Core::Assets::ArtifactType;
@@ -2152,7 +2161,7 @@ TEST(AssetImportPipelineTests, NativeArtifactContainerViewPreservesValidationAnd
         << "The low-copy view must also keep native container dependency hash validation.";
 }
 
-TEST(AssetImportPipelineTests, ArtifactWriterRewrapsNativePayloadWithoutPayloadVectorCopy)
+NLS_LONG_RUNNING_TEST(AssetImportPipelineIntegrationPerformanceTests, ArtifactWriterRewrapsNativePayloadWithoutPayloadVectorCopy)
 {
     using namespace NLS::Core::Assets;
 
@@ -2201,7 +2210,7 @@ TEST(AssetImportPipelineTests, ArtifactWriterRewrapsNativePayloadWithoutPayloadV
     std::filesystem::remove_all(root);
 }
 
-TEST(AssetImportPipelineTests, NativeArtifactPayloadTextFromFileValidatesAndAvoidsPayloadVectorCopy)
+NLS_LONG_RUNNING_TEST(AssetImportPipelineIntegrationPerformanceTests, NativeArtifactPayloadTextFromFileValidatesAndAvoidsPayloadVectorCopy)
 {
     using NLS::Core::Assets::ArtifactLoadTelemetryStage;
     using NLS::Core::Assets::ArtifactType;
@@ -2251,7 +2260,7 @@ TEST(AssetImportPipelineTests, NativeArtifactPayloadTextFromFileValidatesAndAvoi
         << "The direct text path must keep payload hash validation.";
 }
 
-TEST(AssetImportPipelineTests, NativeArtifactContainerViewRejectsMissingPayloadWithDiagnostics)
+NLS_LONG_RUNNING_TEST(AssetImportPipelineIntegrationPerformanceTests, NativeArtifactContainerViewRejectsMissingPayloadWithDiagnostics)
 {
     using NLS::Core::Assets::ArtifactType;
     using NLS::Core::Assets::ReadNativeArtifactContainerView;
@@ -2278,7 +2287,7 @@ TEST(AssetImportPipelineTests, NativeArtifactContainerViewRejectsMissingPayloadW
         << "Missing payload failures must be diagnosable so corrupt artifacts do not look like generic load misses.";
 }
 
-TEST(AssetImportPipelineTests, ArtifactWriterKeepsPreviousManifestWhenStagedPayloadFails)
+NLS_LONG_RUNNING_TEST(AssetImportPipelineIntegrationPerformanceTests, ArtifactWriterKeepsPreviousManifestWhenStagedPayloadFails)
 {
     using namespace NLS::Core::Assets;
 
@@ -2324,7 +2333,7 @@ TEST(AssetImportPipelineTests, ArtifactWriterKeepsPreviousManifestWhenStagedPayl
 }
 
 #if defined(_WIN32)
-TEST(AssetImportPipelineTests, ArtifactWriterRejectsWindowsRootedPayloadPaths)
+NLS_LONG_RUNNING_TEST(AssetImportPipelineIntegrationPerformanceTests, ArtifactWriterRejectsWindowsRootedPayloadPaths)
 {
     using namespace NLS::Core::Assets;
 
@@ -2354,7 +2363,7 @@ TEST(AssetImportPipelineTests, ArtifactWriterRejectsWindowsRootedPayloadPaths)
 }
 #endif
 
-TEST(AssetImportPipelineTests, ArtifactWriterPreservesCommittedFilesWhenCommitFails)
+NLS_LONG_RUNNING_TEST(AssetImportPipelineIntegrationPerformanceTests, ArtifactWriterPreservesCommittedFilesWhenCommitFails)
 {
     using namespace NLS::Core::Assets;
 
@@ -2410,7 +2419,7 @@ TEST(AssetImportPipelineTests, ArtifactWriterPreservesCommittedFilesWhenCommitFa
     std::filesystem::remove_all(root);
 }
 
-TEST(AssetImportPipelineTests, ArtifactWriterRollsBackCommittedFilesWhenCancelledDuringCommit)
+NLS_LONG_RUNNING_TEST(AssetImportPipelineIntegrationPerformanceTests, ArtifactWriterRollsBackCommittedFilesWhenCancelledDuringCommit)
 {
     using namespace NLS::Core::Assets;
 
@@ -2468,7 +2477,7 @@ TEST(AssetImportPipelineTests, ArtifactWriterRollsBackCommittedFilesWhenCancelle
     std::filesystem::remove_all(root);
 }
 
-TEST(AssetImportPipelineTests, ArtifactWriterRejectsUnsafeRootsBeforeDeletingCommittedArtifacts)
+NLS_LONG_RUNNING_TEST(AssetImportPipelineIntegrationPerformanceTests, ArtifactWriterRejectsUnsafeRootsBeforeDeletingCommittedArtifacts)
 {
     using namespace NLS::Core::Assets;
 
@@ -2500,7 +2509,7 @@ TEST(AssetImportPipelineTests, ArtifactWriterRejectsUnsafeRootsBeforeDeletingCom
     std::filesystem::remove_all(root);
 }
 
-TEST(AssetImportPipelineTests, ArtifactWriterRejectsRollbackRootThatWouldDeleteCommittedArtifacts)
+NLS_LONG_RUNNING_TEST(AssetImportPipelineIntegrationPerformanceTests, ArtifactWriterRejectsRollbackRootThatWouldDeleteCommittedArtifacts)
 {
     using namespace NLS::Core::Assets;
 
@@ -2533,7 +2542,7 @@ TEST(AssetImportPipelineTests, ArtifactWriterRejectsRollbackRootThatWouldDeleteC
     std::filesystem::remove_all(root);
 }
 
-TEST(AssetImportPipelineTests, GltfImporterExtractsSceneContractData)
+NLS_LONG_RUNNING_TEST(AssetImportPipelineIntegrationPerformanceTests, GltfImporterExtractsSceneContractData)
 {
     const std::string gltf = R"(
     {
@@ -2646,7 +2655,7 @@ TEST(AssetImportPipelineTests, GltfImporterExtractsSceneContractData)
     EXPECT_EQ(scene.morphTargets[0].meshKey, "mesh/0");
 }
 
-TEST(AssetImportPipelineTests, GlbImporterExtractsPayloadAccessorsAndVertexStreams)
+NLS_LONG_RUNNING_TEST(AssetImportPipelineIntegrationPerformanceTests, GlbImporterExtractsPayloadAccessorsAndVertexStreams)
 {
     const std::string json = R"(
     {
@@ -2729,7 +2738,7 @@ TEST(AssetImportPipelineTests, GlbImporterExtractsPayloadAccessorsAndVertexStrea
     EXPECT_EQ(scene.meshes[0].primitives[0].indexAccessorKey, "accessor/1");
 }
 
-TEST(AssetImportPipelineTests, GlbImporterReportsInvalidContainerDiagnostics)
+NLS_LONG_RUNNING_TEST(AssetImportPipelineIntegrationPerformanceTests, GlbImporterReportsInvalidContainerDiagnostics)
 {
     const auto sourceAsset = NLS::Core::Assets::AssetId(
         NLS::Guid::Parse("cccccccc-cccc-4ccc-8ccc-cccccccccccc"));
@@ -2768,7 +2777,7 @@ TEST(AssetImportPipelineTests, GlbImporterReportsInvalidContainerDiagnostics)
     EXPECT_EQ(outOfRangeChunk.diagnostics[0].code, "glb-chunk-out-of-range");
 }
 
-TEST(AssetImportPipelineTests, ObjImporterConvertsParserMeshesAndReportsFormatLimits)
+NLS_LONG_RUNNING_TEST(AssetImportPipelineIntegrationPerformanceTests, ObjImporterConvertsParserMeshesAndReportsFormatLimits)
 {
     FakeModelParser parser;
     parser.meshCount = 2u;
@@ -2791,7 +2800,7 @@ TEST(AssetImportPipelineTests, ObjImporterConvertsParserMeshesAndReportsFormatLi
     EXPECT_EQ(scene.diagnostics[0].code, "obj-no-skeleton-animation-support");
 }
 
-TEST(AssetImportPipelineTests, ObjImporterPreservesMtlMaterialsAndTextureDependencies)
+NLS_LONG_RUNNING_TEST(AssetImportPipelineIntegrationPerformanceTests, ObjImporterPreservesMtlMaterialsAndTextureDependencies)
 {
     DetailedFakeModelParser parser;
     parser.meshCount = 1u;
@@ -2862,7 +2871,7 @@ TEST(AssetImportPipelineTests, ObjImporterPreservesMtlMaterialsAndTextureDepende
     EXPECT_EQ(scene.diagnostics[0].code, "obj-no-skeleton-animation-support");
 }
 
-TEST(AssetImportPipelineTests, AssimpParserReportsMaterialTextureDependencies)
+NLS_LONG_RUNNING_TEST(AssetImportPipelineIntegrationPerformanceTests, AssimpParserReportsMaterialTextureDependencies)
 {
     const auto root = MakeImportTestRoot();
     WriteTextFile(root / "Assets" / "Textures" / "HeroDiffuse.png", "texture-bytes");
@@ -2904,7 +2913,7 @@ f 1/1/1 2/2/1 3/3/1
     std::filesystem::remove_all(root);
 }
 
-TEST(AssetImportPipelineTests, AssimpParserPopulatesImportedSceneMaterialChannelsAndTextureUris)
+NLS_LONG_RUNNING_TEST(AssetImportPipelineIntegrationPerformanceTests, AssimpParserPopulatesImportedSceneMaterialChannelsAndTextureUris)
 {
     const auto root = MakeImportTestRoot();
     WriteTextFile(root / "Assets" / "Textures" / "HeroDiffuse.png", "texture-bytes");
@@ -3019,7 +3028,7 @@ f 1/1/1 2/2/1 3/3/1
     std::filesystem::remove_all(root);
 }
 
-TEST(AssetImportPipelineTests, AssimpDetailedSceneCreatesStableParentNodeForMultiMeshSourceNodes)
+NLS_LONG_RUNNING_TEST(AssetImportPipelineIntegrationPerformanceTests, AssimpDetailedSceneCreatesStableParentNodeForMultiMeshSourceNodes)
 {
     const auto root = MakeImportTestRoot();
     WriteTextFile(
@@ -3071,7 +3080,7 @@ f 4//2 5//2 6//2
     std::filesystem::remove_all(root);
 }
 
-TEST(AssetImportPipelineTests, AssimpFbxParserSurfacesTemplateDiffuseAndTexture)
+NLS_LONG_RUNNING_TEST(AssetImportPipelineIntegrationPerformanceTests, AssimpFbxParserSurfacesTemplateDiffuseAndTexture)
 {
 #if !NLS_HAS_ASSIMP_FBX_IMPORTER
     GTEST_SKIP() << "Assimp FBX import is not enabled in this build.";
@@ -3135,7 +3144,7 @@ TEST(AssetImportPipelineTests, AssimpFbxParserSurfacesTemplateDiffuseAndTexture)
 #endif
 }
 
-TEST(AssetImportPipelineTests, AssimpFbxParserSurfacesNeutralTexturedDiffuse)
+NLS_LONG_RUNNING_TEST(AssetImportPipelineIntegrationPerformanceTests, AssimpFbxParserSurfacesNeutralTexturedDiffuse)
 {
 #if !NLS_HAS_ASSIMP_FBX_IMPORTER
     GTEST_SKIP() << "Assimp FBX import is not enabled in this build.";
@@ -3198,7 +3207,7 @@ TEST(AssetImportPipelineTests, AssimpFbxParserSurfacesNeutralTexturedDiffuse)
 #endif
 }
 
-TEST(AssetImportPipelineTests, AssimpFbxParserKeepsColoredTexturedDiffuseTintAuthored)
+NLS_LONG_RUNNING_TEST(AssetImportPipelineIntegrationPerformanceTests, AssimpFbxParserKeepsColoredTexturedDiffuseTintAuthored)
 {
 #if !NLS_HAS_ASSIMP_FBX_IMPORTER
     GTEST_SKIP() << "Assimp FBX import is not enabled in this build.";
@@ -3261,7 +3270,7 @@ TEST(AssetImportPipelineTests, AssimpFbxParserKeepsColoredTexturedDiffuseTintAut
 #endif
 }
 
-TEST(AssetImportPipelineTests, AssimpFbxParserSurfaces3dsMaxParametersOpacityMaps)
+NLS_LONG_RUNNING_TEST(AssetImportPipelineIntegrationPerformanceTests, AssimpFbxParserSurfaces3dsMaxParametersOpacityMaps)
 {
 #if !NLS_HAS_ASSIMP_FBX_IMPORTER
     GTEST_SKIP() << "Assimp FBX import is not enabled in this build.";
@@ -3759,7 +3768,7 @@ bool ShortenInjectedFbxFilenamePropertyBoundary(std::vector<uint8_t>& bytes)
     return true;
 }
 
-TEST(AssetImportPipelineTests, AssimpFbxParserResolves3dsMaxBump2dNormalTextureChain)
+NLS_LONG_RUNNING_TEST(AssetImportPipelineIntegrationPerformanceTests, AssimpFbxParserResolves3dsMaxBump2dNormalTextureChain)
 {
 #if !NLS_HAS_ASSIMP_FBX_IMPORTER
     GTEST_SKIP() << "Assimp FBX import is not enabled in this build.";
@@ -3890,7 +3899,7 @@ TEST(AssetImportPipelineTests, AssimpFbxParserResolves3dsMaxBump2dNormalTextureC
 #endif
 }
 
-TEST(AssetImportPipelineTests, AssimpFbxParserResolvesBinary3dsMaxBump2dNormalTextureChain)
+NLS_LONG_RUNNING_TEST(AssetImportPipelineIntegrationPerformanceTests, AssimpFbxParserResolvesBinary3dsMaxBump2dNormalTextureChain)
 {
 #if !NLS_HAS_ASSIMP_FBX_IMPORTER
     GTEST_SKIP() << "Assimp FBX import is not enabled in this build.";
@@ -3982,7 +3991,7 @@ TEST(AssetImportPipelineTests, AssimpFbxParserResolvesBinary3dsMaxBump2dNormalTe
 #endif
 }
 
-TEST(AssetImportPipelineTests, AssimpFbxParserReadsBinary7500WideOffsetBump2dGraph)
+NLS_LONG_RUNNING_TEST(AssetImportPipelineIntegrationPerformanceTests, AssimpFbxParserReadsBinary7500WideOffsetBump2dGraph)
 {
 #if !NLS_HAS_ASSIMP_FBX_IMPORTER
     GTEST_SKIP() << "Assimp FBX import is not enabled in this build.";
@@ -4001,7 +4010,7 @@ TEST(AssetImportPipelineTests, AssimpFbxParserReadsBinary7500WideOffsetBump2dGra
 #endif
 }
 
-TEST(AssetImportPipelineTests, AssimpFbxParserReadsSignedObjectIdsAcrossAsciiAndBinaryGraphs)
+NLS_LONG_RUNNING_TEST(AssetImportPipelineIntegrationPerformanceTests, AssimpFbxParserReadsSignedObjectIdsAcrossAsciiAndBinaryGraphs)
 {
 #if !NLS_HAS_ASSIMP_FBX_IMPORTER
     GTEST_SKIP() << "Assimp FBX import is not enabled in this build.";
@@ -4033,7 +4042,7 @@ Connections:  {
 #endif
 }
 
-TEST(AssetImportPipelineTests, AssimpFbxParserRefusesAmbiguousDuplicateMaterialRecovery)
+NLS_LONG_RUNNING_TEST(AssetImportPipelineIntegrationPerformanceTests, AssimpFbxParserRefusesAmbiguousDuplicateMaterialRecovery)
 {
 #if !NLS_HAS_ASSIMP_FBX_IMPORTER
     GTEST_SKIP() << "Assimp FBX import is not enabled in this build.";
@@ -4099,7 +4108,7 @@ TEST(AssetImportPipelineTests, AssimpFbxParserRefusesAmbiguousDuplicateMaterialR
 #endif
 }
 
-TEST(AssetImportPipelineTests, AssimpFbxParserRejectsStringThatCrossesBinaryPropertyBoundary)
+NLS_LONG_RUNNING_TEST(AssetImportPipelineIntegrationPerformanceTests, AssimpFbxParserRejectsStringThatCrossesBinaryPropertyBoundary)
 {
 #if !NLS_HAS_ASSIMP_FBX_IMPORTER
     GTEST_SKIP() << "Assimp FBX import is not enabled in this build.";
@@ -4119,7 +4128,7 @@ TEST(AssetImportPipelineTests, AssimpFbxParserRejectsStringThatCrossesBinaryProp
 #endif
 }
 
-TEST(AssetImportPipelineTests, AssimpFbxParserPreservesExplicit3dsMaxNormalTexture)
+NLS_LONG_RUNNING_TEST(AssetImportPipelineIntegrationPerformanceTests, AssimpFbxParserPreservesExplicit3dsMaxNormalTexture)
 {
 #if !NLS_HAS_ASSIMP_FBX_IMPORTER
     GTEST_SKIP() << "Assimp FBX import is not enabled in this build.";
@@ -4173,7 +4182,7 @@ TEST(AssetImportPipelineTests, AssimpFbxParserPreservesExplicit3dsMaxNormalTextu
 #endif
 }
 
-TEST(AssetImportPipelineTests, AssimpFbxParserPreservesStandardNormalMapTexture)
+NLS_LONG_RUNNING_TEST(AssetImportPipelineIntegrationPerformanceTests, AssimpFbxParserPreservesStandardNormalMapTexture)
 {
 #if !NLS_HAS_ASSIMP_FBX_IMPORTER
     GTEST_SKIP() << "Assimp FBX import is not enabled in this build.";
@@ -4233,7 +4242,7 @@ TEST(AssetImportPipelineTests, AssimpFbxParserPreservesStandardNormalMapTexture)
 #endif
 }
 
-TEST(AssetImportPipelineTests, AssimpParserKeepsSharedMeshPayloadInSourceSpaceAndStoresNodeTransforms)
+NLS_LONG_RUNNING_TEST(AssetImportPipelineIntegrationPerformanceTests, AssimpParserKeepsSharedMeshPayloadInSourceSpaceAndStoresNodeTransforms)
 {
     const auto root = MakeImportTestRoot();
     const auto sourcePath = root / "Assets" / "Models" / "SharedMesh.gltf";
@@ -4321,7 +4330,7 @@ TEST(AssetImportPipelineTests, AssimpParserKeepsSharedMeshPayloadInSourceSpaceAn
     std::filesystem::remove_all(root);
 }
 
-TEST(AssetImportPipelineTests, AssimpBakedNodeTransformsDoNotTranslateDirectionStreams)
+NLS_LONG_RUNNING_TEST(AssetImportPipelineIntegrationPerformanceTests, AssimpBakedNodeTransformsDoNotTranslateDirectionStreams)
 {
     const auto root = MakeImportTestRoot();
     const auto sourcePath = root / "Assets" / "Models" / "BakedDirections.gltf";
@@ -4442,7 +4451,7 @@ TEST(AssetImportPipelineTests, AssimpBakedNodeTransformsDoNotTranslateDirectionS
     std::filesystem::remove_all(root);
 }
 
-TEST(AssetImportPipelineTests, AssimpBakedNormalMatrixIsPrecomputedPerMesh)
+NLS_LONG_RUNNING_TEST(AssetImportPipelineIntegrationPerformanceTests, AssimpBakedNormalMatrixIsPrecomputedPerMesh)
 {
     const auto source = ReadTextFile(
         std::filesystem::path(NLS_ROOT_DIR) /
@@ -4464,7 +4473,7 @@ TEST(AssetImportPipelineTests, AssimpBakedNormalMatrixIsPrecomputedPerMesh)
         << "Normal matrix inverse/transpose must not run once per vertex in ProcessMesh.";
 }
 
-TEST(AssetImportPipelineTests, AssimpRawFbxOpacityCompatibilityIsFbxScoped)
+NLS_LONG_RUNNING_TEST(AssetImportPipelineIntegrationPerformanceTests, AssimpRawFbxOpacityCompatibilityIsFbxScoped)
 {
     const auto source = ReadTextFile(
         std::filesystem::path(NLS_ROOT_DIR) /
@@ -4488,7 +4497,7 @@ TEST(AssetImportPipelineTests, AssimpRawFbxOpacityCompatibilityIsFbxScoped)
     EXPECT_NE(processMaterials.find("AddRawTextureDependency"), std::string::npos);
 }
 
-TEST(AssetImportPipelineTests, AssimpBakedDirectionStreamsStayFiniteForScaledNodes)
+NLS_LONG_RUNNING_TEST(AssetImportPipelineIntegrationPerformanceTests, AssimpBakedDirectionStreamsStayFiniteForScaledNodes)
 {
     const auto root = MakeImportTestRoot();
     const auto writeModel = [&root](
@@ -4629,7 +4638,7 @@ TEST(AssetImportPipelineTests, AssimpBakedDirectionStreamsStayFiniteForScaledNod
     std::filesystem::remove_all(root);
 }
 
-TEST(AssetImportPipelineTests, ExternalModelImportWritesMeshArtifactsBySourceMeshIndexWhenNodesReferenceMeshesOutOfOrder)
+NLS_LONG_RUNNING_TEST(AssetImportPipelineIntegrationPerformanceTests, ExternalModelImportWritesMeshArtifactsBySourceMeshIndexWhenNodesReferenceMeshesOutOfOrder)
 {
     const auto root = MakeImportTestRoot();
     const auto sourcePath = root / "Assets" / "Models" / "OutOfOrder.gltf";
@@ -4792,7 +4801,7 @@ TEST(AssetImportPipelineTests, ExternalModelImportWritesMeshArtifactsBySourceMes
     std::filesystem::remove_all(root);
 }
 
-TEST(AssetImportPipelineTests, ExternalModelImportPreparationDefersArtifactPublicationUntilCommit)
+NLS_LONG_RUNNING_TEST(AssetImportPipelineIntegrationPerformanceTests, ExternalModelImportPreparationDefersArtifactPublicationUntilCommit)
 {
     const auto root = MakeImportTestRoot();
     const auto sourcePath = root / "Assets" / "Models" / "PreparedScene.gltf";
@@ -4848,7 +4857,7 @@ TEST(AssetImportPipelineTests, ExternalModelImportPreparationDefersArtifactPubli
     std::filesystem::remove_all(root);
 }
 
-TEST(AssetImportPipelineTests, StaticMeshImportBuildsFormalLODsFromExplicitLODGroup)
+NLS_LONG_RUNNING_TEST(AssetImportPipelineIntegrationPerformanceTests, StaticMeshImportBuildsFormalLODsFromExplicitLODGroup)
 {
     const auto root = MakeImportTestRoot();
     const auto sourcePath = root / "Assets" / "Models" / "SmallProp.obj";
@@ -4937,7 +4946,7 @@ TEST(AssetImportPipelineTests, StaticMeshImportBuildsFormalLODsFromExplicitLODGr
     std::filesystem::remove_all(root);
 }
 
-TEST(AssetImportPipelineTests, StaticMeshImportRecognizesAuthoredLODSuffixesOnlyWhenEnabled)
+NLS_LONG_RUNNING_TEST(AssetImportPipelineIntegrationPerformanceTests, StaticMeshImportRecognizesAuthoredLODSuffixesOnlyWhenEnabled)
 {
     const auto root = MakeImportTestRoot();
     const auto sourcePath = root / "Assets" / "Models" / "AuthoredLODs.gltf";
@@ -5040,7 +5049,7 @@ TEST(AssetImportPipelineTests, StaticMeshImportRecognizesAuthoredLODSuffixesOnly
     std::filesystem::remove_all(root);
 }
 
-TEST(AssetImportPipelineTests, ExternalObjModelImportWritesMaterialTextureUniforms)
+NLS_LONG_RUNNING_TEST(AssetImportPipelineIntegrationPerformanceTests, ExternalObjModelImportWritesMaterialTextureUniforms)
 {
     const auto root = MakeImportTestRoot();
     const auto sourcePath = root / "Assets" / "Models" / "Hero.obj";
@@ -5145,7 +5154,7 @@ f 1/1/1 2/2/1 3/3/1
     std::filesystem::remove_all(root);
 }
 
-TEST(AssetImportPipelineTests, ExternalObjModelImportWritesTextureArtifactPayloads)
+NLS_LONG_RUNNING_TEST(AssetImportPipelineIntegrationPerformanceTests, ExternalObjModelImportWritesTextureArtifactPayloads)
 {
     const auto root = MakeImportTestRoot();
     const auto sourcePath = root / "Assets" / "Models" / "Hero.obj";
@@ -5254,7 +5263,7 @@ f 1/1/1 2/2/1 3/3/1
     std::filesystem::remove_all(root);
 }
 
-TEST(AssetImportPipelineTests, ExternalEditorModelImportBuildsTexturesForDx12WhileKeepingEditorManifest)
+NLS_LONG_RUNNING_TEST(AssetImportPipelineIntegrationPerformanceTests, ExternalEditorModelImportBuildsTexturesForDx12WhileKeepingEditorManifest)
 {
     const auto root = MakeImportTestRoot();
     const auto sourcePath = root / "Assets" / "Models" / "Hero.obj";
@@ -5333,7 +5342,7 @@ f 1/1/1 2/2/1 3/3/1
     std::filesystem::remove_all(root);
 }
 
-TEST(AssetImportPipelineTests, TextureFormatResolverMapsWindowsDx12CommonCases)
+NLS_LONG_RUNNING_TEST(AssetImportPipelineIntegrationPerformanceTests, TextureFormatResolverMapsWindowsDx12CommonCases)
 {
     NLS::Render::Assets::TextureImportSettingsSnapshot settings;
     settings.textureType = "default";
@@ -5562,7 +5571,7 @@ TEST(AssetImportPipelineTests, TextureFormatResolverMapsWindowsDx12CommonCases)
     EXPECT_EQ(capabilityFallback->resolvedFormat, NLS::Render::RHI::TextureFormat::RGBA8);
 }
 
-TEST(AssetImportPipelineTests, TextureFormatResolverReportsFallbackAndFailureDiagnostics)
+NLS_LONG_RUNNING_TEST(AssetImportPipelineIntegrationPerformanceTests, TextureFormatResolverReportsFallbackAndFailureDiagnostics)
 {
     NLS::Render::Assets::TextureImportSettingsSnapshot settings;
     settings.textureType = "default";
@@ -5659,7 +5668,7 @@ TEST(AssetImportPipelineTests, TextureFormatResolverReportsFallbackAndFailureDia
     EXPECT_NE(unknownExplicit.diagnostics[0].reason.find("does-not-exist"), std::string::npos);
 }
 
-TEST(AssetImportPipelineTests, TextureFormatResolverKeepsReservedPlatformsAndFormatsExplicitlyUnsupported)
+NLS_LONG_RUNNING_TEST(AssetImportPipelineIntegrationPerformanceTests, TextureFormatResolverKeepsReservedPlatformsAndFormatsExplicitlyUnsupported)
 {
     NLS::Render::Assets::TextureImportSettingsSnapshot settings;
     settings.textureType = "default";
@@ -5737,7 +5746,7 @@ TEST(AssetImportPipelineTests, TextureFormatResolverKeepsReservedPlatformsAndFor
     EXPECT_NE(missingEncoder.diagnostics[0].reason.find("encoder"), std::string::npos);
 }
 
-TEST(AssetImportPipelineTests, TextureEncoderRegistryFindsEncodersByIdAndFormat)
+NLS_LONG_RUNNING_TEST(AssetImportPipelineIntegrationPerformanceTests, TextureEncoderRegistryFindsEncodersByIdAndFormat)
 {
     class FakeTextureEncoder final : public NLS::Render::Assets::ITextureEncoder
     {
@@ -5769,7 +5778,7 @@ TEST(AssetImportPipelineTests, TextureEncoderRegistryFindsEncodersByIdAndFormat)
     EXPECT_EQ(registry.FindForFormat(NLS::Render::RHI::TextureFormat::ASTC4x4), nullptr);
 }
 
-TEST(AssetImportPipelineTests, DirectXTexTextureEncoderProducesBC7ArtifactWhenDependencyAvailable)
+NLS_LONG_RUNNING_TEST(AssetImportPipelineIntegrationPerformanceTests, DirectXTexTextureEncoderProducesBC7ArtifactWhenDependencyAvailable)
 {
     auto encoder = NLS::Editor::Assets::CreateDirectXTexTextureEncoder();
     ASSERT_NE(encoder, nullptr);
@@ -5843,7 +5852,7 @@ TEST(AssetImportPipelineTests, DirectXTexTextureEncoderProducesBC7ArtifactWhenDe
 #endif
 }
 
-TEST(AssetImportPipelineTests, DirectXTexTextureEncoderProducesFirstScopeBCArtifactsWhenDependencyAvailable)
+NLS_LONG_RUNNING_TEST(AssetImportPipelineIntegrationPerformanceTests, DirectXTexTextureEncoderProducesFirstScopeBCArtifactsWhenDependencyAvailable)
 {
     auto encoder = NLS::Editor::Assets::CreateDirectXTexTextureEncoder();
     ASSERT_NE(encoder, nullptr);
@@ -5909,7 +5918,7 @@ TEST(AssetImportPipelineTests, DirectXTexTextureEncoderProducesFirstScopeBCArtif
     }
 }
 
-TEST(AssetImportPipelineTests, TextureBuildIdentityChangesWhenKeyInputsChange)
+NLS_LONG_RUNNING_TEST(AssetImportPipelineIntegrationPerformanceTests, TextureBuildIdentityChangesWhenKeyInputsChange)
 {
     constexpr uint32_t baselineImporterVersion = 41u;
     constexpr uint32_t changedImporterVersion = baselineImporterVersion + 1u;
@@ -6001,7 +6010,7 @@ TEST(AssetImportPipelineTests, TextureBuildIdentityChangesWhenKeyInputsChange)
     EXPECT_NE(baseline, NLS::Render::Assets::BuildTextureBuildIdentity(changed));
 }
 
-TEST(AssetImportPipelineTests, ExternalModelImportUsesMetaModelImporterSettings)
+NLS_LONG_RUNNING_TEST(AssetImportPipelineIntegrationPerformanceTests, ExternalModelImportUsesMetaModelImporterSettings)
 {
     const auto root = MakeImportTestRoot();
     const auto sourcePath = root / "Assets" / "Models" / "SettingsHero.gltf";
@@ -6123,7 +6132,7 @@ TEST(AssetImportPipelineTests, ExternalModelImportUsesMetaModelImporterSettings)
     std::filesystem::remove_all(root);
 }
 
-TEST(AssetImportPipelineTests, ExternalModelImportPreservesPreviousArtifactsWhenCancellationRequested)
+NLS_LONG_RUNNING_TEST(AssetImportPipelineIntegrationPerformanceTests, ExternalModelImportPreservesPreviousArtifactsWhenCancellationRequested)
 {
     const auto root = MakeImportTestRoot();
     const auto sourcePath = root / "Assets" / "Models" / "CancelledHero.gltf";
@@ -6194,7 +6203,7 @@ TEST(AssetImportPipelineTests, ExternalModelImportPreservesPreviousArtifactsWhen
     std::filesystem::remove_all(root);
 }
 
-TEST(AssetImportPipelineTests, ExternalGltfModelTextureArtifactsPreserveEncodedRowOrder)
+NLS_LONG_RUNNING_TEST(AssetImportPipelineIntegrationPerformanceTests, ExternalGltfModelTextureArtifactsPreserveEncodedRowOrder)
 {
     const auto root = MakeImportTestRoot();
     WriteBinaryFile(root / "Assets" / "Textures" / "TwoRows.png", TwoRowColorPng());
@@ -6299,7 +6308,7 @@ TEST(AssetImportPipelineTests, ExternalGltfModelTextureArtifactsPreserveEncodedR
     std::filesystem::remove_all(root);
 }
 
-TEST(AssetImportPipelineTests, ExternalObjModelTextureArtifactsKeepLegacyFlippedRowOrder)
+NLS_LONG_RUNNING_TEST(AssetImportPipelineIntegrationPerformanceTests, ExternalObjModelTextureArtifactsKeepLegacyFlippedRowOrder)
 {
     const auto root = MakeImportTestRoot();
     const auto sourcePath = root / "Assets" / "Models" / "TextureOrientation.obj";
@@ -6378,7 +6387,7 @@ f 1/1/1 2/2/1 3/3/1
     std::filesystem::remove_all(root);
 }
 
-TEST(AssetImportPipelineTests, ExternalModelImportReusesProjectTextureAssetBySourcePath)
+NLS_LONG_RUNNING_TEST(AssetImportPipelineIntegrationPerformanceTests, ExternalModelImportReusesProjectTextureAssetBySourcePath)
 {
     const auto root = MakeImportTestRoot();
     const auto sourcePath = root / "Assets" / "Models" / "SharedTextureHero.gltf";
@@ -6537,7 +6546,7 @@ TEST(AssetImportPipelineTests, ExternalModelImportReusesProjectTextureAssetBySou
     std::filesystem::remove_all(root);
 }
 
-TEST(AssetImportPipelineTests, ExternalModelImportMatchesProjectTexturesCaseInsensitively)
+NLS_LONG_RUNNING_TEST(AssetImportPipelineIntegrationPerformanceTests, ExternalModelImportMatchesProjectTexturesCaseInsensitively)
 {
     const auto root = MakeImportTestRoot();
     const auto sourcePath = root / "Assets" / "Models" / "CaseTextureHero.gltf";
@@ -6633,7 +6642,7 @@ TEST(AssetImportPipelineTests, ExternalModelImportMatchesProjectTexturesCaseInse
     std::filesystem::remove_all(root);
 }
 
-TEST(AssetImportPipelineTests, ExternalModelImportAutoImportsMissingProjectTextureAssetWhenEnabled)
+NLS_LONG_RUNNING_TEST(AssetImportPipelineIntegrationPerformanceTests, ExternalModelImportAutoImportsMissingProjectTextureAssetWhenEnabled)
 {
     const auto root = MakeImportTestRoot();
     const auto sourcePath = root / "Assets" / "Models" / "AutoImportTextureHero.gltf";
@@ -6761,7 +6770,7 @@ TEST(AssetImportPipelineTests, ExternalModelImportAutoImportsMissingProjectTextu
     std::filesystem::remove_all(root);
 }
 
-TEST(AssetImportPipelineTests, ExternalModelImportPreparationAllowsCurrentAutoImportedProjectTexture)
+NLS_LONG_RUNNING_TEST(AssetImportPipelineIntegrationPerformanceTests, ExternalModelImportPreparationAllowsCurrentAutoImportedProjectTexture)
 {
     const auto root = MakeImportTestRoot();
     const auto sourcePath = root / "Assets" / "Models" / "PreparedCurrentTextureHero.gltf";
@@ -6837,7 +6846,7 @@ TEST(AssetImportPipelineTests, ExternalModelImportPreparationAllowsCurrentAutoIm
     std::filesystem::remove_all(root);
 }
 
-TEST(AssetImportPipelineTests, ExternalModelImportRecordsProjectTextureFreshnessDependencies)
+NLS_LONG_RUNNING_TEST(AssetImportPipelineIntegrationPerformanceTests, ExternalModelImportRecordsProjectTextureFreshnessDependencies)
 {
     const auto root = MakeImportTestRoot();
     const auto sourcePath = root / "Assets" / "Models" / "FreshnessHero.gltf";
@@ -6934,7 +6943,7 @@ TEST(AssetImportPipelineTests, ExternalModelImportRecordsProjectTextureFreshness
     std::filesystem::remove_all(root);
 }
 
-TEST(AssetImportPipelineTests, ExternalModelImportFallsBackToArtifactDatabaseWhenManifestSnapshotMissesTexture)
+NLS_LONG_RUNNING_TEST(AssetImportPipelineIntegrationPerformanceTests, ExternalModelImportFallsBackToArtifactDatabaseWhenManifestSnapshotMissesTexture)
 {
     const auto root = MakeImportTestRoot();
     const auto sourcePath = root / "Assets" / "Models" / "SnapshotMissHero.gltf";
@@ -7017,7 +7026,7 @@ TEST(AssetImportPipelineTests, ExternalModelImportFallsBackToArtifactDatabaseWhe
     std::filesystem::remove_all(root);
 }
 
-TEST(AssetImportPipelineTests, ExternalModelImportRecordsPathMappingDependencyWhenTextureArtifactIsMissing)
+NLS_LONG_RUNNING_TEST(AssetImportPipelineIntegrationPerformanceTests, ExternalModelImportRecordsPathMappingDependencyWhenTextureArtifactIsMissing)
 {
     const auto root = MakeImportTestRoot();
     const auto sourcePath = root / "Assets" / "Models" / "MissingArtifactHero.gltf";
@@ -7101,7 +7110,7 @@ TEST(AssetImportPipelineTests, ExternalModelImportRecordsPathMappingDependencyWh
     std::filesystem::remove_all(root);
 }
 
-TEST(AssetImportPipelineTests, ExternalModelImportRecordsNameSearchCandidateFreshnessDependencies)
+NLS_LONG_RUNNING_TEST(AssetImportPipelineIntegrationPerformanceTests, ExternalModelImportRecordsNameSearchCandidateFreshnessDependencies)
 {
     const auto root = MakeImportTestRoot();
     const auto sourcePath = root / "Assets" / "Models" / "NameSearchHero.gltf";
@@ -7217,7 +7226,7 @@ TEST(AssetImportPipelineTests, ExternalModelImportRecordsNameSearchCandidateFres
     std::filesystem::remove_all(root);
 }
 
-TEST(AssetImportPipelineTests, ExternalModelImportScansProjectTextureNamesOnceForBatchNameSearch)
+NLS_LONG_RUNNING_TEST(AssetImportPipelineIntegrationPerformanceTests, ExternalModelImportScansProjectTextureNamesOnceForBatchNameSearch)
 {
     const ScopedImportTestRoot tempRoot(MakeImportTestRoot());
     const auto& root = tempRoot.Path();
@@ -7352,7 +7361,7 @@ TEST(AssetImportPipelineTests, ExternalModelImportScansProjectTextureNamesOnceFo
     EXPECT_NE(nameSearchProgress->find("scanCount=1"), std::string::npos) << *nameSearchProgress;
 }
 
-TEST(AssetImportPipelineTests, ExternalModelImportKeepsPreviousTextureResolutionReportWhenReimportFails)
+NLS_LONG_RUNNING_TEST(AssetImportPipelineIntegrationPerformanceTests, ExternalModelImportKeepsPreviousTextureResolutionReportWhenReimportFails)
 {
     const auto root = MakeImportTestRoot();
     const auto sourcePath = root / "Assets" / "Models" / "ReportHero.gltf";
@@ -7467,7 +7476,7 @@ TEST(AssetImportPipelineTests, ExternalModelImportKeepsPreviousTextureResolution
     std::filesystem::remove_all(root);
 }
 
-TEST(AssetImportPipelineTests, ExternalGltfImportDefersExternalTexturePayloadReadsWhenProjectTextureResolutionIsEnabled)
+NLS_LONG_RUNNING_TEST(AssetImportPipelineIntegrationPerformanceTests, ExternalGltfImportDefersExternalTexturePayloadReadsWhenProjectTextureResolutionIsEnabled)
 {
     const ScopedImportTestRoot tempRoot(MakeImportTestRoot());
     const auto& root = tempRoot.Path();
@@ -7562,7 +7571,7 @@ TEST(AssetImportPipelineTests, ExternalGltfImportDefersExternalTexturePayloadRea
     EXPECT_TRUE(std::filesystem::is_regular_file(importedTextureArtifactPath));
 }
 
-TEST(AssetImportPipelineTests, ExternalGltfImportDefersBulkProjectTextureAutoImport)
+NLS_LONG_RUNNING_TEST(AssetImportPipelineIntegrationPerformanceTests, ExternalGltfImportDefersBulkProjectTextureAutoImport)
 {
     const ScopedImportTestRoot tempRoot(MakeImportTestRoot());
     const auto& root = tempRoot.Path();
@@ -7714,7 +7723,7 @@ TEST(AssetImportPipelineTests, ExternalGltfImportDefersBulkProjectTextureAutoImp
     EXPECT_NE(deferredBulkTextureArtifacts, progressMessages.end());
 }
 
-TEST(AssetImportPipelineTests, ExternalModelImportAutoImportsTextureWithExistingMetaButMissingManifest)
+NLS_LONG_RUNNING_TEST(AssetImportPipelineIntegrationPerformanceTests, ExternalModelImportAutoImportsTextureWithExistingMetaButMissingManifest)
 {
     const auto root = MakeImportTestRoot();
     const auto sourcePath = root / "Assets" / "Models" / "AutoImportFailureHero.gltf";
@@ -7820,7 +7829,7 @@ TEST(AssetImportPipelineTests, ExternalModelImportAutoImportsTextureWithExisting
     std::filesystem::remove_all(root);
 }
 
-TEST(AssetImportPipelineTests, ExternalModelImportDoesNotWriteArtifactDatabaseDirectlyForAutoImportedTextures)
+NLS_LONG_RUNNING_TEST(AssetImportPipelineIntegrationPerformanceTests, ExternalModelImportDoesNotWriteArtifactDatabaseDirectlyForAutoImportedTextures)
 {
     const auto root = MakeImportTestRoot();
     const auto sourcePath = root / "Assets" / "Models" / "AutoImportCorruptDbHero.gltf";
@@ -7928,7 +7937,7 @@ TEST(AssetImportPipelineTests, ExternalModelImportDoesNotWriteArtifactDatabaseDi
     std::filesystem::remove_all(root);
 }
 
-TEST(AssetImportPipelineTests, ExternalModelImportRollsBackAutoImportedTextureWhenModelImportFails)
+NLS_LONG_RUNNING_TEST(AssetImportPipelineIntegrationPerformanceTests, ExternalModelImportRollsBackAutoImportedTextureWhenModelImportFails)
 {
     const auto root = MakeImportTestRoot();
     const auto sourcePath = root / "Assets" / "Models" / "RollbackAutoImportHero.gltf";
@@ -7993,7 +8002,7 @@ TEST(AssetImportPipelineTests, ExternalModelImportRollsBackAutoImportedTextureWh
     std::filesystem::remove_all(root);
 }
 
-TEST(AssetImportPipelineTests, ExternalModelImportRollsBackAutoImportedTextureWhenEarlyConversionFails)
+NLS_LONG_RUNNING_TEST(AssetImportPipelineIntegrationPerformanceTests, ExternalModelImportRollsBackAutoImportedTextureWhenEarlyConversionFails)
 {
     const auto root = MakeImportTestRoot();
     const auto sourcePath = root / "Assets" / "Models" / "RollbackEarlyAutoImportHero.gltf";
@@ -8060,7 +8069,7 @@ TEST(AssetImportPipelineTests, ExternalModelImportRollsBackAutoImportedTextureWh
     std::filesystem::remove_all(root);
 }
 
-TEST(AssetImportPipelineTests, ExternalModelImportKeepsModelLocalTextureForEmbeddedFallback)
+NLS_LONG_RUNNING_TEST(AssetImportPipelineIntegrationPerformanceTests, ExternalModelImportKeepsModelLocalTextureForEmbeddedFallback)
 {
     const auto root = MakeImportTestRoot();
     const auto sourcePath = root / "Assets" / "Models" / "EmbeddedTextureHero.glb";
@@ -8147,7 +8156,7 @@ TEST(AssetImportPipelineTests, ExternalModelImportKeepsModelLocalTextureForEmbed
     std::filesystem::remove_all(root);
 }
 
-TEST(AssetImportPipelineTests, ExternalGltfModelImportKeepsBaseColorAndNormalMaterialTextureKeysWhenExternallyResolved)
+NLS_LONG_RUNNING_TEST(AssetImportPipelineIntegrationPerformanceTests, ExternalGltfModelImportKeepsBaseColorAndNormalMaterialTextureKeysWhenExternallyResolved)
 {
     const auto root = MakeImportTestRoot();
     const auto sourcePath = root / "Assets" / "Models" / "ExternalGltfTextureSlots.gltf";
@@ -8238,7 +8247,7 @@ TEST(AssetImportPipelineTests, ExternalGltfModelImportKeepsBaseColorAndNormalMat
     std::filesystem::remove_all(root);
 }
 
-TEST(AssetImportPipelineTests, ExternalGltfModelImportFallsBackWhenProjectNormalTextureIsSrgb)
+NLS_LONG_RUNNING_TEST(AssetImportPipelineIntegrationPerformanceTests, ExternalGltfModelImportFallsBackWhenProjectNormalTextureIsSrgb)
 {
     const auto root = MakeImportTestRoot();
     const auto sourcePath = root / "Assets" / "Models" / "SrgbProjectNormal.gltf";
@@ -8346,7 +8355,7 @@ TEST(AssetImportPipelineTests, ExternalGltfModelImportFallsBackWhenProjectNormal
     std::filesystem::remove_all(root);
 }
 
-TEST(AssetImportPipelineTests, ExternalModelImportReportsUnsupportedExternallyResolvedTextureEncodingWithoutDuplicateSubAssets)
+NLS_LONG_RUNNING_TEST(AssetImportPipelineIntegrationPerformanceTests, ExternalModelImportReportsUnsupportedExternallyResolvedTextureEncodingWithoutDuplicateSubAssets)
 {
     const auto root = MakeImportTestRoot();
     const auto sourcePath = root / "Assets" / "Models" / "UnsupportedExternalTextureHero.gltf";
@@ -8444,7 +8453,7 @@ TEST(AssetImportPipelineTests, ExternalModelImportReportsUnsupportedExternallyRe
     std::filesystem::remove_all(root);
 }
 
-TEST(AssetImportPipelineTests, ExternalModelReimportPrunesOnlyExternallyResolvedLegacyTextureSubAssets)
+NLS_LONG_RUNNING_TEST(AssetImportPipelineIntegrationPerformanceTests, ExternalModelReimportPrunesOnlyExternallyResolvedLegacyTextureSubAssets)
 {
     const auto root = MakeImportTestRoot();
     const auto sourcePath = root / "Assets" / "Models" / "LegacyTextureReimport.glb";
@@ -8559,7 +8568,7 @@ TEST(AssetImportPipelineTests, ExternalModelReimportPrunesOnlyExternallyResolved
     std::filesystem::remove_all(root);
 }
 
-TEST(AssetImportPipelineTests, ExternalObjModelImportKeepsDiffuseOpacityAndNormalMaterialTextureKeysWhenExternallyResolved)
+NLS_LONG_RUNNING_TEST(AssetImportPipelineIntegrationPerformanceTests, ExternalObjModelImportKeepsDiffuseOpacityAndNormalMaterialTextureKeysWhenExternallyResolved)
 {
     const auto root = MakeImportTestRoot();
     const auto sourcePath = root / "Assets" / "Models" / "ExternalObjTextureSlots.obj";
@@ -8663,7 +8672,7 @@ f 1/1/1 2/2/1 3/3/1
     std::filesystem::remove_all(root);
 }
 
-TEST(AssetImportPipelineTests, ExternalGltfModelTextureArtifactsUseMaterialSlotColorSpace)
+NLS_LONG_RUNNING_TEST(AssetImportPipelineIntegrationPerformanceTests, ExternalGltfModelTextureArtifactsUseMaterialSlotColorSpace)
 {
     const auto root = MakeImportTestRoot();
     const auto sourcePath = root / "Assets" / "Models" / "NormalMapHero.gltf";
@@ -8735,7 +8744,7 @@ TEST(AssetImportPipelineTests, ExternalGltfModelTextureArtifactsUseMaterialSlotC
     std::filesystem::remove_all(root);
 }
 
-TEST(AssetImportPipelineTests, ExternalModelImportFailsClosedWhenTextureArtifactPayloadCannotBeSerialized)
+NLS_LONG_RUNNING_TEST(AssetImportPipelineIntegrationPerformanceTests, ExternalModelImportFailsClosedWhenTextureArtifactPayloadCannotBeSerialized)
 {
     const auto root = MakeImportTestRoot();
     const auto sourcePath = root / "Assets" / "Models" / "BrokenTextureHero.gltf";
@@ -8796,7 +8805,7 @@ TEST(AssetImportPipelineTests, ExternalModelImportFailsClosedWhenTextureArtifact
     std::filesystem::remove_all(root);
 }
 
-TEST(AssetImportPipelineTests, ExternalModelImportKeepsOversizedReferencedTexturesReadableByDefault)
+NLS_LONG_RUNNING_TEST(AssetImportPipelineIntegrationPerformanceTests, ExternalModelImportKeepsOversizedReferencedTexturesReadableByDefault)
 {
     const auto root = MakeImportTestRoot();
     const auto sourcePath = root / "Assets" / "Models" / "LargeTextureHero.gltf";
@@ -8863,7 +8872,7 @@ TEST(AssetImportPipelineTests, ExternalModelImportKeepsOversizedReferencedTextur
     std::filesystem::remove_all(root);
 }
 
-TEST(AssetImportPipelineTests, ExternalModelImportFailsClosedForPathologicalTextureDimensions)
+NLS_LONG_RUNNING_TEST(AssetImportPipelineIntegrationPerformanceTests, ExternalModelImportFailsClosedForPathologicalTextureDimensions)
 {
     const auto root = MakeImportTestRoot();
     const auto sourcePath = root / "Assets" / "Models" / "PathologicalTextureHero.gltf";
@@ -8926,7 +8935,7 @@ TEST(AssetImportPipelineTests, ExternalModelImportFailsClosedForPathologicalText
     std::filesystem::remove_all(root);
 }
 
-TEST(AssetImportPipelineTests, ExternalGltfNormalTexturesUseNormalMipIntent)
+NLS_LONG_RUNNING_TEST(AssetImportPipelineIntegrationPerformanceTests, ExternalGltfNormalTexturesUseNormalMipIntent)
 {
     const auto root = MakeImportTestRoot();
     const auto sourcePath = root / "Assets" / "Models" / "NormalMipHero.gltf";
@@ -9022,7 +9031,7 @@ TEST(AssetImportPipelineTests, ExternalGltfNormalTexturesUseNormalMipIntent)
     std::filesystem::remove_all(root);
 }
 
-TEST(AssetImportPipelineTests, ExternalModelImportResolvesProjectRelativeTextureUrisFromAssetsRoot)
+NLS_LONG_RUNNING_TEST(AssetImportPipelineIntegrationPerformanceTests, ExternalModelImportResolvesProjectRelativeTextureUrisFromAssetsRoot)
 {
     const auto root = MakeImportTestRoot();
     const auto sourcePath = root / "Assets" / "Model" / "main_sponza" / "Hero.gltf";
@@ -9104,7 +9113,7 @@ TEST(AssetImportPipelineTests, ExternalModelImportResolvesProjectRelativeTexture
     std::filesystem::remove_all(root);
 }
 
-TEST(AssetImportPipelineTests, ExternalModelImportDecodesPercentEncodedTextureUris)
+NLS_LONG_RUNNING_TEST(AssetImportPipelineIntegrationPerformanceTests, ExternalModelImportDecodesPercentEncodedTextureUris)
 {
     const auto root = MakeImportTestRoot();
     const auto sourcePath = root / "Assets" / "Model" / "main_sponza" / "EncodedTextureHero.gltf";
@@ -9171,7 +9180,7 @@ TEST(AssetImportPipelineTests, ExternalModelImportDecodesPercentEncodedTextureUr
     std::filesystem::remove_all(root);
 }
 
-TEST(AssetImportPipelineTests, ExternalModelImportResolvesBackslashTextureUrisOnPortableAssetPaths)
+NLS_LONG_RUNNING_TEST(AssetImportPipelineIntegrationPerformanceTests, ExternalModelImportResolvesBackslashTextureUrisOnPortableAssetPaths)
 {
     const ScopedImportTestRoot tempRoot(MakeImportTestRoot());
     const auto& root = tempRoot.Path();
@@ -9237,7 +9246,7 @@ TEST(AssetImportPipelineTests, ExternalModelImportResolvesBackslashTextureUrisOn
     EXPECT_TRUE(NLS::Render::Assets::DeserializeTextureArtifact(texturePayload).has_value());
 }
 
-TEST(AssetImportPipelineTests, ExternalModelImportResolvesProjectRelativeBackslashTextureUrisFromAssetsRoot)
+NLS_LONG_RUNNING_TEST(AssetImportPipelineIntegrationPerformanceTests, ExternalModelImportResolvesProjectRelativeBackslashTextureUrisFromAssetsRoot)
 {
     const ScopedImportTestRoot tempRoot(MakeImportTestRoot());
     const auto& root = tempRoot.Path();
@@ -9319,7 +9328,7 @@ TEST(AssetImportPipelineTests, ExternalModelImportResolvesProjectRelativeBacksla
     EXPECT_EQ(materialPayload.find("Model\\main_sponza\\textures\\HeroBaseColor.png"), std::string::npos);
 }
 
-TEST(AssetImportPipelineTests, ExternalModelImportResolvesProjectRelativeBufferUrisFromAssetsRoot)
+NLS_LONG_RUNNING_TEST(AssetImportPipelineIntegrationPerformanceTests, ExternalModelImportResolvesProjectRelativeBufferUrisFromAssetsRoot)
 {
     const auto root = MakeImportTestRoot();
     const auto sourcePath = root / "Assets" / "Model" / "main_sponza" / "HeroMesh.gltf";
@@ -9409,7 +9418,7 @@ TEST(AssetImportPipelineTests, ExternalModelImportResolvesProjectRelativeBufferU
     std::filesystem::remove_all(root);
 }
 
-TEST(AssetImportPipelineTests, ExternalModelImportExportsGltfMultiPrimitiveMeshesAsPrimitiveArtifacts)
+NLS_LONG_RUNNING_TEST(AssetImportPipelineIntegrationPerformanceTests, ExternalModelImportExportsGltfMultiPrimitiveMeshesAsPrimitiveArtifacts)
 {
     const auto root = MakeImportTestRoot();
     const auto sourcePath = root / "Assets" / "Models" / "TwoMeshFirstSplit.gltf";
@@ -9521,7 +9530,7 @@ TEST(AssetImportPipelineTests, ExternalModelImportExportsGltfMultiPrimitiveMeshe
     std::filesystem::remove_all(root);
 }
 
-TEST(AssetImportPipelineTests, PrimitiveMeshSourceKeyParserRejectsMalformedKeys)
+NLS_LONG_RUNNING_TEST(AssetImportPipelineIntegrationPerformanceTests, PrimitiveMeshSourceKeyParserRejectsMalformedKeys)
 {
     constexpr uint32_t primitiveIndex = 7u;
     const auto key = NLS::Render::Assets::BuildPrimitiveMeshSourceKey("mesh/Body", primitiveIndex);
@@ -9540,7 +9549,7 @@ TEST(AssetImportPipelineTests, PrimitiveMeshSourceKeyParserRejectsMalformedKeys)
         "mesh/Body/primitive/999999999999999999999999999999999999999").has_value());
 }
 
-TEST(AssetImportPipelineTests, ExternalModelImportDecodesPercentEncodedBufferUris)
+NLS_LONG_RUNNING_TEST(AssetImportPipelineIntegrationPerformanceTests, ExternalModelImportDecodesPercentEncodedBufferUris)
 {
     const auto root = MakeImportTestRoot();
     const auto sourcePath = root / "Assets" / "Model" / "main_sponza" / "EncodedBufferHero.gltf";
@@ -9628,7 +9637,7 @@ TEST(AssetImportPipelineTests, ExternalModelImportDecodesPercentEncodedBufferUri
     std::filesystem::remove_all(root);
 }
 
-TEST(AssetImportPipelineTests, AssimpParserClearsOutputsWhenLoadFails)
+NLS_LONG_RUNNING_TEST(AssetImportPipelineIntegrationPerformanceTests, AssimpParserClearsOutputsWhenLoadFails)
 {
     const auto root = MakeImportTestRoot();
     NLS::Render::Resources::Parsers::AssimpParser parser;
@@ -9650,7 +9659,7 @@ TEST(AssetImportPipelineTests, AssimpParserClearsOutputsWhenLoadFails)
     std::filesystem::remove_all(root);
 }
 
-TEST(AssetImportPipelineTests, ModelImporterSettingsResolveMissingFbxReaderToAutodeskWithAssimpFallback)
+NLS_LONG_RUNNING_TEST(AssetImportPipelineIntegrationPerformanceTests, ModelImporterSettingsResolveMissingFbxReaderToAutodeskWithAssimpFallback)
 {
     const std::map<std::string, std::string> settings;
 
@@ -9661,7 +9670,7 @@ TEST(AssetImportPipelineTests, ModelImporterSettingsResolveMissingFbxReaderToAut
         NLS::Editor::Assets::FbxReaderSelection::AutodeskWithAssimpFallback);
 }
 
-TEST(AssetImportPipelineTests, ModelTextureResolutionSettingsUseEngineAlignedDefaults)
+NLS_LONG_RUNNING_TEST(AssetImportPipelineIntegrationPerformanceTests, ModelTextureResolutionSettingsUseEngineAlignedDefaults)
 {
     NLS::Core::Assets::AssetMeta meta;
 
@@ -9676,7 +9685,7 @@ TEST(AssetImportPipelineTests, ModelTextureResolutionSettingsUseEngineAlignedDef
         NLS::Editor::Assets::ModelEmbeddedTextureMode::ModelSubAsset);
 }
 
-TEST(AssetImportPipelineTests, ModelTextureResolutionSettingsRejectMalformedEncodedValues)
+NLS_LONG_RUNNING_TEST(AssetImportPipelineIntegrationPerformanceTests, ModelTextureResolutionSettingsRejectMalformedEncodedValues)
 {
     NLS::Core::Assets::AssetMeta meta;
     meta.settings["MODEL_TEXTURE_USE_EXTERNAL_TEXTURES"] = "false";
@@ -9697,7 +9706,7 @@ TEST(AssetImportPipelineTests, ModelTextureResolutionSettingsRejectMalformedEnco
     EXPECT_TRUE(remaps.empty());
 }
 
-TEST(AssetImportPipelineTests, ModelTextureRemapSettingsRoundTripStableSourceKeys)
+NLS_LONG_RUNNING_TEST(AssetImportPipelineIntegrationPerformanceTests, ModelTextureRemapSettingsRoundTripStableSourceKeys)
 {
     NLS::Core::Assets::AssetMeta meta;
     const std::string stableKey = "mtxsrc:v1:kind=ExternalFile;uri=Assets/Textures/Wood.png";
@@ -9720,7 +9729,7 @@ TEST(AssetImportPipelineTests, ModelTextureRemapSettingsRoundTripStableSourceKey
     EXPECT_TRUE(remaps.empty());
 }
 
-TEST(AssetImportPipelineTests, ModelTextureRemapSettingsRoundTripEscapedStableKeysAndRejectMalformedValues)
+NLS_LONG_RUNNING_TEST(AssetImportPipelineIntegrationPerformanceTests, ModelTextureRemapSettingsRoundTripEscapedStableKeysAndRejectMalformedValues)
 {
     NLS::Core::Assets::AssetMeta meta;
     const std::string stableKey =
@@ -9746,7 +9755,7 @@ TEST(AssetImportPipelineTests, ModelTextureRemapSettingsRoundTripEscapedStableKe
     EXPECT_EQ(diagnostics[0].code, "model-texture-remap-malformed");
 }
 
-TEST(AssetImportPipelineTests, ModelTextureRemapSettingsClearReturnsToAutomaticResolution)
+NLS_LONG_RUNNING_TEST(AssetImportPipelineIntegrationPerformanceTests, ModelTextureRemapSettingsClearReturnsToAutomaticResolution)
 {
     NLS::Core::Assets::AssetMeta meta;
     const std::string stableKey =
@@ -9763,7 +9772,7 @@ TEST(AssetImportPipelineTests, ModelTextureRemapSettingsClearReturnsToAutomaticR
     EXPECT_TRUE(NLS::Editor::Assets::LoadModelTextureRemapSettings(meta).empty());
 }
 
-TEST(AssetImportPipelineTests, ModelTextureRemapSettingsEscapesStableKeysAndRejectsMalformedValues)
+NLS_LONG_RUNNING_TEST(AssetImportPipelineIntegrationPerformanceTests, ModelTextureRemapSettingsEscapesStableKeysAndRejectsMalformedValues)
 {
     NLS::Core::Assets::AssetMeta meta;
     const std::string stableKey = "mtxsrc:v1:kind=ExternalFile;uri=Assets/Textures/Wood;Oak|A.png;source=line\nsnowman-\xE2\x98\x83";
@@ -9788,7 +9797,7 @@ TEST(AssetImportPipelineTests, ModelTextureRemapSettingsEscapesStableKeysAndReje
     EXPECT_EQ(diagnostics[0].code, "model-texture-remap-malformed");
 }
 
-TEST(AssetImportPipelineTests, ExternalModelImportExplicitTextureRemapOverridesSourcePath)
+NLS_LONG_RUNNING_TEST(AssetImportPipelineIntegrationPerformanceTests, ExternalModelImportExplicitTextureRemapOverridesSourcePath)
 {
     const auto root = MakeImportTestRoot();
     const auto sourcePath = root / "Assets" / "Models" / "ExplicitRemapHero.gltf";
@@ -9927,7 +9936,7 @@ TEST(AssetImportPipelineTests, ExternalModelImportExplicitTextureRemapOverridesS
     std::filesystem::remove_all(root);
 }
 
-TEST(AssetImportPipelineTests, ExternalModelImportExplicitTextureRemapSurvivesTargetMoveByGuid)
+NLS_LONG_RUNNING_TEST(AssetImportPipelineIntegrationPerformanceTests, ExternalModelImportExplicitTextureRemapSurvivesTargetMoveByGuid)
 {
     const auto root = MakeImportTestRoot();
     const auto sourcePath = root / "Assets" / "Models" / "MovedRemapHero.gltf";
@@ -10060,7 +10069,7 @@ TEST(AssetImportPipelineTests, ExternalModelImportExplicitTextureRemapSurvivesTa
     std::filesystem::remove_all(root);
 }
 
-TEST(AssetImportPipelineTests, ExternalModelImportInvalidTextureRemapWarnsAndFallsBack)
+NLS_LONG_RUNNING_TEST(AssetImportPipelineIntegrationPerformanceTests, ExternalModelImportInvalidTextureRemapWarnsAndFallsBack)
 {
     const auto root = MakeImportTestRoot();
     const auto sourcePath = root / "Assets" / "Models" / "InvalidRemapHero.gltf";
@@ -10186,7 +10195,7 @@ TEST(AssetImportPipelineTests, ExternalModelImportInvalidTextureRemapWarnsAndFal
     std::filesystem::remove_all(root);
 }
 
-TEST(AssetImportPipelineTests, ModelTextureResolutionReportRoundTripsEntriesAndDiagnostics)
+NLS_LONG_RUNNING_TEST(AssetImportPipelineIntegrationPerformanceTests, ModelTextureResolutionReportRoundTripsEntriesAndDiagnostics)
 {
     NLS::Editor::Assets::ModelTextureResolutionReport report;
     report.modelAssetId = "30303030-3030-4030-8030-303030303030";
@@ -10249,14 +10258,14 @@ TEST(AssetImportPipelineTests, ModelTextureResolutionReportRoundTripsEntriesAndD
     EXPECT_EQ(parsed->entries[1].modelSubAssetKey, "texture:bufferView/1");
 }
 
-TEST(AssetImportPipelineTests, ModelTextureResolutionReportRejectsMalformedPayload)
+NLS_LONG_RUNNING_TEST(AssetImportPipelineIntegrationPerformanceTests, ModelTextureResolutionReportRejectsMalformedPayload)
 {
     EXPECT_FALSE(NLS::Editor::Assets::ParseModelTextureResolutionReport("not a report").has_value());
     EXPECT_FALSE(NLS::Editor::Assets::ParseModelTextureResolutionReport(
         "NULLUS_MODEL_TEXTURE_RESOLUTION_REPORT=1\nreportVersion=abc\n").has_value());
 }
 
-TEST(AssetImportPipelineTests, ModelTextureResolutionReportRejectsStaleContext)
+NLS_LONG_RUNNING_TEST(AssetImportPipelineIntegrationPerformanceTests, ModelTextureResolutionReportRejectsStaleContext)
 {
     NLS::Editor::Assets::ModelTextureResolutionReport report;
     report.modelAssetId = "50505050-5050-4050-8050-505050505050";
@@ -10281,7 +10290,7 @@ TEST(AssetImportPipelineTests, ModelTextureResolutionReportRejectsStaleContext)
         { report.modelAssetId, report.targetPlatform, report.importerVersion, "settings:v2" }));
 }
 
-TEST(AssetImportPipelineTests, ModelTextureResolutionReportEscapesSpecialCharacters)
+NLS_LONG_RUNNING_TEST(AssetImportPipelineIntegrationPerformanceTests, ModelTextureResolutionReportEscapesSpecialCharacters)
 {
     NLS::Editor::Assets::ModelTextureResolutionReport report;
     report.modelAssetId = "70707070-7070-4070-8070-707070707070";
@@ -10313,7 +10322,7 @@ TEST(AssetImportPipelineTests, ModelTextureResolutionReportEscapesSpecialCharact
     EXPECT_EQ(parsed->entries[0].diagnostics[0].message, "missing=A;B|C\nline2");
 }
 
-TEST(AssetImportPipelineTests, InspectorModelLODSettingsExposeRegistryChoicesAndPreserveValues)
+NLS_LONG_RUNNING_TEST(AssetImportPipelineIntegrationPerformanceTests, InspectorModelLODSettingsExposeRegistryChoicesAndPreserveValues)
 {
     const std::vector<std::string> expectedGroups {
         "None",
@@ -10341,7 +10350,7 @@ TEST(AssetImportPipelineTests, InspectorModelLODSettingsExposeRegistryChoicesAnd
     EXPECT_FALSE(view.autoComputeLODScreenSize);
 }
 
-TEST(AssetImportPipelineTests, InspectorModelLODSettingsNormalizeUnknownGroupToNone)
+NLS_LONG_RUNNING_TEST(AssetImportPipelineIntegrationPerformanceTests, InspectorModelLODSettingsNormalizeUnknownGroupToNone)
 {
     std::map<std::string, std::string> serialized {{"LOD_GROUP", "RemovedPreset"}};
 
@@ -10352,7 +10361,7 @@ TEST(AssetImportPipelineTests, InspectorModelLODSettingsNormalizeUnknownGroupToN
     EXPECT_EQ(serialized.at("LOD_GROUP"), "None");
 }
 
-TEST(AssetImportPipelineTests, InspectorModelLODSettingsStoreSelectionAndClampMinLOD)
+NLS_LONG_RUNNING_TEST(AssetImportPipelineIntegrationPerformanceTests, InspectorModelLODSettingsStoreSelectionAndClampMinLOD)
 {
     std::map<std::string, std::string> serialized;
     auto view = NLS::Editor::Inspector::BuildModelLODInspectorView(serialized);
@@ -10369,7 +10378,7 @@ TEST(AssetImportPipelineTests, InspectorModelLODSettingsStoreSelectionAndClampMi
     EXPECT_EQ(serialized.at("AUTO_COMPUTE_LOD_SCREEN_SIZE"), "false");
 }
 
-TEST(AssetImportPipelineTests, InspectorModelLODSettingsLoadNegativeMinLODAsZero)
+NLS_LONG_RUNNING_TEST(AssetImportPipelineIntegrationPerformanceTests, InspectorModelLODSettingsLoadNegativeMinLODAsZero)
 {
     const std::map<std::string, std::string> serialized {{"MIN_LOD", "-7"}};
 
@@ -10378,7 +10387,7 @@ TEST(AssetImportPipelineTests, InspectorModelLODSettingsLoadNegativeMinLODAsZero
     EXPECT_EQ(view.minLOD, 0);
 }
 
-TEST(AssetImportPipelineTests, InspectorModelLODSettingsStoreInvalidSelectionAsNone)
+NLS_LONG_RUNNING_TEST(AssetImportPipelineIntegrationPerformanceTests, InspectorModelLODSettingsStoreInvalidSelectionAsNone)
 {
     std::map<std::string, std::string> serialized;
     auto view = NLS::Editor::Inspector::BuildModelLODInspectorView(serialized);
@@ -10389,7 +10398,7 @@ TEST(AssetImportPipelineTests, InspectorModelLODSettingsStoreInvalidSelectionAsN
     EXPECT_EQ(serialized.at("LOD_GROUP"), "None");
 }
 
-TEST(AssetImportPipelineTests, ModelImporterSettingsRejectNegativeMinLOD)
+NLS_LONG_RUNNING_TEST(AssetImportPipelineIntegrationPerformanceTests, ModelImporterSettingsRejectNegativeMinLOD)
 {
     const std::map<std::string, std::string> serialized {{"MIN_LOD", "-7"}};
 
@@ -10398,7 +10407,7 @@ TEST(AssetImportPipelineTests, ModelImporterSettingsRejectNegativeMinLOD)
     EXPECT_EQ(parsed.minLOD, 0u);
 }
 
-TEST(AssetImportPipelineTests, InspectorModelTextureReportRowsHideMissingStaleAndMalformedReports)
+NLS_LONG_RUNNING_TEST(AssetImportPipelineIntegrationPerformanceTests, InspectorModelTextureReportRowsHideMissingStaleAndMalformedReports)
 {
     NLS::Core::Assets::AssetMeta modelMeta;
     modelMeta.id = NLS::Core::Assets::AssetId(
@@ -10446,7 +10455,7 @@ TEST(AssetImportPipelineTests, InspectorModelTextureReportRowsHideMissingStaleAn
     EXPECT_TRUE(stale.rows.empty());
 }
 
-TEST(AssetImportPipelineTests, InspectorModelTextureReportRowsExposeWarningsAndResolutionDetails)
+NLS_LONG_RUNNING_TEST(AssetImportPipelineIntegrationPerformanceTests, InspectorModelTextureReportRowsExposeWarningsAndResolutionDetails)
 {
     NLS::Core::Assets::AssetMeta modelMeta;
     modelMeta.id = NLS::Core::Assets::AssetId(
@@ -10533,7 +10542,7 @@ TEST(AssetImportPipelineTests, InspectorModelTextureReportRowsExposeWarningsAndR
     EXPECT_EQ(view.rows[3].targetAssetId, "53535353-5353-4353-8353-535353535353");
 }
 
-TEST(AssetImportPipelineTests, InspectorModelTextureSettingAndRemapChangesRequireReimport)
+NLS_LONG_RUNNING_TEST(AssetImportPipelineIntegrationPerformanceTests, InspectorModelTextureSettingAndRemapChangesRequireReimport)
 {
     NLS::Core::Assets::AssetMeta modelMeta;
     modelMeta.id = NLS::Core::Assets::AssetId(
@@ -10585,7 +10594,7 @@ TEST(AssetImportPipelineTests, InspectorModelTextureSettingAndRemapChangesRequir
     EXPECT_TRUE(NLS::Editor::Assets::LoadModelTextureRemapSettings(modelMeta).empty());
 }
 
-TEST(AssetImportPipelineTests, ModelTextureStableKeyUsesVersionedKindSourceAndNormalizedUri)
+NLS_LONG_RUNNING_TEST(AssetImportPipelineIntegrationPerformanceTests, ModelTextureStableKeyUsesVersionedKindSourceAndNormalizedUri)
 {
     NLS::Editor::Assets::ModelTextureSourceReference source;
     source.kind = NLS::Editor::Assets::TextureSourceKind::ExternalFile;
@@ -10598,7 +10607,7 @@ TEST(AssetImportPipelineTests, ModelTextureStableKeyUsesVersionedKindSourceAndNo
     EXPECT_EQ(key, "mtxsrc:v1:kind=ExternalFile;source=image/0;uri=Textures/Wood.png");
 }
 
-TEST(AssetImportPipelineTests, ModelTextureStableKeyHandlesEmptySourceKeyDataUriBufferViewAndEmbeddedIndex)
+NLS_LONG_RUNNING_TEST(AssetImportPipelineIntegrationPerformanceTests, ModelTextureStableKeyHandlesEmptySourceKeyDataUriBufferViewAndEmbeddedIndex)
 {
     NLS::Editor::Assets::ModelTextureSourceReference dataUri;
     dataUri.kind = NLS::Editor::Assets::TextureSourceKind::EmbeddedData;
@@ -10622,7 +10631,7 @@ TEST(AssetImportPipelineTests, ModelTextureStableKeyHandlesEmptySourceKeyDataUri
         "mtxsrc:v1:kind=EmbeddedData;embedded=2");
 }
 
-TEST(AssetImportPipelineTests, ModelTextureStableKeyAddsDeterministicCollisionSuffixes)
+NLS_LONG_RUNNING_TEST(AssetImportPipelineIntegrationPerformanceTests, ModelTextureStableKeyAddsDeterministicCollisionSuffixes)
 {
     NLS::Editor::Assets::ModelTextureSourceReference first;
     first.kind = NLS::Editor::Assets::TextureSourceKind::ExternalFile;
@@ -10642,7 +10651,7 @@ TEST(AssetImportPipelineTests, ModelTextureStableKeyAddsDeterministicCollisionSu
     EXPECT_EQ(assigned[1].stableKeyStatus, NLS::Editor::Assets::ModelTextureStableKeyStatus::Stable);
 }
 
-TEST(AssetImportPipelineTests, ModelTextureStableKeyKeepsUriIdentityWhenDisplayNameChanges)
+NLS_LONG_RUNNING_TEST(AssetImportPipelineIntegrationPerformanceTests, ModelTextureStableKeyKeepsUriIdentityWhenDisplayNameChanges)
 {
     NLS::Editor::Assets::ModelTextureSourceReference first;
     first.kind = NLS::Editor::Assets::TextureSourceKind::ExternalFile;
@@ -10657,7 +10666,7 @@ TEST(AssetImportPipelineTests, ModelTextureStableKeyKeepsUriIdentityWhenDisplayN
         NLS::Editor::Assets::MakeModelTextureStableKey(second));
 }
 
-TEST(AssetImportPipelineTests, ModelTextureStableKeyEscapesSemicolonAndPipeSeparators)
+NLS_LONG_RUNNING_TEST(AssetImportPipelineIntegrationPerformanceTests, ModelTextureStableKeyEscapesSemicolonAndPipeSeparators)
 {
     NLS::Editor::Assets::ModelTextureSourceReference source;
     source.kind = NLS::Editor::Assets::TextureSourceKind::ExternalFile;
@@ -10669,7 +10678,7 @@ TEST(AssetImportPipelineTests, ModelTextureStableKeyEscapesSemicolonAndPipeSepar
     EXPECT_NE(key.find("%7C"), std::string::npos);
 }
 
-TEST(AssetImportPipelineTests, ModelTextureStableKeyMarksOrderDerivedFallback)
+NLS_LONG_RUNNING_TEST(AssetImportPipelineIntegrationPerformanceTests, ModelTextureStableKeyMarksOrderDerivedFallback)
 {
     NLS::Editor::Assets::ModelTextureSourceReference first;
     first.kind = NLS::Editor::Assets::TextureSourceKind::Missing;
@@ -10685,7 +10694,7 @@ TEST(AssetImportPipelineTests, ModelTextureStableKeyMarksOrderDerivedFallback)
     EXPECT_EQ(assigned[1].stableKeyStatus, NLS::Editor::Assets::ModelTextureStableKeyStatus::OrderDerived);
 }
 
-TEST(AssetImportPipelineTests, ModelTextureStableKeyIsStableAcrossRepeatedImports)
+NLS_LONG_RUNNING_TEST(AssetImportPipelineIntegrationPerformanceTests, ModelTextureStableKeyIsStableAcrossRepeatedImports)
 {
     NLS::Editor::Assets::ModelTextureSourceReference source;
     source.kind = NLS::Editor::Assets::TextureSourceKind::BufferView;
@@ -10698,7 +10707,7 @@ TEST(AssetImportPipelineTests, ModelTextureStableKeyIsStableAcrossRepeatedImport
         NLS::Editor::Assets::MakeModelTextureStableKey(source));
 }
 
-TEST(AssetImportPipelineTests, ModelTextureResolverUsesExplicitRemapBeforePath)
+NLS_LONG_RUNNING_TEST(AssetImportPipelineIntegrationPerformanceTests, ModelTextureResolverUsesExplicitRemapBeforePath)
 {
     NLS::Editor::Assets::ModelTextureSourceReference source;
     source.stableKey = "mtxsrc:v1:kind=ExternalFile;uri=Textures/Wood.png";
@@ -10735,7 +10744,7 @@ TEST(AssetImportPipelineTests, ModelTextureResolverUsesExplicitRemapBeforePath)
     EXPECT_EQ(resolved.resourcePath.generic_string(), "Library/Artifacts/Override.ntex");
 }
 
-TEST(AssetImportPipelineTests, ModelTextureResolverUsesSourcePathBeforeNameSearch)
+NLS_LONG_RUNNING_TEST(AssetImportPipelineIntegrationPerformanceTests, ModelTextureResolverUsesSourcePathBeforeNameSearch)
 {
     NLS::Editor::Assets::ModelTextureSourceReference source;
     source.stableKey = "mtxsrc:v1:kind=ExternalFile;uri=Textures/Wood.png";
@@ -10767,7 +10776,7 @@ TEST(AssetImportPipelineTests, ModelTextureResolverUsesSourcePathBeforeNameSearc
     EXPECT_EQ(resolved.targetSubAssetKey, "texture:path");
 }
 
-TEST(AssetImportPipelineTests, ModelTextureResolverMatchesSourcePathCaseInsensitively)
+NLS_LONG_RUNNING_TEST(AssetImportPipelineIntegrationPerformanceTests, ModelTextureResolverMatchesSourcePathCaseInsensitively)
 {
     NLS::Editor::Assets::ModelTextureSourceReference source;
     source.stableKey = "mtxsrc:v1:kind=ExternalFile;uri=Assets/Textures/casealbedo.png";
@@ -10799,7 +10808,7 @@ TEST(AssetImportPipelineTests, ModelTextureResolverMatchesSourcePathCaseInsensit
     EXPECT_EQ(resolved.targetSubAssetKey, "texture:path");
 }
 
-TEST(AssetImportPipelineTests, ModelTextureResolverDoesNotBindAmbiguousNameMatches)
+NLS_LONG_RUNNING_TEST(AssetImportPipelineIntegrationPerformanceTests, ModelTextureResolverDoesNotBindAmbiguousNameMatches)
 {
     NLS::Editor::Assets::ModelTextureSourceReference source;
     source.stableKey = "mtxsrc:v1:kind=ExternalFile;name=Wood";
@@ -10832,7 +10841,7 @@ TEST(AssetImportPipelineTests, ModelTextureResolverDoesNotBindAmbiguousNameMatch
     EXPECT_EQ(resolved.diagnostics[0].code, "model-texture-name-ambiguous");
 }
 
-TEST(AssetImportPipelineTests, ModelTextureResolverUsesModelLocalFallbackWhenExternalDisabled)
+NLS_LONG_RUNNING_TEST(AssetImportPipelineIntegrationPerformanceTests, ModelTextureResolverUsesModelLocalFallbackWhenExternalDisabled)
 {
     NLS::Editor::Assets::ModelTextureSourceReference source;
     source.stableKey = "mtxsrc:v1:kind=ExternalFile;uri=Textures/Wood.png";
@@ -10859,7 +10868,7 @@ TEST(AssetImportPipelineTests, ModelTextureResolverUsesModelLocalFallbackWhenExt
     EXPECT_EQ(resolved.diagnostics[0].code, "model-texture-external-resolution-disabled");
 }
 
-TEST(AssetImportPipelineTests, ModelTextureResolverOrdersMultiRootNameCandidatesDeterministically)
+NLS_LONG_RUNNING_TEST(AssetImportPipelineIntegrationPerformanceTests, ModelTextureResolverOrdersMultiRootNameCandidatesDeterministically)
 {
     NLS::Editor::Assets::ModelTextureSourceReference source;
     source.stableKey = "mtxsrc:v1:kind=ExternalFile;name=Wood";
@@ -10903,7 +10912,7 @@ TEST(AssetImportPipelineTests, ModelTextureResolverOrdersMultiRootNameCandidates
     EXPECT_EQ(resolved.diagnostics[0].code, "model-texture-name-ambiguous");
 }
 
-TEST(AssetImportPipelineTests, ModelTextureResolverBindsUniqueTextureNameAfterRejectingNonTextures)
+NLS_LONG_RUNNING_TEST(AssetImportPipelineIntegrationPerformanceTests, ModelTextureResolverBindsUniqueTextureNameAfterRejectingNonTextures)
 {
     NLS::Editor::Assets::ModelTextureSourceReference source;
     source.stableKey = "mtxsrc:v1:kind=ExternalFile;name=Wood";
@@ -10934,7 +10943,7 @@ TEST(AssetImportPipelineTests, ModelTextureResolverBindsUniqueTextureNameAfterRe
     EXPECT_EQ(resolved.targetSubAssetKey, "texture:wood");
 }
 
-TEST(AssetImportPipelineTests, ModelTextureResolverTreatsCaseCollisionAsAmbiguous)
+NLS_LONG_RUNNING_TEST(AssetImportPipelineIntegrationPerformanceTests, ModelTextureResolverTreatsCaseCollisionAsAmbiguous)
 {
     NLS::Editor::Assets::ModelTextureSourceReference source;
     source.stableKey = "mtxsrc:v1:kind=ExternalFile;name=wood.png";
@@ -10966,7 +10975,7 @@ TEST(AssetImportPipelineTests, ModelTextureResolverTreatsCaseCollisionAsAmbiguou
     EXPECT_EQ(resolved.diagnostics[0].code, "model-texture-name-ambiguous");
 }
 
-TEST(AssetImportPipelineTests, ModelTextureResolverSkipsUnimportedNameCandidatesWhenAutoImportDisabled)
+NLS_LONG_RUNNING_TEST(AssetImportPipelineIntegrationPerformanceTests, ModelTextureResolverSkipsUnimportedNameCandidatesWhenAutoImportDisabled)
 {
     NLS::Editor::Assets::ModelTextureSourceReference source;
     source.stableKey = "mtxsrc:v1:kind=ExternalFile;name=Wood";
@@ -10991,7 +11000,7 @@ TEST(AssetImportPipelineTests, ModelTextureResolverSkipsUnimportedNameCandidates
     EXPECT_EQ(resolved.modelSubAssetKey, "texture:image/0");
 }
 
-TEST(AssetImportPipelineTests, ModelTextureResolverWarnsForUnimportedNameCandidateUntilArtifactExists)
+NLS_LONG_RUNNING_TEST(AssetImportPipelineIntegrationPerformanceTests, ModelTextureResolverWarnsForUnimportedNameCandidateUntilArtifactExists)
 {
     NLS::Editor::Assets::ModelTextureSourceReference source;
     source.stableKey = "mtxsrc:v1:kind=ExternalFile;name=Wood";
@@ -11016,7 +11025,7 @@ TEST(AssetImportPipelineTests, ModelTextureResolverWarnsForUnimportedNameCandida
     EXPECT_EQ(resolved.diagnostics[0].code, "model-texture-artifact-missing");
 }
 
-TEST(AssetImportPipelineTests, ModelImporterSettingsRejectUnknownFbxReaderToAutodeskWithAssimpFallback)
+NLS_LONG_RUNNING_TEST(AssetImportPipelineIntegrationPerformanceTests, ModelImporterSettingsRejectUnknownFbxReaderToAutodeskWithAssimpFallback)
 {
     const std::map<std::string, std::string> settings {
         {"MODEL_FBX_READER", "mystery-reader"}
@@ -11029,7 +11038,7 @@ TEST(AssetImportPipelineTests, ModelImporterSettingsRejectUnknownFbxReaderToAuto
         NLS::Editor::Assets::FbxReaderSelection::AutodeskWithAssimpFallback);
 }
 
-TEST(AssetImportPipelineTests, ModelImporterSettingsResolveFallbackFbxReaderSelection)
+NLS_LONG_RUNNING_TEST(AssetImportPipelineIntegrationPerformanceTests, ModelImporterSettingsResolveFallbackFbxReaderSelection)
 {
     const std::map<std::string, std::string> settings {
         {"MODEL_FBX_READER", "autodesk-with-assimp-fallback"}
@@ -11042,7 +11051,7 @@ TEST(AssetImportPipelineTests, ModelImporterSettingsResolveFallbackFbxReaderSele
         NLS::Editor::Assets::FbxReaderSelection::AutodeskWithAssimpFallback);
 }
 
-TEST(AssetImportPipelineTests, ModelSceneImporterVersionInvalidatesFbxParityVersion6Artifacts)
+NLS_LONG_RUNNING_TEST(AssetImportPipelineIntegrationPerformanceTests, ModelSceneImporterVersionInvalidatesFbxParityVersion6Artifacts)
 {
     EXPECT_GT(
         NLS::Core::Assets::GetCurrentImporterVersion(NLS::Core::Assets::AssetType::ModelScene),
@@ -11050,7 +11059,7 @@ TEST(AssetImportPipelineTests, ModelSceneImporterVersionInvalidatesFbxParityVers
         << "Importer version 6 artifacts can still contain dark FBX albedo, invalid roughness, and opaque decal metadata.";
 }
 
-TEST(AssetImportPipelineTests, ModelSceneImporterVersionInvalidatesFbxDecalRootNameVersion7Artifacts)
+NLS_LONG_RUNNING_TEST(AssetImportPipelineIntegrationPerformanceTests, ModelSceneImporterVersionInvalidatesFbxDecalRootNameVersion7Artifacts)
 {
     EXPECT_GT(
         NLS::Core::Assets::GetCurrentImporterVersion(NLS::Core::Assets::AssetType::ModelScene),
@@ -11058,7 +11067,7 @@ TEST(AssetImportPipelineTests, ModelSceneImporterVersionInvalidatesFbxDecalRootN
         << "Importer version 7 artifacts can still contain FBX dirt_decal as Opaque and generated prefab roots named RootNode.";
 }
 
-TEST(AssetImportPipelineTests, ModelSceneImporterVersionInvalidatesFbxRawOpacityVersion8Artifacts)
+NLS_LONG_RUNNING_TEST(AssetImportPipelineIntegrationPerformanceTests, ModelSceneImporterVersionInvalidatesFbxRawOpacityVersion8Artifacts)
 {
     EXPECT_GT(
         NLS::Core::Assets::GetCurrentImporterVersion(NLS::Core::Assets::AssetType::ModelScene),
@@ -11066,7 +11075,7 @@ TEST(AssetImportPipelineTests, ModelSceneImporterVersionInvalidatesFbxRawOpacity
         << "Importer version 8 artifacts can still miss FBX 3dsMax Parameters transparency/cutout maps.";
 }
 
-TEST(AssetImportPipelineTests, ModelSceneImporterVersionInvalidatesPrefabValidationProofVersion9Artifacts)
+NLS_LONG_RUNNING_TEST(AssetImportPipelineIntegrationPerformanceTests, ModelSceneImporterVersionInvalidatesPrefabValidationProofVersion9Artifacts)
 {
     EXPECT_GT(
         NLS::Core::Assets::GetCurrentImporterVersion(NLS::Core::Assets::AssetType::ModelScene),
@@ -11074,7 +11083,7 @@ TEST(AssetImportPipelineTests, ModelSceneImporterVersionInvalidatesPrefabValidat
         << "Importer version 9 generated prefab artifacts can still carry path-sensitive validation proofs that block prepared runtime graph caching.";
 }
 
-TEST(AssetImportPipelineTests, ModelSceneImporterVersionInvalidatesFbxUvOriginVersion11Artifacts)
+NLS_LONG_RUNNING_TEST(AssetImportPipelineIntegrationPerformanceTests, ModelSceneImporterVersionInvalidatesFbxUvOriginVersion11Artifacts)
 {
     EXPECT_GT(
         NLS::Core::Assets::GetCurrentImporterVersion(NLS::Core::Assets::AssetType::ModelScene),
@@ -11082,7 +11091,7 @@ TEST(AssetImportPipelineTests, ModelSceneImporterVersionInvalidatesFbxUvOriginVe
         << "Importer version 11 FBX mesh artifacts can sample shared textures with an inverted UV origin.";
 }
 
-TEST(AssetImportPipelineTests, ModelSceneImporterVersionInvalidatesGltfPackedMaterialChannelVersion12Artifacts)
+NLS_LONG_RUNNING_TEST(AssetImportPipelineIntegrationPerformanceTests, ModelSceneImporterVersionInvalidatesGltfPackedMaterialChannelVersion12Artifacts)
 {
     EXPECT_GT(
         NLS::Core::Assets::GetCurrentImporterVersion(NLS::Core::Assets::AssetType::ModelScene),
@@ -11090,7 +11099,7 @@ TEST(AssetImportPipelineTests, ModelSceneImporterVersionInvalidatesGltfPackedMat
         << "Importer version 12 glTF materials can sample packed metallic and roughness values from the red channel.";
 }
 
-TEST(AssetImportPipelineTests, ModelSceneImporterVersionInvalidatesFbxTexturedMetallicVersion13Artifacts)
+NLS_LONG_RUNNING_TEST(AssetImportPipelineIntegrationPerformanceTests, ModelSceneImporterVersionInvalidatesFbxTexturedMetallicVersion13Artifacts)
 {
     EXPECT_GT(
         NLS::Core::Assets::GetCurrentImporterVersion(NLS::Core::Assets::AssetType::ModelScene),
@@ -11098,7 +11107,7 @@ TEST(AssetImportPipelineTests, ModelSceneImporterVersionInvalidatesFbxTexturedMe
         << "Importer version 13 FBX materials can multiply authored metalness maps by Assimp's default zero factor.";
 }
 
-TEST(AssetImportPipelineTests, ModelSceneImporterVersionInvalidatesFbxNearZeroMetallicVersion14Artifacts)
+NLS_LONG_RUNNING_TEST(AssetImportPipelineIntegrationPerformanceTests, ModelSceneImporterVersionInvalidatesFbxNearZeroMetallicVersion14Artifacts)
 {
     EXPECT_GT(
         NLS::Core::Assets::GetCurrentImporterVersion(NLS::Core::Assets::AssetType::ModelScene),
@@ -11106,7 +11115,7 @@ TEST(AssetImportPipelineTests, ModelSceneImporterVersionInvalidatesFbxNearZeroMe
         << "Importer version 14 FBX materials can preserve Assimp's near-zero metallic default and disable authored metalness maps.";
 }
 
-TEST(AssetImportPipelineTests, ModelSceneImporterVersionInvalidatesFbxMissingMetallicFactorVersion15Artifacts)
+NLS_LONG_RUNNING_TEST(AssetImportPipelineIntegrationPerformanceTests, ModelSceneImporterVersionInvalidatesFbxMissingMetallicFactorVersion15Artifacts)
 {
     EXPECT_GT(
         NLS::Core::Assets::GetCurrentImporterVersion(NLS::Core::Assets::AssetType::ModelScene),
@@ -11114,7 +11123,7 @@ TEST(AssetImportPipelineTests, ModelSceneImporterVersionInvalidatesFbxMissingMet
         << "Importer version 15 FBX materials can default a texture-only metalness channel to a zero multiplier.";
 }
 
-TEST(AssetImportPipelineTests, ModelSceneImporterVersionInvalidatesFbxLegacySpecularVersion16Artifacts)
+NLS_LONG_RUNNING_TEST(AssetImportPipelineIntegrationPerformanceTests, ModelSceneImporterVersionInvalidatesFbxLegacySpecularVersion16Artifacts)
 {
     EXPECT_GT(
         NLS::Core::Assets::GetCurrentImporterVersion(NLS::Core::Assets::AssetType::ModelScene),
@@ -11122,7 +11131,7 @@ TEST(AssetImportPipelineTests, ModelSceneImporterVersionInvalidatesFbxLegacySpec
         << "Importer version 16 FBX PBR materials can retain an untextured white legacy specular color and render too bright.";
 }
 
-TEST(AssetImportPipelineTests, ModelSceneImporterVersionInvalidatesCrossFormatNormalMapVersion17Artifacts)
+NLS_LONG_RUNNING_TEST(AssetImportPipelineIntegrationPerformanceTests, ModelSceneImporterVersionInvalidatesCrossFormatNormalMapVersion17Artifacts)
 {
     EXPECT_GT(
         NLS::Core::Assets::GetCurrentImporterVersion(NLS::Core::Assets::AssetType::ModelScene),
@@ -11130,7 +11139,7 @@ TEST(AssetImportPipelineTests, ModelSceneImporterVersionInvalidatesCrossFormatNo
         << "Importer version 17 FBX materials can omit normal-named bump textures and OBJ materials can misdecode height maps as tangent-space normals.";
 }
 
-TEST(AssetImportPipelineTests, ModelSceneImporterVersionInvalidatesIncompleteFbxBump2dVersion18Artifacts)
+NLS_LONG_RUNNING_TEST(AssetImportPipelineIntegrationPerformanceTests, ModelSceneImporterVersionInvalidatesIncompleteFbxBump2dVersion18Artifacts)
 {
     EXPECT_GT(
         NLS::Core::Assets::GetCurrentImporterVersion(NLS::Core::Assets::AssetType::ModelScene),
@@ -11138,7 +11147,7 @@ TEST(AssetImportPipelineTests, ModelSceneImporterVersionInvalidatesIncompleteFbx
         << "Importer version 18 FBX materials can still omit file textures connected through a 3ds Max ai_bump2d node.";
 }
 
-TEST(AssetImportPipelineTests, ModelSceneImporterVersionInvalidatesSrgbProjectNormalVersion19Artifacts)
+NLS_LONG_RUNNING_TEST(AssetImportPipelineIntegrationPerformanceTests, ModelSceneImporterVersionInvalidatesSrgbProjectNormalVersion19Artifacts)
 {
     EXPECT_GT(
         NLS::Core::Assets::GetCurrentImporterVersion(NLS::Core::Assets::AssetType::ModelScene),
@@ -11147,7 +11156,7 @@ TEST(AssetImportPipelineTests, ModelSceneImporterVersionInvalidatesSrgbProjectNo
 }
 
 #if !NLS_HAS_AUTODESK_FBX_SDK && NLS_HAS_ASSIMP_FBX_IMPORTER
-TEST(AssetImportPipelineTests, ExternalModelImportDefaultFbxReaderFallsBackToAssimpWhenAutodeskSdkUnavailable)
+NLS_LONG_RUNNING_TEST(AssetImportPipelineIntegrationPerformanceTests, ExternalModelImportDefaultFbxReaderFallsBackToAssimpWhenAutodeskSdkUnavailable)
 {
     const auto root = MakeImportTestRoot();
     const auto sourcePath = root / "Assets" / "Models" / "DefaultAutodeskFallback.fbx";
@@ -11199,7 +11208,7 @@ TEST(AssetImportPipelineTests, ExternalModelImportDefaultFbxReaderFallsBackToAss
 #endif
 
 #if !NLS_HAS_ASSIMP_FBX_IMPORTER
-TEST(AssetImportPipelineTests, ExternalModelImportDefaultFbxReaderDoesNotFallbackToAssimp)
+NLS_LONG_RUNNING_TEST(AssetImportPipelineIntegrationPerformanceTests, ExternalModelImportDefaultFbxReaderDoesNotFallbackToAssimp)
 {
     const auto root = MakeImportTestRoot();
     const auto sourcePath = root / "Assets" / "Models" / "DefaultNoFallback.fbx";
@@ -11238,7 +11247,7 @@ TEST(AssetImportPipelineTests, ExternalModelImportDefaultFbxReaderDoesNotFallbac
     std::filesystem::remove_all(root);
 }
 
-TEST(AssetImportPipelineTests, ExternalModelImportReportsUnavailableAssimpFbxWhenExplicitlySelected)
+NLS_LONG_RUNNING_TEST(AssetImportPipelineIntegrationPerformanceTests, ExternalModelImportReportsUnavailableAssimpFbxWhenExplicitlySelected)
 {
     const auto root = MakeImportTestRoot();
     const auto sourcePath = root / "Assets" / "Models" / "AssimpUnavailable.fbx";
@@ -11275,7 +11284,7 @@ TEST(AssetImportPipelineTests, ExternalModelImportReportsUnavailableAssimpFbxWhe
     std::filesystem::remove_all(root);
 }
 
-TEST(AssetImportPipelineTests, ExternalModelImportFallbackModeReportsFallbackBeforeUnavailableAssimp)
+NLS_LONG_RUNNING_TEST(AssetImportPipelineIntegrationPerformanceTests, ExternalModelImportFallbackModeReportsFallbackBeforeUnavailableAssimp)
 {
     const auto root = MakeImportTestRoot();
     const auto sourcePath = root / "Assets" / "Models" / "FallbackUnavailable.fbx";
@@ -11323,7 +11332,7 @@ TEST(AssetImportPipelineTests, ExternalModelImportFallbackModeReportsFallbackBef
 #endif
 
 #if NLS_HAS_ASSIMP_FBX_IMPORTER
-TEST(AssetImportPipelineTests, ExternalModelImportExplicitAssimpFbxBuildsArtifactsWhenEnabled)
+NLS_LONG_RUNNING_TEST(AssetImportPipelineIntegrationPerformanceTests, ExternalModelImportExplicitAssimpFbxBuildsArtifactsWhenEnabled)
 {
     const auto root = MakeImportTestRoot();
     const auto sourcePath = root / "Assets" / "Models" / "AssimpCube.fbx";
@@ -11429,7 +11438,7 @@ TEST(AssetImportPipelineTests, ExternalModelImportExplicitAssimpFbxBuildsArtifac
     std::filesystem::remove_all(root);
 }
 
-TEST(AssetImportPipelineTests, ExternalAssimpFbxNeutralDiffusePolicyAffectsMaterialArtifactIdentity)
+NLS_LONG_RUNNING_TEST(AssetImportPipelineIntegrationPerformanceTests, ExternalAssimpFbxNeutralDiffusePolicyAffectsMaterialArtifactIdentity)
 {
     const auto root = MakeImportTestRoot();
     const auto sourceFixture =
@@ -11552,7 +11561,7 @@ TEST(AssetImportPipelineTests, ExternalAssimpFbxNeutralDiffusePolicyAffectsMater
     std::filesystem::remove_all(root);
 }
 
-TEST(AssetImportPipelineTests, ExternalAssimpFbxModelImportKeepsDiffuseOpacityAndNormalMaterialTextureKeysWhenExternallyResolved)
+NLS_LONG_RUNNING_TEST(AssetImportPipelineIntegrationPerformanceTests, ExternalAssimpFbxModelImportKeepsDiffuseOpacityAndNormalMaterialTextureKeysWhenExternallyResolved)
 {
     const auto root = MakeImportTestRoot();
     const auto sourceFixture =
@@ -11656,7 +11665,7 @@ TEST(AssetImportPipelineTests, ExternalAssimpFbxModelImportKeepsDiffuseOpacityAn
     std::filesystem::remove_all(root);
 }
 
-TEST(AssetImportPipelineTests, ExternalAssimpFbxBaseColorAlphaDecalImportsAsDecalMaterial)
+NLS_LONG_RUNNING_TEST(AssetImportPipelineIntegrationPerformanceTests, ExternalAssimpFbxBaseColorAlphaDecalImportsAsDecalMaterial)
 {
     const auto root = MakeImportTestRoot();
     const auto sourceFixture =
@@ -11766,7 +11775,7 @@ TEST(AssetImportPipelineTests, ExternalAssimpFbxBaseColorAlphaDecalImportsAsDeca
 }
 #endif
 
-TEST(AssetImportPipelineTests, FbxImporterConvertsParserDataAndReportsParserExposureLimits)
+NLS_LONG_RUNNING_TEST(AssetImportPipelineIntegrationPerformanceTests, FbxImporterConvertsParserDataAndReportsParserExposureLimits)
 {
     FakeModelParser parser;
     std::vector<NLS::Render::Resources::Mesh*> parserMeshes;
@@ -11796,7 +11805,7 @@ TEST(AssetImportPipelineTests, FbxImporterConvertsParserDataAndReportsParserExpo
     EXPECT_EQ(scene.diagnostics[0].code, "fbx-parser-limited-scene-data");
 }
 
-TEST(AssetImportPipelineTests, ParsedFbxMeshDataBuildsImporterSceneWithoutSecondParserLoad)
+NLS_LONG_RUNNING_TEST(AssetImportPipelineIntegrationPerformanceTests, ParsedFbxMeshDataBuildsImporterSceneWithoutSecondParserLoad)
 {
     std::vector<NLS::Render::Resources::Parsers::ParsedMeshData> meshes;
     NLS::Render::Resources::Parsers::ParsedMeshData mesh;
@@ -11824,7 +11833,7 @@ TEST(AssetImportPipelineTests, ParsedFbxMeshDataBuildsImporterSceneWithoutSecond
     EXPECT_EQ(scene.diagnostics[0].code, "fbx-parser-limited-scene-data");
 }
 
-TEST(AssetImportPipelineTests, FbxImporterConsumesParserExposedSceneHierarchyAndRigData)
+NLS_LONG_RUNNING_TEST(AssetImportPipelineIntegrationPerformanceTests, FbxImporterConsumesParserExposedSceneHierarchyAndRigData)
 {
     DetailedFakeModelParser parser;
     parser.meshCount = 1u;
@@ -11910,7 +11919,7 @@ TEST(AssetImportPipelineTests, FbxImporterConsumesParserExposedSceneHierarchyAnd
     EXPECT_TRUE(scene.diagnostics.empty());
 }
 
-TEST(AssetImportPipelineTests, ParserDetailedSceneFailureFallsBackWithoutPartialData)
+NLS_LONG_RUNNING_TEST(AssetImportPipelineIntegrationPerformanceTests, ParserDetailedSceneFailureFallsBackWithoutPartialData)
 {
     DetailedFakeModelParser parser;
     parser.meshCount = 1u;
@@ -11940,7 +11949,7 @@ TEST(AssetImportPipelineTests, ParserDetailedSceneFailureFallsBackWithoutPartial
     EXPECT_EQ(scene.diagnostics[1].code, "fbx-parser-limited-scene-data");
 }
 
-TEST(AssetImportPipelineTests, ArtifactLoadTelemetrySummarizesStageBaselineForPrefabPathComparison)
+NLS_LONG_RUNNING_TEST(AssetImportPipelineIntegrationPerformanceTests, ArtifactLoadTelemetrySummarizesStageBaselineForPrefabPathComparison)
 {
     using NLS::Core::Assets::ArtifactLoadTelemetryStage;
     using NLS::Core::Assets::ClearArtifactLoadTelemetry;
@@ -12018,7 +12027,7 @@ TEST(AssetImportPipelineTests, ArtifactLoadTelemetrySummarizesStageBaselineForPr
     EXPECT_EQ(cacheHit->totalElapsed, std::chrono::microseconds(5));
 }
 
-TEST(AssetImportPipelineTests, ArtifactLoadTelemetryStageNameCoversThumbnailLatencyStages)
+NLS_LONG_RUNNING_TEST(AssetImportPipelineIntegrationPerformanceTests, ArtifactLoadTelemetryStageNameCoversThumbnailLatencyStages)
 {
     using NLS::Core::Assets::ArtifactLoadTelemetryStage;
     using NLS::Core::Assets::ArtifactLoadTelemetryStageName;
@@ -12280,7 +12289,7 @@ TEST(AssetImportPipelineTests, ArtifactLoadTelemetryStageNameCoversThumbnailLate
         "ThumbnailCacheEvaluateResolveEntryContainmentValidate");
 }
 
-TEST(AssetImportPipelineTests, ArtifactLoadTelemetryCanBeRuntimeEnabledForReleaseDiagnostics)
+NLS_LONG_RUNNING_TEST(AssetImportPipelineIntegrationPerformanceTests, ArtifactLoadTelemetryCanBeRuntimeEnabledForReleaseDiagnostics)
 {
     using NLS::Core::Assets::ArtifactLoadTelemetryStage;
     using NLS::Core::Assets::ClearArtifactLoadTelemetry;

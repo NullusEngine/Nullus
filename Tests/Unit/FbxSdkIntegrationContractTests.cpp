@@ -38,12 +38,6 @@ template<typename T>
 using FbxPtr = std::unique_ptr<T, FbxSdkObjectDeleter>;
 #endif
 
-std::string ReadTextFile(const std::filesystem::path& path)
-{
-    std::ifstream stream(path, std::ios::binary);
-    return {std::istreambuf_iterator<char>(stream), std::istreambuf_iterator<char>()};
-}
-
 float MaxAbsVertexPosition(const std::vector<NLS::Render::Resources::Parsers::ParsedMeshData>& meshes)
 {
     float maxPosition = 0.0f;

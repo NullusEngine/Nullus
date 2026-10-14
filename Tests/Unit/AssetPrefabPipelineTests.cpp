@@ -31,6 +31,15 @@
 #include <memory>
 #include <algorithm>
 
+#define NLS_UNREGISTERED_TEST(suite, name) static void suite##_##name##_Unregistered()
+#if defined(NLS_REGISTER_LONG_RUNNING_ASSET_PREFAB_PIPELINE_TESTS)
+#undef TEST
+#define TEST(suite, name) NLS_UNREGISTERED_TEST(suite, name)
+#define NLS_LONG_RUNNING_TEST(performanceSuite, name) GTEST_TEST(performanceSuite, name)
+#else
+#define NLS_LONG_RUNNING_TEST(performanceSuite, name) NLS_UNREGISTERED_TEST(performanceSuite, name)
+#endif
+
 namespace
 {
 const NLS::Engine::Serialize::ObjectRecord* FindRecord(
@@ -338,7 +347,7 @@ NLS::Engine::Serialize::PropertyValue MakeObjectReference(
 }
 }
 
-TEST(AssetPrefabPipelineTests, PrefabArtifactTracksBaseChainResolvedAssetsAndInstanceMap)
+NLS_LONG_RUNNING_TEST(AssetPrefabPipelineIntegrationPerformanceTests, PrefabArtifactTracksBaseChainResolvedAssetsAndInstanceMap)
 {
     NLS::Engine::Assets::PrefabArtifact artifact;
     artifact.assetId = NLS::Core::Assets::AssetId(
@@ -375,7 +384,7 @@ TEST(AssetPrefabPipelineTests, PrefabArtifactTracksBaseChainResolvedAssetsAndIns
         nullptr);
 }
 
-TEST(AssetPrefabPipelineTests, ValidationFingerprintIgnoresResolvedArtifactPath)
+NLS_LONG_RUNNING_TEST(AssetPrefabPipelineIntegrationPerformanceTests, ValidationFingerprintIgnoresResolvedArtifactPath)
 {
     NLS::Engine::Assets::PrefabArtifact artifact;
     artifact.graph.format = "Nullus.ObjectGraph.Prefab";
@@ -411,7 +420,7 @@ TEST(AssetPrefabPipelineTests, ValidationFingerprintIgnoresResolvedArtifactPath)
         NLS::Engine::Assets::BuildPrefabRuntimeResolvedGraphFingerprint(differentPath));
 }
 
-TEST(AssetPrefabPipelineTests, PrefabArtifactValidationUsesObjectGraphDiagnostics)
+NLS_LONG_RUNNING_TEST(AssetPrefabPipelineIntegrationPerformanceTests, PrefabArtifactValidationUsesObjectGraphDiagnostics)
 {
     NLS::Engine::Assets::PrefabArtifact artifact;
     artifact.graph.format = "Nullus.ObjectGraph.Prefab";
@@ -440,7 +449,7 @@ TEST(AssetPrefabPipelineTests, PrefabArtifactValidationUsesObjectGraphDiagnostic
     EXPECT_TRUE(foundInvalidOverride);
 }
 
-TEST(AssetPrefabPipelineTests, FallbackResolvedAssetDoesNotInferArtifactTypeFromLibraryPathExtension)
+NLS_LONG_RUNNING_TEST(AssetPrefabPipelineIntegrationPerformanceTests, FallbackResolvedAssetDoesNotInferArtifactTypeFromLibraryPathExtension)
 {
     NLS::Engine::Serialize::ObjectGraphDocument graph;
     graph.format = "Nullus.ObjectGraph.Prefab";
@@ -470,7 +479,7 @@ TEST(AssetPrefabPipelineTests, FallbackResolvedAssetDoesNotInferArtifactTypeFrom
     EXPECT_EQ(resolvedAssets.front().artifactPath, artifactPath);
 }
 
-TEST(AssetPrefabPipelineTests, FallbackResolvedAssetKeepsSubAssetHintOutOfArtifactPath)
+NLS_LONG_RUNNING_TEST(AssetPrefabPipelineIntegrationPerformanceTests, FallbackResolvedAssetKeepsSubAssetHintOutOfArtifactPath)
 {
     NLS::Engine::Serialize::ObjectGraphDocument graph;
     graph.format = "Nullus.ObjectGraph.Prefab";
@@ -501,7 +510,7 @@ TEST(AssetPrefabPipelineTests, FallbackResolvedAssetKeepsSubAssetHintOutOfArtifa
     EXPECT_TRUE(resolvedAssets.front().artifactPath.empty());
 }
 
-TEST(AssetPrefabPipelineTests, FallbackResolvedAssetPreservesContentStorageArtifactPath)
+NLS_LONG_RUNNING_TEST(AssetPrefabPipelineIntegrationPerformanceTests, FallbackResolvedAssetPreservesContentStorageArtifactPath)
 {
     NLS::Engine::Serialize::ObjectGraphDocument graph;
     graph.format = "Nullus.ObjectGraph.Prefab";
@@ -532,7 +541,7 @@ TEST(AssetPrefabPipelineTests, FallbackResolvedAssetPreservesContentStorageArtif
     EXPECT_EQ(resolvedAssets.front().artifactPath, artifactPath);
 }
 
-TEST(AssetPrefabPipelineTests, FallbackResolvedAssetRejectsEscapingContentStorageArtifactPath)
+NLS_LONG_RUNNING_TEST(AssetPrefabPipelineIntegrationPerformanceTests, FallbackResolvedAssetRejectsEscapingContentStorageArtifactPath)
 {
     NLS::Engine::Serialize::ObjectGraphDocument graph;
     graph.format = "Nullus.ObjectGraph.Prefab";
@@ -569,7 +578,7 @@ TEST(AssetPrefabPipelineTests, FallbackResolvedAssetRejectsEscapingContentStorag
     }
 }
 
-TEST(AssetPrefabPipelineTests, ImportsPrefabSourceDocumentAndCapturesBaseDependency)
+NLS_LONG_RUNNING_TEST(AssetPrefabPipelineIntegrationPerformanceTests, ImportsPrefabSourceDocumentAndCapturesBaseDependency)
 {
     NLS::Engine::Serialize::ObjectGraphDocument document;
     document.format = "Nullus.ObjectGraph.Prefab";
@@ -604,7 +613,7 @@ TEST(AssetPrefabPipelineTests, ImportsPrefabSourceDocumentAndCapturesBaseDepende
     EXPECT_EQ(result.artifact.baseChain.front().GetGuid().ToString(), "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa");
 }
 
-TEST(AssetPrefabPipelineTests, ImportPrefabSourceReportsObjectGraphDiagnostics)
+NLS_LONG_RUNNING_TEST(AssetPrefabPipelineIntegrationPerformanceTests, ImportPrefabSourceReportsObjectGraphDiagnostics)
 {
     NLS::Engine::Serialize::ObjectGraphDocument document;
     document.format = "Nullus.ObjectGraph.Prefab";
@@ -634,7 +643,7 @@ TEST(AssetPrefabPipelineTests, ImportPrefabSourceReportsObjectGraphDiagnostics)
     EXPECT_TRUE(foundMissingRoot);
 }
 
-TEST(AssetPrefabPipelineTests, SerializesGameObjectSelectionAsPrefabSource)
+NLS_LONG_RUNNING_TEST(AssetPrefabPipelineIntegrationPerformanceTests, SerializesGameObjectSelectionAsPrefabSource)
 {
     NLS::Engine::GameObject root("WorkshopLamp", "Prop");
     root.AddComponent<NLS::Engine::Components::LightComponent>()->SetIntensity(3.0f);
@@ -665,7 +674,7 @@ TEST(AssetPrefabPipelineTests, SerializesGameObjectSelectionAsPrefabSource)
     ASSERT_EQ(children->value.GetArray().size(), 1u);
 }
 
-TEST(AssetPrefabPipelineTests, ImportPrefabSourceRebuildsResolvedAssetsFromExternalReferences)
+NLS_LONG_RUNNING_TEST(AssetPrefabPipelineIntegrationPerformanceTests, ImportPrefabSourceRebuildsResolvedAssetsFromExternalReferences)
 {
     using namespace NLS::Engine::Serialize;
 
@@ -709,7 +718,7 @@ TEST(AssetPrefabPipelineTests, ImportPrefabSourceRebuildsResolvedAssetsFromExter
     EXPECT_TRUE(result.artifact.resolvedAssets.front().artifactPath.empty());
 }
 
-TEST(AssetPrefabPipelineTests, ImportPrefabSourceDoesNotResolveLegacyArtifactPathHints)
+NLS_LONG_RUNNING_TEST(AssetPrefabPipelineIntegrationPerformanceTests, ImportPrefabSourceDoesNotResolveLegacyArtifactPathHints)
 {
     using namespace NLS::Engine::Serialize;
 
@@ -765,7 +774,7 @@ TEST(AssetPrefabPipelineTests, ImportPrefabSourceDoesNotResolveLegacyArtifactPat
            "must not be treated as authoritative sub-asset hints.";
 }
 
-TEST(AssetPrefabPipelineTests, ImportPrefabSourceResolvesStaleContentArtifactPathThroughLocalFileId)
+NLS_LONG_RUNNING_TEST(AssetPrefabPipelineIntegrationPerformanceTests, ImportPrefabSourceResolvesStaleContentArtifactPathThroughLocalFileId)
 {
     using namespace NLS::Engine::Serialize;
 
@@ -820,7 +829,7 @@ TEST(AssetPrefabPipelineTests, ImportPrefabSourceResolvesStaleContentArtifactPat
     EXPECT_EQ(result.artifact.resolvedAssets.front().artifactPath, currentArtifactPath);
 }
 
-TEST(AssetPrefabPipelineTests, ImportPrefabSourceIgnoresNonLegacyArtifactPathSubAssetKeyLookalikes)
+NLS_LONG_RUNNING_TEST(AssetPrefabPipelineIntegrationPerformanceTests, ImportPrefabSourceIgnoresNonLegacyArtifactPathSubAssetKeyLookalikes)
 {
     using namespace NLS::Engine::Serialize;
 
@@ -871,7 +880,7 @@ TEST(AssetPrefabPipelineTests, ImportPrefabSourceIgnoresNonLegacyArtifactPathSub
            "may be treated as sub-asset key hints.";
 }
 
-TEST(AssetPrefabPipelineTests, RendererDependencyTemplatesRejectLegacyArtifactPathHints)
+NLS_LONG_RUNNING_TEST(AssetPrefabPipelineIntegrationPerformanceTests, RendererDependencyTemplatesRejectLegacyArtifactPathHints)
 {
     using namespace NLS::Engine::Serialize;
 
@@ -965,7 +974,7 @@ TEST(AssetPrefabPipelineTests, RendererDependencyTemplatesRejectLegacyArtifactPa
            "prefabs need current content-addressed artifact paths or stable local identifiers.";
 }
 
-TEST(AssetPrefabPipelineTests, RendererDependencyTemplatesIgnoreNonLegacyArtifactPathSubAssetKeyLookalikes)
+NLS_LONG_RUNNING_TEST(AssetPrefabPipelineIntegrationPerformanceTests, RendererDependencyTemplatesIgnoreNonLegacyArtifactPathSubAssetKeyLookalikes)
 {
     using namespace NLS::Engine::Serialize;
 
@@ -1054,7 +1063,7 @@ TEST(AssetPrefabPipelineTests, RendererDependencyTemplatesIgnoreNonLegacyArtifac
         << "Arbitrary filenames that decode to sub-asset-looking text must not bind renderer dependencies.";
 }
 
-TEST(AssetPrefabPipelineTests, InstantiatesPrefabArtifactWithStableSourceToInstanceMap)
+NLS_LONG_RUNNING_TEST(AssetPrefabPipelineIntegrationPerformanceTests, InstantiatesPrefabArtifactWithStableSourceToInstanceMap)
 {
     NLS::Engine::GameObject root("Crate", "Prop");
     root.AddComponent<NLS::Engine::Components::LightComponent>()->SetIntensity(2.0f);
@@ -1084,7 +1093,7 @@ TEST(AssetPrefabPipelineTests, InstantiatesPrefabArtifactWithStableSourceToInsta
     }
 }
 
-TEST(AssetPrefabPipelineTests, RepeatedPrefabInstantiationKeepsHotPathCompiledAndInstancesIndependent)
+NLS_LONG_RUNNING_TEST(AssetPrefabPipelineIntegrationPerformanceTests, RepeatedPrefabInstantiationKeepsHotPathCompiledAndInstancesIndependent)
 {
     NLS::Engine::GameObject root("Crate", "Prop");
     root.AddComponent<NLS::Engine::Components::LightComponent>()->SetIntensity(2.0f);
@@ -1167,7 +1176,7 @@ TEST(AssetPrefabPipelineTests, RepeatedPrefabInstantiationKeepsHotPathCompiledAn
     EXPECT_EQ(deserialize->counters.at("linearRecordLookupCount"), 0u);
 }
 
-TEST(AssetPrefabPipelineTests, SceneDeferredActivationDelaysLifecycleUntilExplicitActivation)
+NLS_LONG_RUNNING_TEST(AssetPrefabPipelineIntegrationPerformanceTests, SceneDeferredActivationDelaysLifecycleUntilExplicitActivation)
 {
     NLS::Engine::SceneSystem::Scene scene;
     scene.Play();
@@ -1215,7 +1224,7 @@ TEST(AssetPrefabPipelineTests, SceneDeferredActivationDelaysLifecycleUntilExplic
     EXPECT_EQ(childLifecycleCounter->enableCount, 1u);
 }
 
-TEST(AssetPrefabPipelineTests, DeferredPrefabActivationRunsLifecycleInInvokeLifecyclePhase)
+NLS_LONG_RUNNING_TEST(AssetPrefabPipelineIntegrationPerformanceTests, DeferredPrefabActivationRunsLifecycleInInvokeLifecyclePhase)
 {
     NLS::Engine::GameObject root("RuntimeCrate", "Prop");
     root.AddComponent<NLS::Engine::Components::LightComponent>()->SetIntensity(3.0f);
@@ -1256,7 +1265,7 @@ TEST(AssetPrefabPipelineTests, DeferredPrefabActivationRunsLifecycleInInvokeLife
     EXPECT_EQ(lifecycle->counters.at("activatedObjectCount"), 2u);
 }
 
-TEST(AssetPrefabPipelineTests, AmbiguousEmptyAssetReferenceHintDoesNotResolveToFirstSubAsset)
+NLS_LONG_RUNNING_TEST(AssetPrefabPipelineIntegrationPerformanceTests, AmbiguousEmptyAssetReferenceHintDoesNotResolveToFirstSubAsset)
 {
     using namespace NLS::Engine::Serialize;
 
@@ -1306,7 +1315,7 @@ TEST(AssetPrefabPipelineTests, AmbiguousEmptyAssetReferenceHintDoesNotResolveToF
     EXPECT_TRUE(meshFilterComponent->GetModelPath().empty());
 }
 
-TEST(AssetPrefabPipelineTests, ImportPrefabSourceKeepsAmbiguousEmptyAssetReferenceUnresolved)
+NLS_LONG_RUNNING_TEST(AssetPrefabPipelineIntegrationPerformanceTests, ImportPrefabSourceKeepsAmbiguousEmptyAssetReferenceUnresolved)
 {
     using namespace NLS::Engine::Serialize;
 
@@ -1370,7 +1379,7 @@ TEST(AssetPrefabPipelineTests, ImportPrefabSourceKeepsAmbiguousEmptyAssetReferen
     EXPECT_TRUE(meshFilterComponent->GetModelPath().empty());
 }
 
-TEST(AssetPrefabPipelineTests, ValidatesPrefabBaseChainsAndMissingBases)
+NLS_LONG_RUNNING_TEST(AssetPrefabPipelineIntegrationPerformanceTests, ValidatesPrefabBaseChainsAndMissingBases)
 {
     const auto rootId = NLS::Core::Assets::AssetId(
         NLS::Guid::Parse("30303030-3030-4030-8030-303030303030"));
@@ -1420,7 +1429,7 @@ TEST(AssetPrefabPipelineTests, ValidatesPrefabBaseChainsAndMissingBases)
     EXPECT_EQ(cycleDiagnostics.GetItems()[0].GetCode(), NLS::Engine::Serialize::SerializationDiagnosticCode::InvalidPrefabOverride);
 }
 
-TEST(AssetPrefabPipelineTests, ReportsUnresolvedAssetReferencesInPrefabArtifacts)
+NLS_LONG_RUNNING_TEST(AssetPrefabPipelineIntegrationPerformanceTests, ReportsUnresolvedAssetReferencesInPrefabArtifacts)
 {
     NLS::Engine::Assets::PrefabArtifact artifact;
     artifact.assetId = NLS::Core::Assets::AssetId(
@@ -1461,7 +1470,7 @@ TEST(AssetPrefabPipelineTests, ReportsUnresolvedAssetReferencesInPrefabArtifacts
     EXPECT_TRUE(foundUnresolvedAsset);
 }
 
-TEST(AssetPrefabPipelineTests, NormalizesPrefabOverridePatchesDeterministically)
+NLS_LONG_RUNNING_TEST(AssetPrefabPipelineIntegrationPerformanceTests, NormalizesPrefabOverridePatchesDeterministically)
 {
     using namespace NLS::Engine::Serialize;
 
@@ -1490,7 +1499,7 @@ TEST(AssetPrefabPipelineTests, NormalizesPrefabOverridePatchesDeterministically)
     EXPECT_EQ(normalized[3].property, "children");
 }
 
-TEST(AssetPrefabPipelineTests, ExtractsNestedPrefabDependenciesAndValidatesCycles)
+NLS_LONG_RUNNING_TEST(AssetPrefabPipelineIntegrationPerformanceTests, ExtractsNestedPrefabDependenciesAndValidatesCycles)
 {
     using namespace NLS::Engine::Serialize;
 
@@ -1546,7 +1555,7 @@ TEST(AssetPrefabPipelineTests, ExtractsNestedPrefabDependenciesAndValidatesCycle
         NLS::Engine::Serialize::SerializationDiagnosticCode::MissingAsset);
 }
 
-TEST(AssetPrefabPipelineTests, ExtractsNestedPrefabDependenciesFromLegacyArtifactPathHints)
+NLS_LONG_RUNNING_TEST(AssetPrefabPipelineIntegrationPerformanceTests, ExtractsNestedPrefabDependenciesFromLegacyArtifactPathHints)
 {
     using namespace NLS::Engine::Serialize;
 
@@ -1591,7 +1600,7 @@ TEST(AssetPrefabPipelineTests, ExtractsNestedPrefabDependenciesFromLegacyArtifac
     EXPECT_EQ(dependencies.front(), childId);
 }
 
-TEST(AssetPrefabPipelineTests, BuildsGeneratedModelPrefabHierarchyWithRendererAssetReferences)
+NLS_LONG_RUNNING_TEST(AssetPrefabPipelineIntegrationPerformanceTests, BuildsGeneratedModelPrefabHierarchyWithRendererAssetReferences)
 {
     NLS::Render::Assets::ImportedScene scene;
     scene.sourceAssetId = NLS::Core::Assets::AssetId(
@@ -1724,7 +1733,7 @@ TEST(AssetPrefabPipelineTests, BuildsGeneratedModelPrefabHierarchyWithRendererAs
     EXPECT_EQ(result.artifact.sourceToRuntimeObject.size(), result.artifact.graph.objects.size());
 }
 
-TEST(AssetPrefabPipelineTests, GeneratedModelPrefabUsesSceneKeyForSingleParserRootNodeName)
+NLS_LONG_RUNNING_TEST(AssetPrefabPipelineIntegrationPerformanceTests, GeneratedModelPrefabUsesSceneKeyForSingleParserRootNodeName)
 {
     NLS::Render::Assets::ImportedScene scene;
     scene.sourceAssetId = NLS::Core::Assets::AssetId(
@@ -1807,7 +1816,7 @@ TEST(AssetPrefabPipelineTests, GeneratedModelPrefabUsesSceneKeyForSingleParserRo
     EXPECT_EQ(*resolvedChildParent, root->id);
 }
 
-TEST(AssetPrefabPipelineTests, GeneratedModelPrefabKeepsChildParserRootNodeName)
+NLS_LONG_RUNNING_TEST(AssetPrefabPipelineIntegrationPerformanceTests, GeneratedModelPrefabKeepsChildParserRootNodeName)
 {
     NLS::Render::Assets::ImportedScene scene;
     scene.sourceAssetId = NLS::Core::Assets::AssetId(
@@ -1836,7 +1845,7 @@ TEST(AssetPrefabPipelineTests, GeneratedModelPrefabKeepsChildParserRootNodeName)
     EXPECT_EQ(childName->value.GetString(), "RootNode");
 }
 
-TEST(AssetPrefabPipelineTests, GeneratedModelPrefabInstantiationResolvesSubAssetHintsToArtifacts)
+NLS_LONG_RUNNING_TEST(AssetPrefabPipelineIntegrationPerformanceTests, GeneratedModelPrefabInstantiationResolvesSubAssetHintsToArtifacts)
 {
     NLS::Render::Assets::ImportedScene scene;
     scene.sourceAssetId = NLS::Core::Assets::AssetId(
@@ -1909,7 +1918,7 @@ TEST(AssetPrefabPipelineTests, GeneratedModelPrefabInstantiationResolvesSubAsset
     EXPECT_EQ(materials[0], "Library/Artifacts/Hero/materials/8ca977f3a8a054ff6767e381b334be9e47456f725e02f84e11a3b5b1f3f4218b");
 }
 
-TEST(AssetPrefabPipelineTests, GeneratedModelPrefabPreservesSparseMaterialSlots)
+NLS_LONG_RUNNING_TEST(AssetPrefabPipelineIntegrationPerformanceTests, GeneratedModelPrefabPreservesSparseMaterialSlots)
 {
     NLS::Render::Assets::ImportedScene scene;
     scene.sourceAssetId = NLS::Core::Assets::AssetId(
@@ -1986,7 +1995,7 @@ TEST(AssetPrefabPipelineTests, GeneratedModelPrefabPreservesSparseMaterialSlots)
     EXPECT_EQ(runtimeMaterialPaths[1], "Library/Artifacts/Sparse/materials/2384ba5f4dd69868ad409a745d029b3352710ff25b0d0391a44b6e32697d5f9f");
 }
 
-TEST(AssetPrefabPipelineTests, PreparedPrefabFreshnessRejectsStaleKeyVersionsAndStamps)
+NLS_LONG_RUNNING_TEST(AssetPrefabPipelineIntegrationPerformanceTests, PreparedPrefabFreshnessRejectsStaleKeyVersionsAndStamps)
 {
 #if !defined(NLS_ENABLE_TEST_HOOKS)
     GTEST_SKIP() << "NLS_ENABLE_TEST_HOOKS is required for prepared prefab freshness inspection.";
@@ -2021,7 +2030,7 @@ TEST(AssetPrefabPipelineTests, PreparedPrefabFreshnessRejectsStaleKeyVersionsAnd
 #endif
 }
 
-TEST(AssetPrefabPipelineTests, EditorRestartPreparedPrefabCacheHitSkipsPrefabGraphLoad)
+NLS_LONG_RUNNING_TEST(AssetPrefabPipelineIntegrationPerformanceTests, EditorRestartPreparedPrefabCacheHitSkipsPrefabGraphLoad)
 {
 #if !defined(NLS_ENABLE_TEST_HOOKS)
     GTEST_SKIP() << "NLS_ENABLE_TEST_HOOKS is required to clear the imported prefab L1 hot cache.";
@@ -2151,7 +2160,7 @@ TEST(AssetPrefabPipelineTests, EditorRestartPreparedPrefabCacheHitSkipsPrefabGra
 #endif
 }
 
-TEST(AssetPrefabPipelineTests, EditorRestartPreparedPrefabCacheRejectsStaleRuntimeResolvedGraph)
+NLS_LONG_RUNNING_TEST(AssetPrefabPipelineIntegrationPerformanceTests, EditorRestartPreparedPrefabCacheRejectsStaleRuntimeResolvedGraph)
 {
 #if !defined(NLS_ENABLE_TEST_HOOKS)
     GTEST_SKIP() << "NLS_ENABLE_TEST_HOOKS is required to clear the imported prefab L1 hot cache.";
@@ -2235,7 +2244,7 @@ TEST(AssetPrefabPipelineTests, EditorRestartPreparedPrefabCacheRejectsStaleRunti
 #endif
 }
 
-TEST(AssetPrefabPipelineTests, EditorRestartPreparedPrefabCacheRejectsStaleFreshnessRecord)
+NLS_LONG_RUNNING_TEST(AssetPrefabPipelineIntegrationPerformanceTests, EditorRestartPreparedPrefabCacheRejectsStaleFreshnessRecord)
 {
 #if !defined(NLS_ENABLE_TEST_HOOKS)
     GTEST_SKIP() << "NLS_ENABLE_TEST_HOOKS is required to clear the imported prefab L1 hot cache.";
@@ -2317,7 +2326,7 @@ TEST(AssetPrefabPipelineTests, EditorRestartPreparedPrefabCacheRejectsStaleFresh
 #endif
 }
 
-TEST(AssetPrefabPipelineTests, EditorRestartPreparedPrefabCacheRejectsMalformedFreshnessTypes)
+NLS_LONG_RUNNING_TEST(AssetPrefabPipelineIntegrationPerformanceTests, EditorRestartPreparedPrefabCacheRejectsMalformedFreshnessTypes)
 {
 #if !defined(NLS_ENABLE_TEST_HOOKS)
     GTEST_SKIP() << "NLS_ENABLE_TEST_HOOKS is required to clear the imported prefab L1 hot cache.";
@@ -2412,7 +2421,7 @@ TEST(AssetPrefabPipelineTests, EditorRestartPreparedPrefabCacheRejectsMalformedF
 #endif
 }
 
-TEST(AssetPrefabPipelineTests, FailedPreparedPrefabLoadDoesNotEnterHotOrDiskCache)
+NLS_LONG_RUNNING_TEST(AssetPrefabPipelineIntegrationPerformanceTests, FailedPreparedPrefabLoadDoesNotEnterHotOrDiskCache)
 {
 #if !defined(NLS_ENABLE_TEST_HOOKS)
     GTEST_SKIP() << "NLS_ENABLE_TEST_HOOKS is required to inspect imported prefab L1 hot cache state.";
@@ -2501,7 +2510,7 @@ TEST(AssetPrefabPipelineTests, FailedPreparedPrefabLoadDoesNotEnterHotOrDiskCach
 #endif
 }
 
-TEST(AssetPrefabPipelineTests, PreparedPrefabMappingDependencyFingerprintReusesStampedCache)
+NLS_LONG_RUNNING_TEST(AssetPrefabPipelineIntegrationPerformanceTests, PreparedPrefabMappingDependencyFingerprintReusesStampedCache)
 {
 #if !defined(NLS_ENABLE_TEST_HOOKS)
     GTEST_SKIP() << "NLS_ENABLE_TEST_HOOKS is required for prepared prefab cache scan counters.";
@@ -2607,7 +2616,7 @@ TEST(AssetPrefabPipelineTests, PreparedPrefabMappingDependencyFingerprintReusesS
 #endif
 }
 
-TEST(AssetPrefabPipelineTests, PreparedPrefabSourcePathMappingFallbackTracksTextureManifestStamp)
+NLS_LONG_RUNNING_TEST(AssetPrefabPipelineIntegrationPerformanceTests, PreparedPrefabSourcePathMappingFallbackTracksTextureManifestStamp)
 {
 #if !defined(NLS_ENABLE_TEST_HOOKS)
     GTEST_SKIP() << "NLS_ENABLE_TEST_HOOKS is required for prepared prefab cache scan counters.";
@@ -2697,7 +2706,7 @@ TEST(AssetPrefabPipelineTests, PreparedPrefabSourcePathMappingFallbackTracksText
 #endif
 }
 
-TEST(AssetPrefabPipelineTests, PreparedPrefabSourcePathMappingKeyAvoidsMetaContentParse)
+NLS_LONG_RUNNING_TEST(AssetPrefabPipelineIntegrationPerformanceTests, PreparedPrefabSourcePathMappingKeyAvoidsMetaContentParse)
 {
 #if !defined(NLS_ENABLE_TEST_HOOKS)
     GTEST_SKIP() << "NLS_ENABLE_TEST_HOOKS is required for prepared prefab cache counters.";
@@ -2771,7 +2780,7 @@ TEST(AssetPrefabPipelineTests, PreparedPrefabSourcePathMappingKeyAvoidsMetaConte
 #endif
 }
 
-TEST(AssetPrefabPipelineTests, PreparedPrefabSourcePathFallbackFingerprintIsCached)
+NLS_LONG_RUNNING_TEST(AssetPrefabPipelineIntegrationPerformanceTests, PreparedPrefabSourcePathFallbackFingerprintIsCached)
 {
 #if !defined(NLS_ENABLE_TEST_HOOKS)
     GTEST_SKIP() << "NLS_ENABLE_TEST_HOOKS is required for prepared prefab cache counters.";
@@ -2845,7 +2854,7 @@ TEST(AssetPrefabPipelineTests, PreparedPrefabSourcePathFallbackFingerprintIsCach
 #endif
 }
 
-TEST(AssetPrefabPipelineTests, GeneratedModelPrefabCreatesInactiveHLODProxyNode)
+NLS_LONG_RUNNING_TEST(AssetPrefabPipelineIntegrationPerformanceTests, GeneratedModelPrefabCreatesInactiveHLODProxyNode)
 {
     NLS::Render::Assets::ImportedScene scene;
     scene.sourceAssetId = NLS::Core::Assets::AssetId(
@@ -2952,7 +2961,7 @@ TEST(AssetPrefabPipelineTests, GeneratedModelPrefabCreatesInactiveHLODProxyNode)
     EXPECT_EQ(proxyFilter->GetModelPath(), "Library/Artifacts/HLOD/7db0044a982d2592b1d91c8f16b54d922af06b2e0643dbe3552a02027ec3e8ff");
 }
 
-TEST(AssetPrefabPipelineTests, GeneratedModelPrefabSplitsMultiPrimitiveMeshIntoPrimitiveRenderers)
+NLS_LONG_RUNNING_TEST(AssetPrefabPipelineIntegrationPerformanceTests, GeneratedModelPrefabSplitsMultiPrimitiveMeshIntoPrimitiveRenderers)
 {
     NLS::Render::Assets::ImportedScene scene;
     scene.sourceAssetId = NLS::Core::Assets::AssetId(
@@ -3068,7 +3077,7 @@ TEST(AssetPrefabPipelineTests, GeneratedModelPrefabSplitsMultiPrimitiveMeshIntoP
     EXPECT_TRUE(ContainsResolvedAsset(result.artifact.resolvedAssets, "Mesh", "mesh:mesh/body/primitive/1"));
 }
 
-TEST(AssetPrefabPipelineTests, DeferredAssetResolutionIgnoresLegacyStringMaterialPaths)
+NLS_LONG_RUNNING_TEST(AssetPrefabPipelineIntegrationPerformanceTests, DeferredAssetResolutionIgnoresLegacyStringMaterialPaths)
 {
     using namespace NLS::Engine::Serialize;
 
@@ -3113,7 +3122,7 @@ TEST(AssetPrefabPipelineTests, DeferredAssetResolutionIgnoresLegacyStringMateria
     EXPECT_TRUE(runtimeMeshRenderer->GetMaterialPaths().empty());
 }
 
-TEST(AssetPrefabPipelineTests, GeneratedModelPrefabInstantiationMapsDeepImportedHierarchy)
+NLS_LONG_RUNNING_TEST(AssetPrefabPipelineIntegrationPerformanceTests, GeneratedModelPrefabInstantiationMapsDeepImportedHierarchy)
 {
     NLS::Render::Assets::ImportedScene scene;
     scene.sourceAssetId = NLS::Core::Assets::AssetId(
@@ -3185,7 +3194,7 @@ TEST(AssetPrefabPipelineTests, GeneratedModelPrefabInstantiationMapsDeepImported
     EXPECT_EQ(fastAccess.modelRenderers[0], meshNode->GetComponent<NLS::Engine::Components::MeshRenderer>());
 }
 
-TEST(AssetPrefabPipelineTests, GeneratedModelPrefabValidationAllowsResolvedSubAssetIds)
+NLS_LONG_RUNNING_TEST(AssetPrefabPipelineIntegrationPerformanceTests, GeneratedModelPrefabValidationAllowsResolvedSubAssetIds)
 {
     NLS::Render::Assets::ImportedScene scene;
     scene.sourceAssetId = NLS::Core::Assets::AssetId(
@@ -3232,7 +3241,7 @@ TEST(AssetPrefabPipelineTests, GeneratedModelPrefabValidationAllowsResolvedSubAs
     EXPECT_FALSE(result.artifact.Validate().HasErrors());
 }
 
-TEST(AssetPrefabPipelineTests, GeneratedModelPrefabReportsSkinningAndMorphRuntimeCapabilityGaps)
+NLS_LONG_RUNNING_TEST(AssetPrefabPipelineIntegrationPerformanceTests, GeneratedModelPrefabReportsSkinningAndMorphRuntimeCapabilityGaps)
 {
     NLS::Render::Assets::ImportedScene scene;
     scene.sourceAssetId = NLS::Core::Assets::AssetId(

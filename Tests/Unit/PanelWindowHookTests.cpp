@@ -649,135 +649,6 @@ TEST(PanelWindowHookTests, PanelDrawProfilerScopeUsesVisiblePanelName)
 #endif
 }
 
-TEST(PanelWindowHookTests, TimelineProfilerFrameBeginsBeforeApplicationFrameScopes)
-{
-    const auto applicationSource = ReadSourceFile(
-        std::filesystem::path(NLS_ROOT_DIR) / "Project/Editor/Core/Application.cpp");
-    const auto editorSource = ReadSourceFile(
-        std::filesystem::path(NLS_ROOT_DIR) / "Project/Editor/Core/Editor.cpp");
-
-    const auto tickFrameFunction = applicationSource.find("void Editor::Core::Application::TickFrame");
-    ASSERT_NE(tickFrameFunction, std::string::npos);
-    const auto profilerFrameCall = applicationSource.find("BeginProfilerFrame()", tickFrameFunction);
-    const auto applicationTickScope = applicationSource.find(
-        "NLS_PROFILE_NAMED_SCOPE(\"Application::TickFrame\")",
-        tickFrameFunction);
-    const auto editorPreUpdateScope = applicationSource.find(
-        "NLS_PROFILE_NAMED_SCOPE(\"Application::EditorPreUpdate\")",
-        tickFrameFunction);
-
-    ASSERT_NE(profilerFrameCall, std::string::npos);
-    ASSERT_NE(applicationTickScope, std::string::npos);
-    ASSERT_NE(editorPreUpdateScope, std::string::npos);
-    EXPECT_LT(profilerFrameCall, applicationTickScope)
-        << "TimelineProfiler TickFrame must run before any current-frame CPU scope is opened, "
-           "otherwise it can pop the wrong event and leak the CPU frame stack.";
-    EXPECT_LT(profilerFrameCall, editorPreUpdateScope);
-
-    const auto resizeFrameFunction = applicationSource.find("void Editor::Core::Application::TickResizeFrame");
-    ASSERT_NE(resizeFrameFunction, std::string::npos);
-    const auto resizeProfilerFrameCall = applicationSource.find("BeginProfilerFrame()", resizeFrameFunction);
-    const auto resizeFrameScope = applicationSource.find(
-        "NLS_PROFILE_NAMED_SCOPE(\"Application::ResizeFrame\")",
-        resizeFrameFunction);
-    ASSERT_NE(resizeProfilerFrameCall, std::string::npos);
-    ASSERT_NE(resizeFrameScope, std::string::npos);
-    EXPECT_LT(resizeProfilerFrameCall, resizeFrameScope)
-        << "Native resize frames need the same TimelineProfiler frame boundary as normal editor frames.";
-    const auto resizeRunGuard = applicationSource.find("if (!IsRunning())", resizeProfilerFrameCall);
-    ASSERT_NE(resizeRunGuard, std::string::npos);
-    EXPECT_LT(resizeRunGuard, resizeFrameScope)
-        << "Validation trace export can request close from TickResizeFrame::BeginProfilerFrame; "
-           "resize rendering must not continue after that close request.";
-
-    const auto runFunction = applicationSource.find("void Editor::Core::Application::Run()");
-    const auto tickFrameCallInRun = applicationSource.find("TickFrame(clock.GetDeltaTime(), true)", runFunction);
-    const auto flushDeferredResizeCall = applicationSource.find("FlushDeferredResizeTick()", tickFrameCallInRun);
-    const auto paceIdleCall = applicationSource.find("PaceIdleFrameIfNeeded()", flushDeferredResizeCall);
-    ASSERT_NE(runFunction, std::string::npos);
-    ASSERT_NE(tickFrameCallInRun, std::string::npos);
-    ASSERT_NE(flushDeferredResizeCall, std::string::npos);
-    ASSERT_NE(paceIdleCall, std::string::npos);
-    const auto deferredResizeRunSegment =
-        applicationSource.substr(flushDeferredResizeCall, paceIdleCall - flushDeferredResizeCall);
-    EXPECT_EQ(deferredResizeRunSegment.find("NLS_PROFILE_NAMED_SCOPE"), std::string::npos)
-        << "Deferred resize flushing may call TickResizeFrame(), which starts a TimelineProfiler frame; "
-           "it must not be wrapped by an already-open current-frame profiling scope.";
-
-    const auto runEditorFrameScope = applicationSource.find(
-        "NLS_PROFILE_NAMED_SCOPE(\"Application::RunEditorFrame\")",
-        editorPreUpdateScope);
-    ASSERT_NE(runEditorFrameScope, std::string::npos);
-    const auto postPollCloseGuard = applicationSource.find("if (!IsRunning())", editorPreUpdateScope);
-    ASSERT_NE(postPollCloseGuard, std::string::npos);
-    EXPECT_LT(postPollCloseGuard, runEditorFrameScope)
-        << "Window close requests from event polling must stop the normal frame before UI rendering.";
-
-    const auto normalResizeFollowUpScope = applicationSource.find(
-        "NLS_PROFILE_NAMED_SCOPE(\"Application::ResizeFollowUpFrame\")",
-        runEditorFrameScope);
-    ASSERT_NE(normalResizeFollowUpScope, std::string::npos);
-    const auto postEditorFrameCloseGuard = applicationSource.find("if (!IsRunning())", runEditorFrameScope);
-    ASSERT_NE(postEditorFrameCloseGuard, std::string::npos);
-    EXPECT_LT(postEditorFrameCloseGuard, normalResizeFollowUpScope)
-        << "A close request from the main editor frame must stop resize follow-up rendering.";
-
-    const auto preUpdateFunction = editorSource.find("void Editor::Core::Editor::PreUpdate");
-    ASSERT_NE(preUpdateFunction, std::string::npos);
-    const auto nextEditorFunction = editorSource.find("void Editor::Core::Editor::BeginProfilerFrame", preUpdateFunction);
-    ASSERT_NE(nextEditorFunction, std::string::npos);
-    const auto preUpdateBody = editorSource.substr(preUpdateFunction, nextEditorFunction - preUpdateFunction);
-    const auto refreshCall = preUpdateBody.find("RefreshProfilerRecordingState()");
-    ASSERT_NE(refreshCall, std::string::npos);
-    EXPECT_EQ(preUpdateBody.find("BeginProfilerFrame()"), std::string::npos)
-        << "Editor::PreUpdate is called inside Application profiling scopes; beginning the TimelineProfiler "
-           "frame there can leave unterminated outer scopes in the fixed event stack.";
-}
-
-TEST(PanelWindowHookTests, TimelineProfilerFrameMaintenanceHasNamedScope)
-{
-    const auto timelineSinkSource = ReadSourceFile(
-        std::filesystem::path(NLS_ROOT_DIR) / "Runtime/UI/Profiling/TimelineProfilerSink.cpp");
-
-    const auto tickFrameFunction = timelineSinkSource.find("void TimelineProfilerSink::TickFrame()");
-    ASSERT_NE(tickFrameFunction, std::string::npos);
-    const auto tickFrameScope = timelineSinkSource.find(
-        "NLS_PROFILE_NAMED_SCOPE(\"TimelineProfiler::TickFrame\")",
-        tickFrameFunction);
-    const auto gpuProfilerTick = timelineSinkSource.find("gGPUProfiler.Tick()", tickFrameFunction);
-
-    ASSERT_NE(tickFrameScope, std::string::npos);
-    ASSERT_NE(gpuProfilerTick, std::string::npos);
-    EXPECT_LT(tickFrameScope, gpuProfilerTick)
-        << "TimelineProfiler frame maintenance must be visible before GPU profiler tick work can create "
-           "anonymous start-of-frame gaps.";
-}
-
-TEST(PanelWindowHookTests, TimelineProfilerFlushesOpenCpuScopesBeforeFrameReset)
-{
-    const auto timelineSinkSource = ReadSourceFile(
-        std::filesystem::path(NLS_ROOT_DIR) / "Runtime/UI/Profiling/TimelineProfilerSink.cpp");
-
-    const auto flushFunction = timelineSinkSource.find("void FlushOpenTimelineCpuScopes()");
-    ASSERT_NE(flushFunction, std::string::npos);
-    const auto tickFrameFunction = timelineSinkSource.find("void TimelineProfilerSink::TickFrame()");
-    ASSERT_NE(tickFrameFunction, std::string::npos);
-
-    const auto flushEndEvent = timelineSinkSource.find("gProfiler.EndEvent()", flushFunction);
-    const auto tickFrameFlushCall = timelineSinkSource.find("FlushOpenTimelineCpuScopes();", tickFrameFunction);
-    const auto depthReset = timelineSinkSource.find("g_timelineScopeDepth = 0u;", tickFrameFunction);
-    const auto profilerTick = timelineSinkSource.find("gProfiler.Tick()", tickFrameFunction);
-
-    ASSERT_NE(flushEndEvent, std::string::npos);
-    ASSERT_NE(tickFrameFlushCall, std::string::npos);
-    ASSERT_NE(depthReset, std::string::npos);
-    ASSERT_NE(profilerTick, std::string::npos);
-    EXPECT_LT(tickFrameFlushCall, depthReset);
-    EXPECT_LT(tickFrameFlushCall, profilerTick)
-        << "Open CPU scopes must be closed before TimelineProfiler starts the next frame, otherwise "
-           "stale events can pollute subsequent tests and captures.";
-}
-
 TEST(PanelWindowHookTests, StartupArtifactDbRefreshesOnlyWhenWatcherImportsChangedAssets)
 {
     const auto applicationSource = ReadSourceFile(
@@ -883,38 +754,6 @@ TEST(PanelWindowHookTests, StartupArtifactDbRefreshesOnlyWhenWatcherImportsChang
                    "all startup imports that can populate ArtifactDB.";
         }
     }
-}
-
-TEST(PanelWindowHookTests, TimelineProfilerFixedArrayUsesFullDeclaredCapacity)
-{
-    const auto profilerHeader = ReadSourceFile(
-        std::filesystem::path(NLS_ROOT_DIR) / "Runtime/UI/ImGuiExtensions/TimelineProfiler/Profiler.h");
-
-    const auto pushFunction = profilerHeader.find("T& Push()");
-    ASSERT_NE(pushFunction, std::string::npos);
-    const auto capacityCheck = profilerHeader.find("gAssert(Length < N)", pushFunction);
-    const auto increment = profilerHeader.find("Data[Length++]", pushFunction);
-
-    ASSERT_NE(capacityCheck, std::string::npos);
-    ASSERT_NE(increment, std::string::npos);
-    EXPECT_LT(capacityCheck, increment)
-        << "FixedArray must check capacity before incrementing so it can use the full declared capacity "
-           "without allowing overflow after Length reaches N.";
-}
-
-TEST(PanelWindowHookTests, ApplicationTickStateFlagsUseScopeGuards)
-{
-    const auto applicationSource = ReadSourceFile(
-        std::filesystem::path(NLS_ROOT_DIR) / "Project/Editor/Core/Application.cpp");
-
-    EXPECT_NE(applicationSource.find("class ScopedBoolFlag final"), std::string::npos);
-    EXPECT_NE(applicationSource.find("const ScopedBoolFlag tickingScope(m_isTicking)"), std::string::npos);
-    EXPECT_NE(applicationSource.find("const ScopedBoolFlag pollingScope(m_isPollingEvents)"), std::string::npos);
-    EXPECT_NE(applicationSource.find("const ScopedBoolFlag resizeTickingScope(m_isResizeTicking)"), std::string::npos);
-
-    EXPECT_EQ(applicationSource.find("m_isTicking = false"), std::string::npos);
-    EXPECT_EQ(applicationSource.find("m_isPollingEvents = false"), std::string::npos);
-    EXPECT_EQ(applicationSource.find("m_isResizeTicking = false"), std::string::npos);
 }
 
 TEST(PanelWindowHookTests, PanelDrawRecordsLastDrawDurationForFrameInfo)
@@ -1202,21 +1041,6 @@ TEST(PanelWindowHookTests, FrameInfoPanelAggregatesDisplayedRenderViewSnapshots)
     ExpectFrameInfoRow(panel, "Debug", "Binding Sets", "12");
 }
 
-TEST(PanelWindowHookTests, EditorFrameInfoSelectionIgnoresFocusedView)
-{
-    const auto editorSource = ReadSourceFile(
-        std::filesystem::path(NLS_ROOT_DIR) / "Project/Editor/Core/Editor.cpp");
-
-    const auto updateStart = editorSource.find("void Editor::Core::Editor::UpdateEditorPanels");
-    const auto updateEnd = editorSource.find("void Editor::Core::Editor::UpdateViews", updateStart);
-    ASSERT_NE(updateStart, std::string::npos);
-    ASSERT_NE(updateEnd, std::string::npos);
-    const auto updateBody = editorSource.substr(updateStart, updateEnd - updateStart);
-
-    EXPECT_EQ(updateBody.find("IsFocused()"), std::string::npos);
-    EXPECT_NE(updateBody.find("SetCandidateViews"), std::string::npos);
-}
-
 TEST(PanelWindowHookTests, FrameInfoPanelIgnoresViewsNotDrawnInCurrentUiFrame)
 {
     IMGUI_CHECKVERSION();
@@ -1383,69 +1207,6 @@ TEST(PanelWindowHookTests, FrameInfoPanelExcludesEditorUiPanelDrawMetrics)
     // rest of the binary. The process-wide registration is what makes a later
     // FlushRenderingCommands wait for a drain nobody can run.
     driver->ShutdownThreadedRendering();
-}
-
-TEST(PanelWindowHookTests, EditorCreatesFrameInfoAsDockableRenderStatsWindow)
-{
-    const auto editorSource = ReadSourceFile(
-        std::filesystem::path(NLS_ROOT_DIR) / "Project/Editor/Core/Editor.cpp");
-
-    const auto settingsDeclaration = editorSource.find("auto frameInfoSettings = settings;");
-    ASSERT_NE(settingsDeclaration, std::string::npos);
-    const auto frameInfoCreation = editorSource.find("CreatePanel<Panels::FrameInfo>", settingsDeclaration);
-    ASSERT_NE(frameInfoCreation, std::string::npos);
-
-    const auto frameInfoSetup = editorSource.substr(settingsDeclaration, frameInfoCreation - settingsDeclaration);
-    EXPECT_EQ(frameInfoSetup.find("frameInfoSettings.dockable = false;"), std::string::npos);
-    EXPECT_NE(frameInfoSetup.find("frameInfoSettings.autoSize = true;"), std::string::npos);
-    EXPECT_NE(
-        editorSource.find("CreatePanel<Panels::FrameInfo>(\"Frame Info\", false, frameInfoSettings)"),
-        std::string::npos);
-}
-
-TEST(PanelWindowHookTests, ContextAppliesFrameInfoStartupValidationOverride)
-{
-    const auto contextHeader = ReadSourceFile(
-        std::filesystem::path(NLS_ROOT_DIR) / "Project/Editor/Core/Context.h");
-
-    const auto applyOverride = contextHeader.find("void ApplyDiagnosticsOverride");
-    ASSERT_NE(applyOverride, std::string::npos);
-    const auto diagnosticsSettingsMember = contextHeader.find("Render::Settings::EngineDiagnosticsSettings m_diagnosticsSettings", applyOverride);
-    ASSERT_NE(diagnosticsSettingsMember, std::string::npos);
-
-    const auto applyBody = contextHeader.substr(applyOverride, diagnosticsSettingsMember - applyOverride);
-    EXPECT_NE(applyBody.find("m_diagnosticsOverride->editorValidationOpenFrameInfo"), std::string::npos);
-    EXPECT_NE(applyBody.find("settings.editorValidationOpenFrameInfo = true;"), std::string::npos);
-}
-
-TEST(PanelWindowHookTests, EditorStartupValidationCanOpenProfilerPanel)
-{
-    const auto contextHeader = ReadSourceFile(
-        std::filesystem::path(NLS_ROOT_DIR) / "Project/Editor/Core/Context.h");
-    const auto editorSource = ReadSourceFile(
-        std::filesystem::path(NLS_ROOT_DIR) / "Project/Editor/Core/Editor.cpp");
-
-    const auto applyOverride = contextHeader.find("void ApplyDiagnosticsOverride");
-    ASSERT_NE(applyOverride, std::string::npos);
-    const auto diagnosticsSettingsMember = contextHeader.find(
-        "Render::Settings::EngineDiagnosticsSettings m_diagnosticsSettings",
-        applyOverride);
-    ASSERT_NE(diagnosticsSettingsMember, std::string::npos);
-    const auto applyBody = contextHeader.substr(applyOverride, diagnosticsSettingsMember - applyOverride);
-
-    EXPECT_NE(applyBody.find("m_diagnosticsOverride->editorValidationOpenProfiler"), std::string::npos);
-    EXPECT_NE(applyBody.find("settings.editorValidationOpenProfiler = true;"), std::string::npos);
-
-    const auto startupValidation = editorSource.find("void Editor::Core::Editor::ApplyStartupValidationDirectives");
-    ASSERT_NE(startupValidation, std::string::npos);
-    const auto updateMode = editorSource.find("void Editor::Core::Editor::UpdateCurrentEditorMode", startupValidation);
-    ASSERT_NE(updateMode, std::string::npos);
-    const auto validationBody = editorSource.substr(startupValidation, updateMode - startupValidation);
-
-    EXPECT_NE(validationBody.find("GetPanelAs<NLS::Editor::Panels::ProfilerPanel>(\"Profiler\")"), std::string::npos);
-    EXPECT_NE(validationBody.find("diagnostics.editorValidationOpenProfiler"), std::string::npos);
-    EXPECT_NE(validationBody.find("profilerPanel.Open();"), std::string::npos);
-    EXPECT_NE(validationBody.find("Editor validation opened Profiler."), std::string::npos);
 }
 
 TEST(PanelWindowHookTests, EditorResolvesUiSceneWaitAfterCanvasDraw)

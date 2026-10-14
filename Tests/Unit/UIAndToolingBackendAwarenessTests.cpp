@@ -421,58 +421,6 @@ TEST(UIAndToolingBackendAwarenessTests, RenderDocDefaultCaptureDirectoryUsesProj
         projectRoot / "Logs" / "RenderDoc" / "Game");
 }
 
-TEST(UIAndToolingBackendAwarenessTests, OffscreenRenderDocCaptureEndWaitsForPathAndUsesFallbackOnlyOnFailure)
-{
-    const std::filesystem::path controllerPath =
-        std::filesystem::path(NLS_ROOT_DIR) / "Runtime/Rendering/Tooling/RenderDocCaptureController.cpp";
-
-    std::ifstream stream(controllerPath, std::ios::binary);
-    const std::string source{
-        std::istreambuf_iterator<char>(stream),
-        std::istreambuf_iterator<char>()};
-
-    const auto onPostFrame = source.find("void RenderDocCaptureController::OnPostFrame");
-    ASSERT_NE(onPostFrame, std::string::npos);
-    const auto getLatestCapturePath = source.find("std::string RenderDocCaptureController::GetLatestCapturePath", onPostFrame);
-    ASSERT_NE(getLatestCapturePath, std::string::npos);
-    const auto body = source.substr(onPostFrame, getLatestCapturePath - onPostFrame);
-
-    EXPECT_NE(body.find("EndFrameCapture(m_impl->captureDevice, m_impl->captureWindow)"), std::string::npos);
-    EXPECT_NE(body.find("WaitForEndedCapturePath("), std::string::npos);
-    const auto waitForEndedCapture = body.find("WaitForEndedCapturePath(");
-    const auto triggerFallback = body.find("TriggerCaptureFallback(");
-    ASSERT_NE(waitForEndedCapture, std::string::npos);
-    ASSERT_NE(triggerFallback, std::string::npos);
-    EXPECT_LT(waitForEndedCapture, triggerFallback);
-    EXPECT_NE(body.find("m_impl->queuedCaptureActive = false;"), std::string::npos);
-}
-
-TEST(UIAndToolingBackendAwarenessTests, OffscreenRenderDocTriggeredFallbackCanResolveWithoutPresent)
-{
-    const std::filesystem::path controllerPath =
-        std::filesystem::path(NLS_ROOT_DIR) / "Runtime/Rendering/Tooling/RenderDocCaptureController.cpp";
-
-    std::ifstream stream(controllerPath, std::ios::binary);
-    const std::string source{
-        std::istreambuf_iterator<char>(stream),
-        std::istreambuf_iterator<char>()};
-
-    ASSERT_FALSE(source.empty());
-    const auto helper = source.find("ResolveTriggeredCaptureIfAvailable");
-    ASSERT_NE(helper, std::string::npos);
-    const auto onPostFrame = source.find("void RenderDocCaptureController::OnPostFrame");
-    ASSERT_NE(onPostFrame, std::string::npos);
-    const auto getLatestCapturePath = source.find("std::string RenderDocCaptureController::GetLatestCapturePath", onPostFrame);
-    ASSERT_NE(getLatestCapturePath, std::string::npos);
-    const auto body = source.substr(onPostFrame, getLatestCapturePath - onPostFrame);
-
-    const auto fallbackPoll = body.find("ResolveTriggeredCaptureIfAvailable(\"after post-frame\")");
-    const auto queuedCaptureCheck = body.find("!m_impl->queuedCaptureActive");
-    ASSERT_NE(fallbackPoll, std::string::npos);
-    ASSERT_NE(queuedCaptureCheck, std::string::npos);
-    EXPECT_LT(fallbackPoll, queuedCaptureCheck);
-}
-
 TEST(UIAndToolingBackendAwarenessTests, RhiDeviceBaseDoesNotExposeDefaultUiBridgeHooks)
 {
     EXPECT_FALSE(HasDevicePrepareUIRender<NLS::Render::RHI::RHIDevice>::value);

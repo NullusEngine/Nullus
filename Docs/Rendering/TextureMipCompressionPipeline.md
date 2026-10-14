@@ -21,7 +21,8 @@ This document records the validation boundary for the texture mipmap and compres
 Use this suite for the current texture pipeline checkpoint:
 
 ```powershell
-Build\bin\Debug\NullusUnitTests.exe --gtest_filter="AssetImporterFacadeTests.TextureImporterSettings*:AssetImportPipelineTests.*Texture*:AssetMaterialConversionTests.*Texture*:DX12TextureUploadUtilsTests.*:DX12FormatUtilsTests.*"
+Build\bin\Debug\NullusPerformanceTests.exe --gtest_filter="AssetImporterFacadeIntegrationPerformanceTests.TextureImporterSettings*:AssetImportPipelineIntegrationPerformanceTests.*Texture*"
+Build\bin\Debug\NullusUnitTests.exe --gtest_filter="AssetMaterialConversionTests.*Texture*:DX12TextureUploadUtilsTests.*:DX12FormatUtilsTests.*"
 ```
 
 Before claiming real backend support, also capture runtime evidence on Windows/DX12 for RGBA8, RGBA16F, BC1, BC3, BC5, and BC7 artifact loading.

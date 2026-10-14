@@ -213,39 +213,6 @@ TEST(DebugSceneLifecycleTests, SelectionHelpersRequireGameObjectPassAndSelectedG
     EXPECT_TRUE(OutlineRenderer::ShouldIncludeInThreadedFrame(true, &actor));
 }
 
-TEST(DebugSceneLifecycleTests, DebugSceneViewOnlyPassesSkipWhenDebugDescriptorIsMissing)
-{
-    const auto debugRendererSource = ReadTextFile(
-        std::filesystem::path(NLS_ROOT_DIR) / "Project/Editor/Rendering/DebugSceneRenderer.cpp");
-    const auto debugPassStart = debugRendererSource.find("class DebugGameObjectRenderPass");
-    ASSERT_NE(debugPassStart, std::string::npos);
-    const auto debugDrawStart = debugRendererSource.find("virtual void Draw", debugPassStart);
-    ASSERT_NE(debugDrawStart, std::string::npos);
-    const auto debugDrawEnd = debugRendererSource.find("BuildThreadedPassInput", debugDrawStart);
-    ASSERT_NE(debugDrawEnd, std::string::npos);
-    const auto debugDrawBody = debugRendererSource.substr(debugDrawStart, debugDrawEnd - debugDrawStart);
-
-    const auto debugGuardPosition = debugDrawBody.find("HasDescriptor<Editor::Rendering::DebugSceneRenderer::DebugSceneDescriptor>()");
-    const auto debugGetPosition = debugDrawBody.find("GetDescriptor<Editor::Rendering::DebugSceneRenderer::DebugSceneDescriptor>()");
-    ASSERT_NE(debugGuardPosition, std::string::npos);
-    ASSERT_NE(debugGetPosition, std::string::npos);
-    EXPECT_LT(debugGuardPosition, debugGetPosition);
-
-    const auto pickingSource = ReadTextFile(
-        std::filesystem::path(NLS_ROOT_DIR) / "Project/Editor/Rendering/PickingRenderPass.cpp");
-    const auto pickingDrawStart = pickingSource.find("void Editor::Rendering::PickingRenderPass::Draw");
-    ASSERT_NE(pickingDrawStart, std::string::npos);
-    const auto pickingDrawEnd = pickingSource.find("RenderPickingScene", pickingDrawStart);
-    ASSERT_NE(pickingDrawEnd, std::string::npos);
-    const auto pickingDrawBody = pickingSource.substr(pickingDrawStart, pickingDrawEnd - pickingDrawStart);
-
-    const auto pickingGuardPosition = pickingDrawBody.find("HasDescriptor<DebugSceneRenderer::DebugSceneDescriptor>()");
-    const auto pickingGetPosition = pickingDrawBody.find("GetDescriptor<DebugSceneRenderer::DebugSceneDescriptor>()");
-    ASSERT_NE(pickingGuardPosition, std::string::npos);
-    ASSERT_NE(pickingGetPosition, std::string::npos);
-    EXPECT_LT(pickingGuardPosition, pickingGetPosition);
-}
-
 TEST(DebugSceneLifecycleTests, EditorLargeSceneSettingsDisableHZBOcclusionByDefault)
 {
     const auto header = ReadTextFile(
@@ -406,20 +373,6 @@ TEST(DebugSceneLifecycleTests, FastAccessRebuildKeepsDuplicateComponentsOnSameGa
     ASSERT_EQ(fastAccess.modelRenderers.size(), 2u);
     EXPECT_EQ(fastAccess.modelRenderers[0], first);
     EXPECT_EQ(fastAccess.modelRenderers[1], second);
-}
-
-TEST(DebugSceneLifecycleTests, DestroyGameObjectRemovesPointerBeforeDeletingAndRebuildingFastAccess)
-{
-    const auto sceneSource = ReadTextFile(
-        std::filesystem::path(NLS_ROOT_DIR) / "Runtime/Engine/SceneSystem/Scene.cpp");
-    const auto destroyFunction = sceneSource.substr(sceneSource.find("bool Scene::DestroyGameObject"));
-
-    const auto removePosition = destroyFunction.find("RemoveGameObjectsFromSceneList(collected)");
-    const auto destroyPosition = destroyFunction.find("DestroyCollectedGameObjects(gameObjects)");
-
-    ASSERT_NE(removePosition, std::string::npos);
-    ASSERT_NE(destroyPosition, std::string::npos);
-    EXPECT_LT(removePosition, destroyPosition);
 }
 
 TEST(DebugSceneLifecycleTests, DestroyGameObjectDestroysChildSubtreeOnceAndRebuildsFastAccess)

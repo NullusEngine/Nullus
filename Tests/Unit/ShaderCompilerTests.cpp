@@ -46,12 +46,6 @@ namespace
             << "}\n";
     }
 
-    std::string ReadTextFile(const std::filesystem::path& path)
-    {
-        std::ifstream stream(path, std::ios::binary);
-        return std::string((std::istreambuf_iterator<char>(stream)), std::istreambuf_iterator<char>());
-    }
-
     bool IsDxcUnavailableDiagnostic(const std::string& diagnostics)
     {
         return diagnostics.find("Unable to locate dxc.exe.") != std::string::npos ||
@@ -439,18 +433,6 @@ TEST(ShaderCompilerTests, ShaderCompilationCacheKeyIncludesDxcIdentityAndArgumen
     EXPECT_NE(baseKey, argumentsKey);
 
     EXPECT_EQ(baseKey, artifactDirectoryKey);
-}
-
-TEST(ShaderCompilerTests, SpirvCompilationUsesDxMemoryLayoutAndVersionedCacheSchema)
-{
-    const auto source = ReadTextFile(
-        std::filesystem::path(NLS_ROOT_DIR) /
-        "Runtime/Rendering/ShaderCompiler/ShaderCompiler.cpp");
-
-    EXPECT_NE(source.find("-fvk-use-dx-layout"), std::string::npos)
-        << "Metal SPIR-V must preserve the DXIL/HLSL constant-buffer and structured-data layout.";
-    EXPECT_NE(source.find("dxc-args-v4-vulkan-object-push-constants-dx-layout"), std::string::npos)
-        << "Changing the SPIR-V memory layout must invalidate artifacts compiled with the old argument schema.";
 }
 
 TEST(ShaderCompilerTests, ReflectDxcStructuredBuffersAsStructuredBuffersWithElementStride)

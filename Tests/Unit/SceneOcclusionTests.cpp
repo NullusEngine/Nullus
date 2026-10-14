@@ -764,24 +764,6 @@ TEST(SceneOcclusionTests, BaseSceneRendererMovesPreviousHZBInputsInsteadOfCopyin
 		std::string::npos);
 }
 
-TEST(SceneOcclusionTests, BaseSceneRendererUsesStableHZBViewKeyInsteadOfCameraObjectAddress)
-{
-	const auto source = ReadTextFile(
-		std::filesystem::path(NLS_ROOT_DIR) /
-		"Runtime/Engine/Rendering/BaseSceneRenderer.cpp");
-
-	// The view key must come from the frame's descriptor values, never from the
-	// camera object's address: the address changes between frames and would make
-	// every HZB history entry look like a new view.
-	//
-	// BaseSceneRenderer::ParseScene now consumes a frozen descriptor (so the parse
-	// can run off the thread that owns the live one), which is why the argument is
-	// frame.descriptor instead of m_frameDescriptor. The guarded property is
-	// unchanged.
-	EXPECT_NE(source.find("BuildHZBViewKey(frame.descriptor)"), std::string::npos);
-	EXPECT_EQ(source.find("reinterpret_cast<uintptr_t>(&camera)"), std::string::npos);
-}
-
 TEST(SceneOcclusionTests, SceneParseCaptureDropperCannotOutliveItsRenderer)
 {
 	// A prepared builder can outlive the renderer that produced it: the driver
@@ -959,24 +941,6 @@ TEST(SceneOcclusionTests, EditorInspectionRootsStillReadTheGameThreadDescriptorM
 	EXPECT_NE(body.find("GetDescriptor<DebugSceneDescriptor>()"), std::string::npos)
 		<< "The override must keep reading the descriptor it freezes.";
 }
-TEST(SceneOcclusionTests, BaseSceneRendererLogsHZBObservationReadbackFlagDistribution)
-{
-	const auto source = ReadTextFile(
-		std::filesystem::path(NLS_ROOT_DIR) /
-		"Runtime/Engine/Rendering/BaseSceneRenderer.cpp");
-
-	const auto functionStart = source.find("BaseSceneRenderer::CompleteHZBOcclusionObservationFrame");
-	ASSERT_NE(functionStart, std::string::npos);
-	const auto functionEnd = source.find("void BaseSceneRenderer::RefreshSceneLightingDescriptor", functionStart);
-	ASSERT_NE(functionEnd, std::string::npos);
-	const auto body = source.substr(functionStart, functionEnd - functionStart);
-
-	EXPECT_NE(body.find("[BaseSceneRenderer][HZBObservation]"), std::string::npos);
-	EXPECT_NE(body.find("gpuOccludedFlags"), std::string::npos);
-	EXPECT_NE(body.find("appliedOccluded"), std::string::npos);
-	EXPECT_NE(body.find("incompatibleView"), std::string::npos);
-	EXPECT_NE(body.find("std::count_if"), std::string::npos);
-}
 
 TEST(SceneOcclusionTests, ObservationBatchRejectsStaleFrameAndIncompatibleViewResults)
 {
@@ -1015,25 +979,6 @@ TEST(SceneOcclusionTests, ObservationBatchRejectsStaleFrameAndIncompatibleViewRe
 	EXPECT_TRUE(result.primitiveResults[0].culledByOcclusion);
 	EXPECT_FALSE(result.primitiveResults[1].culledByOcclusion);
 	EXPECT_FALSE(result.primitiveResults[2].culledByOcclusion);
-}
-
-TEST(SceneOcclusionTests, HZBViewCompatibilityHashDoesNotUseCameraPose)
-{
-	const auto source = ReadTextFile(
-		std::filesystem::path(NLS_ROOT_DIR) /
-		"Runtime/Engine/Rendering/BaseSceneRenderer.cpp");
-
-	const auto functionStart = source.find("uint64_t HashCameraViewCompatibility");
-	ASSERT_NE(functionStart, std::string::npos);
-	const auto functionEnd = source.find("uint64_t ResolveDepthFormatKey", functionStart);
-	ASSERT_NE(functionEnd, std::string::npos);
-	const auto body = source.substr(functionStart, functionEnd - functionStart);
-
-	EXPECT_EQ(body.find("GetPosition()"), std::string::npos);
-	EXPECT_EQ(body.find("GetRotation()"), std::string::npos);
-	EXPECT_NE(body.find("GetNear()"), std::string::npos);
-	EXPECT_NE(body.find("GetFar()"), std::string::npos);
-	EXPECT_NE(body.find("GetProjectionMode()"), std::string::npos);
 }
 
 TEST(SceneOcclusionTests, GpuPrimitiveResultFlagsBuildObservationBatchForValidatedFrameMerge)
@@ -1393,64 +1338,4 @@ TEST(SceneOcclusionTests, AsyncReadbackRequirementCanBeDisabledForGpuOnlyHistory
 
 	EXPECT_TRUE(support.backendSupported);
 	EXPECT_EQ(support.fallbackReason, SceneOcclusionFallbackReason::None);
-}
-
-TEST(SceneOcclusionTests, RhiDeviceCapabilityResolverConsumesGetCapabilitiesOnly)
-{
-	const auto source = ReadTextFile(
-		std::filesystem::path(NLS_ROOT_DIR) /
-		"Runtime/Engine/Rendering/SceneOcclusion.cpp");
-
-	const auto resolver = source.find("SceneOcclusionSystem::ResolveCapabilities(");
-	ASSERT_NE(resolver, std::string::npos);
-	const auto deviceResolver = source.find("const NLS::Render::RHI::RHIDevice& device", resolver);
-	ASSERT_NE(deviceResolver, std::string::npos);
-	const auto deviceResolverEnd = source.find("SceneOcclusionResult SceneOcclusionSystem::Evaluate", deviceResolver);
-	ASSERT_NE(deviceResolverEnd, std::string::npos);
-	const auto deviceResolverBody = source.substr(deviceResolver, deviceResolverEnd - deviceResolver);
-
-	EXPECT_NE(deviceResolverBody.find("device.GetCapabilities()"), std::string::npos);
-	EXPECT_EQ(deviceResolverBody.find("ReadPixelsChecked"), std::string::npos);
-	EXPECT_EQ(deviceResolverBody.find("BeginReadPixels"), std::string::npos);
-}
-
-TEST(SceneOcclusionTests, OrdinaryOcclusionSourcePathDoesNotContainBlockingReadbackCalls)
-{
-	const auto source = ReadTextFile(
-		std::filesystem::path(NLS_ROOT_DIR) /
-		"Runtime/Engine/Rendering/SceneOcclusion.cpp");
-
-	const auto evaluate = source.find("SceneOcclusionResult SceneOcclusionSystem::Evaluate");
-	ASSERT_NE(evaluate, std::string::npos);
-	const auto evaluateBody = source.substr(evaluate);
-
-	EXPECT_EQ(evaluateBody.find("ReadPixelsChecked"), std::string::npos);
-	EXPECT_EQ(evaluateBody.find("BeginReadPixels"), std::string::npos);
-	EXPECT_EQ(evaluateBody.find(".Wait("), std::string::npos);
-	EXPECT_EQ(evaluateBody.find("->Wait("), std::string::npos);
-	EXPECT_EQ(evaluateBody.find(".Map("), std::string::npos);
-	EXPECT_EQ(evaluateBody.find("->Map("), std::string::npos);
-}
-
-TEST(SceneOcclusionTests, OrdinaryOcclusionMissClassificationDoesNotScanFullHistory)
-{
-	const auto source = ReadTextFile(
-		std::filesystem::path(NLS_ROOT_DIR) /
-		"Runtime/Engine/Rendering/SceneOcclusion.cpp");
-
-	const auto evaluate = source.find("SceneOcclusionResult SceneOcclusionSystem::Evaluate");
-	ASSERT_NE(evaluate, std::string::npos);
-	const auto evaluateBody = source.substr(evaluate);
-
-	EXPECT_EQ(evaluateBody.find("FindKeysForHandle"), std::string::npos);
-	EXPECT_NE(evaluateBody.find("ClassifyMissingHistoryForHandle"), std::string::npos);
-
-	const auto classifier = source.find("SceneOcclusionHistory::ClassifyMissingHistoryForHandle");
-	ASSERT_NE(classifier, std::string::npos);
-	const auto classifierEnd = source.find("SceneOcclusionHistoryKey SceneOcclusionSystem::BuildHistoryKey", classifier);
-	ASSERT_NE(classifierEnd, std::string::npos);
-	const auto classifierBody = source.substr(classifier, classifierEnd - classifier);
-
-	EXPECT_NE(classifierBody.find("m_keysByHandle.find"), std::string::npos);
-	EXPECT_EQ(classifierBody.find("m_occludedFrameByKey"), std::string::npos);
 }

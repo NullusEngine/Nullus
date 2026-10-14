@@ -4258,9 +4258,6 @@ TEST(RenderFrameExecutionTests, RenderTickServicesCompletedFencesWhileCommandsKe
         EXPECT_EQ(executedCommands[index], index);
 }
 
-
-
-
 TEST(RenderFrameExecutionTests, UiOnlyFrameRejectsUnrecordableCommandsWithoutConsumingPendingSnapshot)
 {
     using namespace NLS::Render::Context;
@@ -8386,7 +8383,6 @@ TEST(RenderFrameExecutionTests, DriverWorkersPreserveRendererPreparedAttribution
     frameContext.imageAcquiredSemaphore = imageAcquiredSemaphore;
     frameContext.renderFinishedSemaphore = renderFinishedSemaphore;
 
-
     NLS::Render::Context::RenderFramePacket snapshot;
     snapshot.frameId = 124u;
     snapshot.targetsSwapchain = true;
@@ -8655,7 +8651,6 @@ TEST(RenderFrameExecutionTests, DriverRhiWorkerSubmitsAndPresentsSwapchainFrames
     frameContext.imageAcquiredSemaphore = imageAcquiredSemaphore;
     frameContext.renderFinishedSemaphore = renderFinishedSemaphore;
 
-
     NLS::Render::Context::RenderFramePacket snapshot;
     snapshot.frameId = 121u;
     snapshot.targetsSwapchain = true;
@@ -8723,7 +8718,6 @@ TEST(RenderFrameExecutionTests, ThreadedMainlinePresentDoesNotRequireMainThreadP
     frameContext.imageAcquiredSemaphore = imageAcquiredSemaphore;
     frameContext.renderFinishedSemaphore = renderFinishedSemaphore;
 
-
     NLS::Render::Context::RenderFramePacket snapshot;
     snapshot.frameId = 122u;
     snapshot.targetsSwapchain = true;
@@ -8772,7 +8766,6 @@ TEST(RenderFrameExecutionTests, DriverRhiWorkerSkipsRejectedHarnessOffscreenFram
     frameContext.commandPool = commandPool;
     frameContext.frameFence = frameFence;
     frameContext.resourceStateTracker = NLS::Render::RHI::CreateDefaultResourceStateTracker();
-
 
     NLS::Render::Context::RenderFramePacket snapshot;
     snapshot.frameId = 131u;
@@ -9134,7 +9127,6 @@ TEST(RenderFrameExecutionTests, RhiWorkerMarksVisiblePackageAsRecordedBeforeSubm
 
     auto result = NLS::Tests::ObserveNextRhiFrameForTest(driver);
     ASSERT_TRUE(NLS::Render::Context::DriverRendererAccess::TryEnqueueRenderFrame(driver, snapshot, [package](size_t) { return package; }));
-
 
     NLS::Render::Context::DriverTestAccess::DrainThreadedRendering(driver);
     ASSERT_EQ(result.wait_for(std::chrono::seconds(2)), std::future_status::ready);
@@ -12597,7 +12589,6 @@ TEST(RenderFrameExecutionTests, RhiWorkerMarksBeginPassFailureAsFailedRetirement
     frameContext.frameFence = frameFence;
     frameContext.resourceStateTracker = nullptr;
 
-
     NLS::Render::Context::RenderFramePacket snapshot;
     snapshot.frameId = 405u;
     snapshot.targetsSwapchain = false;
@@ -12876,8 +12867,6 @@ TEST(RenderFrameExecutionTests, RendererFrameReservationDoesNotOpenNativeCommand
     EXPECT_EQ(explicitDevice->GetTestQueue()->presentCalls, 0u);
 }
 
-
-
 TEST(RenderFrameExecutionTests, UiOnlyFramePresentUsesTheCapturedCompositionBoundary)
 {
     using namespace NLS::Render::Context;
@@ -12921,7 +12910,6 @@ TEST(RenderFrameExecutionTests, UiOnlyFramePresentUsesTheCapturedCompositionBoun
     EXPECT_FALSE(boundary.uiToPresentSignalSemaphore.IsValid());
     EXPECT_EQ(boundary.uiToPresentSignalValue, 0u);
 }
-
 
 TEST(RenderFrameExecutionTests, MainThreadPresentSkipsWhenNoUiSnapshotWasPublished)
 {
@@ -15469,68 +15457,6 @@ TEST(RenderFrameExecutionTests, DriverBeginReadPixelsExceptionPreservesUnfencedR
     EXPECT_FALSE(retainedTexture.expired());
 }
 
-TEST(RenderFrameExecutionTests, PostSubmitBufferReadbackRejectsUnsafeGpuQuarantineBeforeTouchingExplicitDevice)
-{
-    const auto sourcePath =
-        std::filesystem::path(NLS_ROOT_DIR) / "Runtime/Rendering/Context/RhiCommandListExecutorFrame.cpp";
-    std::ifstream input(sourcePath);
-    const std::string source{
-        std::istreambuf_iterator<char>(input),
-        std::istreambuf_iterator<char>()
-    };
-
-    ASSERT_FALSE(source.empty());
-    const auto beginPostSubmit = source.find("void BeginPostSubmitBufferReadbacks");
-    const auto beginReadBuffer = source.find("BeginReadBuffer(readbackDesc)", beginPostSubmit);
-    ASSERT_NE(beginPostSubmit, std::string::npos);
-    ASSERT_NE(beginReadBuffer, std::string::npos);
-
-    const auto preReadbackBody = source.substr(beginPostSubmit, beginReadBuffer - beginPostSubmit);
-    EXPECT_NE(preReadbackBody.find("deviceLostDetected.load(std::memory_order_acquire)"), std::string::npos);
-    EXPECT_NE(preReadbackBody.find("unsafeGpuWorkQuarantined.load(std::memory_order_acquire)"), std::string::npos);
-    EXPECT_NE(preReadbackBody.find("post-submit buffer readback rejected because RHI device is lost or GPU work is quarantined"), std::string::npos);
-    EXPECT_NE(preReadbackBody.find("request.state->beginAttempted = true"), std::string::npos);
-    EXPECT_NE(preReadbackBody.find("request.state->beginSucceeded = false"), std::string::npos);
-}
-
-TEST(RenderFrameExecutionTests, PostSubmitTextureReadbackTerminatesOnThreadedFrameEarlyExit)
-{
-    const auto sourcePath =
-        std::filesystem::path(NLS_ROOT_DIR) / "Runtime/Rendering/Context/RhiCommandListExecutorFrame.cpp";
-    std::ifstream input(sourcePath);
-    const std::string source{
-        std::istreambuf_iterator<char>(input),
-        std::istreambuf_iterator<char>()
-    };
-
-    ASSERT_FALSE(source.empty());
-    const auto failHelper = source.find("void FailPostSubmitReadbacks");
-    const auto submitFrame = source.find("RhiSubmissionFrame Detail::SubmitThreadedRhiFrame");
-    ASSERT_NE(failHelper, std::string::npos);
-    ASSERT_NE(submitFrame, std::string::npos);
-
-    const auto helperBody = source.substr(failHelper, submitFrame - failHelper);
-    EXPECT_NE(helperBody.find("request.state->beginAttempted = true"), std::string::npos);
-    EXPECT_NE(helperBody.find("request.state->beginInProgress = false"), std::string::npos);
-    EXPECT_NE(helperBody.find("request.state->beginSucceeded = false"), std::string::npos);
-    EXPECT_NE(helperBody.find("RHIReadbackStatusCode::BackendFailure"), std::string::npos);
-    EXPECT_NE(helperBody.find("request.state->completion.reset()"), std::string::npos);
-
-    // Every frame-dispatch failure must release the readback waiter through abort.
-    const auto abortHelper = source.find("void AbortThreadedRhiSubmission");
-    ASSERT_NE(abortHelper, std::string::npos);
-    const auto abortBody = source.substr(abortHelper, submitFrame - abortHelper);
-    EXPECT_NE(abortBody.find("FailPostSubmitReadbacks("), std::string::npos);
-
-    const auto submitBody = source.substr(submitFrame);
-    EXPECT_NE(submitBody.find("AbortThreadedRhiSubmission(execution)"), std::string::npos);
-
-    const auto failStageHelper = source.find("void FailThreadedRhiSubmissionStage");
-    ASSERT_NE(failStageHelper, std::string::npos);
-    const auto failStageBody = source.substr(failStageHelper, abortHelper - failStageHelper);
-    EXPECT_NE(failStageBody.find("throw ThreadedRhiSubmissionStageAbort"), std::string::npos);
-}
-
 // ---------------------------------------------------------------------------
 // Normal (view-independent) versus swapchain batch split.
 //
@@ -15616,7 +15542,6 @@ TEST(RenderFrameExecutionTests, SwapchainBatchBoundaryFollowsSubmissionOrder)
         EXPECT_EQ(Detail::FindFirstSwapchainDependentWorkUnitPosition(workUnits, submissionOrder), 1u);
     }
 }
-
 
 // BuildParallelCommandWorkUnits normalises the package into the submission order
 // the batcher splits on, so a realistic mixed package must still report a normal

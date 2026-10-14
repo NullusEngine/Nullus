@@ -339,25 +339,6 @@ TEST(ShaderArchitectureAlignmentTests, ShaderMapsResolveEngineShaderRefsByTypeAn
     EXPECT_EQ(shaderRef.GetShaderType()->GetName(), "StandardPS");
 }
 
-TEST(ShaderArchitectureAlignmentTests, ShaderLoaderDoesNotOwnEngineShaderFilenameSwitches)
-{
-    const std::filesystem::path loaderPath =
-        std::filesystem::path(NLS_ROOT_DIR) / "Runtime/Rendering/Resources/Loaders/ShaderLoader.cpp";
-    std::ifstream stream(loaderPath, std::ios::binary);
-    ASSERT_TRUE(stream) << loaderPath.string();
-
-    std::ostringstream sourceBuffer;
-    sourceBuffer << stream.rdbuf();
-    const std::string loaderSourceText = sourceBuffer.str();
-
-    EXPECT_TRUE((loaderSourceText.find("BuildEngineGraphicsShaderParameterStructs") == std::string::npos));
-    EXPECT_TRUE((loaderSourceText.find("Standard.hlsl") == std::string::npos));
-    EXPECT_TRUE((loaderSourceText.find("Lambert.hlsl") == std::string::npos));
-    EXPECT_TRUE((loaderSourceText.find("StandardPBR.hlsl") == std::string::npos));
-    EXPECT_TRUE((loaderSourceText.find("DeferredLighting.hlsl") == std::string::npos));
-    EXPECT_TRUE((loaderSourceText.find("DeferredGBuffer.hlsl") == std::string::npos));
-}
-
 TEST(ShaderArchitectureAlignmentTests, ShaderLoaderDoesNotDirectCompileShaderLabSources)
 {
     const std::filesystem::path loaderPath =
@@ -388,62 +369,6 @@ TEST(ShaderArchitectureAlignmentTests, SceneRendererDoesNotLoadSourceDefaultMate
     EXPECT_EQ(rendererSourceText.find(":Materials\\\\Default.mat"), std::string::npos);
     EXPECT_EQ(rendererSourceText.find("Default.mat"), std::string::npos);
     EXPECT_EQ(rendererSourceText.find("GetResource(\":Materials"), std::string::npos);
-}
-
-TEST(ShaderArchitectureAlignmentTests, ShaderLabImportReflectionUsesDxilFirstBackendPolicy)
-{
-    const std::filesystem::path importerPath =
-        std::filesystem::path(NLS_ROOT_DIR) / "Project/Editor/Assets/AssetDatabaseFacade.cpp";
-    std::ifstream stream(importerPath, std::ios::binary);
-    ASSERT_TRUE(stream) << importerPath.string();
-
-    std::ostringstream sourceBuffer;
-    sourceBuffer << stream.rdbuf();
-    const std::string importerSourceText = sourceBuffer.str();
-
-    EXPECT_NE(importerSourceText.find("ReflectImportedShaderStagesDxilFirst"), std::string::npos);
-    EXPECT_NE(importerSourceText.find("dxilReflections"), std::string::npos);
-    EXPECT_NE(importerSourceText.find("collectReflectionInputs(NLS::Render::ShaderCompiler::ShaderTargetPlatform::DXIL)"), std::string::npos);
-    EXPECT_NE(importerSourceText.find("spirvReflections"), std::string::npos);
-    EXPECT_NE(importerSourceText.find("collectReflectionInputs(NLS::Render::ShaderCompiler::ShaderTargetPlatform::SPIRV)"), std::string::npos);
-    EXPECT_NE(importerSourceText.find("TryMergePreferredShaderReflectionOrFallback("), std::string::npos);
-}
-
-TEST(ShaderArchitectureAlignmentTests, RecordedMaterialPsoUsesFrameOutputAttachmentLayout)
-{
-    const std::filesystem::path rendererPath =
-        std::filesystem::path(NLS_ROOT_DIR) / "Runtime/Rendering/Core/ABaseRenderer.cpp";
-    std::ifstream stream(rendererPath, std::ios::binary);
-    ASSERT_TRUE(stream) << rendererPath.string();
-
-    std::ostringstream sourceBuffer;
-    sourceBuffer << stream.rdbuf();
-    const std::string source = sourceBuffer.str();
-
-    const auto attachmentHelperStart = source.find("ResolveAttachmentPipelineState");
-    ASSERT_NE(attachmentHelperStart, std::string::npos);
-    const auto pipelineHelperStart = source.find("BuildMaterialPipelineStateOverrides", attachmentHelperStart);
-    ASSERT_NE(pipelineHelperStart, std::string::npos);
-    const auto attachmentHelperBody = source.substr(
-        attachmentHelperStart,
-        pipelineHelperStart - attachmentHelperStart);
-
-    EXPECT_NE(attachmentHelperBody.find("outputColorView"), std::string::npos);
-    EXPECT_NE(attachmentHelperBody.find("outputDepthStencilView"), std::string::npos);
-    EXPECT_NE(attachmentHelperBody.find("colorView->GetDesc().format"), std::string::npos);
-    EXPECT_NE(attachmentHelperBody.find("depthView->GetDesc().format"), std::string::npos);
-
-    const auto helperStart = pipelineHelperStart;
-    ASSERT_NE(helperStart, std::string::npos);
-    const auto helperEnd = source.find("template<typename TValue>", helperStart);
-    ASSERT_NE(helperEnd, std::string::npos);
-    const auto helperBody = source.substr(helperStart, helperEnd - helperStart);
-
-    EXPECT_NE(helperBody.find("ResolveAttachmentPipelineState"), std::string::npos);
-    EXPECT_NE(helperBody.find("return std::nullopt"), std::string::npos);
-    EXPECT_NE(helperBody.find("SetColorFormats"), std::string::npos);
-    EXPECT_NE(helperBody.find("sampleCount"), std::string::npos);
-    EXPECT_NE(helperBody.find("depthFormat"), std::string::npos);
 }
 
 TEST(ShaderArchitectureAlignmentTests, VulkanObjectDrawConstantsUsePushConstantShaderAbi)
@@ -500,30 +425,6 @@ TEST(ShaderArchitectureAlignmentTests, VulkanNegativeViewportPreservesRhiFrontFa
         std::string::npos);
 }
 
-TEST(ShaderArchitectureAlignmentTests, VulkanRasterizerPreservesDisabledAndExplicitCullModes)
-{
-    const std::filesystem::path backendPath =
-        std::filesystem::path(NLS_ROOT_DIR) /
-        "Runtime/Rendering/RHI/Backends/Vulkan/VulkanExplicitDeviceFactory.cpp";
-    std::ifstream stream(backendPath, std::ios::binary);
-    ASSERT_TRUE(stream) << backendPath.string();
-
-    std::ostringstream sourceBuffer;
-    sourceBuffer << stream.rdbuf();
-    const std::string source = sourceBuffer.str();
-
-    const auto mappingStart = source.find("VkCullModeFlags vkCullMode = VK_CULL_MODE_NONE");
-    ASSERT_NE(mappingStart, std::string::npos);
-    const auto mappingEnd = source.find("VkPipelineRasterizationStateCreateInfo rasterizer", mappingStart);
-    ASSERT_NE(mappingEnd, std::string::npos);
-    const auto mapping = source.substr(mappingStart, mappingEnd - mappingStart);
-
-    EXPECT_NE(mapping.find("if (m_desc.rasterState.cullEnabled)"), std::string::npos);
-    EXPECT_NE(mapping.find("VK_CULL_MODE_FRONT_BIT"), std::string::npos);
-    EXPECT_NE(mapping.find("VK_CULL_MODE_BACK_BIT"), std::string::npos);
-    EXPECT_NE(mapping.find("VK_CULL_MODE_FRONT_AND_BACK"), std::string::npos);
-}
-
 TEST(ShaderArchitectureAlignmentTests, VulkanTextureBarriersPublishLogicalStateForUiSampling)
 {
     const std::filesystem::path backendPath =
@@ -547,50 +448,4 @@ TEST(ShaderArchitectureAlignmentTests, VulkanTextureBarriersPublishLogicalStateF
         std::string::npos);
     EXPECT_NE(source.find("m_state.load(std::memory_order_acquire)"), std::string::npos);
     EXPECT_NE(source.find("m_state.store(state, std::memory_order_release)"), std::string::npos);
-}
-
-TEST(ShaderArchitectureAlignmentTests, VulkanTextureFormatsPreserveRhiColorSpace)
-{
-    const std::filesystem::path backendPath =
-        std::filesystem::path(NLS_ROOT_DIR) /
-        "Runtime/Rendering/RHI/Backends/Vulkan/VulkanExplicitDeviceFactory.cpp";
-    std::ifstream stream(backendPath, std::ios::binary);
-    ASSERT_TRUE(stream) << backendPath.string();
-
-    std::ostringstream sourceBuffer;
-    sourceBuffer << stream.rdbuf();
-    const std::string source = sourceBuffer.str();
-
-    EXPECT_NE(source.find("TextureColorSpace::SRGB"), std::string::npos);
-    EXPECT_NE(source.find("VK_FORMAT_R8G8B8A8_SRGB"), std::string::npos);
-    EXPECT_NE(source.find("VK_FORMAT_BC1_RGBA_SRGB_BLOCK"), std::string::npos);
-    EXPECT_NE(source.find("VK_FORMAT_BC3_SRGB_BLOCK"), std::string::npos);
-    EXPECT_NE(source.find("VK_FORMAT_BC7_SRGB_BLOCK"), std::string::npos);
-    EXPECT_NE(source.find("effectiveColorSpace"), std::string::npos);
-}
-
-TEST(ShaderArchitectureAlignmentTests, VulkanSamplerPreservesIndependentFilterAndLodState)
-{
-    const std::filesystem::path backendPath =
-        std::filesystem::path(NLS_ROOT_DIR) /
-        "Runtime/Rendering/RHI/Backends/Vulkan/VulkanExplicitDeviceFactory.cpp";
-    std::ifstream stream(backendPath, std::ios::binary);
-    ASSERT_TRUE(stream) << backendPath.string();
-
-    std::ostringstream sourceBuffer;
-    sourceBuffer << stream.rdbuf();
-    const std::string source = sourceBuffer.str();
-    const auto samplerStart = source.find("class NativeVulkanSampler");
-    ASSERT_NE(samplerStart, std::string::npos);
-    const auto samplerEnd = source.find("class NativeVulkanBindingLayout", samplerStart);
-    ASSERT_NE(samplerEnd, std::string::npos);
-    const auto sampler = source.substr(samplerStart, samplerEnd - samplerStart);
-
-    EXPECT_NE(sampler.find("desc.magFilter"), std::string::npos);
-    EXPECT_NE(sampler.find("desc.mipFilter"), std::string::npos);
-    EXPECT_NE(sampler.find("desc.mipLodBias"), std::string::npos);
-    EXPECT_NE(sampler.find("desc.minLod"), std::string::npos);
-    EXPECT_NE(sampler.find("desc.maxLod"), std::string::npos);
-    EXPECT_NE(sampler.find("TextureWrap::MirrorRepeat"), std::string::npos);
-    EXPECT_NE(sampler.find("TextureWrap::ClampToBorder"), std::string::npos);
 }

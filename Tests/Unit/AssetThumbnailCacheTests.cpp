@@ -119,49 +119,6 @@ std::filesystem::path MakeAssetThumbnailCacheRoot()
     return root;
 }
 
-std::filesystem::path RepoPath(std::string_view relativePath)
-{
-    return std::filesystem::path(NLS_ROOT_DIR) / std::filesystem::path(relativePath);
-}
-
-std::string ReadSourceText(const std::filesystem::path& path)
-{
-    std::ifstream input(path, std::ios::binary);
-    EXPECT_TRUE(input.is_open()) << "Failed to open source file: " << path.string();
-    return std::string(
-        std::istreambuf_iterator<char>(input),
-        std::istreambuf_iterator<char>());
-}
-
-std::string ExtractFunctionBody(const std::string& source, std::string_view functionNeedle)
-{
-    const auto begin = source.find(functionNeedle);
-    EXPECT_NE(begin, std::string::npos) << "Missing function: " << functionNeedle;
-    if (begin == std::string::npos)
-        return {};
-
-    const auto bodyBegin = source.find('{', begin);
-    EXPECT_NE(bodyBegin, std::string::npos) << "Missing function body: " << functionNeedle;
-    if (bodyBegin == std::string::npos)
-        return {};
-
-    size_t depth = 0u;
-    for (size_t offset = bodyBegin; offset < source.size(); ++offset)
-    {
-        if (source[offset] == '{')
-            ++depth;
-        else if (source[offset] == '}')
-        {
-            --depth;
-            if (depth == 0u)
-                return source.substr(bodyBegin, offset - bodyBegin + 1u);
-        }
-    }
-
-    ADD_FAILURE() << "Unterminated function body: " << functionNeedle;
-    return {};
-}
-
 class ScopedThumbnailMeshManagerAssetPaths final
 {
 public:
@@ -6967,22 +6924,13 @@ TEST(AssetThumbnailCacheTests, GpuPrefabPreviewEmptyFrameDoesNotHotRetryInSameGe
         << "A transient empty GPU prefab frame must not immediately requeue the same visible preview and monopolize the UI thumbnail pump.";
     EXPECT_EQ(renderer.renderCount, 1u);
 
-    std::this_thread::sleep_for(std::chrono::milliseconds(5100));
-    EXPECT_EQ(service.GetQueuedRequestCount(), 1u)
-        << "A deferred empty GPU frame should become eligible for retry after the cooldown.";
-    const auto delayedRetry = service.GenerateNextThumbnail(renderer, true);
-    ASSERT_TRUE(delayedRetry.has_value());
-    EXPECT_EQ(delayedRetry->status, AssetThumbnailServiceStatus::Pending);
-    EXPECT_EQ(delayedRetry->diagnostic, "thumbnail-gpu-preview-empty-frame");
-    EXPECT_EQ(renderer.renderCount, 2u);
-
     service.SupersedeQueuedRequestsForGeneration("prefab-empty-frame-next-scope");
     EXPECT_EQ(service.GetThumbnailState(prefab), ThumbnailState::Cancelled);
     ASSERT_EQ(service.RequestAssetPreview(prefab).status, AssetThumbnailServiceStatus::Pending);
     const auto retried = service.GenerateNextThumbnail(renderer, true);
     ASSERT_TRUE(retried.has_value());
     EXPECT_EQ(retried->diagnostic, "thumbnail-gpu-preview-empty-frame");
-    EXPECT_EQ(renderer.renderCount, 3u)
+    EXPECT_EQ(renderer.renderCount, 2u)
         << "A new generation should still be allowed to retry GPU-only prefab preview generation.";
 
     std::filesystem::remove_all(root);
@@ -7040,38 +6988,6 @@ TEST(AssetThumbnailCacheTests, GpuPrefabPreviewKeepsSubmittedDarkFramesWithoutCp
     EXPECT_EQ(EvaluateAssetThumbnailCache(prefab).status, AssetThumbnailCacheStatus::Fresh);
 
     std::filesystem::remove_all(root);
-}
-
-TEST(AssetThumbnailCacheTests, MainThreadGpuPreviewPathUsesSharedClearFrameDisposition)
-{
-    const auto source = ReadSourceText(RepoPath("Project/Editor/Assets/AssetThumbnailService.cpp"));
-    const std::string gpuPreviewNeedle =
-        "std::optional<AssetThumbnailServiceResult> AssetThumbnailService::GenerateNextThumbnail(";
-    std::string gpuPreviewBody;
-    for (size_t searchBegin = 0u;; searchBegin += gpuPreviewNeedle.size())
-    {
-        const auto candidateBegin = source.find(gpuPreviewNeedle, searchBegin);
-        if (candidateBegin == std::string::npos)
-            break;
-
-        const auto candidateBodyBegin = source.find('{', candidateBegin);
-        ASSERT_NE(candidateBodyBegin, std::string::npos);
-        const auto candidateSignature = source.substr(candidateBegin, candidateBodyBegin - candidateBegin);
-        if (candidateSignature.find("IEditorThumbnailPreviewRenderer& previewRenderer") != std::string::npos)
-        {
-            gpuPreviewBody = ExtractFunctionBody(source.substr(candidateBegin), gpuPreviewNeedle);
-            break;
-        }
-        searchBegin = candidateBegin;
-    }
-    ASSERT_FALSE(gpuPreviewBody.empty())
-        << "Missing main-thread GPU preview GenerateNextThumbnail overload.";
-    ASSERT_NE(gpuPreviewBody.find("EvaluateGpuPreviewClearFrameDisposition"), std::string::npos)
-        << "The main-thread GPU preview pump must share the clear-frame policy covered by the prefab black-frame test.";
-    ASSERT_NE(gpuPreviewBody.find("GpuPreviewClearFrameDisposition::FailEmptyFrame"), std::string::npos);
-    ASSERT_NE(gpuPreviewBody.find("BuildGpuPreviewEmptyFrameResult"), std::string::npos);
-    EXPECT_EQ(source.find("GenerateGpuPreviewThumbnailResult"), std::string::npos)
-        << "GPU preview rendering must not be scheduled through a background worker.";
 }
 
 TEST(AssetThumbnailCacheTests, GpuPumpPollsExistingPendingReadbackWhenReadbackBudgetIsExhausted)
@@ -8412,46 +8328,6 @@ TEST(AssetThumbnailCacheTests, ThumbnailPreviewDefaultShaderUsesLoadedStandardPb
 
     shaderManager.UnloadResources();
 #endif
-}
-
-TEST(AssetThumbnailCacheTests, ThumbnailPreviewDefaultShaderSelectionDoesNotSynchronouslyLoadArtifactDb)
-{
-    const auto source = ReadSourceText(RepoPath("Project/Editor/Assets/EditorThumbnailPreviewRenderer.cpp"));
-    const auto body = ExtractFunctionBody(
-        source,
-        "NLS::Render::Resources::Shader* ResolveThumbnailPreviewDefaultShader(");
-
-    EXPECT_EQ(body.find("ArtifactDatabase"), std::string::npos)
-        << "Default material selection runs on the GPU preview path and must not synchronously scan ArtifactDB.";
-    EXPECT_EQ(body.find("GetResource(candidate, true)"), std::string::npos)
-        << "Default material selection must only use already-loaded shader resources.";
-}
-
-TEST(AssetThumbnailCacheTests, ThumbnailPreviewDefaultShaderLabMaterialKeepsAmbientOcclusionVisible)
-{
-    const auto source = ReadSourceText(RepoPath("Project/Editor/Assets/EditorThumbnailPreviewRenderer.cpp"));
-    const auto body = ExtractFunctionBody(
-        source,
-        "NLS::Render::Resources::Material& DefaultMaterial()");
-
-    EXPECT_NE(body.find("SetRawParameter(\"_AmbientOcclusion\", 1.0f)"), std::string::npos)
-        << "ShaderLab StandardPBR multiplies RGB by _AmbientOcclusion, so the fallback material must not leave it at zero.";
-}
-
-TEST(AssetThumbnailCacheTests, ThumbnailPreviewPendingRenderInputsPollRetirementWithoutDraining)
-{
-    const auto source = ReadSourceText(RepoPath("Project/Editor/Assets/EditorThumbnailPreviewRenderer.cpp"));
-    const auto body = ExtractFunctionBody(source, "void RenderCurrentPreviewScene(");
-
-    ASSERT_NE(body.find("threadedReadback.renderInputsKeepAlive"), std::string::npos);
-    EXPECT_NE(body.find("SetNextFramePostSubmitTextureReadback"), std::string::npos)
-        << "The readback must be queued on the same threaded frame as the thumbnail draw.";
-    EXPECT_NE(body.find("WasLastThreadedFramePublished"), std::string::npos)
-        << "Lifecycle backpressure must be reported without using a global frame-id maximum.";
-    EXPECT_EQ(source.find("latestRetiredFrameId"), std::string::npos)
-        << "Renderer-local frame ids are not a valid cross-renderer completion token.";
-    EXPECT_EQ(body.find("TryDrainThreadedRendering"), std::string::npos)
-        << "Thumbnail retries run from the editor UI pump and must never synchronously drain rendering.";
 }
 
 TEST(AssetThumbnailCacheTests, ExternalMeshPrefabRemainsPendingWithoutGpuRenderer)

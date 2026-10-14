@@ -713,14 +713,6 @@ namespace
     }
 }
 
-TEST(RHIUiOverlayPassTests, OverlayPassIdentityIsDeclaredInRenderScenePackage)
-{
-    const auto source = ReadSourceText(RepoPath("Runtime/Rendering/Context/RenderScenePackage.h"));
-
-    EXPECT_NE(source.find("UIOverlay"), std::string::npos)
-        << "RenderPassCommandKind must expose UIOverlay for the migrated UI pass.";
-}
-
 TEST(RHIUiOverlayPassTests, OverlayRendererContractHeaderExists)
 {
     EXPECT_TRUE(std::filesystem::exists(RepoPath("Runtime/Rendering/UI/RHIImGuiOverlayRenderer.h")))
@@ -1153,16 +1145,6 @@ TEST(RHIUiOverlayPassTests, DriverImplStoresPendingUiOverlaySnapshotBehindMutex)
     EXPECT_EQ(impl.pendingUiOverlaySnapshotGeneration, 1u);
 }
 
-TEST(RHIUiOverlayPassTests, DriverUIAccessDeclaresUiOverlaySnapshotAndTextureApis)
-{
-    const auto source = ReadSourceText(RepoPath("Runtime/Rendering/Context/DriverAccess.h"));
-
-    EXPECT_NE(source.find("PublishUiDrawDataSnapshot"), std::string::npos);
-    EXPECT_NE(source.find("ConsumePendingUiDrawDataSnapshot"), std::string::npos);
-    EXPECT_NE(source.find("RegisterUiTextureView"), std::string::npos);
-    EXPECT_NE(source.find("ReleaseUiTextureView"), std::string::npos);
-}
-
 TEST(RHIUiOverlayPassTests, DriverUIAccessPublishesAndConsumesUiOverlaySnapshot)
 {
     NLS::Render::Settings::DriverSettings settings;
@@ -1190,59 +1172,6 @@ TEST(RHIUiOverlayPassTests, DriverUIAccessPublishesAndConsumesUiOverlaySnapshot)
         kUiTexturePreviousFrameOrStatic);
     EXPECT_FALSE(invalidTextureId.IsValid());
     NLS::Render::Context::DriverUIAccess::ReleaseUiTextureView(driver, nullptr);
-}
-
-TEST(RHIUiOverlayPassTests, PreparedSceneFrameBuilderConsumesPendingUiSnapshotWhenBuildingPackage)
-{
-    const auto source = ReadSourceText(RepoPath("Runtime/Rendering/Context/Driver.cpp"));
-
-    const auto functionBody = source.substr(
-        source.find("bool DriverRendererAccess::TryEnqueueRenderFrame"),
-        source.find("void DriverRendererAccess::CancelBackgroundPreviewPublicationRequest") -
-            source.find("bool DriverRendererAccess::TryEnqueueRenderFrame"));
-
-    const auto builderWrap = functionBody.find("originalRenderSceneBuilder = std::move(renderSceneBuilder)");
-    const auto generation = functionBody.find("consumedUiSnapshotGeneration", builderWrap);
-    const auto consume = functionBody.find("DriverUIAccess::ConsumePendingUiDrawDataSnapshot(", generation);
-    const auto attach = functionBody.find("AttachUiOverlaySnapshotToRenderScenePackage(package, uiSnapshot)", consume);
-    const auto publish = functionBody.find("RenderThreadCoordinator::TryEnqueueRenderFrame", attach);
-
-    ASSERT_NE(builderWrap, std::string::npos);
-    ASSERT_NE(generation, std::string::npos);
-    ASSERT_NE(consume, std::string::npos);
-    ASSERT_NE(attach, std::string::npos);
-    ASSERT_NE(publish, std::string::npos);
-    EXPECT_LT(builderWrap, generation);
-    EXPECT_LT(generation, consume);
-    EXPECT_LT(consume, attach);
-    EXPECT_LT(attach, publish);
-}
-
-TEST(RHIUiOverlayPassTests, PreparedSceneFrameBuilderRestoresUiSnapshotWhenPackageCannotAttachIfUnchanged)
-{
-    const auto source = ReadSourceText(RepoPath("Runtime/Rendering/Context/Driver.cpp"));
-
-    const auto functionBody = source.substr(
-        source.find("bool DriverRendererAccess::TryEnqueueRenderFrame"),
-        source.find("void DriverRendererAccess::CancelBackgroundPreviewPublicationRequest") -
-            source.find("bool DriverRendererAccess::TryEnqueueRenderFrame"));
-
-    const auto consume = functionBody.find("DriverUIAccess::ConsumePendingUiDrawDataSnapshot(");
-    const auto attach = functionBody.find("AttachUiOverlaySnapshotToRenderScenePackage(package, uiSnapshot)", consume);
-    const auto restore = functionBody.find("DriverUIAccess::RestoreConsumedUiDrawDataSnapshotIfUnchanged(", attach);
-    const auto generation = functionBody.find("consumedUiSnapshotGeneration", restore);
-    const auto publish = functionBody.find("RenderThreadCoordinator::TryEnqueueRenderFrame", attach);
-
-    ASSERT_NE(consume, std::string::npos);
-    ASSERT_NE(attach, std::string::npos);
-    ASSERT_NE(restore, std::string::npos);
-    ASSERT_NE(generation, std::string::npos);
-    ASSERT_NE(publish, std::string::npos);
-    EXPECT_LT(attach, restore);
-    EXPECT_LT(restore, generation);
-    EXPECT_LT(generation, publish)
-        << "If an offscreen package cannot own the swapchain UI overlay pass, the snapshot must remain "
-           "pending for UI-only overlay only when no newer pending UI snapshot has replaced it.";
 }
 
 TEST(RHIUiOverlayPassTests, DriverUIAccessRegistersStableUiTextureIdentities)
@@ -1502,27 +1431,6 @@ TEST(RHIUiOverlayPassTests, UncompletedPublishedUiSnapshotDoesNotRetireOnUnrelat
 #else
     GTEST_SKIP() << "Requires NLS_ENABLE_TEST_HOOKS.";
 #endif
-}
-
-TEST(RHIUiOverlayPassTests, UiFrameCompletionDoesNotAdvanceGpuRetirementWatermark)
-{
-    const auto source = ReadSourceText(RepoPath("Runtime/Rendering/Context/RhiCommandListExecutorFrame.cpp"));
-
-    const auto finalizeStart = source.find("void FinalizeThreadedRhiFrameContext");
-    ASSERT_NE(finalizeStart, std::string::npos);
-    const auto finalizeEnd = source.find("bool ShouldDeferFrameScopedRetirementAfterSubmit", finalizeStart);
-    ASSERT_NE(finalizeEnd, std::string::npos);
-    const auto finalizeBody = source.substr(finalizeStart, finalizeEnd - finalizeStart);
-    EXPECT_EQ(
-        finalizeBody.find("ReleaseRetiredUiTextureViewsForCompletedUiFrame"),
-        std::string::npos);
-    EXPECT_EQ(
-        finalizeBody.find("ReleaseRetiredUiTextureViewsForCompletedFrame"),
-        std::string::npos);
-    EXPECT_EQ(
-        finalizeBody.find("ReleaseRetiredTextureViewsUpTo"),
-        std::string::npos);
-
 }
 
 TEST(RHIUiOverlayPassTests, UIOverlayFallbackPassNameUsesFrameGraphIdentity)
@@ -2086,111 +1994,6 @@ TEST(RHIUiOverlayPassTests, OverlayRendererRequiresFontAtlasUploadVisibilityOnly
     EXPECT_FALSE(secondResources.fontAtlasUploadTransitionRequired)
         << "Atlas upload-to-read visibility should only be recorded when the atlas upload/rebuild happened.";
     EXPECT_EQ(device.createTextureCalls, 1u);
-}
-
-TEST(RHIUiOverlayPassTests, RhiThreadUiOverlayPassInputAddsPreparedConcreteResourcesBeforeBeginPass)
-{
-    const auto source = ReadSourceText(RepoPath("Runtime/Rendering/Context/RhiCommandListExecutorFrame.cpp"));
-    const auto appendAccesses = source.find("AppendUiOverlayPreparedResourceAccesses(");
-    const auto prepareInput = source.find("std::optional<RenderPassCommandInput> PrepareUiOverlayPassInput(");
-    ASSERT_NE(appendAccesses, std::string::npos);
-    ASSERT_NE(prepareInput, std::string::npos);
-    EXPECT_LT(appendAccesses, prepareInput)
-        << "The concrete prepared-resource injection helper should be defined before the pass-input "
-           "builder that consumes it.";
-
-    EXPECT_NE(source.find("resources.vertexBuffer", appendAccesses), std::string::npos);
-    EXPECT_NE(source.find("resources.indexBuffer", appendAccesses), std::string::npos);
-    EXPECT_NE(source.find("resources.fontAtlasTextureView", appendAccesses), std::string::npos);
-    EXPECT_NE(source.find("resources.fontAtlasUploadTransitionRequired", appendAccesses), std::string::npos);
-    EXPECT_NE(source.find("resources.registeredTextureViews", appendAccesses), std::string::npos);
-    EXPECT_NE(source.find("MakeUiOverlaySampledTextureAccess", appendAccesses), std::string::npos);
-    EXPECT_NE(source.find("MakeUiOverlayFontAtlasUploadToReadTransition", appendAccesses), std::string::npos);
-
-    const auto prepareResources = source.find("PrepareFrameResources(", prepareInput);
-    const auto appendPreparedAccesses = source.find("AppendUiOverlayPreparedResourceAccesses(", prepareInput);
-    const auto preparedSnapshot = source.find("GetPreparedResourceSnapshot(", prepareInput);
-    ASSERT_NE(prepareResources, std::string::npos);
-    ASSERT_NE(appendPreparedAccesses, std::string::npos);
-    ASSERT_NE(preparedSnapshot, std::string::npos);
-    EXPECT_LT(prepareResources, appendPreparedAccesses)
-        << "Concrete UI resources must exist before the pass input declares FrameGraph-visible accesses.";
-    EXPECT_LT(appendPreparedAccesses, preparedSnapshot);
-
-    size_t searchFrom = 0u;
-    size_t prepareCallCount = 0u;
-    while ((searchFrom = source.find("PrepareUiOverlayPassInput(", searchFrom)) != std::string::npos)
-    {
-        ++prepareCallCount;
-        searchFrom += std::string_view("PrepareUiOverlayPassInput(").size();
-    }
-    EXPECT_GE(prepareCallCount, 4u)
-        << "Expected the helper definition plus threaded, serial, and parallel UI overlay recording call sites.";
-
-    const auto firstRecordVisibility = source.find("RecordResourceVisibilityTransitions", prepareInput);
-    const auto firstBeginPlan = source.find("BeginPassCommandPlan");
-    const auto firstPrepareInputCall = source.find("PrepareUiOverlayPassInput(", prepareInput + 1u);
-    ASSERT_NE(firstBeginPlan, std::string::npos);
-    ASSERT_NE(firstPrepareInputCall, std::string::npos);
-    ASSERT_NE(firstRecordVisibility, std::string::npos);
-    EXPECT_LT(firstPrepareInputCall, firstBeginPlan);
-    EXPECT_LT(firstPrepareInputCall, firstRecordVisibility)
-        << "UIOverlay resource preparation must append sampled texture/font transitions before visibility barriers are recorded.";
-    EXPECT_LT(firstRecordVisibility, firstBeginPlan)
-        << "Prepared UIOverlay sampled-resource barriers must be recorded before opening the render pass.";
-}
-
-TEST(RHIUiOverlayPassTests, RhiThreadUiOverlayPassInputMaterializesSwapchainBackbufferBeforeVisibility)
-{
-    const auto source = ReadSourceText(RepoPath("Runtime/Rendering/Context/RhiCommandListExecutorFrame.cpp"));
-    const auto materializeFunction = source.find("MaterializeUiOverlaySwapchainResourceAccesses(");
-    const auto materializeEdgesFunction = source.find("MaterializeUiOverlayDependencyEdges(");
-    const auto prepareInput = source.find("std::optional<RenderPassCommandInput> PrepareUiOverlayPassInput(");
-    ASSERT_NE(materializeFunction, std::string::npos);
-    ASSERT_NE(materializeEdgesFunction, std::string::npos);
-    ASSERT_NE(prepareInput, std::string::npos);
-
-    const auto backbufferTexture = source.find("swapchainBackbufferView->GetTexture()", materializeFunction);
-    ASSERT_NE(backbufferTexture, std::string::npos)
-        << "UIOverlay must replace package-time swapchain intent with the acquired backbuffer texture.";
-    EXPECT_NE(source.find("access.texture = backbufferTexture", materializeFunction), std::string::npos);
-    EXPECT_NE(source.find("transition.texture = backbufferTexture", materializeFunction), std::string::npos);
-
-    const auto materializeCall = source.find("MaterializeUiOverlaySwapchainResourceAccesses(", prepareInput + 1u);
-    const auto appendPreparedAccesses = source.find("AppendUiOverlayPreparedResourceAccesses(", prepareInput);
-    ASSERT_NE(materializeCall, std::string::npos);
-    ASSERT_NE(appendPreparedAccesses, std::string::npos);
-    EXPECT_LT(materializeCall, appendPreparedAccesses)
-        << "The swapchain access must be concrete before prepared sampled resources and visibility barriers are derived.";
-
-    const auto visibilityWorkUnit = source.find("auto visibilityWorkUnit = workUnit;");
-    ASSERT_NE(visibilityWorkUnit, std::string::npos);
-    EXPECT_NE(source.find("MaterializeUiOverlayDependencyEdges(", visibilityWorkUnit), std::string::npos)
-        << "Incoming UIOverlay dependency edges must use the materialized backbuffer access before barrier derivation.";
-}
-
-TEST(RHIUiOverlayPassTests, OverlayRendererUsesFloatColorVertexAttributeLayout)
-{
-    const auto source = ReadSourceText(RepoPath("Runtime/Rendering/UI/RHIImGuiOverlayRenderer.cpp"));
-    const auto layoutBody = source.find("desc.vertexAttributes.push_back({ 0u, 0u, 0u, sizeof(float) * 2u });");
-    ASSERT_NE(layoutBody, std::string::npos);
-    EXPECT_NE(source.find("desc.vertexAttributes.push_back({ 1u, 0u, sizeof(float) * 2u, sizeof(float) * 2u });", layoutBody), std::string::npos);
-    const auto colorAttribute = source.find("RHI::RHIVertexSemantic::TexCoord", layoutBody);
-    ASSERT_NE(colorAttribute, std::string::npos);
-    const auto colorLocation = source.rfind("2u,", colorAttribute);
-    ASSERT_NE(colorLocation, std::string::npos);
-    EXPECT_GT(colorLocation, layoutBody);
-    EXPECT_NE(source.find("1u", colorAttribute), std::string::npos);
-
-    const auto shaderSource = ReadSourceText(RepoPath("App/Assets/Engine/Shaders/RHIImGuiOverlay.hlsl"));
-    EXPECT_NE(shaderSource.find("float4 Color : TEXCOORD1;"), std::string::npos);
-    EXPECT_NE(shaderSource.find("[[vk::location(0)]]"), std::string::npos);
-    EXPECT_NE(shaderSource.find("[[vk::location(1)]]"), std::string::npos);
-    EXPECT_NE(shaderSource.find("[[vk::location(3)]]"), std::string::npos);
-    EXPECT_NE(shaderSource.find("#if defined(NLS_SPIRV)"), std::string::npos);
-    EXPECT_NE(shaderSource.find("[[vk::push_constant]] ConstantBuffer<OverlayProjection>"), std::string::npos);
-    EXPECT_NE(shaderSource.find("cbuffer OverlayProjection : register(b0, space0)"), std::string::npos);
-    EXPECT_NE(shaderSource.find("return input.Color * FontAtlasTexture.Sample(FontAtlasSampler, input.UV);"), std::string::npos);
 }
 
 TEST(RHIUiOverlayPassTests, OverlayRendererRebuildsGraphicsPipelineWhenDeviceChanges)

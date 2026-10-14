@@ -2850,8 +2850,16 @@ namespace
                 return std::nullopt;
             }
             (void)RenderingThreadSystem::PumpGameThreadTasks();
-            const auto wait = std::chrono::nanoseconds((std::min)(uint64_t { 1'000'000u },
-                ResolveRemainingWaitNanoseconds(retirementDeadline)));
+            // Pumping game-thread tasks can consume the whole remaining budget on a
+            // loaded machine. Re-check it before waiting so the loop never issues a
+            // zero-length wait: the head of the loop then reports the expired
+            // deadline instead.
+            const uint64_t remainingWaitNanoseconds =
+                ResolveRemainingWaitNanoseconds(retirementDeadline);
+            if (remainingWaitNanoseconds == 0u)
+                continue;
+            const auto wait = std::chrono::nanoseconds(
+                (std::min)(uint64_t { 1'000'000u }, remainingWaitNanoseconds));
             if (waitForDeferredFrameFence && retirementFence != nullptr)
             {
                 const auto sliceDeadline = std::chrono::steady_clock::now() + wait;

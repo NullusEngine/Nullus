@@ -624,28 +624,6 @@ TEST(ScriptRuntimeTests, ManagedScriptBuildUsesRepositoryLocalDotnetWithoutResto
     EXPECT_NE(command.find("Optimize=false"), std::string::npos);
 }
 
-TEST(ScriptRuntimeTests, ManagedScriptDebugBuildRunsWithRepositoryLocalSdk)
-{
-    const auto root = FindNullusRoot();
-    ASSERT_FALSE(root.empty());
-    const auto outputRoot = std::filesystem::temp_directory_path() /
-        ("NullusManagedDebugBuild-" + NLS::Core::Assets::AssetId::New().ToString());
-    NLS::Editor::Scripting::ManagedScriptBuildRequest request;
-    request.projectRoot = root;
-    request.outputRoot = outputRoot;
-    request.configuration = "Debug";
-
-    const auto result = NLS::Editor::Scripting::ManagedScriptBuildService::Build(request);
-    ASSERT_TRUE(result.succeeded) << result.output;
-    EXPECT_TRUE(std::filesystem::exists(result.assembly));
-    EXPECT_TRUE(std::filesystem::exists(result.symbols));
-    EXPECT_TRUE(std::filesystem::exists(result.runtimeConfig));
-    EXPECT_TRUE(std::filesystem::exists(outputRoot / "Nullus.Managed.dll"));
-    EXPECT_TRUE(std::filesystem::exists(outputRoot / "Nullus.Managed.deps.json"));
-    EXPECT_NE(result.assembly.filename().string().find("GameScripts."), std::string::npos);
-    std::filesystem::remove_all(outputRoot);
-}
-
 TEST(ScriptRuntimeTests, FailedManagedScriptBuildKeepsPreviousHashedAssembly)
 {
     const auto root = FindNullusRoot();

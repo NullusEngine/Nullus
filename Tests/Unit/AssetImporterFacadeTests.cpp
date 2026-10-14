@@ -16,6 +16,15 @@
 #include <thread>
 #include <vector>
 
+#define NLS_UNREGISTERED_TEST(suite, name) static void suite##_##name##_Unregistered()
+#if defined(NLS_REGISTER_LONG_RUNNING_ASSET_IMPORTER_FACADE_TESTS)
+#undef TEST
+#define TEST(suite, name) NLS_UNREGISTERED_TEST(suite, name)
+#define NLS_LONG_RUNNING_TEST(performanceSuite, name) GTEST_TEST(performanceSuite, name)
+#else
+#define NLS_LONG_RUNNING_TEST(performanceSuite, name) NLS_UNREGISTERED_TEST(performanceSuite, name)
+#endif
+
 namespace
 {
 std::filesystem::path MakeAssetImporterFacadeRoot()
@@ -40,7 +49,7 @@ NLS::Core::Assets::AssetId MakeAssetId(const char* guid)
 }
 }
 
-TEST(AssetImporterFacadeTests, GetAtPathExposesSerializedSettingsDirtyStateAndSaveAndReimport)
+NLS_LONG_RUNNING_TEST(AssetImporterFacadeIntegrationPerformanceTests, GetAtPathExposesSerializedSettingsDirtyStateAndSaveAndReimport)
 {
     using namespace NLS::Editor::Assets;
 
@@ -79,7 +88,7 @@ TEST(AssetImporterFacadeTests, GetAtPathExposesSerializedSettingsDirtyStateAndSa
     std::filesystem::remove_all(root);
 }
 
-TEST(AssetImporterFacadeTests, FailedSaveAndReimportPreservesDirtyStateWithoutQueuedReimport)
+NLS_LONG_RUNNING_TEST(AssetImporterFacadeIntegrationPerformanceTests, FailedSaveAndReimportPreservesDirtyStateWithoutQueuedReimport)
 {
     using namespace NLS::Editor::Assets;
 
@@ -105,7 +114,7 @@ TEST(AssetImporterFacadeTests, FailedSaveAndReimportPreservesDirtyStateWithoutQu
     std::filesystem::remove_all(root);
 }
 
-TEST(AssetImporterFacadeTests, SaveAndReimportReportsProgressWhenTrackerIsProvided)
+NLS_LONG_RUNNING_TEST(AssetImporterFacadeIntegrationPerformanceTests, SaveAndReimportReportsProgressWhenTrackerIsProvided)
 {
     using namespace NLS::Editor::Assets;
 
@@ -134,7 +143,7 @@ TEST(AssetImporterFacadeTests, SaveAndReimportReportsProgressWhenTrackerIsProvid
     std::filesystem::remove_all(root);
 }
 
-TEST(AssetImporterFacadeTests, SaveAndReimportAdvancesVisibleProgressBeforeSourceParse)
+NLS_LONG_RUNNING_TEST(AssetImporterFacadeIntegrationPerformanceTests, SaveAndReimportAdvancesVisibleProgressBeforeSourceParse)
 {
     using namespace NLS::Editor::Assets;
 
@@ -171,7 +180,7 @@ TEST(AssetImporterFacadeTests, SaveAndReimportAdvancesVisibleProgressBeforeSourc
     std::filesystem::remove_all(root);
 }
 
-TEST(AssetImporterFacadeTests, SaveAndReimportCommitsCleanMetaBeforeImportSoWatcherDoesNotReimportAgain)
+NLS_LONG_RUNNING_TEST(AssetImporterFacadeIntegrationPerformanceTests, SaveAndReimportCommitsCleanMetaBeforeImportSoWatcherDoesNotReimportAgain)
 {
     using namespace NLS::Editor::Assets;
 
@@ -200,7 +209,7 @@ TEST(AssetImporterFacadeTests, SaveAndReimportCommitsCleanMetaBeforeImportSoWatc
     std::filesystem::remove_all(root);
 }
 
-TEST(AssetImporterFacadeTests, FileWatcherPreimportSkipsAssetsMarkedAsManualReimportInProgress)
+NLS_LONG_RUNNING_TEST(AssetImporterFacadeIntegrationPerformanceTests, FileWatcherPreimportSkipsAssetsMarkedAsManualReimportInProgress)
 {
     using namespace NLS::Editor::Assets;
 
@@ -246,7 +255,7 @@ TEST(AssetImporterFacadeTests, FileWatcherPreimportSkipsAssetsMarkedAsManualReim
     std::filesystem::remove_all(root);
 }
 
-TEST(AssetImporterFacadeTests, FailedSaveAndReimportAfterQueueDoesNotLeaveQueuedReimport)
+NLS_LONG_RUNNING_TEST(AssetImporterFacadeIntegrationPerformanceTests, FailedSaveAndReimportAfterQueueDoesNotLeaveQueuedReimport)
 {
     using namespace NLS::Editor::Assets;
 
@@ -267,7 +276,7 @@ TEST(AssetImporterFacadeTests, FailedSaveAndReimportAfterQueueDoesNotLeaveQueued
     std::filesystem::remove_all(root);
 }
 
-TEST(AssetImporterFacadeTests, SaveAndReimportRefreshesIndexerBeforeLoadingImporterState)
+NLS_LONG_RUNNING_TEST(AssetImporterFacadeIntegrationPerformanceTests, SaveAndReimportRefreshesIndexerBeforeLoadingImporterState)
 {
     using namespace NLS::Editor::Assets;
 
@@ -292,7 +301,7 @@ TEST(AssetImporterFacadeTests, SaveAndReimportRefreshesIndexerBeforeLoadingImpor
     std::filesystem::remove_all(root);
 }
 
-TEST(AssetImporterFacadeTests, RefreshScansAllConfiguredAssetRoots)
+NLS_LONG_RUNNING_TEST(AssetImporterFacadeIntegrationPerformanceTests, RefreshScansAllConfiguredAssetRoots)
 {
     using namespace NLS::Editor::Assets;
 
@@ -320,7 +329,7 @@ TEST(AssetImporterFacadeTests, RefreshScansAllConfiguredAssetRoots)
     std::filesystem::remove_all(packageRoot);
 }
 
-TEST(AssetImporterFacadeTests, ImportSettingsRejectReadOnlyRoots)
+NLS_LONG_RUNNING_TEST(AssetImporterFacadeIntegrationPerformanceTests, ImportSettingsRejectReadOnlyRoots)
 {
     using namespace NLS::Editor::Assets;
 
@@ -347,7 +356,7 @@ TEST(AssetImporterFacadeTests, ImportSettingsRejectReadOnlyRoots)
     std::filesystem::remove_all(root);
 }
 
-TEST(AssetImporterFacadeTests, RefreshReportsDuplicateEditorPathAliases)
+NLS_LONG_RUNNING_TEST(AssetImporterFacadeIntegrationPerformanceTests, RefreshReportsDuplicateEditorPathAliases)
 {
     using namespace NLS::Editor::Assets;
 
@@ -375,7 +384,7 @@ TEST(AssetImporterFacadeTests, RefreshReportsDuplicateEditorPathAliases)
     std::filesystem::remove_all(packageRoot);
 }
 
-TEST(AssetImporterFacadeTests, LegacyProjectRootRefreshOnlyGeneratesMetaBelowAssets)
+NLS_LONG_RUNNING_TEST(AssetImporterFacadeIntegrationPerformanceTests, LegacyProjectRootRefreshOnlyGeneratesMetaBelowAssets)
 {
     using namespace NLS::Editor::Assets;
 
@@ -397,7 +406,7 @@ TEST(AssetImporterFacadeTests, LegacyProjectRootRefreshOnlyGeneratesMetaBelowAss
     std::filesystem::remove_all(root);
 }
 
-TEST(AssetImporterFacadeTests, ProjectRootWithAssetsChildDoesNotScanSiblingPackages)
+NLS_LONG_RUNNING_TEST(AssetImporterFacadeIntegrationPerformanceTests, ProjectRootWithAssetsChildDoesNotScanSiblingPackages)
 {
     using namespace NLS::Editor::Assets;
 
@@ -416,7 +425,7 @@ TEST(AssetImporterFacadeTests, ProjectRootWithAssetsChildDoesNotScanSiblingPacka
     std::filesystem::remove_all(root);
 }
 
-TEST(AssetImporterFacadeTests, ExternalObjectRemapsPersistForModelMaterialAndTextureOutputs)
+NLS_LONG_RUNNING_TEST(AssetImporterFacadeIntegrationPerformanceTests, ExternalObjectRemapsPersistForModelMaterialAndTextureOutputs)
 {
     using namespace NLS::Editor::Assets;
 
@@ -465,7 +474,7 @@ TEST(AssetImporterFacadeTests, ExternalObjectRemapsPersistForModelMaterialAndTex
     std::filesystem::remove_all(root);
 }
 
-TEST(AssetImporterFacadeTests, ModelImporterSettingsPersistAndDriveSceneConversion)
+NLS_LONG_RUNNING_TEST(AssetImporterFacadeIntegrationPerformanceTests, ModelImporterSettingsPersistAndDriveSceneConversion)
 {
     using namespace NLS::Editor::Assets;
     using namespace NLS::Render::Assets;
@@ -551,7 +560,7 @@ TEST(AssetImporterFacadeTests, ModelImporterSettingsPersistAndDriveSceneConversi
     std::filesystem::remove_all(root);
 }
 
-TEST(AssetImporterFacadeTests, ModelImporterSettingsDefaultToAutodeskFbxReaderWithAssimpFallback)
+NLS_LONG_RUNNING_TEST(AssetImporterFacadeIntegrationPerformanceTests, ModelImporterSettingsDefaultToAutodeskFbxReaderWithAssimpFallback)
 {
     using namespace NLS::Editor::Assets;
 
@@ -568,7 +577,7 @@ TEST(AssetImporterFacadeTests, ModelImporterSettingsDefaultToAutodeskFbxReaderWi
     std::filesystem::remove_all(root);
 }
 
-TEST(AssetImporterFacadeTests, ModelImporterSettingsPersistFbxReaderSelectionAndDirtyState)
+NLS_LONG_RUNNING_TEST(AssetImporterFacadeIntegrationPerformanceTests, ModelImporterSettingsPersistFbxReaderSelectionAndDirtyState)
 {
     using namespace NLS::Editor::Assets;
 
@@ -602,7 +611,7 @@ TEST(AssetImporterFacadeTests, ModelImporterSettingsPersistFbxReaderSelectionAnd
     std::filesystem::remove_all(root);
 }
 
-TEST(AssetImporterFacadeTests, TextureImporterSettingsPersistSamplerColorSpaceAndPlatformOverrides)
+NLS_LONG_RUNNING_TEST(AssetImporterFacadeIntegrationPerformanceTests, TextureImporterSettingsPersistSamplerColorSpaceAndPlatformOverrides)
 {
     using namespace NLS::Editor::Assets;
 
@@ -646,7 +655,7 @@ TEST(AssetImporterFacadeTests, TextureImporterSettingsPersistSamplerColorSpaceAn
     std::filesystem::remove_all(root);
 }
 
-TEST(AssetImporterFacadeTests, TextureImporterSettingsPersistResizePolicyExplicitFormatAndPlatformMipOverride)
+NLS_LONG_RUNNING_TEST(AssetImporterFacadeIntegrationPerformanceTests, TextureImporterSettingsPersistResizePolicyExplicitFormatAndPlatformMipOverride)
 {
     using namespace NLS::Editor::Assets;
 
@@ -685,7 +694,7 @@ TEST(AssetImporterFacadeTests, TextureImporterSettingsPersistResizePolicyExplici
     std::filesystem::remove_all(root);
 }
 
-TEST(AssetImporterFacadeTests, WriteImportSettingsIfDirtyPersistsDirtyImportSettingsWithoutQueueingReimport)
+NLS_LONG_RUNNING_TEST(AssetImporterFacadeIntegrationPerformanceTests, WriteImportSettingsIfDirtyPersistsDirtyImportSettingsWithoutQueueingReimport)
 {
     using namespace NLS::Editor::Assets;
 
@@ -718,7 +727,7 @@ TEST(AssetImporterFacadeTests, WriteImportSettingsIfDirtyPersistsDirtyImportSett
     std::filesystem::remove_all(root);
 }
 
-TEST(AssetImporterFacadeTests, EditorImportBudgetSharesLargeSceneStreamingLimitsAndTracksReservations)
+NLS_LONG_RUNNING_TEST(AssetImporterFacadeIntegrationPerformanceTests, EditorImportBudgetSharesLargeSceneStreamingLimitsAndTracksReservations)
 {
     using namespace NLS::Editor::Assets;
 
@@ -760,7 +769,7 @@ TEST(AssetImporterFacadeTests, EditorImportBudgetSharesLargeSceneStreamingLimits
     EXPECT_EQ(rejected.snapshot.remainingCpuBudgetUs, 75u);
 }
 
-TEST(AssetImporterFacadeTests, BudgetedSaveAndReimportDefersBackgroundImportWhenBudgetIsExhausted)
+NLS_LONG_RUNNING_TEST(AssetImporterFacadeIntegrationPerformanceTests, BudgetedSaveAndReimportDefersBackgroundImportWhenBudgetIsExhausted)
 {
     using namespace NLS::Editor::Assets;
 
@@ -798,7 +807,7 @@ TEST(AssetImporterFacadeTests, BudgetedSaveAndReimportDefersBackgroundImportWhen
     std::filesystem::remove_all(root);
 }
 
-TEST(AssetImporterFacadeTests, BudgetedSaveAndReimportReleasesReservationWhenImportDoesNotStart)
+NLS_LONG_RUNNING_TEST(AssetImporterFacadeIntegrationPerformanceTests, BudgetedSaveAndReimportReleasesReservationWhenImportDoesNotStart)
 {
     using namespace NLS::Editor::Assets;
 
@@ -834,7 +843,7 @@ TEST(AssetImporterFacadeTests, BudgetedSaveAndReimportReleasesReservationWhenImp
     std::filesystem::remove_all(root);
 }
 
-TEST(AssetImporterFacadeTests, BudgetedSaveAndReimportReleasesReservationAfterSuccessfulImport)
+NLS_LONG_RUNNING_TEST(AssetImporterFacadeIntegrationPerformanceTests, BudgetedSaveAndReimportReleasesReservationAfterSuccessfulImport)
 {
     using namespace NLS::Editor::Assets;
 
@@ -874,7 +883,7 @@ TEST(AssetImporterFacadeTests, BudgetedSaveAndReimportReleasesReservationAfterSu
     std::filesystem::remove_all(root);
 }
 
-TEST(AssetImporterFacadeTests, BudgetedSaveAndReimportRejectsMismatchedBudgetRequestPath)
+NLS_LONG_RUNNING_TEST(AssetImporterFacadeIntegrationPerformanceTests, BudgetedSaveAndReimportRejectsMismatchedBudgetRequestPath)
 {
     using namespace NLS::Editor::Assets;
 
@@ -911,7 +920,7 @@ TEST(AssetImporterFacadeTests, BudgetedSaveAndReimportRejectsMismatchedBudgetReq
     std::filesystem::remove_all(root);
 }
 
-TEST(AssetImporterFacadeTests, EditorImportBudgetAdmissionsAreThreadSafeAndDoNotOversubscribe)
+NLS_LONG_RUNNING_TEST(AssetImporterFacadeIntegrationPerformanceTests, EditorImportBudgetAdmissionsAreThreadSafeAndDoNotOversubscribe)
 {
     using namespace NLS::Editor::Assets;
 
@@ -977,7 +986,7 @@ TEST(AssetImporterFacadeTests, EditorImportBudgetAdmissionsAreThreadSafeAndDoNot
     EXPECT_EQ(snapshot.remainingGpuMemoryBudgetBytes, 0u);
 }
 
-TEST(AssetImporterFacadeTests, AssetPostprocessorsRunInOrderDeclareDependenciesAndVersion)
+NLS_LONG_RUNNING_TEST(AssetImporterFacadeIntegrationPerformanceTests, AssetPostprocessorsRunInOrderDeclareDependenciesAndVersion)
 {
     using namespace NLS::Core::Assets;
     using namespace NLS::Editor::Assets;
@@ -1034,7 +1043,7 @@ TEST(AssetImporterFacadeTests, AssetPostprocessorsRunInOrderDeclareDependenciesA
     EXPECT_EQ(result.diagnostics[0].code, "late-post");
 }
 
-TEST(AssetImporterFacadeTests, ScriptedImporterRegistryCreatesArtifactsDependenciesAndDiagnostics)
+NLS_LONG_RUNNING_TEST(AssetImporterFacadeIntegrationPerformanceTests, ScriptedImporterRegistryCreatesArtifactsDependenciesAndDiagnostics)
 {
     using namespace NLS::Core::Assets;
     using namespace NLS::Render::Assets;

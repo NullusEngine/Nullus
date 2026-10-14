@@ -514,7 +514,7 @@ NLS::Editor::Assets::EditorAssetDragPayload MakeImportedGeneratedModelPayload(
 }
 }
 
-TEST(EditorAssetDragDropTests, DropsPrefabAssetIntoHierarchyAsConnectedInstance)
+NLS_LONG_RUNNING_TEST(EditorAssetDragDropIntegrationPerformanceTests, DropsPrefabAssetIntoHierarchyAsConnectedInstance)
 {
     auto prefab = MakePrefabArtifact("Crate", Id("c1010101-0101-4101-8101-010101010101"));
     NLS::Engine::SceneSystem::Scene scene;
@@ -543,7 +543,7 @@ TEST(EditorAssetDragDropTests, DropsPrefabAssetIntoHierarchyAsConnectedInstance)
     EXPECT_TRUE(HasCommand(result.commandDescriptors, "dragdrop.instantiate-prefab", true));
 }
 
-TEST(EditorAssetDragDropTests, DropsPrefabAssetIntoHierarchyRegistersConnectedInstance)
+NLS_LONG_RUNNING_TEST(EditorAssetDragDropIntegrationPerformanceTests, DropsPrefabAssetIntoHierarchyRegistersConnectedInstance)
 {
     auto prefab = MakePrefabArtifact("RegisteredCrate", Id("c1110101-0101-4101-8101-010101010101"));
     NLS::Engine::SceneSystem::Scene scene;
@@ -573,7 +573,7 @@ TEST(EditorAssetDragDropTests, DropsPrefabAssetIntoHierarchyRegistersConnectedIn
     EXPECT_EQ(presentation.color, NLS::Editor::Assets::PrefabHierarchyColorToken::ConnectedRoot);
 }
 
-TEST(EditorAssetDragDropTests, DropsPrefabAssetIntoHierarchyUnderRequestedParent)
+NLS_LONG_RUNNING_TEST(EditorAssetDragDropIntegrationPerformanceTests, DropsPrefabAssetIntoHierarchyUnderRequestedParent)
 {
     auto prefab = MakePrefabArtifact("ChildCrate", Id("c1210101-0101-4101-8101-010101010101"));
     NLS::Engine::SceneSystem::Scene scene;
@@ -599,7 +599,7 @@ TEST(EditorAssetDragDropTests, DropsPrefabAssetIntoHierarchyUnderRequestedParent
     EXPECT_NE(registry.FindInstance(*result.instance->instanceRoot), nullptr);
 }
 
-TEST(EditorAssetDragDropTests, DropsGeneratedModelPrefabAsReadOnlyConnectedInstance)
+NLS_LONG_RUNNING_TEST(EditorAssetDragDropIntegrationPerformanceTests, DropsGeneratedModelPrefabAsReadOnlyConnectedInstance)
 {
     auto prefab = MakePrefabArtifact("ImportedHero", Id("c2010101-0101-4101-8101-010101010101"), true);
     NLS::Engine::SceneSystem::Scene scene;
@@ -620,7 +620,7 @@ TEST(EditorAssetDragDropTests, DropsGeneratedModelPrefabAsReadOnlyConnectedInsta
     EXPECT_EQ(scene.GetGameObjects().front(), result.instance->instanceRoot);
 }
 
-TEST(EditorAssetDragDropTests, GeneratedModelBlockingDropReimportsWhenRendererTextureArtifactIsMissing)
+NLS_LONG_RUNNING_TEST(EditorAssetDragDropIntegrationPerformanceTests, GeneratedModelBlockingDropReimportsWhenRendererTextureArtifactIsMissing)
 {
     const auto root = MakeAssetDragDropRoot();
     WriteBinaryFile(root / "Assets" / "Textures" / "HeroBaseColor.png", TinyPng());
@@ -693,7 +693,7 @@ TEST(EditorAssetDragDropTests, GeneratedModelBlockingDropReimportsWhenRendererTe
     std::filesystem::remove_all(root);
 }
 
-TEST(EditorAssetDragDropTests, GeneratedModelPreviewDropInstantiatesGraphOnlyWhenRendererTextureArtifactIsMissing)
+NLS_LONG_RUNNING_TEST(EditorAssetDragDropIntegrationPerformanceTests, GeneratedModelPreviewDropInstantiatesGraphOnlyWhenRendererTextureArtifactIsMissing)
 {
     const auto root = MakeAssetDragDropRoot();
     WriteBinaryFile(root / "Assets" / "Textures" / "HeroBaseColor.png", TinyPng());
@@ -790,7 +790,7 @@ TEST(EditorAssetDragDropTests, GeneratedModelPreviewDropInstantiatesGraphOnlyWhe
     std::filesystem::remove_all(root);
 }
 
-TEST(EditorAssetDragDropTests, GeneratedModelDropCommitsWhenRendererTextureArtifactIsReady)
+NLS_LONG_RUNNING_TEST(EditorAssetDragDropIntegrationPerformanceTests, GeneratedModelDropCommitsWhenRendererTextureArtifactIsReady)
 {
     const auto root = MakeAssetDragDropRoot();
     WriteBinaryFile(root / "Assets" / "Textures" / "HeroBaseColor.png", TinyPng());
@@ -827,7 +827,7 @@ TEST(EditorAssetDragDropTests, GeneratedModelDropCommitsWhenRendererTextureArtif
     std::filesystem::remove_all(root);
 }
 
-TEST(EditorAssetDragDropTests, ModelTextureMappingDependencyNameSearchReusesProjectScan)
+NLS_LONG_RUNNING_TEST(EditorAssetDragDropIntegrationPerformanceTests, ModelTextureMappingDependencyNameSearchReusesProjectScan)
 {
     using namespace NLS::Core::Assets;
     using namespace NLS::Editor::Assets;
@@ -866,7 +866,7 @@ TEST(EditorAssetDragDropTests, ModelTextureMappingDependencyNameSearchReusesProj
     std::filesystem::remove_all(root);
 }
 
-TEST(EditorAssetDragDropTests, ModelTextureMappingDependencyFallbackScanDoesNotReuseStaleFingerprint)
+NLS_LONG_RUNNING_TEST(EditorAssetDragDropIntegrationPerformanceTests, ModelTextureMappingDependencyFallbackScanDoesNotReuseStaleFingerprint)
 {
     using namespace NLS::Core::Assets;
     using namespace NLS::Editor::Assets;
@@ -908,7 +908,7 @@ TEST(EditorAssetDragDropTests, ModelTextureMappingDependencyFallbackScanDoesNotR
     std::filesystem::remove_all(root);
 }
 
-TEST(EditorAssetDragDropTests, ModelTextureMappingDependencyBatchUsesOneArtifactDatabaseLoad)
+NLS_LONG_RUNNING_TEST(EditorAssetDragDropIntegrationPerformanceTests, ModelTextureMappingDependencyBatchUsesOneArtifactDatabaseLoad)
 {
     using namespace NLS::Core::Assets;
     using namespace NLS::Editor::Assets;
@@ -991,7 +991,7 @@ TEST(EditorAssetDragDropTests, ModelTextureMappingDependencyBatchUsesOneArtifact
     std::filesystem::remove_all(root);
 }
 
-TEST(EditorAssetDragDropTests, ModelTextureMappingDependencyBatchSourcePathMissesUseOneArtifactDatabaseLoad)
+NLS_LONG_RUNNING_TEST(EditorAssetDragDropIntegrationPerformanceTests, ModelTextureMappingDependencyBatchSourcePathMissesUseOneArtifactDatabaseLoad)
 {
     using namespace NLS::Core::Assets;
     using namespace NLS::Editor::Assets;
@@ -1027,7 +1027,7 @@ TEST(EditorAssetDragDropTests, ModelTextureMappingDependencyBatchSourcePathMisse
     std::filesystem::remove_all(root);
 }
 
-TEST(EditorAssetDragDropTests, FormalPrefabInstantiationStillBroadcastsNormalGameObjectCreatedEvents)
+NLS_LONG_RUNNING_TEST(EditorAssetDragDropIntegrationPerformanceTests, FormalPrefabInstantiationStillBroadcastsNormalGameObjectCreatedEvents)
 {
     auto prefab = MakePrefabArtifact(
         "FormalEventHero",
@@ -1051,7 +1051,7 @@ TEST(EditorAssetDragDropTests, FormalPrefabInstantiationStillBroadcastsNormalGam
         << "Preview isolation must not globally silence normal prefab instance creation events used by Hierarchy.";
 }
 
-TEST(EditorAssetDragDropTests, SceneLoadGeneratedPrefabResolutionRevealsMeshReadyObjectsBeforeAllRendererResourcesReady)
+NLS_LONG_RUNNING_TEST(EditorAssetDragDropIntegrationPerformanceTests, SceneLoadGeneratedPrefabResolutionRevealsMeshReadyObjectsBeforeAllRendererResourcesReady)
 {
     const auto options = NLS::Editor::Core::BuildSceneLoadPrefabResourceResolutionOptions();
     const auto startupOptions = NLS::Editor::Core::BuildSceneLoadPrefabResourceResolutionOptions(true);
@@ -1115,7 +1115,7 @@ TEST(EditorAssetDragDropTests, SceneLoadGeneratedPrefabResolutionRevealsMeshRead
         << "Scene-open restoration still needs enough texture completions per frame to progress renderer readiness.";
 }
 
-TEST(EditorAssetDragDropTests, RendererResourceQueueInterleavesMatchingMeshAndMaterialTasks)
+NLS_LONG_RUNNING_TEST(EditorAssetDragDropIntegrationPerformanceTests, RendererResourceQueueInterleavesMatchingMeshAndMaterialTasks)
 {
     using namespace NLS::Editor::Core;
 
@@ -1150,7 +1150,7 @@ TEST(EditorAssetDragDropTests, RendererResourceQueueInterleavesMatchingMeshAndMa
     EXPECT_EQ(plan[6].sourceIndex, 3u);
 }
 
-TEST(EditorAssetDragDropTests, SceneLoadSharedMeshArtifactLoadsUseGlobalInflightCapacity)
+NLS_LONG_RUNNING_TEST(EditorAssetDragDropIntegrationPerformanceTests, SceneLoadSharedMeshArtifactLoadsUseGlobalInflightCapacity)
 {
     EXPECT_FALSE(NLS::Editor::Core::CanStartSceneLoadSharedMeshArtifactLoad(0u, 0u))
         << "A zero shared scene-load mesh budget must not create background work.";
@@ -1165,7 +1165,7 @@ TEST(EditorAssetDragDropTests, SceneLoadSharedMeshArtifactLoadsUseGlobalInflight
     EXPECT_TRUE(NLS::Editor::Core::CanEvictSceneLoadSharedMeshArtifactLoad(true));
 }
 
-TEST(EditorAssetDragDropTests, PrefabResourceHandoffPreservesLoadedTransientMeshesForCommit)
+NLS_LONG_RUNNING_TEST(EditorAssetDragDropIntegrationPerformanceTests, PrefabResourceHandoffPreservesLoadedTransientMeshesForCommit)
 {
     NLS::Editor::Core::RendererResourcePrewarmRequest request;
     request.ownerToken = "prefab:handoff";
@@ -1189,7 +1189,7 @@ TEST(EditorAssetDragDropTests, PrefabResourceHandoffPreservesLoadedTransientMesh
         << "Mouse-release commit must adopt the loaded handoff mesh; clearing it here makes the formal instance invisible until a slow reload finishes.";
 }
 
-TEST(EditorAssetDragDropTests, PrefabResourceHandoffPromotesPendingMaterialTextureLoadsForCommit)
+NLS_LONG_RUNNING_TEST(EditorAssetDragDropIntegrationPerformanceTests, PrefabResourceHandoffPromotesPendingMaterialTextureLoadsForCommit)
 {
     const ScopedEditorAssetDragDropJobSystem jobSystem;
     ASSERT_TRUE(jobSystem.IsAvailable());
@@ -1294,7 +1294,7 @@ TEST(EditorAssetDragDropTests, PrefabResourceHandoffPromotesPendingMaterialTextu
     std::filesystem::remove_all(root);
 }
 
-TEST(EditorAssetDragDropTests, PrefabDeletionCleanupReleasesSceneOwnedRendererResources)
+NLS_LONG_RUNNING_TEST(EditorAssetDragDropIntegrationPerformanceTests, PrefabDeletionCleanupReleasesSceneOwnedRendererResources)
 {
     using NLS::Core::ResourceManagement::ResourceLifetimeOwnerKind;
     using NLS::Core::ResourceManagement::ResourceLifetimeRegistry;
@@ -1364,7 +1364,7 @@ TEST(EditorAssetDragDropTests, PrefabDeletionCleanupReleasesSceneOwnedRendererRe
         << "After a prefab instance is deleted, instance-owned renderer resources must become trim-eligible.";
 }
 
-TEST(EditorAssetDragDropTests, PrefabDeletionCleanupKeepsSharedResourcesAliveForSiblingInstance)
+NLS_LONG_RUNNING_TEST(EditorAssetDragDropIntegrationPerformanceTests, PrefabDeletionCleanupKeepsSharedResourcesAliveForSiblingInstance)
 {
     using NLS::Core::ResourceManagement::ResourceLifetimeOwnerKind;
     using NLS::Core::ResourceManagement::ResourceLifetimeRegistry;
@@ -1463,7 +1463,7 @@ TEST(EditorAssetDragDropTests, PrefabDeletionCleanupKeepsSharedResourcesAliveFor
         << "Shared renderer resources must not become trim candidates while a sibling prefab instance still owns them.";
 }
 
-TEST(EditorAssetDragDropTests, InstantiatedImportedPrefabInstancesPreserveResolvedArtifactPathsForLifetime)
+NLS_LONG_RUNNING_TEST(EditorAssetDragDropIntegrationPerformanceTests, InstantiatedImportedPrefabInstancesPreserveResolvedArtifactPathsForLifetime)
 {
     using NLS::Engine::Serialize::ObjectIdentifier;
 
@@ -1547,7 +1547,7 @@ TEST(EditorAssetDragDropTests, InstantiatedImportedPrefabInstancesPreserveResolv
         materialSubAssetKey), 0u);
 }
 
-TEST(EditorAssetDragDropTests, PrefabResolvedAssetOwnerAcquireDeduplicatesPreservedArtifactPaths)
+NLS_LONG_RUNNING_TEST(EditorAssetDragDropIntegrationPerformanceTests, PrefabResolvedAssetOwnerAcquireDeduplicatesPreservedArtifactPaths)
 {
     using NLS::Core::ResourceManagement::ResourceLifetimeRegistry;
     using NLS::Core::ResourceManagement::ResourceLifetimeResourceType;
@@ -1574,7 +1574,7 @@ TEST(EditorAssetDragDropTests, PrefabResolvedAssetOwnerAcquireDeduplicatesPreser
     EXPECT_EQ(lifetimeRegistry.GetActiveOwnerCount(ResourceLifetimeResourceType::Material, materialArtifactPath), 1u);
 }
 
-TEST(EditorAssetDragDropTests, TrimRefreshKeepsSiblingImportedPrefabArtifactOwnersAfterDeletingTwin)
+NLS_LONG_RUNNING_TEST(EditorAssetDragDropIntegrationPerformanceTests, TrimRefreshKeepsSiblingImportedPrefabArtifactOwnersAfterDeletingTwin)
 {
     using NLS::Core::ResourceManagement::ResourceLifetimeRegistry;
     using NLS::Core::ResourceManagement::ResourceLifetimeResourceType;
@@ -1683,7 +1683,7 @@ TEST(EditorAssetDragDropTests, TrimRefreshKeepsSiblingImportedPrefabArtifactOwne
         << "Trim refresh after deleting one prefab twin must keep the sibling's real artifact resources owned.";
 }
 
-TEST(EditorAssetDragDropTests, TrimRefreshDoesNotReleaseLegacyPrefabOwnerWithoutResolvedArtifactPaths)
+NLS_LONG_RUNNING_TEST(EditorAssetDragDropIntegrationPerformanceTests, TrimRefreshDoesNotReleaseLegacyPrefabOwnerWithoutResolvedArtifactPaths)
 {
     using NLS::Core::ResourceManagement::ResourceLifetimeRegistry;
     using NLS::Core::ResourceManagement::ResourceLifetimeResourceType;
@@ -1733,7 +1733,7 @@ TEST(EditorAssetDragDropTests, TrimRefreshDoesNotReleaseLegacyPrefabOwnerWithout
         << "Legacy instances without authoritative prefab resolved assets must not lose their existing real artifact owners during trim refresh.";
 }
 
-TEST(EditorAssetDragDropTests, TrimRefreshRejectsSubAssetKeysAsAuthoritativeResolvedArtifactOwners)
+NLS_LONG_RUNNING_TEST(EditorAssetDragDropIntegrationPerformanceTests, TrimRefreshRejectsSubAssetKeysAsAuthoritativeResolvedArtifactOwners)
 {
     using NLS::Core::ResourceManagement::ResourceLifetimeRegistry;
     using NLS::Core::ResourceManagement::ResourceLifetimeResourceType;
@@ -1786,7 +1786,7 @@ TEST(EditorAssetDragDropTests, TrimRefreshRejectsSubAssetKeysAsAuthoritativeReso
     EXPECT_TRUE(lifetimeRegistry.CollectTrimCandidates({}).empty());
 }
 
-TEST(EditorAssetDragDropTests, ImportedResourceTrimDefersWhenGeneratedPrefabLacksAuthoritativeResolvedOwners)
+NLS_LONG_RUNNING_TEST(EditorAssetDragDropIntegrationPerformanceTests, ImportedResourceTrimDefersWhenGeneratedPrefabLacksAuthoritativeResolvedOwners)
 {
     NLS::Editor::Assets::PrefabInstanceRegistry registry;
 
@@ -1818,7 +1818,7 @@ TEST(EditorAssetDragDropTests, ImportedResourceTrimDefersWhenGeneratedPrefabLack
         << "Non-generated prefab instances should not globally block imported renderer resource trimming.";
 }
 
-TEST(EditorAssetDragDropTests, TrimRefreshRecoversGeneratedPrefabOwnersFromLiveArtifactPathsBeforeDefer)
+NLS_LONG_RUNNING_TEST(EditorAssetDragDropIntegrationPerformanceTests, TrimRefreshRecoversGeneratedPrefabOwnersFromLiveArtifactPathsBeforeDefer)
 {
     using NLS::Core::ResourceManagement::ResourceLifetimeOwnerKind;
     using NLS::Core::ResourceManagement::ResourceLifetimeRegistry;
@@ -1874,7 +1874,7 @@ TEST(EditorAssetDragDropTests, TrimRefreshRecoversGeneratedPrefabOwnersFromLiveA
         << "Deleting a twin must not leave the live sibling's recovered artifact paths trim-eligible.";
 }
 
-TEST(EditorAssetDragDropTests, TrimRefreshMergesPreservedAndLiveArtifactOwnersForPartiallyResolvedPrefab)
+NLS_LONG_RUNNING_TEST(EditorAssetDragDropIntegrationPerformanceTests, TrimRefreshMergesPreservedAndLiveArtifactOwnersForPartiallyResolvedPrefab)
 {
     using NLS::Core::ResourceManagement::ResourceLifetimeOwnerKind;
     using NLS::Core::ResourceManagement::ResourceLifetimeRegistry;
@@ -1934,7 +1934,7 @@ TEST(EditorAssetDragDropTests, TrimRefreshMergesPreservedAndLiveArtifactOwnersFo
     EXPECT_TRUE(lifetimeRegistry.CollectTrimCandidates({}).empty());
 }
 
-TEST(EditorAssetDragDropTests, TrimRefreshDefersAndPreservesOldOwnersWhenGeneratedPrefabIsPartiallyLoaded)
+NLS_LONG_RUNNING_TEST(EditorAssetDragDropIntegrationPerformanceTests, TrimRefreshDefersAndPreservesOldOwnersWhenGeneratedPrefabIsPartiallyLoaded)
 {
     using NLS::Core::ResourceManagement::ResourceLifetimeOwnerKind;
     using NLS::Core::ResourceManagement::ResourceLifetimeRegistry;
@@ -1987,7 +1987,7 @@ TEST(EditorAssetDragDropTests, TrimRefreshDefersAndPreservesOldOwnersWhenGenerat
     EXPECT_TRUE(lifetimeRegistry.CollectTrimCandidates({}).empty());
 }
 
-TEST(EditorAssetDragDropTests, TrimRefreshDefersWhenGeneratedPrefabHasUnresolvedSameTypeDependency)
+NLS_LONG_RUNNING_TEST(EditorAssetDragDropIntegrationPerformanceTests, TrimRefreshDefersWhenGeneratedPrefabHasUnresolvedSameTypeDependency)
 {
     using NLS::Core::ResourceManagement::ResourceLifetimeOwnerKind;
     using NLS::Core::ResourceManagement::ResourceLifetimeRegistry;
@@ -2062,7 +2062,7 @@ TEST(EditorAssetDragDropTests, TrimRefreshDefersWhenGeneratedPrefabHasUnresolved
     EXPECT_TRUE(lifetimeRegistry.CollectTrimCandidates({}).empty());
 }
 
-TEST(EditorAssetDragDropTests, DeletingOneOfTwoSamePrefabInstancesLeavesSiblingVisibleAndRegistered)
+NLS_LONG_RUNNING_TEST(EditorAssetDragDropIntegrationPerformanceTests, DeletingOneOfTwoSamePrefabInstancesLeavesSiblingVisibleAndRegistered)
 {
     using NLS::Core::ResourceManagement::ResourceLifetimeOwnerKind;
     using NLS::Core::ResourceManagement::ResourceLifetimeRegistry;
@@ -2146,7 +2146,7 @@ TEST(EditorAssetDragDropTests, DeletingOneOfTwoSamePrefabInstancesLeavesSiblingV
     EXPECT_EQ(lifetimeRegistry.GetActiveOwnerCount(ResourceLifetimeResourceType::Mesh, meshPath), 1u);
 }
 
-TEST(EditorAssetDragDropTests, MarkDestroyEventCleanupKeepsSiblingPrefabInstanceAlive)
+NLS_LONG_RUNNING_TEST(EditorAssetDragDropIntegrationPerformanceTests, MarkDestroyEventCleanupKeepsSiblingPrefabInstanceAlive)
 {
     using NLS::Core::ResourceManagement::ResourceLifetimeOwnerKind;
     using NLS::Core::ResourceManagement::ResourceLifetimeRegistry;
@@ -2317,7 +2317,7 @@ TEST(EditorAssetDragDropTests, MarkDestroyEventCleanupKeepsSiblingPrefabInstance
     delete child;
 }
 
-TEST(EditorAssetDragDropTests, RepeatedPrefabDropsCreateDistinctInstanceCorrespondenceIds)
+NLS_LONG_RUNNING_TEST(EditorAssetDragDropIntegrationPerformanceTests, RepeatedPrefabDropsCreateDistinctInstanceCorrespondenceIds)
 {
     const std::string meshPath = "Library/Artifacts/61/615163ab16dcb343d84c732a81af22bfa1eb723730fc6e33ceb9e9b0d03c7ae4";
     const std::string materialPath = "Library/Artifacts/fb/fb41ae9d32fa428ecd683bd8d7fe37596daac1cb232ae5814da99c65ca29aa5e";
@@ -2365,7 +2365,7 @@ TEST(EditorAssetDragDropTests, RepeatedPrefabDropsCreateDistinctInstanceCorrespo
         << "Multiple instances of the same prefab must not share scene-instance correspondence ids.";
 }
 
-TEST(EditorAssetDragDropTests, PrefabDeletionCleanupReleasesNestedPrefabRootsUnderDestroyedParent)
+NLS_LONG_RUNNING_TEST(EditorAssetDragDropIntegrationPerformanceTests, PrefabDeletionCleanupReleasesNestedPrefabRootsUnderDestroyedParent)
 {
     using NLS::Core::ResourceManagement::ResourceLifetimeOwnerKind;
     using NLS::Core::ResourceManagement::ResourceLifetimeRegistry;
@@ -2417,7 +2417,7 @@ TEST(EditorAssetDragDropTests, PrefabDeletionCleanupReleasesNestedPrefabRootsUnd
         "Library/Artifacts/f4/f4ecd92dfc33c7355c091d5b62052282e4a247a586159afdabf06bd39da2036b"), 0u);
 }
 
-TEST(EditorAssetDragDropTests, RepeatedGeneratedModelDropFastBindsThroughUnifiedHotCache)
+NLS_LONG_RUNNING_TEST(EditorAssetDragDropIntegrationPerformanceTests, RepeatedGeneratedModelDropFastBindsThroughUnifiedHotCache)
 {
     using NLS::Core::Assets::ArtifactLoadTelemetryStage;
 
@@ -2467,7 +2467,7 @@ TEST(EditorAssetDragDropTests, RepeatedGeneratedModelDropFastBindsThroughUnified
     std::filesystem::remove_all(root);
 }
 
-TEST(EditorAssetDragDropTests, ConcurrentUnifiedPrefabLoadsShareOneInFlightFuture)
+NLS_LONG_RUNNING_TEST(EditorAssetDragDropIntegrationPerformanceTests, ConcurrentUnifiedPrefabLoadsShareOneInFlightFuture)
 {
     const auto root = MakeAssetDragDropRoot();
     WriteBinaryFile(root / "Assets" / "Textures" / "HeroBaseColor.png", TinyPng());
@@ -2541,7 +2541,7 @@ TEST(EditorAssetDragDropTests, ConcurrentUnifiedPrefabLoadsShareOneInFlightFutur
     std::filesystem::remove_all(root);
 }
 
-TEST(EditorAssetDragDropTests, SceneViewHotCacheKeyPollingDoesNotTouchColdArtifactPath)
+NLS_LONG_RUNNING_TEST(EditorAssetDragDropIntegrationPerformanceTests, SceneViewHotCacheKeyPollingDoesNotTouchColdArtifactPath)
 {
     const auto root = MakeAssetDragDropRoot();
     WriteBinaryFile(root / "Assets" / "Textures" / "HeroBaseColor.png", TinyPng());
@@ -2591,7 +2591,7 @@ TEST(EditorAssetDragDropTests, SceneViewHotCacheKeyPollingDoesNotTouchColdArtifa
     std::filesystem::remove_all(root);
 }
 
-TEST(EditorAssetDragDropTests, SceneViewPrefabDragProxyDescriptorTracksPlacementBeforeRootExists)
+NLS_LONG_RUNNING_TEST(EditorAssetDragDropIntegrationPerformanceTests, SceneViewPrefabDragProxyDescriptorTracksPlacementBeforeRootExists)
 {
     const NLS::Maths::Vector3 firstPlacement { 1.0f, 0.0f, 2.0f };
     const auto firstDescriptor = NLS::Editor::Panels::BuildSceneViewPrefabDragProxyDescriptor(
@@ -2630,7 +2630,7 @@ TEST(EditorAssetDragDropTests, SceneViewPrefabDragProxyDescriptorTracksPlacement
         << "Stale placements must not draw after the drag payload has been cleared.";
 }
 
-TEST(EditorAssetDragDropTests, SceneViewDisablesTrustedRenderRevisionFastPathDuringPrefabDrag)
+NLS_LONG_RUNNING_TEST(EditorAssetDragDropIntegrationPerformanceTests, SceneViewDisablesTrustedRenderRevisionFastPathDuringPrefabDrag)
 {
     EXPECT_TRUE(NLS::Editor::Panels::ShouldTrustSceneViewRenderContentRevision(false, false));
     EXPECT_FALSE(NLS::Editor::Panels::ShouldTrustSceneViewRenderContentRevision(true, false))
@@ -2640,7 +2640,7 @@ TEST(EditorAssetDragDropTests, SceneViewDisablesTrustedRenderRevisionFastPathDur
     EXPECT_FALSE(NLS::Editor::Panels::ShouldTrustSceneViewRenderContentRevision(true, true));
 }
 
-TEST(EditorAssetDragDropTests, DebugSceneRendererSubmitsPrefabDragProxyPrimitives)
+NLS_LONG_RUNNING_TEST(EditorAssetDragDropIntegrationPerformanceTests, DebugSceneRendererSubmitsPrefabDragProxyPrimitives)
 {
     NLS::Render::Debug::DebugDrawService debugDrawService;
     NLS::Editor::Rendering::DebugSceneRenderer::PrefabDragProxyDescriptor descriptor;
@@ -2656,7 +2656,7 @@ TEST(EditorAssetDragDropTests, DebugSceneRendererSubmitsPrefabDragProxyPrimitive
     EXPECT_GT(debugDrawService.GetQueuedPrimitiveCount(), 0u);
 }
 
-TEST(EditorAssetDragDropTests, DebugSceneRendererPrefabDragProxyIgnoresDisabledDebugDrawSettings)
+NLS_LONG_RUNNING_TEST(EditorAssetDragDropIntegrationPerformanceTests, DebugSceneRendererPrefabDragProxyIgnoresDisabledDebugDrawSettings)
 {
     NLS::Render::Debug::DebugDrawService debugDrawService;
     debugDrawService.SetEnabled(false);
@@ -2672,7 +2672,7 @@ TEST(EditorAssetDragDropTests, DebugSceneRendererPrefabDragProxyIgnoresDisabledD
         << "Prefab drag feedback is editor interaction feedback, not an optional debug overlay.";
 }
 
-TEST(EditorAssetDragDropTests, RepeatedImportedFbxDropFastBindsThroughUnifiedHotCache)
+NLS_LONG_RUNNING_TEST(EditorAssetDragDropIntegrationPerformanceTests, RepeatedImportedFbxDropFastBindsThroughUnifiedHotCache)
 {
 #if !NLS_HAS_ASSIMP_FBX_IMPORTER
     GTEST_SKIP() << "Assimp FBX import is not enabled in this build.";
@@ -2746,7 +2746,7 @@ TEST(EditorAssetDragDropTests, RepeatedImportedFbxDropFastBindsThroughUnifiedHot
 #endif
 }
 
-TEST(EditorAssetDragDropTests, GeneratedModelDropCommitsAfterReimportRefreshesRendererTextureArtifact)
+NLS_LONG_RUNNING_TEST(EditorAssetDragDropIntegrationPerformanceTests, GeneratedModelDropCommitsAfterReimportRefreshesRendererTextureArtifact)
 {
     const auto root = MakeAssetDragDropRoot();
     WriteBinaryFile(root / "Assets" / "Textures" / "HeroBaseColor.png", TinyPng());
@@ -2828,7 +2828,7 @@ NLS_LONG_RUNNING_TEST(EditorAssetDragDropIntegrationPerformanceTests, GeneratedM
     std::filesystem::remove_all(root);
 }
 
-TEST(EditorAssetDragDropTests, GeneratedModelDropRejectsWhenRendererMeshArtifactIsInvalid)
+NLS_LONG_RUNNING_TEST(EditorAssetDragDropIntegrationPerformanceTests, GeneratedModelDropRejectsWhenRendererMeshArtifactIsInvalid)
 {
     const auto root = MakeAssetDragDropRoot();
     WriteBinaryFile(root / "Assets" / "Textures" / "HeroBaseColor.png", TinyPng());
@@ -2862,7 +2862,7 @@ TEST(EditorAssetDragDropTests, GeneratedModelDropRejectsWhenRendererMeshArtifact
     std::filesystem::remove_all(root);
 }
 
-TEST(EditorAssetDragDropTests, GeneratedModelDropRejectsWhenRendererMaterialArtifactIsInvalid)
+NLS_LONG_RUNNING_TEST(EditorAssetDragDropIntegrationPerformanceTests, GeneratedModelDropRejectsWhenRendererMaterialArtifactIsInvalid)
 {
     const auto root = MakeAssetDragDropRoot();
     WriteBinaryFile(root / "Assets" / "Textures" / "HeroBaseColor.png", TinyPng());
@@ -2896,7 +2896,7 @@ TEST(EditorAssetDragDropTests, GeneratedModelDropRejectsWhenRendererMaterialArti
     std::filesystem::remove_all(root);
 }
 
-TEST(EditorAssetDragDropTests, RejectsPrefabDropIntoReadOnlyHierarchyTarget)
+NLS_LONG_RUNNING_TEST(EditorAssetDragDropIntegrationPerformanceTests, RejectsPrefabDropIntoReadOnlyHierarchyTarget)
 {
     auto prefab = MakePrefabArtifact("Locked", Id("c3010101-0101-4101-8101-010101010101"));
     NLS::Engine::SceneSystem::Scene scene;
@@ -2913,7 +2913,7 @@ TEST(EditorAssetDragDropTests, RejectsPrefabDropIntoReadOnlyHierarchyTarget)
     EXPECT_TRUE(scene.GetGameObjects().empty());
 }
 
-TEST(EditorAssetDragDropTests, DropsMaterialAssetOntoRendererMaterialSlotAsGuidReference)
+NLS_LONG_RUNNING_TEST(EditorAssetDragDropIntegrationPerformanceTests, DropsMaterialAssetOntoRendererMaterialSlotAsGuidReference)
 {
     NLS::Engine::SceneSystem::Scene scene;
     auto& receiver = scene.CreateGameObject("Receiver", "Prop");
@@ -2937,7 +2937,7 @@ TEST(EditorAssetDragDropTests, DropsMaterialAssetOntoRendererMaterialSlotAsGuidR
     EXPECT_FALSE(result.commandDescriptors.empty());
 }
 
-TEST(EditorAssetDragDropTests, TextureDropCreatesMaterialAssetAndAssignsItDeterministically)
+NLS_LONG_RUNNING_TEST(EditorAssetDragDropIntegrationPerformanceTests, TextureDropCreatesMaterialAssetAndAssignsItDeterministically)
 {
     const auto root = std::filesystem::temp_directory_path() /
         "NullusEditorAssetDragDropTests_TextureDropCreatesMaterialAssetAndAssignsItDeterministically";
@@ -3012,7 +3012,7 @@ TEST(EditorAssetDragDropTests, TextureDropCreatesMaterialAssetAndAssignsItDeterm
     std::filesystem::remove_all(root);
 }
 
-TEST(EditorAssetDragDropTests, RejectsMaterialDropWithoutRendererTarget)
+NLS_LONG_RUNNING_TEST(EditorAssetDragDropIntegrationPerformanceTests, RejectsMaterialDropWithoutRendererTarget)
 {
     NLS::Engine::SceneSystem::Scene scene;
     auto& receiver = scene.CreateGameObject("Receiver", "Prop");
@@ -3028,7 +3028,7 @@ TEST(EditorAssetDragDropTests, RejectsMaterialDropWithoutRendererTarget)
     EXPECT_TRUE(HasDiagnosticCode(result, "dragdrop-missing-mesh-renderer"));
 }
 
-TEST(EditorAssetDragDropTests, DropsHierarchyObjectIntoAssetBrowserFolderCreatesPrefabSourceAsset)
+NLS_LONG_RUNNING_TEST(EditorAssetDragDropIntegrationPerformanceTests, DropsHierarchyObjectIntoAssetBrowserFolderCreatesPrefabSourceAsset)
 {
     const auto root = MakeAssetDragDropRoot();
     NLS::Editor::Assets::AssetDatabaseFacade database({root});
@@ -3078,7 +3078,7 @@ TEST(EditorAssetDragDropTests, DropsHierarchyObjectIntoAssetBrowserFolderCreates
     std::filesystem::remove_all(root);
 }
 
-TEST(EditorAssetDragDropTests, DropsImportedPrefabHandleAfterFileWatcherPreimport)
+NLS_LONG_RUNNING_TEST(EditorAssetDragDropIntegrationPerformanceTests, DropsImportedPrefabHandleAfterFileWatcherPreimport)
 {
     const auto root = MakeAssetDragDropRoot();
 
@@ -3131,7 +3131,7 @@ TEST(EditorAssetDragDropTests, DropsImportedPrefabHandleAfterFileWatcherPreimpor
     std::filesystem::remove_all(root);
 }
 
-TEST(EditorAssetDragDropTests, ImportedPrefabHandleDropPublishesBlockingLoadProgress)
+NLS_LONG_RUNNING_TEST(EditorAssetDragDropIntegrationPerformanceTests, ImportedPrefabHandleDropPublishesBlockingLoadProgress)
 {
     const auto root = MakeAssetDragDropRoot();
 
@@ -3209,7 +3209,7 @@ TEST(EditorAssetDragDropTests, ImportedPrefabHandleDropPublishesBlockingLoadProg
     std::filesystem::remove_all(root);
 }
 
-TEST(EditorAssetDragDropTests, ImportedPrefabHandleBlockingDropPublishesProgressWhenPayloadAlreadyImported)
+NLS_LONG_RUNNING_TEST(EditorAssetDragDropIntegrationPerformanceTests, ImportedPrefabHandleBlockingDropPublishesProgressWhenPayloadAlreadyImported)
 {
     const auto root = MakeAssetDragDropRoot();
 
@@ -3289,7 +3289,7 @@ TEST(EditorAssetDragDropTests, ImportedPrefabHandleBlockingDropPublishesProgress
     std::filesystem::remove_all(root);
 }
 
-TEST(EditorAssetDragDropTests, ImportedPrefabHandleBlockingDropImportsBeforeCommitWhenPayloadIsCold)
+NLS_LONG_RUNNING_TEST(EditorAssetDragDropIntegrationPerformanceTests, ImportedPrefabHandleBlockingDropImportsBeforeCommitWhenPayloadIsCold)
 {
     const auto root = MakeAssetDragDropRoot();
 
@@ -3342,7 +3342,7 @@ TEST(EditorAssetDragDropTests, ImportedPrefabHandleBlockingDropImportsBeforeComm
     std::filesystem::remove_all(root);
 }
 
-TEST(EditorAssetDragDropTests, DropsConnectedPrefabInstanceIntoAssetBrowserFolderCreatesVariantWithConflictSuffix)
+NLS_LONG_RUNNING_TEST(EditorAssetDragDropIntegrationPerformanceTests, DropsConnectedPrefabInstanceIntoAssetBrowserFolderCreatesVariantWithConflictSuffix)
 {
     const auto root = MakeAssetDragDropRoot();
     WriteTextFile(root / "Assets" / "Prefabs" / "Crate Variant.prefab", "{}");
@@ -3391,7 +3391,7 @@ TEST(EditorAssetDragDropTests, DropsConnectedPrefabInstanceIntoAssetBrowserFolde
     std::filesystem::remove_all(root);
 }
 
-TEST(EditorAssetDragDropTests, DropsGeneratedModelPrefabInstanceIntoAssetBrowserFolderCreatesUnpackedCopy)
+NLS_LONG_RUNNING_TEST(EditorAssetDragDropIntegrationPerformanceTests, DropsGeneratedModelPrefabInstanceIntoAssetBrowserFolderCreatesUnpackedCopy)
 {
     const auto root = MakeAssetDragDropRoot();
     NLS::Editor::Assets::AssetDatabaseFacade database({root});
@@ -3437,7 +3437,7 @@ TEST(EditorAssetDragDropTests, DropsGeneratedModelPrefabInstanceIntoAssetBrowser
     std::filesystem::remove_all(root);
 }
 
-TEST(EditorAssetDragDropTests, RejectsGeneratedModelPrefabInstanceSaveAsPrefabMutation)
+NLS_LONG_RUNNING_TEST(EditorAssetDragDropIntegrationPerformanceTests, RejectsGeneratedModelPrefabInstanceSaveAsPrefabMutation)
 {
     const auto root = MakeAssetDragDropRoot();
     NLS::Editor::Assets::AssetDatabaseFacade database({root});
@@ -3475,7 +3475,7 @@ TEST(EditorAssetDragDropTests, RejectsGeneratedModelPrefabInstanceSaveAsPrefabMu
     std::filesystem::remove_all(root);
 }
 
-TEST(EditorAssetDragDropTests, EditorAssetDatabaseExposesDragDropCommandSurface)
+NLS_LONG_RUNNING_TEST(EditorAssetDragDropIntegrationPerformanceTests, EditorAssetDatabaseExposesDragDropCommandSurface)
 {
     NLS::Editor::Assets::EditorAssetDatabase database;
 

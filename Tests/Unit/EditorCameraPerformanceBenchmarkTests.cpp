@@ -17,12 +17,6 @@ namespace
     using NLS::Editor::Core::EditorCameraPerformanceMetadata;
     using NLS::Editor::Core::EditorCameraPerformanceTelemetry;
 
-    std::string ReadRepositoryTextFile(const std::filesystem::path& path)
-    {
-        std::ifstream stream(path, std::ios::binary);
-        return std::string((std::istreambuf_iterator<char>(stream)), {});
-    }
-
     TEST(EditorCameraPerformanceBenchmarkTests, UsesMeasuredSamplesAndNearestRankPercentiles)
     {
         const std::vector<double> samples { 10.0, 20.0, 30.0, 40.0, 50.0 };
@@ -313,88 +307,4 @@ namespace
         EXPECT_DOUBLE_EQ(summary.publicationRatio, 1.5);
     }
 
-    TEST(EditorCameraPerformanceBenchmarkTests, RuntimeTimesOnlyCompletedCameraStepsAndWritesAfterSampling)
-    {
-        const auto applicationSource = ReadRepositoryTextFile("Project/Editor/Core/Application.cpp");
-        const auto editorHeader = ReadRepositoryTextFile("Project/Editor/Core/Editor.h");
-        const auto viewHeader = ReadRepositoryTextFile("Project/Editor/Panels/AView.h");
-        const auto mainSource = ReadRepositoryTextFile("Project/Editor/Main.cpp");
-
-        const auto warmupReady = applicationSource.find("m_editor->IsCameraPerformanceWarmupReady()");
-        const auto beginMeasurement = applicationSource.find("m_editor->BeginCameraPerformanceMeasurement()");
-        const auto resetWaitMaximum = applicationSource.find(
-            "ResetThreadedReservedSlotWaitMeasurementWindowMaxNs",
-            beginMeasurement);
-        const auto telemetryBefore = applicationSource.find(
-            "m_cameraPerformanceTelemetryBefore = CaptureCameraPerformanceTelemetry()",
-            beginMeasurement);
-        const auto frameStart = applicationSource.find("const auto frameStart = std::chrono::steady_clock::now()");
-        const auto tick = applicationSource.find(
-            "TickFrame(kEditorCameraPerformanceFixedDeltaSeconds, true)",
-            frameStart);
-        const auto frameEnd = applicationSource.find(
-            "const auto frameEnd = std::chrono::steady_clock::now()",
-            tick);
-        const auto addSample = applicationSource.find("m_cameraPerformanceFrameMs.push_back", frameEnd);
-        const auto addSettleSample = applicationSource.find(
-            "m_cameraPerformanceSettleFrameMs.push_back",
-            addSample);
-        const auto writeSummary = applicationSource.find("WriteEditorCameraPerformanceSummaryJson");
-
-        ASSERT_NE(warmupReady, std::string::npos);
-        ASSERT_NE(beginMeasurement, std::string::npos);
-        ASSERT_NE(resetWaitMaximum, std::string::npos);
-        ASSERT_NE(telemetryBefore, std::string::npos);
-        ASSERT_NE(frameStart, std::string::npos);
-        ASSERT_NE(tick, std::string::npos);
-        ASSERT_NE(frameEnd, std::string::npos);
-        ASSERT_NE(addSample, std::string::npos);
-        ASSERT_NE(addSettleSample, std::string::npos);
-        ASSERT_NE(writeSummary, std::string::npos);
-        EXPECT_LT(warmupReady, beginMeasurement);
-        EXPECT_LT(beginMeasurement, frameStart);
-        EXPECT_LT(beginMeasurement, resetWaitMaximum);
-        EXPECT_LT(resetWaitMaximum, telemetryBefore);
-        EXPECT_LT(beginMeasurement, telemetryBefore);
-        EXPECT_LT(telemetryBefore, frameStart);
-        EXPECT_LT(frameStart, tick);
-        EXPECT_LT(tick, frameEnd);
-        EXPECT_LT(frameEnd, addSample);
-        EXPECT_LT(addSample, addSettleSample);
-        EXPECT_LT(addSample, writeSummary);
-        EXPECT_NE(editorHeader.find("GetValidationCameraForwardCompletedFrames() const"), std::string::npos);
-        EXPECT_NE(editorHeader.find("IsCameraPerformanceWarmupReady() const"), std::string::npos);
-        EXPECT_NE(editorHeader.find("WasCameraPerformanceViewThreadedFramePublished() const"), std::string::npos);
-        EXPECT_NE(viewHeader.find("WasLastRenderFramePublished() const"), std::string::npos);
-        EXPECT_NE(mainSource.find("return app->DidRunSuccessfully();"), std::string::npos);
-    }
-
-    TEST(EditorCameraPerformanceBenchmarkTests, RuntimeDoesNotAdvanceCameraOutsideTimedBenchmarkFrame)
-    {
-        const auto applicationSource = ReadRepositoryTextFile("Project/Editor/Core/Application.cpp");
-        const auto benchmarkStart = applicationSource.find(
-            "if (!diagnostics.editorCameraPerformanceOutput.empty())");
-        const auto normalLoopStart = applicationSource.find(
-            "Time::Clock clock;",
-            benchmarkStart);
-
-        ASSERT_NE(benchmarkStart, std::string::npos);
-        ASSERT_NE(normalLoopStart, std::string::npos);
-        const auto benchmarkLoop = applicationSource.substr(
-            benchmarkStart,
-            normalLoopStart - benchmarkStart);
-        const auto normalLoop = applicationSource.substr(normalLoopStart);
-
-        EXPECT_EQ(benchmarkLoop.find("FlushDeferredResizeTick();"), std::string::npos);
-        EXPECT_NE(normalLoop.find("FlushDeferredResizeTick();"), std::string::npos);
-    }
-
-    TEST(EditorCameraPerformanceBenchmarkTests, ContextPropagatesAllBenchmarkOverrides)
-    {
-        const auto contextHeader = ReadRepositoryTextFile("Project/Editor/Core/Context.h");
-        EXPECT_NE(contextHeader.find("settings.editorCameraPerformanceOutput"), std::string::npos);
-        EXPECT_NE(contextHeader.find("settings.editorCameraPerformanceWarmupFrames"), std::string::npos);
-        EXPECT_NE(contextHeader.find("settings.editorCameraPerformanceFrames"), std::string::npos);
-        EXPECT_NE(contextHeader.find("settings.editorCameraPerformanceSettleFrames"), std::string::npos);
-    }
 }

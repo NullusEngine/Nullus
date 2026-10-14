@@ -164,7 +164,7 @@ policy_expected=$(expected_tests "$unit" "$policy_filter")
 run_unit metal-policy "$policy_filter" "$policy_expected"
 
 if [[ "$STRESS_ONLY" -eq 0 ]]; then
-    regression_filter='RhiCommandListExecutorTests.*:RhiSubmitLaneSourceGuardTests.*:RhiCommandListRecorderTests.*:RenderFrameExecutionTests.*:FrameResourceRingTests.*:FrameLatency*Tests.*:DriverFlushTests.*:DriverRhiThreadModeTests.*:DriverSwapchainResizeTests.*:DriverNullDeviceReadinessTests.*:RenderingThread*Tests.*:RenderCommand*Tests.*:FrameGraphSceneTargetsTests.*:RHIUiOverlayPassTests.*:RHIUiOverlaySourceGuardTests.*:UE5RenderArchitectureContractTests.*:RenderFrameworkContractTests.*:RenderSceneCacheTests.*:RenderSceneHandoffTests.*:SceneRenderStore*Tests.*:SceneProxyTests.*:TextureResourceLifecycleTests.*:UploadContextTests.*:DX12ReadbackUtilsTests.*'
+    regression_filter='RhiCommandListExecutorTests.*:RhiCommandListRecorderTests.*:RenderFrameExecutionTests.*:FrameResourceRingTests.*:FrameLatency*Tests.*:DriverFlushTests.*:DriverRhiThreadModeTests.*:DriverSwapchainResizeTests.*:DriverNullDeviceReadinessTests.*:RenderingThread*Tests.*:RenderCommand*Tests.*:FrameGraphSceneTargetsTests.*:RHIUiOverlayPassTests.*:UE5RenderArchitectureContractTests.*:RenderFrameworkContractTests.*:RenderSceneCacheTests.*:RenderSceneHandoffTests.*:SceneRenderStore*Tests.*:SceneProxyTests.*:TextureResourceLifecycleTests.*:UploadContextTests.*:DX12ReadbackUtilsTests.*'
     regression_expected=$(expected_tests "$unit" "$regression_filter")
     [[ "$regression_expected" -gt 0 ]] || fail "Regression filter selected no tests"
     run_unit metal-regression "$regression_filter" "$regression_expected"

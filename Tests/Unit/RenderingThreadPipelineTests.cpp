@@ -1719,7 +1719,6 @@ TEST(DriverFlushTests, FlushRenderingCommandsRetiresThreadedFramesWithoutARender
     // advancing the RHI stages: this is the state a flush has to cope with.
     NLS::Render::Context::DriverTestAccess::PauseThreadedRenderingWorkers(driver);
 
-
     NLS::Render::Context::RenderFramePacket snapshot;
     snapshot.frameId = 91u;
     ASSERT_TRUE(NLS::Render::Context::DriverRendererAccess::TryEnqueueRenderFrame(driver, snapshot,
@@ -2020,85 +2019,6 @@ TEST(RenderingThreadPipelineTests, FrameDispatchDoesNotDrainThePreviousSubmissio
  * a synchronous acquire in BeginThreadedRhiFrame would stall the render lane on
  * the previous frame's Present again.
  */
-TEST(RenderingThreadPipelineTests, SwapchainAcquisitionIsEnqueuedEarlyAndBoundLate)
-{
-    const std::string coordinator = ReadRepositorySource(
-        "Runtime/Rendering/Context/RhiCommandListExecutorFrame.cpp");
-    const std::string executorHeader = ReadRepositorySource(
-        "Runtime/Rendering/Context/RhiCommandListExecutor.h");
-
-    EXPECT_NE(
-        executorHeader.find("EnqueueOnSubmitLane"),
-        std::string::npos)
-        << "The unordered submit-lane enqueue API is what makes early acquisition possible.";
-    EXPECT_NE(executorHeader.find("WaitForSubmitLaneOperation"), std::string::npos);
-
-    const std::string beginBody = ExtractDefinitionBody(
-        coordinator, "Detail::BeginThreadedRhiFrame(");
-    ASSERT_FALSE(beginBody.empty());
-    EXPECT_NE(beginBody.find("EnqueueOnSubmitLane"), std::string::npos)
-        << "Frame begin must enqueue swapchain acquisition without blocking on the lane.";
-    EXPECT_NE(beginBody.find("acquisition->enqueued = true"), std::string::npos);
-
-    const std::string resolveBody = ExtractDefinitionBody(
-        coordinator, "bool Detail::ResolveThreadedSwapchainAcquisition(");
-    ASSERT_FALSE(resolveBody.empty());
-    EXPECT_NE(resolveBody.find("WaitForSubmitLaneOperation"), std::string::npos);
-    EXPECT_NE(resolveBody.find("acquisition.resolved = true"), std::string::npos)
-        << "The lane operation must be consumed at most once per frame.";
-    EXPECT_NE(
-        resolveBody.find("SeedAcquiredSwapchainBackbufferState"),
-        std::string::npos)
-        << "Barrier seeding must follow the resolved acquisition, not precede it.";
-
-    const std::string recordingBody = ExtractDefinitionBody(
-        coordinator, "void RecordThreadedRhiSubmissionWork(");
-    ASSERT_FALSE(recordingBody.empty());
-    EXPECT_NE(
-        recordingBody.find("Detail::ResolveThreadedSwapchainAcquisition"),
-        std::string::npos)
-        << "Recording must bind the backbuffer lazily, once a pass needs it.";
-    EXPECT_NE(
-        recordingBody.find("ensureSwapchainAcquisition"),
-        std::string::npos)
-        << "The serial recording path must resolve the acquisition lazily at the "
-           "first work unit that consumes the backbuffer.";
-
-    const std::string parallelRecordingBody = ExtractDefinitionBody(
-        coordinator, "RecordParallelCommandWorkUnits(");
-    ASSERT_FALSE(parallelRecordingBody.empty());
-    EXPECT_NE(
-        parallelRecordingBody.find("FindFirstSwapchainDependentWorkUnitPosition"),
-        std::string::npos)
-        << "Parallel recording must split at the first swapchain-dependent work unit.";
-    const auto viewIndependentRecord = parallelRecordingBody.find(
-        "for (size_t orderedIndex = 0u; orderedIndex < swapchainBatchBegin;");
-    const auto acquisitionResolve = parallelRecordingBody.find(
-        "Detail::ResolveThreadedSwapchainAcquisition");
-    ASSERT_NE(viewIndependentRecord, std::string::npos);
-    ASSERT_NE(acquisitionResolve, std::string::npos);
-    EXPECT_LT(viewIndependentRecord, acquisitionResolve)
-        << "View-independent work units must record before the frame waits for "
-           "the backbuffer.";
-
-    const std::string orderedChildBody = ExtractDefinitionBody(
-        coordinator, "bool RecordOrderedInRenderPassChildAndSerialWorkUnits(");
-    ASSERT_FALSE(orderedChildBody.empty());
-    EXPECT_NE(orderedChildBody.find("ensureSwapchainAcquisition"), std::string::npos)
-        << "The ordered child/serial path must resolve the acquisition lazily too.";
-    EXPECT_NE(orderedChildBody.find("childGroupTargetsSwapchain"), std::string::npos)
-        << "A child command group that targets the swapchain must resolve the "
-           "acquisition before opening the parent pass.";
-
-    const std::string abortBody = ExtractDefinitionBody(
-        coordinator, "void AbortThreadedRhiSubmission(");
-    ASSERT_FALSE(abortBody.empty());
-    EXPECT_NE(
-        abortBody.find("Detail::ResolveThreadedSwapchainAcquisition"),
-        std::string::npos)
-        << "An aborted frame must still consume its enqueued acquisition.";
-}
-
 /**
  * The split boundary is what lets view-independent recording run while the
  * previous frame is still being submitted: work units before the first

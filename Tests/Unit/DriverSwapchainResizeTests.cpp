@@ -87,11 +87,6 @@ namespace
             return true;
         }
 
-        void SetTrackedView(std::weak_ptr<NLS::Render::RHI::RHITextureView> trackedView)
-        {
-            m_trackedView = std::move(trackedView);
-        }
-
         void SetTrackedTexture(std::weak_ptr<NLS::Render::RHI::RHITexture> trackedTexture)
         {
             m_trackedTexture = std::move(trackedTexture);

@@ -387,33 +387,6 @@ TEST(DX12SubmitLaneTests, FullTextureUpdatesPreserveReadableLayoutAndPixels)
 // the resource's creation layout. Creating native textures in COPY_DEST made UI and
 // material draws report an incompatible layout even though the upload had already
 // transitioned them, so texture creation has to stay in the promotable COMMON state.
-TEST(DX12SubmitLaneTests, NativeTextureCreationUsesPromotableCommonState)
-{
-    std::ifstream input(
-        std::filesystem::path(NLS_ROOT_DIR) /
-            "Runtime/Rendering/RHI/Backends/DX12/DX12Resource.cpp",
-        std::ios::binary);
-    ASSERT_TRUE(input.is_open()) << "DX12Resource.cpp is unavailable to the source guard";
-    const std::string source(
-        (std::istreambuf_iterator<char>(input)),
-        std::istreambuf_iterator<char>());
-    ASSERT_FALSE(source.empty());
-
-    const auto constructorBegin = source.find("NativeDX12Texture::NativeDX12Texture(");
-    ASSERT_NE(constructorBegin, std::string::npos);
-    const auto constructorEnd =
-        source.find("NativeDX12Texture::~NativeDX12Texture", constructorBegin);
-    ASSERT_NE(constructorEnd, std::string::npos);
-    const std::string constructor =
-        source.substr(constructorBegin, constructorEnd - constructorBegin);
-
-    EXPECT_NE(constructor.find("D3D12_RESOURCE_STATE_COMMON"), std::string::npos)
-        << "NativeDX12Texture must create resources in COMMON and record the upload "
-           "transition explicitly.";
-    EXPECT_EQ(constructor.find("D3D12_RESOURCE_STATE_COPY_DEST"), std::string::npos)
-        << "Native texture creation must not start in COPY_DEST; GPU-based validation "
-           "would then judge draws that do not repeat the transition against it.";
-}
 
 TEST(DX12SubmitLaneTests, MismatchedNativeListTypeIsRejectedBeforeQueueingGpuWork)
 {

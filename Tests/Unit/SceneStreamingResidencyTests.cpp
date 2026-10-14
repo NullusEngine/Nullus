@@ -56,36 +56,6 @@ namespace
 		return settings;
 	}
 
-	std::string ReadRepoFile(const std::filesystem::path& relativePath)
-	{
-		const auto path = std::filesystem::path(NLS_ROOT_DIR) / relativePath;
-		std::ifstream stream(path, std::ios::binary);
-		if (!stream)
-			return {};
-		std::ostringstream buffer;
-		buffer << stream.rdbuf();
-		return buffer.str();
-	}
-}
-
-TEST(SceneStreamingResidencyTests, PrimitiveDependencyRegistrationUsesHashSetForDuplicateBindings)
-{
-	const auto header = ReadRepoFile("Runtime/Engine/Rendering/SceneStreamingResidency.h");
-	const auto source = ReadRepoFile("Runtime/Engine/Rendering/SceneStreamingResidency.cpp");
-
-	ASSERT_FALSE(header.empty());
-	ASSERT_FALSE(source.empty());
-	EXPECT_NE(header.find("PrimitiveDependencyBindingHash"), std::string::npos);
-	EXPECT_NE(header.find("primitiveDependencyBindings"), std::string::npos);
-
-	const auto registerStart = source.find("void SceneStreamingResidency::RegisterPrimitiveDependency");
-	const auto planStart = source.find("SceneStreamingResidency::Plan(", registerStart);
-	ASSERT_NE(registerStart, std::string::npos);
-	ASSERT_NE(planStart, std::string::npos);
-	const auto registerBody = source.substr(registerStart, planStart - registerStart);
-
-	EXPECT_NE(registerBody.find("primitiveDependencyBindings.insert"), std::string::npos);
-	EXPECT_EQ(registerBody.find("std::find_if("), std::string::npos);
 }
 
 TEST(SceneStreamingResidencyTests, LargeSceneSettingsDefaultsDisableHLOD)

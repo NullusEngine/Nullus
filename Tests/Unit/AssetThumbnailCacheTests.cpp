@@ -1209,41 +1209,6 @@ const NLS::Base::Profiling::PerformanceStageEntry* FindThumbnailPerformanceStage
     return nullptr;
 }
 
-size_t CountOpaqueColumnClusters(const NLS::Image& image)
-{
-    if (image.GetData() == nullptr || image.GetWidth() <= 0 || image.GetHeight() <= 0)
-        return 0u;
-
-    const auto channels = image.GetChannels();
-    if (channels <= 0)
-        return 0u;
-
-    size_t clusters = 0u;
-    bool previousColumnOpaque = false;
-    const auto* pixels = image.GetData();
-    for (int x = 0; x < image.GetWidth(); ++x)
-    {
-        bool columnOpaque = false;
-        for (int y = 0; y < image.GetHeight(); ++y)
-        {
-            const auto pixelIndex =
-                (static_cast<size_t>(y) * static_cast<size_t>(image.GetWidth()) + static_cast<size_t>(x)) *
-                static_cast<size_t>(channels);
-            const auto alpha = channels >= 4 ? pixels[pixelIndex + 3u] : 255u;
-            if (alpha != 0u)
-            {
-                columnOpaque = true;
-                break;
-            }
-        }
-
-        if (columnOpaque && !previousColumnOpaque)
-            ++clusters;
-        previousColumnOpaque = columnOpaque;
-    }
-    return clusters;
-}
-
 size_t CountOpaquePixels(const NLS::Image& image)
 {
     if (image.GetData() == nullptr || image.GetWidth() <= 0 || image.GetHeight() <= 0)
@@ -1284,86 +1249,6 @@ std::string FormatSerializationDiagnostics(
         formatted += "\n";
     }
     return formatted;
-}
-
-double AverageOpaqueLuminance(const NLS::Image& image)
-{
-    if (image.GetData() == nullptr || image.GetWidth() <= 0 || image.GetHeight() <= 0)
-        return 0.0;
-
-    const auto channels = image.GetChannels();
-    if (channels <= 0)
-        return 0.0;
-
-    const auto* pixels = image.GetData();
-    double total = 0.0;
-    size_t count = 0u;
-    for (int y = 0; y < image.GetHeight(); ++y)
-    {
-        for (int x = 0; x < image.GetWidth(); ++x)
-        {
-            const auto pixelIndex =
-                (static_cast<size_t>(y) * static_cast<size_t>(image.GetWidth()) + static_cast<size_t>(x)) *
-                static_cast<size_t>(channels);
-            const auto alpha = channels >= 4 ? pixels[pixelIndex + 3u] : 255u;
-            if (alpha == 0u)
-                continue;
-
-            total +=
-                0.2126 * static_cast<double>(pixels[pixelIndex + 0u]) +
-                0.7152 * static_cast<double>(pixels[pixelIndex + 1u]) +
-                0.0722 * static_cast<double>(pixels[pixelIndex + 2u]);
-            ++count;
-        }
-    }
-
-    return count > 0u ? total / static_cast<double>(count) : 0.0;
-}
-
-double OpaquePixelCoverage(const NLS::Image& image)
-{
-    if (image.GetWidth() <= 0 || image.GetHeight() <= 0)
-        return 0.0;
-
-    const auto totalPixels =
-        static_cast<size_t>(image.GetWidth()) * static_cast<size_t>(image.GetHeight());
-    return totalPixels == 0u
-        ? 0.0
-        : static_cast<double>(CountOpaquePixels(image)) / static_cast<double>(totalPixels);
-}
-
-size_t CountOpaquePixelsMatchingColor(
-    const NLS::Image& image,
-    const uint8_t red,
-    const uint8_t green,
-    const uint8_t blue)
-{
-    if (image.GetData() == nullptr || image.GetWidth() <= 0 || image.GetHeight() <= 0)
-        return 0u;
-
-    const auto channels = image.GetChannels();
-    if (channels < 4)
-        return 0u;
-
-    size_t count = 0u;
-    const auto* pixels = image.GetData();
-    for (int y = 0; y < image.GetHeight(); ++y)
-    {
-        for (int x = 0; x < image.GetWidth(); ++x)
-        {
-            const auto pixelIndex =
-                (static_cast<size_t>(y) * static_cast<size_t>(image.GetWidth()) + static_cast<size_t>(x)) *
-                static_cast<size_t>(channels);
-            if (pixels[pixelIndex + 3u] != 0u &&
-                pixels[pixelIndex + 0u] == red &&
-                pixels[pixelIndex + 1u] == green &&
-                pixels[pixelIndex + 2u] == blue)
-            {
-                ++count;
-            }
-        }
-    }
-    return count;
 }
 
 void ExpectGeneratedFreshPng(

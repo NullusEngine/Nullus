@@ -274,51 +274,6 @@ void AddCurrentExternalTextureBuildPipelineDependency(NLS::Core::Assets::Artifac
     });
 }
 
-std::string ArtifactTypeToken(const NLS::Core::Assets::ArtifactType type)
-{
-    using NLS::Core::Assets::ArtifactType;
-    switch (type)
-    {
-    case ArtifactType::Model: return "model";
-    case ArtifactType::Mesh: return "mesh";
-    case ArtifactType::Material: return "material";
-    case ArtifactType::Texture: return "texture";
-    case ArtifactType::Shader: return "shader";
-    case ArtifactType::Scene: return "scene";
-    case ArtifactType::Prefab: return "prefab";
-    case ArtifactType::Skeleton: return "skeleton";
-    case ArtifactType::Skin: return "skin";
-    case ArtifactType::AnimationClip: return "animation";
-    case ArtifactType::MorphTarget: return "morph-target";
-    case ArtifactType::Audio: return "audio";
-    case ArtifactType::Unknown:
-    case ArtifactType::Count:
-        break;
-    }
-    return "unknown";
-}
-
-std::string DependencyKindToken(const NLS::Core::Assets::AssetDependencyKind kind)
-{
-    using NLS::Core::Assets::AssetDependencyKind;
-    switch (kind)
-    {
-    case AssetDependencyKind::SourceFileHash: return "source-file-hash";
-    case AssetDependencyKind::SourceAssetGuid: return "source-asset-guid";
-    case AssetDependencyKind::ImportedArtifact: return "imported-artifact";
-    case AssetDependencyKind::PathToGuidMapping: return "path-to-guid-mapping";
-    case AssetDependencyKind::BuildTarget: return "build-target";
-    case AssetDependencyKind::ImporterVersion: return "importer-version";
-    case AssetDependencyKind::PostprocessorVersion: return "postprocessor-version";
-    case AssetDependencyKind::PrefabBase: return "prefab-base";
-    case AssetDependencyKind::NestedPrefab: return "nested-prefab";
-    case AssetDependencyKind::PrefabOverrideTarget: return "prefab-override-target";
-    case AssetDependencyKind::RuntimeComponentCapability: return "runtime-component-capability";
-    case AssetDependencyKind::RawPackageFile: return "raw-package-file";
-    }
-    return "source-file-hash";
-}
-
 void WritePersistedArtifactManifest(
     const std::filesystem::path& root,
     const NLS::Core::Assets::ArtifactManifest& manifest)

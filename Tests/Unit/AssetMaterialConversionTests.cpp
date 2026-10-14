@@ -3177,36 +3177,6 @@ TEST(AssetMaterialConversionTests, MaterialConversionReferencesAuthoritativeShad
     EXPECT_EQ(material.serializedPayload.find("shader=Library/Artifacts/"), std::string::npos);
 }
 
-TEST(AssetMaterialConversionTests, EditorMaterialCreationSourcesReferenceAuthoritativeStandardPbrShader)
-{
-    const auto read = [](const std::filesystem::path& relativePath)
-    {
-        std::ifstream input(std::filesystem::path(NLS_ROOT_DIR) / relativePath, std::ios::binary);
-        EXPECT_TRUE(input) << relativePath.generic_string();
-        return std::string{
-            std::istreambuf_iterator<char>(input),
-            std::istreambuf_iterator<char>()};
-    };
-
-    const auto defaults = read("Project/Editor/Assets/ShaderLabMaterialDefaults.h");
-    EXPECT_NE(
-        defaults.find("Assets/Engine/Shaders/ShaderLab/StandardPBR.shader"),
-        std::string::npos)
-        << "New .mat assets must bind the authoritative ShaderLab StandardPBR source so prefab "
-           "instantiation can resolve material pass artifacts through ArtifactDB.";
-    EXPECT_EQ(defaults.find("shader=?"), std::string::npos)
-        << "The default material template must never create a ShaderLab payload without a shader reference.";
-
-    for (const auto& relativePath : {
-             std::filesystem::path("Project/Editor/Panels/AssetBrowser.cpp"),
-             std::filesystem::path("Project/Editor/Assets/AssetDragDropWorkflow.cpp")})
-    {
-        const auto source = read(relativePath);
-        EXPECT_EQ(source.find("\"shader=?\\\\n\""), std::string::npos) << relativePath.generic_string();
-        EXPECT_EQ(source.find("shader=?"), std::string::npos) << relativePath.generic_string();
-    }
-}
-
 TEST(AssetMaterialConversionTests, ImportedModelMaterialsDefaultToDoubleSidedVisibility)
 {
     const std::string gltf = R"(

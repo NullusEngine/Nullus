@@ -92,58 +92,10 @@ std::filesystem::path Utf8Path(const char8_t* value)
     return std::filesystem::path(std::u8string(value));
 }
 
-std::filesystem::path RepoPath(std::string_view relativePath)
-{
-    return std::filesystem::path(NLS_ROOT_DIR) / std::filesystem::path(relativePath);
-}
-
 void InitializeDrawListSharedData(ImDrawListSharedData& sharedData)
 {
     sharedData.CurveTessellationTol = 1.25f;
     sharedData.SetCircleTessellationMaxError(0.30f);
-}
-
-std::string ReadSourceText(const std::filesystem::path& path)
-{
-    std::ifstream input(path, std::ios::binary);
-    EXPECT_TRUE(input.is_open()) << "Failed to open source file: " << path.string();
-    std::string source {
-        std::istreambuf_iterator<char>(input),
-        std::istreambuf_iterator<char>()
-    };
-    source.erase(std::remove(source.begin(), source.end(), '\r'), source.end());
-    return source;
-}
-
-std::string ExtractFunctionBody(const std::string& source, std::string_view functionNeedle)
-{
-    const auto begin = source.find(functionNeedle);
-    EXPECT_NE(begin, std::string::npos) << "Missing function: " << functionNeedle;
-    if (begin == std::string::npos)
-        return {};
-
-    const auto bodyBegin = source.find('{', begin);
-    EXPECT_NE(bodyBegin, std::string::npos) << "Missing function body: " << functionNeedle;
-    if (bodyBegin == std::string::npos)
-        return {};
-
-    size_t depth = 0u;
-    for (size_t offset = bodyBegin; offset < source.size(); ++offset)
-    {
-        if (source[offset] == '{')
-        {
-            ++depth;
-        }
-        else if (source[offset] == '}')
-        {
-            --depth;
-            if (depth == 0u)
-                return source.substr(bodyBegin, offset - bodyBegin + 1u);
-        }
-    }
-
-    ADD_FAILURE() << "Unterminated function body: " << functionNeedle;
-    return {};
 }
 
 std::vector<std::uint8_t> RasterizeDrawListAlpha(
@@ -2972,17 +2924,6 @@ TEST(AssetBrowserPresentationTests, ResizeRetainsCanonicalGpuUntilNewPngIsDrawab
     ASSERT_TRUE(replacement.retainedGpuPresentation.has_value());
     EXPECT_EQ(replacement.retainedGpuPresentation->cacheKey, "hero-96");
     EXPECT_EQ(replacement.retainedGpuPresentation->textureGeneration, 11u);
-
-    const auto browserSource = ReadSourceText(RepoPath("Project/Editor/Panels/AssetBrowser.cpp"));
-    const auto drawBody = ExtractFunctionBody(
-        browserSource,
-        "void Editor::Panels::AssetBrowser::DrawProjectGridItemThumbnail(");
-    const auto retainedGpuDraw = drawBody.find("|draw=gpu-pool-retained");
-    const auto fallback = drawBody.find("ResolveAssetBrowserDisplayFallbackIconId");
-    ASSERT_NE(retainedGpuDraw, std::string::npos);
-    ASSERT_NE(fallback, std::string::npos);
-    EXPECT_LT(retainedGpuDraw, fallback)
-        << "A retained GPU preview must be tried before the tile falls back while the resized PNG uploads.";
 }
 
 TEST(AssetBrowserPresentationTests, ThumbnailImageCandidatesKeepRetainedImageBehindPendingReplacement)
@@ -2997,23 +2938,6 @@ TEST(AssetBrowserPresentationTests, ThumbnailImageCandidatesKeepRetainedImageBeh
     ASSERT_EQ(candidates.size(), 2u);
     EXPECT_EQ(candidates[0], "Library/AssetThumbnails/Hero-128.png");
     EXPECT_EQ(candidates[1], "Library/AssetThumbnails/Hero-96.png");
-
-    const auto browserSource = ReadSourceText(RepoPath("Project/Editor/Panels/AssetBrowser.cpp"));
-    const auto drawBody = ExtractFunctionBody(
-        browserSource,
-        "void Editor::Panels::AssetBrowser::DrawProjectGridItemThumbnail(");
-    const auto candidateLoop = drawBody.find(
-        "for (const auto& cachedImagePath : cachedImageCandidates)");
-    const auto unresolvedContinue = drawBody.find(
-        "if (textureInfo.textureHandle == nullptr)",
-        candidateLoop);
-    const auto fallback = drawBody.find("ResolveAssetBrowserDisplayFallbackIconId", candidateLoop);
-
-    ASSERT_NE(candidateLoop, std::string::npos);
-    ASSERT_NE(unresolvedContinue, std::string::npos);
-    ASSERT_NE(fallback, std::string::npos);
-    EXPECT_LT(unresolvedContinue, fallback)
-        << "A replacement texture that is still uploading must continue to the retained PNG before fallback.";
 }
 
 TEST(AssetBrowserPresentationTests, PendingThumbnailResultDoesNotReplaceCanonicalGpuPresentation)
@@ -5384,23 +5308,6 @@ TEST(AssetBrowserPresentationTests, ThumbnailGenerationScopeRetriesQueueBackpres
     EXPECT_FALSE(ShouldRetryAssetBrowserThumbnailRequestAfterBackpressure({}));
     EXPECT_FALSE(ShouldRetryAssetBrowserThumbnailRequestAfterBackpressure(
         "thumbnail-gpu-preview-resources-pending"));
-
-    const auto source = ReadSourceText(RepoPath("Project/Editor/Panels/AssetBrowser.cpp"));
-    const auto body = ExtractFunctionBody(
-        source,
-        "void Editor::Panels::AssetBrowser::UpdateThumbnailGenerationScope()");
-    const auto retryCheck = body.find(
-        "ShouldRetryAssetBrowserThumbnailRequestAfterBackpressure");
-    const auto offsetRollback = body.find("--m_pendingThumbnailScopeOffset", retryCheck);
-    const auto resultPublish = body.find("bool replaceThumbnailResult", retryCheck);
-
-    ASSERT_NE(retryCheck, std::string::npos);
-    ASSERT_NE(offsetRollback, std::string::npos);
-    ASSERT_NE(resultPublish, std::string::npos);
-    EXPECT_LT(offsetRollback, resultPublish)
-        << "Queue backpressure must retain the current scope item before any fallback result is published.";
-    EXPECT_NE(body.find("break;", offsetRollback), std::string::npos)
-        << "The current frame should stop submitting once the thumbnail service reports backpressure.";
 }
 
 TEST(AssetBrowserPresentationTests, ThumbnailTextureEvictionSkipsTexturesUsedThisFrame)

@@ -179,13 +179,6 @@ namespace
         bool m_ownsRuntime = false;
     };
 
-    bool ContainsRetainedResource(
-        const std::vector<std::shared_ptr<void>>& keepAlive,
-        const std::shared_ptr<void>& resource)
-    {
-        return std::find(keepAlive.begin(), keepAlive.end(), resource) != keepAlive.end();
-    }
-
     class ScopedDriverService final
     {
     public:
@@ -1926,17 +1919,9 @@ namespace
         {
             m_failNextCommandBufferBeginCalls.store(count, std::memory_order_relaxed);
         }
-        void FailNextCommandBufferBarrierCheckedCalls(const size_t count)
-        {
-            m_failNextCommandBufferBarrierCheckedCalls.store(count, std::memory_order_relaxed);
-        }
         void FailCommandBufferBarrierCheckedAtCommandPoolCall(const size_t callIndex)
         {
             m_failCommandBufferBarrierCheckedAtCommandPoolCall.store(callIndex, std::memory_order_relaxed);
-        }
-        void FailNextCreatedCommandPools(const size_t count)
-        {
-            m_failNextCreatedCommandPools.store(count, std::memory_order_relaxed);
         }
         void FailCreatedCommandPoolAtCall(const size_t callIndex)
         {

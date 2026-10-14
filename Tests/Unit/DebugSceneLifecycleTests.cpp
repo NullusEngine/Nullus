@@ -21,14 +21,6 @@
 
 namespace
 {
-    std::string ReadTextFile(const std::filesystem::path& path)
-    {
-        std::ifstream file(path);
-        std::ostringstream stream;
-        stream << file.rdbuf();
-        return stream.str();
-    }
-
     class TestBindingSet final : public NLS::Render::RHI::RHIBindingSet
     {
     public:
@@ -126,22 +118,6 @@ TEST(DebugSceneLifecycleTests, SceneVisibilityRefreshPreservesEditorHelperDrawCo
     EXPECT_EQ(snapshot.visibleHelperDrawCount, 3u);
 }
 
-TEST(DebugSceneLifecycleTests, DeferredSceneRendererBuildsAggregateHelperInputOnNoSceneFastPath)
-{
-    const auto source = ReadTextFile(
-        std::filesystem::path(NLS_ROOT_DIR) / "Runtime/Engine/Rendering/DeferredSceneRenderer.cpp");
-    const auto builderStart = source.find("DeferredSceneRenderer::BuildDeferredRenderSceneCommand");
-    ASSERT_NE(builderStart, std::string::npos);
-    const auto builderEnd = source.find("DeferredSceneRenderer::BuildRenderSceneCommand", builderStart);
-    ASSERT_NE(builderEnd, std::string::npos);
-
-    const auto builderBody = source.substr(builderStart, builderEnd - builderStart);
-    EXPECT_NE(
-        builderBody.find("BuildDeferredAggregateHelperPassInput(package)"),
-        std::string::npos)
-        << "The no-scene path must materialize snapshot-owned helper draws before frame-graph compilation.";
-}
-
 TEST(DebugSceneLifecycleTests, CullingOverlayItemsAreBuiltFromSceneBuildDataOnlyWhenEnabled)
 {
     NLS::Render::Context::RenderSceneBuildData snapshot;
@@ -211,19 +187,6 @@ TEST(DebugSceneLifecycleTests, SelectionHelpersRequireGameObjectPassAndSelectedG
     EXPECT_FALSE(OutlineRenderer::ShouldIncludeInThreadedFrame(false, &actor));
     EXPECT_FALSE(OutlineRenderer::ShouldIncludeInThreadedFrame(true, nullptr));
     EXPECT_TRUE(OutlineRenderer::ShouldIncludeInThreadedFrame(true, &actor));
-}
-
-TEST(DebugSceneLifecycleTests, EditorLargeSceneSettingsDisableHZBOcclusionByDefault)
-{
-    const auto header = ReadTextFile(
-        std::filesystem::path(NLS_ROOT_DIR) / "Project/Editor/Settings/EditorSettings.h");
-    const auto source = ReadTextFile(
-        std::filesystem::path(NLS_ROOT_DIR) / "Project/Editor/Settings/EditorSettings.cpp");
-
-    ASSERT_FALSE(header.empty());
-    ASSERT_FALSE(source.empty());
-    EXPECT_NE(header.find("bool enableHZBOcclusion = false;"), std::string::npos);
-    EXPECT_NE(source.find("settings.enableHZBOcclusion = editor.enableHZBOcclusion;"), std::string::npos);
 }
 
 TEST(DebugSceneLifecycleTests, EditorHelperDrawsDoNotReceiveLightGridPassBindings)

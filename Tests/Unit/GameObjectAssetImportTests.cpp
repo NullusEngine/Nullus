@@ -624,39 +624,6 @@ std::string FindFirstContentHashForArtifactType(
     return {};
 }
 
-std::string FindFirstImportedArtifactHashForSubAssetPrefix(
-    const std::filesystem::path& manifestPath,
-    const std::string& subAssetPrefix)
-{
-    std::ifstream input(manifestPath, std::ios::binary);
-    if (!input.good())
-        return {};
-
-    auto manifest = nlohmann::json::parse(input, nullptr, false);
-    if (!manifest.is_object() || !manifest["dependencies"].is_array())
-        return {};
-
-    for (const auto& dependency : manifest["dependencies"])
-    {
-        if (!dependency.is_object() ||
-            dependency.value("kind", std::string {}) != "imported-artifact")
-        {
-            continue;
-        }
-
-        const auto value = dependency.value("value", std::string {});
-        const auto separator = value.find('#');
-        if (separator == std::string::npos)
-            continue;
-
-        const auto subAssetAndTarget = value.substr(separator + 1u);
-        if (subAssetAndTarget.rfind(subAssetPrefix, 0u) == 0u)
-            return dependency.value("hashOrVersion", std::string {});
-    }
-
-    return {};
-}
-
 std::filesystem::path FindFirstImportedArtifactPathForSubAssetPrefix(
     const std::filesystem::path& root,
     const NLS::Core::Assets::AssetId sourceAssetId,
@@ -739,19 +706,6 @@ size_t CountArtifactTelemetryStage(
         {
             return record.stage == stage;
         }));
-}
-
-size_t MaxArtifactTelemetryStageBytes(
-    const std::vector<NLS::Core::Assets::ArtifactLoadTelemetryRecord>& records,
-    const NLS::Core::Assets::ArtifactLoadTelemetryStage stage)
-{
-    size_t bytes = 0u;
-    for (const auto& record : records)
-    {
-        if (record.stage == stage)
-            bytes = std::max(bytes, record.byteCount);
-    }
-    return bytes;
 }
 
 NLS::Render::Geometry::Vertex ImportTestVertexAt(float x, float y, float z)

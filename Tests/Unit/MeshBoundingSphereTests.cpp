@@ -68,41 +68,6 @@ NLS::Core::ServiceLocator::Provide(*driver);
         return vertex;
     }
 
-    NLS::Render::Assets::MeshArtifactData GridMeshArtifact(
-        const uint32_t sideVertexCount,
-        const float xOffset = 0.0f)
-    {
-        NLS::Render::Assets::MeshArtifactData mesh;
-        mesh.materialIndex = 7u;
-        mesh.vertices.reserve(static_cast<size_t>(sideVertexCount) * sideVertexCount);
-        for (uint32_t z = 0u; z < sideVertexCount; ++z)
-        {
-            for (uint32_t x = 0u; x < sideVertexCount; ++x)
-            {
-                const auto denominator = static_cast<float>(sideVertexCount - 1u);
-                mesh.vertices.push_back(VertexAt(
-                    xOffset - 1.0f + 2.0f * static_cast<float>(x) / denominator,
-                    0.0f,
-                    -1.0f + 2.0f * static_cast<float>(z) / denominator));
-            }
-        }
-        for (uint32_t z = 0u; z + 1u < sideVertexCount; ++z)
-        {
-            for (uint32_t x = 0u; x + 1u < sideVertexCount; ++x)
-            {
-                const auto topLeft = z * sideVertexCount + x;
-                const auto topRight = topLeft + 1u;
-                const auto bottomLeft = topLeft + sideVertexCount;
-                const auto bottomRight = bottomLeft + 1u;
-                mesh.indices.insert(mesh.indices.end(), {
-                    topLeft, bottomLeft, topRight,
-                    topRight, bottomLeft, bottomRight
-                });
-            }
-        }
-        return mesh;
-    }
-
     void AppendUInt32(std::vector<uint8_t>& bytes, uint32_t value)
     {
         bytes.push_back(static_cast<uint8_t>(value & 0xFFu));

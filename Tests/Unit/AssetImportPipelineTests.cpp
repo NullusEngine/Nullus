@@ -576,47 +576,6 @@ void WriteBinaryFile(const std::filesystem::path& path, const std::vector<uint8_
         static_cast<std::streamsize>(bytes.size()));
 }
 
-std::string ArtifactTypeManifestKey(const NLS::Core::Assets::ArtifactType type)
-{
-    switch (type)
-    {
-    case NLS::Core::Assets::ArtifactType::Model: return "model";
-    case NLS::Core::Assets::ArtifactType::Mesh: return "mesh";
-    case NLS::Core::Assets::ArtifactType::Material: return "material";
-    case NLS::Core::Assets::ArtifactType::Texture: return "texture";
-    case NLS::Core::Assets::ArtifactType::Skeleton: return "skeleton";
-    case NLS::Core::Assets::ArtifactType::Skin: return "skin";
-    case NLS::Core::Assets::ArtifactType::AnimationClip: return "animation-clip";
-    case NLS::Core::Assets::ArtifactType::MorphTarget: return "morph-target";
-    case NLS::Core::Assets::ArtifactType::Prefab: return "prefab";
-    case NLS::Core::Assets::ArtifactType::Scene: return "scene";
-    case NLS::Core::Assets::ArtifactType::Shader: return "shader";
-    case NLS::Core::Assets::ArtifactType::Audio: return "audio";
-    case NLS::Core::Assets::ArtifactType::Unknown:
-    case NLS::Core::Assets::ArtifactType::Count:
-        break;
-    }
-    return "unknown";
-}
-
-NLS::Core::Assets::ArtifactType ArtifactTypeFromManifestKey(const std::string& key)
-{
-    using NLS::Core::Assets::ArtifactType;
-    if (key == "model" || key == "Model") return ArtifactType::Model;
-    if (key == "mesh" || key == "Mesh") return ArtifactType::Mesh;
-    if (key == "material" || key == "Material") return ArtifactType::Material;
-    if (key == "texture" || key == "Texture") return ArtifactType::Texture;
-    if (key == "skeleton" || key == "Skeleton") return ArtifactType::Skeleton;
-    if (key == "skin" || key == "Skin") return ArtifactType::Skin;
-    if (key == "animation-clip" || key == "AnimationClip") return ArtifactType::AnimationClip;
-    if (key == "morph-target" || key == "MorphTarget") return ArtifactType::MorphTarget;
-    if (key == "prefab" || key == "Prefab") return ArtifactType::Prefab;
-    if (key == "scene" || key == "Scene") return ArtifactType::Scene;
-    if (key == "shader" || key == "Shader") return ArtifactType::Shader;
-    if (key == "audio" || key == "Audio") return ArtifactType::Audio;
-    return ArtifactType::Unknown;
-}
-
 void WriteArtifactManifestFile(
     const std::filesystem::path& artifactRoot,
     const NLS::Core::Assets::ArtifactManifest& manifest)
@@ -678,54 +637,6 @@ std::filesystem::path WriteTextureArtifactBlobForTest(
 }
 
 std::string TextureArtifactTargetPlatformForTest();
-
-std::optional<NLS::Core::Assets::ArtifactManifest> ReadArtifactManifestFile(
-    const std::filesystem::path& manifestPath)
-{
-    auto normalized = manifestPath.lexically_normal();
-    std::filesystem::path libraryPath;
-    for (auto it = normalized.begin(); it != normalized.end(); ++it)
-    {
-        libraryPath /= *it;
-        if (*it == "Library")
-            break;
-    }
-    if (libraryPath.empty() || libraryPath.filename() != "Library")
-        return std::nullopt;
-
-    NLS::Core::Assets::ArtifactDatabase database;
-    if (!database.Load(libraryPath / "ArtifactDB"))
-        return std::nullopt;
-
-    std::optional<NLS::Core::Assets::AssetId> requestedSourceAssetId;
-    for (auto it = normalized.begin(); it != normalized.end(); ++it)
-    {
-        if (*it == "Artifacts")
-        {
-            const auto next = std::next(it);
-            if (next != normalized.end())
-            {
-                if (const auto guid = NLS::Guid::TryParse(next->string()))
-                    requestedSourceAssetId = NLS::Core::Assets::AssetId(*guid);
-            }
-            break;
-        }
-    }
-    if (requestedSourceAssetId.has_value())
-    {
-        if (auto manifest = database.BuildManifestForSource(*requestedSourceAssetId, "editor"))
-            return manifest;
-        if (auto manifest = database.BuildManifestForSource(*requestedSourceAssetId, TextureArtifactTargetPlatformForTest()))
-            return manifest;
-    }
-
-    for (const auto& record : database.GetRecords())
-    {
-        if (record.sourceAssetId.IsValid())
-            return database.BuildManifestForSource(record.sourceAssetId, record.targetPlatform);
-    }
-    return std::nullopt;
-}
 
 void DisableExternalModelTextureResolution(NLS::Core::Assets::AssetMeta& meta)
 {
@@ -942,11 +853,6 @@ std::vector<uint8_t> UncompressedBmp(
             bytes.push_back(0u);
     }
     return bytes;
-}
-
-float DecodeNormalComponent(const uint8_t component)
-{
-    return (static_cast<float>(component) / 255.0f) * 2.0f - 1.0f;
 }
 
 float MaxAbsMeshPosition(const NLS::Render::Assets::MeshArtifactData& mesh)

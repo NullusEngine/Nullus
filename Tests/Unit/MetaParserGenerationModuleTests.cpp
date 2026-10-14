@@ -12,6 +12,15 @@
 #include <stdexcept>
 #include <vector>
 
+#define NLS_UNREGISTERED_TEST(suite, name) static void suite##_##name##_Unregistered()
+#if defined(NLS_REGISTER_LONG_RUNNING_META_PARSER_MODULE_TESTS)
+#undef TEST
+#define TEST(suite, name) NLS_UNREGISTERED_TEST(suite, name)
+#define NLS_LONG_RUNNING_TEST(performanceSuite, name) GTEST_TEST(performanceSuite, name)
+#else
+#define NLS_LONG_RUNNING_TEST(performanceSuite, name) NLS_UNREGISTERED_TEST(performanceSuite, name)
+#endif
+
 namespace
 {
 using NLS::Tests::Reflection::ExpectContains;
@@ -239,7 +248,7 @@ void WriteMetaParserConfig(
 }
 }
 
-TEST(MetaParserGenerationModuleTests, FixturePrecompileConfigInheritsBuildCompilerEnvironment)
+NLS_LONG_RUNNING_TEST(MetaParserGenerationModuleIntegrationPerformanceTests, FixturePrecompileConfigInheritsBuildCompilerEnvironment)
 {
     const auto root = std::filesystem::path(NLS_ROOT_DIR);
     const auto tempRoot = std::filesystem::path(NLS_BUILD_DIR) / "MetaParserConfigInheritanceFixture";
@@ -272,7 +281,7 @@ TEST(MetaParserGenerationModuleTests, FixturePrecompileConfigInheritsBuildCompil
         fixtureConfig["IncludeDirs"].end());
 }
 
-TEST(MetaParserGenerationModuleTests, GeneratesModuleSpecificRegistrationEntrypoints)
+NLS_LONG_RUNNING_TEST(MetaParserGenerationModuleIntegrationPerformanceTests, GeneratesModuleSpecificRegistrationEntrypoints)
 {
     const std::filesystem::path baseHeader = std::filesystem::path(NLS_ROOT_DIR) / "Runtime/Base/Gen/MetaGenerated.h";
     const std::filesystem::path engineHeader = std::filesystem::path(NLS_ROOT_DIR) / "Runtime/Engine/Gen/MetaGenerated.h";
@@ -286,7 +295,7 @@ TEST(MetaParserGenerationModuleTests, GeneratesModuleSpecificRegistrationEntrypo
     ExpectContains(engineText, "NLS_META_GENERATED_LINK_FUNCTION");
 }
 
-TEST(MetaParserGenerationModuleTests, GeneratesEditorExtensionDescriptorsFromHeaderMetadata)
+NLS_LONG_RUNNING_TEST(MetaParserGenerationModuleIntegrationPerformanceTests, GeneratesEditorExtensionDescriptorsFromHeaderMetadata)
 {
     const std::filesystem::path editorHeader =
         std::filesystem::path(NLS_ROOT_DIR) / "Project/Editor/Gen/EditorProject_MetaGenerated.h";
@@ -307,7 +316,7 @@ TEST(MetaParserGenerationModuleTests, GeneratesEditorExtensionDescriptorsFromHea
     ExpectContains(descriptorText, "RegisterEditorExtensionDescriptors");
 }
 
-TEST(MetaParserGenerationModuleTests, GeneratesExpectedBaseReflectionBindings)
+NLS_LONG_RUNNING_TEST(MetaParserGenerationModuleIntegrationPerformanceTests, GeneratesExpectedBaseReflectionBindings)
 {
     const std::filesystem::path sampleSource = std::filesystem::path(NLS_ROOT_DIR) / "Runtime/Base/Gen/Reflection/MetaParserFieldMethodSample.generated.cpp";
     const std::filesystem::path metaSource = std::filesystem::path(NLS_ROOT_DIR) / "Runtime/Base/Gen/MetaGenerated.cpp";
@@ -340,7 +349,7 @@ TEST(MetaParserGenerationModuleTests, GeneratesExpectedBaseReflectionBindings)
     ExpectContains(metaText, "#include \"Reflection/MetaParserFieldMethodSample.generated.cpp\"");
 }
 
-TEST(MetaParserGenerationModuleTests, ExternalReflectionTypeDiscoveryIgnoresCommentsAndDisabledBlocks)
+NLS_LONG_RUNNING_TEST(MetaParserGenerationModuleIntegrationPerformanceTests, ExternalReflectionTypeDiscoveryIgnoresCommentsAndDisabledBlocks)
 {
     const std::filesystem::path coreSource =
         std::filesystem::path(NLS_ROOT_DIR) / "Tools/MetaParser/src/MetaParserTool.Core.cs";
@@ -356,7 +365,7 @@ TEST(MetaParserGenerationModuleTests, ExternalReflectionTypeDiscoveryIgnoresComm
     ExpectNotContains(validationText, "Regex.Matches(\r\n                         headerText");
 }
 
-TEST(MetaParserGenerationModuleTests, HeaderSourceTemplateUsesGeneratedTypeTemplateModelShape)
+NLS_LONG_RUNNING_TEST(MetaParserGenerationModuleIntegrationPerformanceTests, HeaderSourceTemplateUsesGeneratedTypeTemplateModelShape)
 {
     const std::filesystem::path modelSource =
         std::filesystem::path(NLS_ROOT_DIR) / "Tools/MetaParser/src/Generation/GenerationModels.cs";
@@ -371,7 +380,7 @@ TEST(MetaParserGenerationModuleTests, HeaderSourceTemplateUsesGeneratedTypeTempl
     ExpectNotContains(templateText, "type.GeneratedBodyLine");
 }
 
-TEST(MetaParserGenerationModuleTests, CMakeTracksNestedMetaParserSourcesForIncrementalGeneration)
+NLS_LONG_RUNNING_TEST(MetaParserGenerationModuleIntegrationPerformanceTests, CMakeTracksNestedMetaParserSourcesForIncrementalGeneration)
 {
     const std::filesystem::path toolsCMakePath =
         std::filesystem::path(NLS_ROOT_DIR) / "Tools/MetaParser/CMakeLists.txt";
@@ -391,7 +400,7 @@ TEST(MetaParserGenerationModuleTests, CMakeTracksNestedMetaParserSourcesForIncre
     ExpectContains(runtimeCMake, "list(FILTER _meta_parser_tool_sources EXCLUDE REGEX [[/obj/]])");
 }
 
-TEST(MetaParserGenerationModuleTests, RenderingResourceReflectionOwnedClassesUseGeneratedBodies)
+NLS_LONG_RUNNING_TEST(MetaParserGenerationModuleIntegrationPerformanceTests, RenderingResourceReflectionOwnedClassesUseGeneratedBodies)
 {
     for (const auto& resource : kRenderingResourceReflectionFiles)
     {
@@ -423,7 +432,7 @@ TEST(MetaParserGenerationModuleTests, RenderingResourceReflectionOwnedClassesUse
     }
 }
 
-TEST(MetaParserGenerationModuleTests, RenderingResourceReflectionGeneratesOwnedRegistrations)
+NLS_LONG_RUNNING_TEST(MetaParserGenerationModuleIntegrationPerformanceTests, RenderingResourceReflectionGeneratesOwnedRegistrations)
 {
     for (const auto& resource : kRenderingResourceReflectionFiles)
     {
@@ -447,7 +456,7 @@ TEST(MetaParserGenerationModuleTests, RenderingResourceReflectionGeneratesOwnedR
     }
 }
 
-TEST(MetaParserGenerationModuleTests, RenderingResourceReflectionSkipsNonReflectedRuntimeInterfacesAsBases)
+NLS_LONG_RUNNING_TEST(MetaParserGenerationModuleIntegrationPerformanceTests, RenderingResourceReflectionSkipsNonReflectedRuntimeInterfacesAsBases)
 {
     const std::filesystem::path generatedSourcePath =
         std::filesystem::path(NLS_ROOT_DIR) / "Runtime/Rendering/Gen/Resources/Mesh.generated.cpp";
@@ -461,7 +470,7 @@ TEST(MetaParserGenerationModuleTests, RenderingResourceReflectionSkipsNonReflect
         "db.ResolveRegisteredType(moduleKey, \"NLS::Render::Resources::IMesh\", reportMissingType)");
 }
 
-TEST(MetaParserGenerationModuleTests, MetaParserCreatesHeaderStubsAndFiltersRuntimeInterfaces)
+NLS_LONG_RUNNING_TEST(MetaParserGenerationModuleIntegrationPerformanceTests, MetaParserCreatesHeaderStubsAndFiltersRuntimeInterfaces)
 {
     const auto root = std::filesystem::path(NLS_ROOT_DIR);
     const auto tempRoot = std::filesystem::path(NLS_BUILD_DIR) / "MetaParserGeneratedHeaderStubFixture";
@@ -544,7 +553,7 @@ TEST(MetaParserGenerationModuleTests, MetaParserCreatesHeaderStubsAndFiltersRunt
         "db.ResolveRegisteredType(moduleKey, \"NLS::Fixture::RuntimeOnlyInterface\", reportMissingType)");
 }
 
-TEST(MetaParserGenerationModuleTests, HeaderSourceTemplateAvoidsDuplicatingRuntimeMetaPropertiesInclude)
+NLS_LONG_RUNNING_TEST(MetaParserGenerationModuleIntegrationPerformanceTests, HeaderSourceTemplateAvoidsDuplicatingRuntimeMetaPropertiesInclude)
 {
     const std::filesystem::path generatedSource =
         std::filesystem::path(NLS_ROOT_DIR) / "Runtime/Base/Gen/Reflection/RuntimeMetaProperties.generated.cpp";
@@ -553,7 +562,7 @@ TEST(MetaParserGenerationModuleTests, HeaderSourceTemplateAvoidsDuplicatingRunti
     EXPECT_EQ(CountOccurrences(generatedText, "#include \"Reflection/RuntimeMetaProperties.h\""), 1u);
 }
 
-TEST(MetaParserGenerationModuleTests, ExternalReflectionTypeDiscoveryHandlesCommentsStringsAndElifBranches)
+NLS_LONG_RUNNING_TEST(MetaParserGenerationModuleIntegrationPerformanceTests, ExternalReflectionTypeDiscoveryHandlesCommentsStringsAndElifBranches)
 {
     const auto root = std::filesystem::path(NLS_ROOT_DIR);
     const auto tempRoot = std::filesystem::path(NLS_BUILD_DIR) / "MetaParserExternalDiscoveryFixture";
@@ -619,7 +628,7 @@ TEST(MetaParserGenerationModuleTests, ExternalReflectionTypeDiscoveryHandlesComm
     ExpectNotContains(processText, "DisabledExternal");
 }
 
-TEST(MetaParserGenerationModuleTests, RejectsPPtrFieldsWhoseTargetsAreNotSupportedEngineObjects)
+NLS_LONG_RUNNING_TEST(MetaParserGenerationModuleIntegrationPerformanceTests, RejectsPPtrFieldsWhoseTargetsAreNotSupportedEngineObjects)
 {
     const auto root = std::filesystem::path(NLS_ROOT_DIR);
     const auto tempRoot = std::filesystem::path(NLS_BUILD_DIR) / "MetaParserInvalidPPtrFixture";
@@ -671,7 +680,7 @@ TEST(MetaParserGenerationModuleTests, RejectsPPtrFieldsWhoseTargetsAreNotSupport
     ExpectContains(processText, "NLS::Fixture::UnsupportedObject");
 }
 
-TEST(MetaParserGenerationModuleTests, PPtrTargetMacroParsingFailsLoudlyAndAcceptsWrappedEntries)
+NLS_LONG_RUNNING_TEST(MetaParserGenerationModuleIntegrationPerformanceTests, PPtrTargetMacroParsingFailsLoudlyAndAcceptsWrappedEntries)
 {
     const auto root = std::filesystem::path(NLS_ROOT_DIR);
     const auto tempRoot = std::filesystem::path(NLS_BUILD_DIR) / "MetaParserWrappedPPtrTargetsFixture";
@@ -745,7 +754,7 @@ TEST(MetaParserGenerationModuleTests, PPtrTargetMacroParsingFailsLoudlyAndAccept
     ExpectContains(processText, "NLS_ENGINE_SERIALIZE_PPTR_RESOURCE_TARGETS");
 }
 
-TEST(MetaParserGenerationModuleTests, GeneratesStdVectorAndArrayReflectedValueFields)
+NLS_LONG_RUNNING_TEST(MetaParserGenerationModuleIntegrationPerformanceTests, GeneratesStdVectorAndArrayReflectedValueFields)
 {
     const auto root = std::filesystem::path(NLS_ROOT_DIR);
     const auto tempRoot = std::filesystem::path(NLS_BUILD_DIR) / "MetaParserVectorArrayFixture";
@@ -821,7 +830,7 @@ TEST(MetaParserGenerationModuleTests, GeneratesStdVectorAndArrayReflectedValueFi
     ExpectContains(templateText, "PPtrFieldTypeRegistrations");
 }
 
-TEST(MetaParserGenerationModuleTests, GeneratesRangeMetadataAndDefaultPrivateFieldAccessors)
+NLS_LONG_RUNNING_TEST(MetaParserGenerationModuleIntegrationPerformanceTests, GeneratesRangeMetadataAndDefaultPrivateFieldAccessors)
 {
     const auto root = std::filesystem::path(NLS_ROOT_DIR);
     const auto tempRoot = std::filesystem::path(NLS_BUILD_DIR) / "MetaParserRangePrivateFixture";
@@ -872,7 +881,7 @@ TEST(MetaParserGenerationModuleTests, GeneratesRangeMetadataAndDefaultPrivateFie
     ExpectContains(headerText, "friend struct ::NLS::meta_generated::PrivateAccess_NLS__Fixture__RangePrivateFixture;");
 }
 
-TEST(MetaParserGenerationModuleTests, RejectsPrivateAccessorPropertiesBeforeGeneratingInvalidPrivateFieldShim)
+NLS_LONG_RUNNING_TEST(MetaParserGenerationModuleIntegrationPerformanceTests, RejectsPrivateAccessorPropertiesBeforeGeneratingInvalidPrivateFieldShim)
 {
     const auto root = std::filesystem::path(NLS_ROOT_DIR);
     const auto tempRoot = std::filesystem::path(NLS_BUILD_DIR) / "MetaParserPrivateAccessorFixture";
@@ -922,7 +931,7 @@ TEST(MetaParserGenerationModuleTests, RejectsPrivateAccessorPropertiesBeforeGene
     ExpectContains(processText, "NLS::Fixture::PrivateAccessorFixture::GetValue");
 }
 
-TEST(MetaParserGenerationModuleTests, RejectsPropertyAnnotationsOnMethods)
+NLS_LONG_RUNNING_TEST(MetaParserGenerationModuleIntegrationPerformanceTests, RejectsPropertyAnnotationsOnMethods)
 {
     const auto root = std::filesystem::path(NLS_ROOT_DIR);
     const auto tempRoot = std::filesystem::path(NLS_BUILD_DIR) / "MetaParserMethodPropertyFixture";
@@ -969,7 +978,7 @@ TEST(MetaParserGenerationModuleTests, RejectsPropertyAnnotationsOnMethods)
     ExpectContains(processText, "PROPERTY(Getter(Name), Setter(Name))");
 }
 
-TEST(MetaParserGenerationModuleTests, BindsFieldsDirectlyWhenNoAccessorsAreDeclared)
+NLS_LONG_RUNNING_TEST(MetaParserGenerationModuleIntegrationPerformanceTests, BindsFieldsDirectlyWhenNoAccessorsAreDeclared)
 {
     const auto root = std::filesystem::path(NLS_ROOT_DIR);
     const auto tempRoot = std::filesystem::path(NLS_BUILD_DIR) / "MetaParserUnmarkedAccessorFixture";
@@ -1084,7 +1093,7 @@ MetaParserFixtureResult RunAccessorGrammarFixture(
 }
 } // namespace
 
-TEST(MetaParserGenerationModuleTests, BindsAccessorsDeclaredInsideTheFieldPropertyAnnotation)
+NLS_LONG_RUNNING_TEST(MetaParserGenerationModuleIntegrationPerformanceTests, BindsAccessorsDeclaredInsideTheFieldPropertyAnnotation)
 {
     const auto root = std::filesystem::path(NLS_ROOT_DIR);
     const auto fixture = RunAccessorGrammarFixture(
@@ -1106,7 +1115,7 @@ TEST(MetaParserGenerationModuleTests, BindsAccessorsDeclaredInsideTheFieldProper
     ExpectNotContains(fixture.generatedSource, "AddField<NLS::Fixture::AccessorBindingFixture, int>(\"value\", &NLS::Fixture::AccessorBindingFixture::value");
 }
 
-TEST(MetaParserGenerationModuleTests, BindsReadOnlyPropertyWhenOnlyAGetterIsDeclared)
+NLS_LONG_RUNNING_TEST(MetaParserGenerationModuleIntegrationPerformanceTests, BindsReadOnlyPropertyWhenOnlyAGetterIsDeclared)
 {
     const auto root = std::filesystem::path(NLS_ROOT_DIR);
     const auto fixture = RunAccessorGrammarFixture(
@@ -1125,7 +1134,7 @@ TEST(MetaParserGenerationModuleTests, BindsReadOnlyPropertyWhenOnlyAGetterIsDecl
     ExpectContains(fixture.generatedSource, "static_cast<void (NLS::Fixture::ReadOnlyAccessorFixture::*)(int)>(nullptr)");
 }
 
-TEST(MetaParserGenerationModuleTests, EmitsFormerlySerializedAsMetadataWithoutRenamingTheField)
+NLS_LONG_RUNNING_TEST(MetaParserGenerationModuleIntegrationPerformanceTests, EmitsFormerlySerializedAsMetadataWithoutRenamingTheField)
 {
     const auto root = std::filesystem::path(NLS_ROOT_DIR);
     const auto fixture = RunAccessorGrammarFixture(
@@ -1141,7 +1150,7 @@ TEST(MetaParserGenerationModuleTests, EmitsFormerlySerializedAsMetadataWithoutRe
     ExpectContains(fixture.generatedSource, "AddField<NLS::Fixture::RenamedFieldFixture, int>(\"value\"");
 }
 
-TEST(MetaParserGenerationModuleTests, RejectsBarePropertyArguments)
+NLS_LONG_RUNNING_TEST(MetaParserGenerationModuleIntegrationPerformanceTests, RejectsBarePropertyArguments)
 {
     const auto root = std::filesystem::path(NLS_ROOT_DIR);
     const auto fixture = RunAccessorGrammarFixture(
@@ -1156,7 +1165,7 @@ TEST(MetaParserGenerationModuleTests, RejectsBarePropertyArguments)
     ExpectContains(fixture.processOutput, "Unsupported PROPERTY argument `value`");
 }
 
-TEST(MetaParserGenerationModuleTests, RejectsSetterWithoutGetter)
+NLS_LONG_RUNNING_TEST(MetaParserGenerationModuleIntegrationPerformanceTests, RejectsSetterWithoutGetter)
 {
     const auto root = std::filesystem::path(NLS_ROOT_DIR);
     const auto fixture = RunAccessorGrammarFixture(
@@ -1173,7 +1182,7 @@ TEST(MetaParserGenerationModuleTests, RejectsSetterWithoutGetter)
     ExpectContains(fixture.processOutput, "without Getter(...)");
 }
 
-TEST(MetaParserGenerationModuleTests, RejectsMissingAccessorMethod)
+NLS_LONG_RUNNING_TEST(MetaParserGenerationModuleIntegrationPerformanceTests, RejectsMissingAccessorMethod)
 {
     const auto root = std::filesystem::path(NLS_ROOT_DIR);
     const auto fixture = RunAccessorGrammarFixture(
@@ -1189,7 +1198,7 @@ TEST(MetaParserGenerationModuleTests, RejectsMissingAccessorMethod)
     ExpectContains(fixture.processOutput, "NLS::Fixture::MissingAccessorFixture::GetMissing");
 }
 
-TEST(MetaParserGenerationModuleTests, RejectsAccessorWithMismatchedSignature)
+NLS_LONG_RUNNING_TEST(MetaParserGenerationModuleIntegrationPerformanceTests, RejectsAccessorWithMismatchedSignature)
 {
     const auto root = std::filesystem::path(NLS_ROOT_DIR);
     const auto fixture = RunAccessorGrammarFixture(
@@ -1207,7 +1216,7 @@ TEST(MetaParserGenerationModuleTests, RejectsAccessorWithMismatchedSignature)
     ExpectContains(fixture.processOutput, "A getter must take no arguments and return a value.");
 }
 
-TEST(MetaParserGenerationModuleTests, RejectsAccessorWithIncompatibleTypes)
+NLS_LONG_RUNNING_TEST(MetaParserGenerationModuleIntegrationPerformanceTests, RejectsAccessorWithIncompatibleTypes)
 {
     const auto root = std::filesystem::path(NLS_ROOT_DIR);
     const auto fixture = RunAccessorGrammarFixture(
@@ -1226,7 +1235,7 @@ TEST(MetaParserGenerationModuleTests, RejectsAccessorWithIncompatibleTypes)
     ExpectContains(fixture.processOutput, "has incompatible accessor types");
 }
 
-TEST(MetaParserGenerationModuleTests, RejectsAmbiguousAccessorOverloads)
+NLS_LONG_RUNNING_TEST(MetaParserGenerationModuleIntegrationPerformanceTests, RejectsAmbiguousAccessorOverloads)
 {
     const auto root = std::filesystem::path(NLS_ROOT_DIR);
     const auto fixture = RunAccessorGrammarFixture(
@@ -1247,7 +1256,7 @@ TEST(MetaParserGenerationModuleTests, RejectsAmbiguousAccessorOverloads)
     ExpectContains(fixture.processOutput, "ambiguously");
 }
 
-TEST(MetaParserGenerationModuleTests, RejectsDuplicateAccessorBindings)
+NLS_LONG_RUNNING_TEST(MetaParserGenerationModuleIntegrationPerformanceTests, RejectsDuplicateAccessorBindings)
 {
     const auto root = std::filesystem::path(NLS_ROOT_DIR);
     const auto fixture = RunAccessorGrammarFixture(
@@ -1264,7 +1273,7 @@ TEST(MetaParserGenerationModuleTests, RejectsDuplicateAccessorBindings)
     ExpectContains(fixture.processOutput, "declares Getter(...) more than once");
 }
 
-TEST(MetaParserGenerationModuleTests, RejectsGetterAndSetterArgumentsOnFunctions)
+NLS_LONG_RUNNING_TEST(MetaParserGenerationModuleIntegrationPerformanceTests, RejectsGetterAndSetterArgumentsOnFunctions)
 {
     const auto root = std::filesystem::path(NLS_ROOT_DIR);
     const auto fixture = RunAccessorGrammarFixture(
@@ -1280,7 +1289,7 @@ TEST(MetaParserGenerationModuleTests, RejectsGetterAndSetterArgumentsOnFunctions
     ExpectContains(fixture.processOutput, "Getter(...)/Setter(...) belong on the PROPERTY annotation of the backing field.");
 }
 
-TEST(MetaParserGenerationModuleTests, RejectsMalformedRangeMetadataBeforeGeneratingCpp)
+NLS_LONG_RUNNING_TEST(MetaParserGenerationModuleIntegrationPerformanceTests, RejectsMalformedRangeMetadataBeforeGeneratingCpp)
 {
     const auto root = std::filesystem::path(NLS_ROOT_DIR);
     const auto tempRoot = std::filesystem::path(NLS_BUILD_DIR) / "MetaParserMalformedRangeFixture";
@@ -1325,7 +1334,7 @@ TEST(MetaParserGenerationModuleTests, RejectsMalformedRangeMetadataBeforeGenerat
     ExpectContains(processText, "Range(0, MakeMax())");
 }
 
-TEST(MetaParserGenerationModuleTests, RejectsUnknownPropertyMetadataBeforeGeneratingCpp)
+NLS_LONG_RUNNING_TEST(MetaParserGenerationModuleIntegrationPerformanceTests, RejectsUnknownPropertyMetadataBeforeGeneratingCpp)
 {
     const auto root = std::filesystem::path(NLS_ROOT_DIR);
     const auto tempRoot = std::filesystem::path(NLS_BUILD_DIR) / "MetaParserUnknownPropertyMetaFixture";
@@ -1370,7 +1379,7 @@ TEST(MetaParserGenerationModuleTests, RejectsUnknownPropertyMetadataBeforeGenera
     ExpectContains(processText, "Rnage(0, 1)");
 }
 
-TEST(MetaParserGenerationModuleTests, RejectsInvertedRangeMetadataBeforeGeneratingCpp)
+NLS_LONG_RUNNING_TEST(MetaParserGenerationModuleIntegrationPerformanceTests, RejectsInvertedRangeMetadataBeforeGeneratingCpp)
 {
     const auto root = std::filesystem::path(NLS_ROOT_DIR);
     const auto tempRoot = std::filesystem::path(NLS_BUILD_DIR) / "MetaParserInvertedRangeFixture";
@@ -1415,7 +1424,7 @@ TEST(MetaParserGenerationModuleTests, RejectsInvertedRangeMetadataBeforeGenerati
     ExpectContains(processText, "Range(10, 0)");
 }
 
-TEST(MetaParserGenerationModuleTests, GeneratedSourcesRegisterEnumTypesWithoutGeneratedBody)
+NLS_LONG_RUNNING_TEST(MetaParserGenerationModuleIntegrationPerformanceTests, GeneratedSourcesRegisterEnumTypesWithoutGeneratedBody)
 {
     const std::filesystem::path lightTypeSource =
         std::filesystem::path(NLS_ROOT_DIR) / "Runtime/Rendering/Gen/Settings/ELightType.generated.cpp";
@@ -1426,7 +1435,7 @@ TEST(MetaParserGenerationModuleTests, GeneratedSourcesRegisterEnumTypesWithoutGe
     ExpectContains(lightTypeText, "static StaticTypeRegister_NLS__Render__Settings__ELightType g_StaticTypeRegister_NLS__Render__Settings__ELightType");
 }
 
-TEST(MetaParserGenerationModuleTests, GeneratesComponentMenuTypeMetadataBindings)
+NLS_LONG_RUNNING_TEST(MetaParserGenerationModuleIntegrationPerformanceTests, GeneratesComponentMenuTypeMetadataBindings)
 {
     const std::filesystem::path meshRendererSource = std::filesystem::path(NLS_ROOT_DIR) / "Runtime/Engine/Gen/Components/MeshRenderer.generated.cpp";
     const std::filesystem::path cameraSource = std::filesystem::path(NLS_ROOT_DIR) / "Runtime/Engine/Gen/Components/CameraComponent.generated.cpp";
@@ -1442,7 +1451,7 @@ TEST(MetaParserGenerationModuleTests, GeneratesComponentMenuTypeMetadataBindings
     ExpectContains(meshRendererText, "type.meta");
 }
 
-TEST(MetaParserGenerationModuleTests, MapsDenseRuntimeMetaPropertyGeneratedBodiesToTheirOwnTypes)
+NLS_LONG_RUNNING_TEST(MetaParserGenerationModuleIntegrationPerformanceTests, MapsDenseRuntimeMetaPropertyGeneratedBodiesToTheirOwnTypes)
 {
     const std::filesystem::path generatedHeader =
         std::filesystem::path(NLS_ROOT_DIR) / "Runtime/Base/Gen/Reflection/RuntimeMetaProperties.generated.h";
@@ -1490,7 +1499,7 @@ TEST(MetaParserGenerationModuleTests, MapsDenseRuntimeMetaPropertyGeneratedBodie
     }
 }
 
-TEST(MetaParserGenerationModuleTests, GeneratesExpectedEditorSettingsReflectionBindings)
+NLS_LONG_RUNNING_TEST(MetaParserGenerationModuleIntegrationPerformanceTests, GeneratesExpectedEditorSettingsReflectionBindings)
 {
     const std::filesystem::path sceneToolSource =
         std::filesystem::path(NLS_ROOT_DIR) / "Project/Editor/Gen/Project/Editor/Settings/EditorSettings.generated.cpp";

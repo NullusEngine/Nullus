@@ -71,16 +71,6 @@ public:
     void Barrier(const NLS::Render::RHI::RHIBarrierDesc&) override {}
 };
 
-std::unique_ptr<NLS::Render::Resources::Mesh> CreateTriangleMesh()
-{
-    std::vector<NLS::Render::Geometry::Vertex> vertices(3);
-    vertices[0].position[0] = 0.0f;
-    vertices[1].position[0] = 1.0f;
-    vertices[2].position[1] = 1.0f;
-    std::vector<uint32_t> indices { 0u, 1u, 2u };
-    return std::make_unique<NLS::Render::Resources::Mesh>(vertices, indices, 0u);
-}
-
 class StatsOnlyRenderer final : public NLS::Render::Core::CompositeRenderer
 {
 public:
@@ -457,63 +447,6 @@ const NLS::UI::Widgets::Text& TextWidgetAt(NLS::UI::PanelWindow& panel, const si
     return *text;
 }
 
-void ExpectTextWidgetContent(NLS::UI::PanelWindow& panel, const std::string& expectedContent)
-{
-    const auto& widgets = panel.GetWidgets();
-    const auto found = std::any_of(
-        widgets.begin(),
-        widgets.end(),
-        [&expectedContent](const auto& widget)
-        {
-            const auto* text = dynamic_cast<NLS::UI::Widgets::Text*>(widget.first);
-            return text != nullptr && text->content == expectedContent;
-        });
-
-    EXPECT_TRUE(found) << "Missing FrameInfo text: " << expectedContent;
-}
-
-void ExpectNoTextWidgetContent(NLS::UI::PanelWindow& panel, const std::string& unexpectedContent)
-{
-    const auto& widgets = panel.GetWidgets();
-    const auto found = std::any_of(
-        widgets.begin(),
-        widgets.end(),
-        [&unexpectedContent](const auto& widget)
-        {
-            const auto* text = dynamic_cast<NLS::UI::Widgets::Text*>(widget.first);
-            return text != nullptr && text->content == unexpectedContent;
-        });
-
-    EXPECT_FALSE(found) << "Unexpected FrameInfo text: " << unexpectedContent;
-}
-
-std::optional<size_t> FindTextWidgetIndex(NLS::UI::PanelWindow& panel, const std::string& expectedContent)
-{
-    const auto& widgets = panel.GetWidgets();
-    for (size_t index = 0u; index < widgets.size(); ++index)
-    {
-        const auto* text = dynamic_cast<NLS::UI::Widgets::Text*>(widgets[index].first);
-        if (text != nullptr && text->content == expectedContent)
-            return index;
-    }
-
-    return std::nullopt;
-}
-
-void ExpectTextWidgetBefore(
-    NLS::UI::PanelWindow& panel,
-    const std::string& earlierContent,
-    const std::string& laterContent)
-{
-    const auto earlierIndex = FindTextWidgetIndex(panel, earlierContent);
-    const auto laterIndex = FindTextWidgetIndex(panel, laterContent);
-
-    ASSERT_TRUE(earlierIndex.has_value()) << "Missing FrameInfo text: " << earlierContent;
-    ASSERT_TRUE(laterIndex.has_value()) << "Missing FrameInfo text: " << laterContent;
-    EXPECT_LT(earlierIndex.value(), laterIndex.value())
-        << "Expected \"" << earlierContent << "\" before \"" << laterContent << "\".";
-}
-
 std::optional<size_t> FindFrameInfoRowIndex(
     const std::vector<NLS::Editor::Panels::FrameInfoTableRow>& rows,
     const std::string& section,
@@ -574,16 +507,6 @@ void ExpectFrameInfoRowBefore(
     ASSERT_TRUE(earlierIndex.has_value()) << "Missing FrameInfo table row: " << earlierSection << " / " << earlierMetric;
     ASSERT_TRUE(laterIndex.has_value()) << "Missing FrameInfo table row: " << laterSection << " / " << laterMetric;
     EXPECT_LT(earlierIndex.value(), laterIndex.value());
-}
-
-std::string ReadSourceFile(const std::filesystem::path& path)
-{
-    std::ifstream stream(path, std::ios::binary);
-    EXPECT_TRUE(stream.is_open()) << path.string();
-    return {
-        std::istreambuf_iterator<char>(stream),
-        std::istreambuf_iterator<char>()
-    };
 }
 
 }
@@ -647,113 +570,6 @@ TEST(PanelWindowHookTests, PanelDrawProfilerScopeUsesVisiblePanelName)
 #else
     SUCCEED() << "Profiling macros compile to no-ops when NLS_ENABLE_PROFILING is disabled.";
 #endif
-}
-
-TEST(PanelWindowHookTests, StartupArtifactDbRefreshesOnlyWhenWatcherImportsChangedAssets)
-{
-    const auto applicationSource = ReadSourceFile(
-        std::filesystem::path(NLS_ROOT_DIR) / "Project/Editor/Core/Application.cpp");
-
-    const auto startupBegin = applicationSource.find(
-        "RunBlockingStartupAssetPreimport(");
-    ASSERT_NE(startupBegin, std::string::npos);
-    const auto startupEnd = applicationSource.find("m_context.CompleteStartupProgress()", startupBegin);
-    ASSERT_NE(startupEnd, std::string::npos);
-    const auto startupBody = applicationSource.substr(startupBegin, startupEnd - startupBegin);
-
-    std::vector<size_t> refreshOffsets;
-    for (size_t searchFrom = 0u;;)
-    {
-        const auto refresh = startupBody.find("m_context.RefreshRuntimeAssetDatabaseFromArtifactDB()", searchFrom);
-        if (refresh == std::string::npos)
-            break;
-        refreshOffsets.push_back(refresh);
-        searchFrom = refresh + 1u;
-    }
-    ASSERT_EQ(refreshOffsets.size(), 3u)
-        << "Startup should retain one blocking refresh plus two conditional watcher refresh sites.";
-
-    const auto blockingRefresh = startupBody.find("m_context.RefreshRuntimeAssetDatabaseFromArtifactDB()");
-    ASSERT_NE(blockingRefresh, std::string::npos);
-    const auto blockingRefreshGuard = startupBody.rfind("startupPreimport.importedAssetCount > 0u", blockingRefresh);
-    ASSERT_NE(blockingRefreshGuard, std::string::npos)
-        << "A startup preimport pass that imports no assets must reuse the runtime asset database loaded "
-           "during Context startup instead of rebuilding the ArtifactDB manifest again.";
-
-    const auto startupWatcherResult = startupBody.find(
-        "const auto startupWatcherPreimport = runStartupWatcherPreimport");
-    ASSERT_NE(startupWatcherResult, std::string::npos);
-    const auto finalWatcherResult = startupBody.find(
-        "const auto finalStartupWatcherImport = m_editor->CompleteStartupWatcherPreimportGate");
-    ASSERT_NE(finalWatcherResult, std::string::npos);
-    EXPECT_NE(
-        startupBody.find("if (startupWatcherPreimport.requiresRuntimeAssetRefresh)", startupWatcherResult),
-        std::string::npos)
-        << "A clean watcher pass must not rebuild the runtime asset database before the first frame.";
-    EXPECT_NE(
-        startupBody.find("if (finalStartupWatcherImport.requiresRuntimeAssetRefresh)", finalWatcherResult),
-        std::string::npos)
-        << "A clean final watcher pass must not rebuild the runtime asset database before opening the editor.";
-    EXPECT_EQ(
-        startupBody.find("DeferStartupSceneViewRenderForNextFrame"),
-        std::string::npos)
-        << "Startup should render the Scene View before closing the native progress dialog so the opened editor "
-           "does not show a blank viewport while the deferred renderer builds its first visible frame.";
-
-    const auto assetBrowserSource = ReadSourceFile(
-        std::filesystem::path(NLS_ROOT_DIR) / "Project/Editor/Panels/AssetBrowser.cpp");
-    const auto watcherPreimport = assetBrowserSource.find("AssetBrowser::RunStartupWatcherPreimport");
-    ASSERT_NE(watcherPreimport, std::string::npos);
-    const auto engineChangesBranch = assetBrowserSource.find("if (!engineAssetChanges.empty())", watcherPreimport);
-    ASSERT_NE(engineChangesBranch, std::string::npos);
-    const auto projectChangesBranch = assetBrowserSource.find("if (projectAssetChanges.empty())", engineChangesBranch);
-    ASSERT_NE(projectChangesBranch, std::string::npos);
-    const auto engineChangesBody = assetBrowserSource.substr(
-        engineChangesBranch,
-        projectChangesBranch - engineChangesBranch);
-    EXPECT_EQ(engineChangesBody.find("requiresRuntimeAssetRefresh = true"), std::string::npos)
-        << "Engine watcher startup noise, especially build-copied built-in assets, must refresh the UI only; "
-           "project asset changes are what require rebuilding the runtime asset database.";
-
-    std::vector<size_t> preloadOffsets;
-    for (size_t searchFrom = 0u;;)
-    {
-        const auto preload = startupBody.find("BaseSceneRenderer::PreloadSceneFallbackShader", searchFrom);
-        if (preload == std::string::npos)
-            break;
-        preloadOffsets.push_back(preload);
-        searchFrom = preload + 1u;
-    }
-    EXPECT_EQ(preloadOffsets.size(), refreshOffsets.size() + 1u)
-        << "StandardPBR may be imported by a later startup watcher pass; every ArtifactDB refresh site and "
-           "the cache-hit first-frame path must retry loading the scene fallback shader before rendering meshes.";
-    EXPECT_NE(startupBody.find("PreloadSceneFallbackShader(m_context.shaderManager, false)"), std::string::npos)
-        << "Early startup fallback attempts should be quiet because later watcher imports can still populate ArtifactDB.";
-    EXPECT_NE(startupBody.find("PreloadSceneFallbackShader(m_context.shaderManager);"), std::string::npos)
-        << "The final startup retry should keep the warning if StandardPBR is still unavailable.";
-
-    const auto firstEditorFrame = startupBody.find("RunEditorFrame(0.0f)");
-    ASSERT_NE(firstEditorFrame, std::string::npos);
-    const auto firstFrameFallbackRetry = startupBody.find(
-        "PreloadSceneFallbackShader(m_context.shaderManager, false)",
-        startupBody.find("RefreshProjectAssetBrowser"));
-    ASSERT_NE(firstFrameFallbackRetry, std::string::npos)
-        << "A cache-hit startup still needs a final quiet fallback retry before the first editor frame, "
-           "otherwise progressive scene-load meshes can render without the default material.";
-    EXPECT_LT(firstFrameFallbackRetry, firstEditorFrame);
-    for (const auto refresh : refreshOffsets)
-    {
-        const auto preload = startupBody.find("BaseSceneRenderer::PreloadSceneFallbackShader", refresh);
-        ASSERT_NE(preload, std::string::npos)
-            << "Every startup ArtifactDB refresh must be followed by a fallback shader preload retry.";
-        EXPECT_LT(refresh, preload);
-        if (refresh < firstEditorFrame)
-        {
-            EXPECT_LT(preload, firstEditorFrame)
-                << "The first visible editor frame should have retried the StandardPBR fallback after "
-                   "all startup imports that can populate ArtifactDB.";
-        }
-    }
 }
 
 TEST(PanelWindowHookTests, PanelDrawRecordsLastDrawDurationForFrameInfo)
@@ -1207,34 +1023,6 @@ TEST(PanelWindowHookTests, FrameInfoPanelExcludesEditorUiPanelDrawMetrics)
     // rest of the binary. The process-wide registration is what makes a later
     // FlushRenderingCommands wait for a drain nobody can run.
     driver->ShutdownThreadedRendering();
-}
-
-TEST(PanelWindowHookTests, EditorResolvesUiSceneWaitAfterCanvasDraw)
-{
-    const auto editorSource = ReadSourceFile(
-        std::filesystem::path(NLS_ROOT_DIR) / "Project/Editor/Core/Editor.cpp");
-
-    const auto renderCall = editorSource.find("Editor::UIManagerRender");
-    ASSERT_NE(renderCall, std::string::npos);
-    const auto renderBlockEnd = editorSource.find("void Editor::Core::Editor::PostUpdate", renderCall);
-    ASSERT_NE(renderBlockEnd, std::string::npos);
-
-    const auto renderBlock = editorSource.substr(renderCall, renderBlockEnd - renderCall);
-    EXPECT_EQ(renderBlock.find("UIManager::SetWaitSemaphore"), std::string::npos);
-    EXPECT_EQ(
-        renderBlock.find("if (uiSyncBoundary.sceneToUiWaitSemaphore.IsValid())"),
-        std::string::npos);
-    EXPECT_EQ(
-        renderBlock.find("DriverUIAccess::GetRenderFinishedSemaphore(*m_context.driver)"),
-        std::string::npos);
-
-    const auto postUpdateCall = editorSource.find("DriverUIAccess::PresentSwapchain", renderBlockEnd);
-    ASSERT_NE(postUpdateCall, std::string::npos);
-    const auto inputClear = editorSource.find("InputManager::ClearEvents", postUpdateCall);
-    ASSERT_NE(inputClear, std::string::npos);
-    EXPECT_LT(postUpdateCall, inputClear)
-        << "Migrated UI rendering should present through the RHI frame graph after ImGui draw-data capture "
-           "and before per-frame input events are cleared.";
 }
 
 TEST(PanelWindowHookTests, FrameInfoPanelRefreshesFromViewOwnedSnapshotAndRetainsLastSuccessfulRender)

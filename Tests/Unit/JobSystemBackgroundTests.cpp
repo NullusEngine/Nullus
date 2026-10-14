@@ -179,15 +179,6 @@ namespace
         data->returned->store(true, std::memory_order_release);
     }
 
-    void BlockingCancel(void* userData)
-    {
-        auto* data = static_cast<BlockingJobData*>(userData);
-        data->started->fetch_add(1, std::memory_order_acq_rel);
-        while (!data->release->load(std::memory_order_acquire))
-            std::this_thread::yield();
-        data->finished->fetch_add(1, std::memory_order_acq_rel);
-    }
-
     struct RecordedProfilerScope
     {
         std::string phase;

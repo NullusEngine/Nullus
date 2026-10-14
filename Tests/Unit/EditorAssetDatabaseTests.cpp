@@ -383,22 +383,6 @@ size_t CountArtifactTelemetryStage(
         }));
 }
 
-std::string EditorAssetDatabaseFileStamp(const std::filesystem::path& path)
-{
-    std::error_code error;
-    const auto size = std::filesystem::file_size(path, error);
-    if (error)
-        return {};
-
-    error.clear();
-    const auto writeTime = std::filesystem::last_write_time(path, error);
-    if (error)
-        return {};
-
-    return std::to_string(size) + ":" +
-        std::to_string(static_cast<std::intmax_t>(writeTime.time_since_epoch().count()));
-}
-
 NLS::Core::Assets::ImportedArtifact MakeEditorAssetDatabaseArtifact(
     const NLS::Core::Assets::AssetId assetId,
     std::string subAssetKey,

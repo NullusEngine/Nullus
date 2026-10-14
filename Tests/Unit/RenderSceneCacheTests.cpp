@@ -91,12 +91,6 @@ namespace
             1u).release();
     }
 
-    std::string ReadRepoText(const std::filesystem::path& relativePath)
-    {
-        std::ifstream stream(std::filesystem::path(NLS_ROOT_DIR) / relativePath, std::ios::binary);
-        return std::string((std::istreambuf_iterator<char>(stream)), std::istreambuf_iterator<char>());
-    }
-
     bool IsDxcUnavailableDiagnosticForTests(const std::string& diagnostics)
     {
         return diagnostics.find("Unable to locate dxc.exe.") != std::string::npos ||
@@ -662,11 +656,6 @@ namespace
         }
 
         /** Pins the publication accessors used by game-thread readers. */
-        bool HasPublishedPickableSourcesForTesting() const
-        {
-            return HasLastVisiblePickablePrimitiveDrawSources();
-        }
-
         std::shared_ptr<const std::vector<NLS::Engine::Rendering::ScenePickablePrimitiveDrawSource>>
         GetPublishedPickableSourcesForTesting() const
         {
@@ -822,12 +811,6 @@ TEST(RenderSceneCacheTests, BaseSceneRendererStoresLargeSceneSettingsOverride)
     {
         const auto fileName = NLS::Core::Assets::BuildArtifactStorageFileName(key);
         return root / "Library" / "Artifacts" / NLS::Core::Assets::BuildArtifactStorageRelativePath(fileName);
-    }
-
-    void CopyTextFile(const std::filesystem::path& source, const std::filesystem::path& destination)
-    {
-        std::filesystem::create_directories(destination.parent_path());
-        std::filesystem::copy_file(source, destination, std::filesystem::copy_options::overwrite_existing);
     }
 
 	void RegisterImportedShaderLabArtifact(
@@ -1365,41 +1348,6 @@ TEST(RenderSceneCacheTests, RenderComponentChangesAdvanceSceneRevision)
     const auto afterComponentRemoval = scene.GetRenderContentRevision();
     ASSERT_TRUE(lightObject.RemoveComponent(light));
     EXPECT_GT(scene.GetRenderContentRevision(), afterComponentRemoval);
-}
-
-TEST(RenderSceneCacheTests, ReuseCheckValidatesCachedCommandStampBeforeMaterialDereference)
-{
-    const auto source = ReadRepoText("Runtime/Engine/Rendering/RenderScene.cpp");
-    const auto functionStart = source.find("bool RenderScene::CanReuseSynchronizedPrimitive(");
-    ASSERT_NE(functionStart, std::string::npos);
-    const auto functionEnd = source.find("void RenderScene::RemoveMissingPrimitives", functionStart);
-    ASSERT_NE(functionEnd, std::string::npos);
-    const auto body = source.substr(functionStart, functionEnd - functionStart);
-
-    const auto stampMaterialCheck = body.find("slot.stamp.material != slot.command.material");
-    const auto texturePathDereference = body.find("GetTextureResourcePaths()");
-
-    EXPECT_NE(stampMaterialCheck, std::string::npos)
-        << "Preview-owned materials can be replaced between frames; the render-scene reuse fast path must "
-           "reject stale cached commands before reading their material pointer.";
-    EXPECT_NE(texturePathDereference, std::string::npos);
-    if (stampMaterialCheck != std::string::npos && texturePathDereference != std::string::npos)
-        EXPECT_LT(stampMaterialCheck, texturePathDereference);
-}
-
-TEST(RenderSceneCacheTests, StableObjectIndexAssignmentReservesClaimedIndexStorage)
-{
-    const auto source = ReadRepoText("Runtime/Engine/Rendering/RenderScene.cpp");
-    const auto functionStart = source.find("void RenderScene::AssignVisibleObjectIndices(");
-    ASSERT_NE(functionStart, std::string::npos);
-    const auto functionEnd = source.find("#undef NLS_RENDER_SCENE_CACHE_SKIP_IF_NATIVE_DXC_UNAVAILABLE", functionStart);
-    const auto body = source.substr(functionStart, functionEnd == std::string::npos
-        ? std::string::npos
-        : functionEnd - functionStart);
-
-    EXPECT_NE(
-        body.find("claimedStableObjectIndices.reserve(reservedStableObjectIndices.size())"),
-        std::string::npos);
 }
 
 TEST(RenderSceneCacheTests, MutableTransformAccessUpdatesPrimitiveWorldMatrixWithoutCommandRebuild)

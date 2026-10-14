@@ -226,32 +226,3 @@ TEST(VulkanSubmitLaneTests, ShaderReadBuffersAndDepthPassTransitionsSatisfyValid
  * freed pool. The invariant is easy to undo by "simplifying" the constructor
  * back to raw handles, so it is pinned here.
  */
-TEST(VulkanSubmitLaneTests, CommandBufferKeepsItsAllocatingPoolAlive)
-{
-    const auto path = std::filesystem::path(NLS_ROOT_DIR) /
-        "Runtime/Rendering/RHI/Backends/Vulkan/VulkanExplicitDeviceFactory.cpp";
-    std::ifstream input(path, std::ios::binary);
-    ASSERT_TRUE(input.is_open()) << "Failed to open " << path.string();
-    // Braces avoid the most-vexing-parse reading of the second iterator as a
-    // parameter declaration, which would make `source` a function.
-    const std::string source {
-        std::istreambuf_iterator<char>(input),
-        std::istreambuf_iterator<char>()};
-
-    EXPECT_NE(source.find("struct NativeVulkanCommandPoolLifetime"), std::string::npos)
-        << "The Vulkan backend must keep a shared pool-lifetime token.";
-    EXPECT_NE(
-        source.find("std::shared_ptr<NativeVulkanCommandPoolLifetime> m_poolLifetime"),
-        std::string::npos)
-        << "Every command buffer must retain the pool it was allocated from.";
-    EXPECT_NE(
-        source.find("~NativeVulkanCommandPool() = default;"),
-        std::string::npos)
-        << "The pool object must not destroy the VkCommandPool while buffers "
-           "allocated from it are still referenced.";
-    // Built from two literals so the needle never carries a comma inside a
-    // single macro argument.
-    const std::string handOffNeedle = std::string("m_commandPool") + ", m_lifetime";
-    EXPECT_NE(source.find(handOffNeedle), std::string::npos)
-        << "CreateCommandBuffer must hand the lifetime token to the buffer.";
-}

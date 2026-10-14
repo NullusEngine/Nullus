@@ -49,8 +49,8 @@ Rendering follows a command-based thread model: the Game Thread only produces co
 ### A Visual Material And ShaderLab Workflow
 
 - **Built-in StandardPBR baseline**: The engine ships a `StandardPBR` ShaderLab asset. Model import connects materials, textures, and sub-assets to the same PBR content path.
-- **Shader-defined material panels**: ShaderLab properties support Float, Int, Color, Vector, and Texture values. Materials also manage keyword sets and render-queue overrides, keeping parameters, variants, and render state on one resource object.
-- **Edit and preview in the Editor**: The Material Editor can select or accept dropped materials and shaders, generate parameter controls from the active shader, and provide preview and reset actions. The Asset Browser supplies GPU thumbnail previews for materials.
+- **Shader-defined material parameters**: ShaderLab properties support Float, Int, Range, Vector, Color, and Texture2D / TextureCube values. Materials also manage keyword sets and render-queue overrides, keeping parameters, variants, and render state on one resource object.
+- **Edit and preview in the Editor**: Selecting a material asset in the Inspector exposes its render state, shader, and uniform parameters, with the parameter list generated from the material's current uniform data. Edits apply immediately and join the undo stack, while save and reload stay explicit asset actions. The Asset Browser supplies GPU thumbnails and a Preview action that opens the material in the Asset View panel.
 - **Asset-managed, validated reloads**: Materials are managed as asynchronously loadable and prewarmable resource artifacts. ShaderLab reloads validate requested variants first, then update dependent materials and invalidate affected pipeline generations on success.
 
 ### From Source Files To Usable Assets

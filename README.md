@@ -49,8 +49,8 @@ Nullus 是一个持续演进的 C++ 3D 引擎。它将原生运行时、项目�
 ### 可视化的材质与 ShaderLab 工作流
 
 - **内置 StandardPBR 基线**：引擎自带 `StandardPBR` ShaderLab 资源；模型导入会将材质、纹理和子资源接入这一套 PBR 内容链路。
-- **由着色器定义材质面板**：ShaderLab 属性支持 Float、Int、Color、Vector 与 Texture。材质还可管理关键词集合和渲染队列覆盖，使参数、变体与渲染状态保持在同一资源对象中。
-- **Editor 内直接编辑和预览**：Material Editor 可选择或拖入材质与着色器，按当前着色器生成参数面板，并提供预览与重置操作；Asset Browser 为材质提供 GPU 缩略图预览。
+- **由着色器定义材质参数**：ShaderLab 属性支持 Float、Int、Range、Vector、Color 与 Texture2D / TextureCube。材质还可管理关键词集合和渲染队列覆盖，使参数、变体与渲染状态保持在同一资源对象中。
+- **Editor 内直接编辑和预览**：在 Inspector 中选中材质资源即可编辑渲染状态、着色器与 uniform 参数，参数项由材质当前的 uniform 数据生成；改动即时生效并进入撤销栈，保存与重载是显式的资源动作。Asset Browser 为材质提供 GPU 缩略图，并可通过 Preview 在 Asset View 面板中打开材质预览。
 - **资源化与安全重载**：材质作为可异步加载和预热的资源工件管理。ShaderLab 重载先校验请求的变体，成功后更新关联材质并使受影响的管线代次失效。
 
 ### 从源文件到可用资产

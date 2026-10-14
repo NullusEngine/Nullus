@@ -1,16 +1,19 @@
 # UE 5.7.4 Threading Migration
 
-Status on 2026-10-12: the single runtime path and removal of the old lifecycle
-are implemented. Final workflow, long-run and all-backend acceptance remain open.
+Status on 2026-10-13: the single runtime path and removal of the old lifecycle
+are implemented, and the Final Revision Acceptance Snapshot below is complete.
+Metal runtime validation was waived by explicit decision.
 
 The reference checkout is `D:/Code/UE/UnrealEngine`. Its
 `Engine/Build/Build.version` reports major 5, minor 7, patch 4.
 
 ## Current Completion Boundary
 
-The dated sections below record intermediate revisions. This section and
-`Required Before Final Cutover` describe the current boundary; intermediate test
-passes do not establish final UE 5.7.4 parity.
+The dated sections below record intermediate revisions. The table here records the
+boundary as it stood during the migration; every `Still required` entry was later
+closed by the `Final Revision Acceptance Snapshot` under `Required Before Final
+Cutover`, except the Metal runtime gate, which was waived by explicit decision.
+Intermediate test passes do not establish final UE 5.7.4 parity.
 
 | Plan step | Current result | Still required |
 | --- | --- | --- |
@@ -2431,6 +2434,8 @@ Audit of the four objective items against the current tree (2026-10-13):
 - Legacy scheduling removal. `threadedRhiProducerLane`, `ThreadedRenderingLifecycle`, `InFlightFrameSlot`, `RhiSubmissionGraph`, `ThreadedFrameStage` and `threadedFrameSlotCount` survive only inside negative source guards (`RhiSubmitLaneSourceGuardTests.cpp`, `RenderingThreadPipelineTests.cpp`); `enableThreadedRendering` appears only in the legacy-settings fixture of `EditorSettingsPersistenceTests`, which asserts the reader ignores the removed key.
 - Entry unification. `RhiSubmitLaneSourceGuardTests` pins the submit funnel (`RhiCommandListExecutorFunnelsQueueOperationsThroughTheSubmitLane`, `NoOtherRuntimeSourceCallsBackendQueuesDirectly`, `Dx12UploadsReadbacksAndProfilerDoNotBypassTheExecutor`, `MetalPreviewAndUiBridgeCommitOnTheSubmitLane`). Picking enters through `DriverRendererAccess::ReadPixelsChecked` (`SceneView.cpp`, `PickingRenderPass.cpp`), the thumbnail preview uses `SetNextFramePostSubmitTextureReadback` plus `BeginReadPixels`, and UI-only frames use `DriverUIAccess::PublishUiOnlyFrame` -> `RenderThreadCoordinator::TryEnqueueRenderFrame`.
 - Production path. `Tools/ValidateRenderingNoTestHooks.ps1` compiles the 17 rendering/engine/editor translation units with `NLS_ENABLE_TEST_HOOKS` undefined and every one passes (`no-test-hooks-final.log`).
+
+(Updated 2026-10-14: commit `1e3b1555` pruned the source-text guard suites, so `RhiSubmitLaneSourceGuardTests.cpp` no longer exists and the guard cases named above are gone. The deleted legacy symbols now appear nowhere under `Runtime/`, `Project/`, `Tests/` or `Tools/` except `threadedRhiProducerLane` inside the negative guard `RenderingThreadPipelineTests.FrameDispatchDoesNotDrainThePreviousSubmission` and `enableThreadedRendering` inside the legacy-settings fixture of `EditorSettingsPersistenceTests`. Submit-funnel behaviour is covered by `RhiCommandListExecutorTests` and `RenderFrameworkContractTests`, which record the lane, sequence and rejection cases the source guards used to pin textually.)
 
 Open items and their current state (last reviewed 2026-10-13). Metal runtime validation was skipped by explicit decision, so no acceptance gate remains open.
 

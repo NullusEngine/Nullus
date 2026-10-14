@@ -18,7 +18,7 @@ The old immediate-style `IRenderDevice` path is now a migration bridge only. New
 ### Platform Runtime Backends
 
 - `DX12` - Full native explicit RHI implementation on Windows
-- `Vulkan` - Vulkan 1.1 explicit RHI implementation on Linux/WSL, including WSI swapchain, scene/UI rendering, readback, and threaded foundation lifecycle
+- `Vulkan` - Vulkan 1.1 explicit RHI implementation on Linux/WSL, including WSI swapchain, scene/UI rendering, readback, and the ordered Render/RHI command execution path
 - `Metal` - native implementation on macOS
 
 Validated backends receive new graphics capabilities first:
@@ -165,9 +165,23 @@ The following formal RHI objects are implemented natively in Tier A backends:
 - Transient lifetime and readback visibility stay on `ResourceStateTracker` plus frame-graph/external-resource bridging.
 - Threaded diagnostics expose descriptor, PSO, transient-lifetime, and retirement mainline activity through `ThreadedFrameTelemetry`, `RendererStats`, and `FrameInfo`.
 
+## RHI Thread Modes
+
+The logical RHI lane runs in one of three modes. The mode is a restart-scoped project setting, `rhi_thread_mode` in the project launch file, with the values `none`, `dedicated_thread`, `tasks` and `backend_default`.
+
+- `none` - the render thread dispatches, translates and submits inline.
+- `dedicated_thread` - one dedicated OS thread owns the lane; submission is admitted only when the current named thread is `NamedThread::Rhi`.
+- `tasks` - the lane runs on TaskGraph workers through a TLS execution context, so `IsInRhiThread()` does not depend on a fixed OS thread id; submission is admitted only on TaskGraph worker threads.
+
+Dispatch still arrives from the render thread, translation may run in parallel, and submission stays ordered by sequence in every mode.
+
+Backends declare `Tasks` support through the dedicated `RHIDeviceFeature::RhiTasksMode` capability. It stays separate from `ParallelCommandRecording`, because a backend can translate in parallel while still requiring a dedicated submit thread - Metal reports exactly that combination today. `ResolveRhiThreadMode` falls back to the backend default only when the caller asked for `backend_default`; a forced mode that the backend does not support is rejected at startup with a diagnostic instead of silently degrading to another scheduler.
+
+Current defaults: `DX12` and `Vulkan` resolve to `tasks`; `Metal` stays on `dedicated_thread` until thread ownership and concurrent submission are validated on device.
+
 ## Vulkan WSLg Boundary
 
-The Vulkan backend deliberately reports the capabilities needed by the default threaded Render/RHI path, while keeping secondary command buffers, parallel command recording/translation, and render-pass child commands disabled. Queue submit/present calls are externally synchronized. Swapchain images retain logical RGBA semantics in the RHI; BGRA WSI formats are converted during presentation/readback.
+The Vulkan backend reports the capabilities needed by the default threaded Render/RHI path, including parallel command recording and translation and the `tasks` RHI lane: command pools are per worker, slot and queue family, and `vkQueueSubmit` stays serialized by the ordered submit lane. Secondary command buffers and in-render-pass child command buffers remain disabled. Queue submit/present calls are externally synchronized. Swapchain images retain logical RGBA semantics in the RHI; BGRA WSI formats are converted during presentation/readback.
 
 From WSL, run `./build_wsl_vulkan.sh --install-deps` once, then `./build_wsl_vulkan.sh`. The script requires Vulkan loader headers, GLFW, Ninja, and a native Linux `dxc`; it prints the selected device with `vulkaninfo` when available. Set `NLS_VULKAN_VALIDATION=1` for validation-layer smoke runs.
 

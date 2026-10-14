@@ -108,7 +108,7 @@ The current implementation requires:
 - Source resource lifetime retained until readback completion or quarantine release.
 - Conservative visibility when history is missing, stale, unsupported, or incomplete.
 
-Focused behavior verification should include the HZB cases in `DeferredSceneRendererMaterialCacheTests`, `FrameGraphSceneTargetsTests`, `SceneOcclusionTests`, `RenderSceneCacheTests`, and `ThreadedRenderingLifecycleTests`. Run the maintained default workflow in `Docs/Testing.md` in addition to capture-specific checks.
+Focused behavior verification should include the HZB cases in `DeferredSceneRendererMaterialCacheTests`, `FrameGraphSceneTargetsTests`, `SceneOcclusionTests`, `RenderSceneCacheTests`, and `RenderFrameExecutionTests`. Run the maintained default workflow in `Docs/Testing.md` in addition to capture-specific checks.
 
 ## Evidence Record Template
 

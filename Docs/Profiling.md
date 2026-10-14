@@ -27,9 +27,9 @@ Both markers route through `NLS::Base::Profiling::Profiler` and can feed every e
 
 ## Thread Names
 
-Use `NLS_PROFILE_REGISTER_THREAD("Name")` once near a worker thread entry point. Thread names are carried on shared scope events so TimelineProfiler and Tracy destinations can show render and RHI work on recognizable tracks.
+Use `NLS_PROFILE_REGISTER_THREAD("Name")` once near a worker thread entry point. Registration records the name on shared scope events and forwards it to the Tracy destination (`tracy::SetThreadName`) so the track name exists before a capture connects; registering an empty name, or the same name twice on one thread, is ignored. A thread that emits a scope without registering receives a stable `"Thread <id>"` fallback.
 
-The threaded renderer registers `"Render Thread"` and `"RHI Thread"` when those workers start.
+Startup names the Game Thread, `"Render Thread"`, the dedicated `"RHI Thread"`, `"TaskGraph Worker <n>"`, `"Background Job Worker <n>"`, and the Editor's metadata/import, startup-cache, prefab-preparation, shader compile/reflect/output, file-watcher, managed-script-build, debug-endpoint, progress-dialog and trace-writer workers. `Tasks` RHI work keeps the physical TaskGraph worker name instead of claiming a dedicated RHI thread.
 
 ## GPU Markers
 

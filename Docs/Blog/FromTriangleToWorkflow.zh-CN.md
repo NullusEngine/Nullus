@@ -32,7 +32,7 @@ Nullus 是一款持续演进的 C++20 原生 3D 引擎。它没有把 Editor、G
 flowchart TD
     Source["glTF / FBX / 纹理 / ShaderLab / 脚本"] --> Import["导入器与 Asset Database"]
     Import --> Artifact["网格 / 材质 / 纹理 / Prefab / 脚本工件"]
-    Artifact --> Editor["Asset Browser / Hierarchy / Inspector / Material Editor"]
+    Artifact --> Editor["Asset Browser / Hierarchy / Inspector / Asset View"]
     Meta["MetaParser 生成的反射元数据"] --> Editor
     Meta --> Serialization["场景与对象图序列化"]
     Meta --> ScriptApi["统一脚本 API 清单"]
@@ -85,7 +85,7 @@ Nullus 也没有把“目录里存在后端代码”等同于“后端已经可�
 
 - Asset Browser 提供浏览、搜索、拖放、分类和对象引用选择；
 - 模型、材质和纹理可以异步生成缩略图或预览；
-- Material Editor 根据 ShaderLab 属性生成参数面板，并提供材质球预览；
+- 在 Inspector 中选中材质即可编辑渲染状态、着色器与 uniform 参数，参数项由材质当前的 uniform 数据生成，Asset View 提供材质球预览；
 - 场景对象可以创建 Prefab 与可编辑 Variant；
 - 大型资源的加载、预热和 GPU 读回受异步队列、缓存与帧预算约束。
 
@@ -141,7 +141,7 @@ return Rotator
 
 ## Editor 是架构的使用者，也是架构的压力测试
 
-Nullus Editor 已经把 Launcher、Hierarchy、Scene View、Game View、Inspector、组件选择器、Gizmo、命中代理选取、播放控制、Asset Browser、Material Editor、Console 与性能观测入口放进同一个工作区。
+Nullus Editor 已经把 Launcher、Hierarchy、Scene View、Game View、Inspector、组件选择器、Gizmo、命中代理选取、播放控制、Asset Browser、Asset View、Console 与性能观测入口放进同一个工作区。
 
 这些面板不是独立功能的集合。它们持续检验底层架构是否真的一致：
 
@@ -162,7 +162,7 @@ Nullus Editor 已经把 Launcher、Hierarchy、Scene View、Game View、Inspecto
 | macOS / Metal | 工程包含原生后端与默认构建目标；Apple 运行时验证单独维护 |
 | DX11、OpenGL | 仍在迁移，当前不是项目交付目标 |
 
-仓库提供 Windows、Linux 和 macOS 构建脚本，GitHub Actions 也分别配置了三平台构建与脚本测试工作流。单元测试覆盖反射、MetaParser、资产数据库、Prefab、渲染缓存和 RHI 等区域；性能测试与真实大资产基准则使用独立开关，避免把合成测试结果包装成真实场景性能结论。
+仓库提供 Windows、Linux 和 macOS 构建脚本，GitHub Actions 分别为这三个平台配置了构建工作流，另有一个手动触发的 Metal 多线程验证工作流。单元测试覆盖反射、MetaParser、资产数据库、Prefab、渲染缓存和 RHI 等区域；性能测试与真实大资产基准则使用独立开关，避免把合成测试结果包装成真实场景性能结论。
 
 这种区分可能不如一句“全平台支持”醒目，却更适合一个希望长期演进的引擎项目：功能是否存在、能否编译、是否跑过测试、是否在真实窗口中呈现，是四种不同等级的证据。
 

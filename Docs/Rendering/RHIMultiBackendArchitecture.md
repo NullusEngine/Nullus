@@ -11,7 +11,7 @@ This document defines the active migration target for the engine rendering archi
 - `runtime` and `editor` consume the same device, queue, swapchain, command buffer, binding, texture, and framebuffer semantics.
 - backend-specific APIs stay inside backend implementations.
 
-The old immediate-style `IRenderDevice` path is now a migration bridge only. New rendering work must target the explicit RHI object model first and use compatibility shims only while older passes are being moved over.
+The old immediate-style `IRenderDevice` path has been retired and no longer exists in the tree. New rendering work must target the explicit RHI object model directly.
 
 ## Backend Tiers
 
@@ -113,9 +113,9 @@ Capabilities alone are not sufficient to keep a backend exposed: current smoke e
 
 ## Migration Boundary
 
-- `Driver::GetExplicitDevice()`, `Driver::BeginExplicitFrame()`, and `Driver::EndExplicitFrame()` are the only public bridge points for the migration.
-- `ExplicitRHICompat` exists only to move legacy renderer code onto the new frame orchestration model. It must not become the place where new rendering features are added.
-- `FrameGraphExecutionContext` and resource wrappers should carry explicit-RHI objects or migration shims, not expose `IRenderDevice&` directly.
+- `DriverRendererAccess` and `DriverUIAccess` are the supported access points: `GetExplicitDevice()` resolves the formal RHI device, `CreateFrameGraphExecutionContext()` prepares frame-graph recording, `TryEnqueueRenderFrame()` hands a `RenderFramePacket` to the render thread, and `PublishUiOnlyFrame()` publishes UI-only frames.
+- The immediate-style device wrapper (`IRenderDevice`) and its `ExplicitRHICompat` shim are gone. Do not reintroduce one as an extension point for new rendering features.
+- `FrameGraphExecutionContext` and resource wrappers carry explicit-RHI objects rather than hiding an immediate device behind them.
 - Renderer instantiation must still go through one selection entry point so backend choice and renderer choice remain centralized.
 
 ## Implementation Status

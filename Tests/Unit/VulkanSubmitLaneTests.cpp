@@ -214,15 +214,3 @@ TEST(VulkanSubmitLaneTests, ShaderReadBuffersAndDepthPassTransitionsSatisfyValid
     GTEST_SKIP() << "The Windows Vulkan backend with test hooks is not compiled.";
 #endif
 }
-
-/**
- * A VkCommandBuffer must never outlive the VkCommandPool it came from.
- *
- * The executor retires a frame's translated batch independently of the frame
- * slot that owns the command pool, so the pool can be released while a batch
- * still holds a buffer allocated from it. The previous code kept only the raw
- * VkCommandPool handle, and the buffer's destructor then called
- * vkFreeCommandBuffers on a destroyed pool - AMDVLK crashed on the read of the
- * freed pool. The invariant is easy to undo by "simplifying" the constructor
- * back to raw handles, so it is pinned here.
- */

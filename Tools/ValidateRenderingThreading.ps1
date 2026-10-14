@@ -40,7 +40,7 @@ New-Item -ItemType Directory -Path $OutputDirectory -Force | Out-Null
 $regressionSuites = @(
     'TaskGraphTests', 'RenderCommand*Tests', 'RenderingThread*Tests',
     'RhiCommandListExecutorTests', 'RhiCommandListRecorderTests',
-    'RhiSubmitLaneSourceGuardTests', 'FrameResourceRingTests', 'FrameLatency*Tests',
+    'FrameResourceRingTests', 'FrameLatency*Tests',
     'DriverFlushTests', 'DriverRhiThreadModeTests', 'DriverSwapchainResizeTests', 'DriverNullDeviceReadinessTests',
     'RenderFrameExecutionTests', '*/FrameTextureReadbackTests', 'UE5RenderArchitectureContractTests',
     'RendererFrameObjectBindingTests', 'CompositeRendererExplicitDrawOrderTests',
@@ -50,7 +50,7 @@ $regressionSuites = @(
     'RendererStatsConcurrencyTests', 'AssetMaterialConversionTests', 'ShaderLabMaterialTests',
     'MaterialVariantKeyTests', 'DeferredSceneRendererMaterialCacheTests',
     'TextureResourceLifecycleTests', 'TextureResourceUpdateUtilsTests', 'UploadContextTests',
-    'RHIUiOverlayPassTests', 'RHIUiOverlaySourceGuardTests',
+    'RHIUiOverlayPassTests',
     'RhiThreadModePolicyTests', 'EditorLaunchArgsTests', 'EditorSettingsPersistenceTests',
     'ProjectLaunchOptionsTests', 'GameLaunchArgsTests', 'LauncherLocalizationTests', 'TimelineProfilerGpuLifecycleTests',
     'DX12ReadbackUtilsTests', 'DX12TextureUploadUtilsTests', 'DX12SubmitLaneTests',

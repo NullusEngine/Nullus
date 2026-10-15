@@ -70,8 +70,11 @@ ctest --test-dir Build -C RelWithDebInfo -L performance --output-on-failure
 | Build Linux | Debug 与 Release |
 | Build MacOS | Debug 与 Release |
 | Metal Threading Validation | Metal 线程归属验证 |
+| Documentation | 文档严格检查、同步工具回归与 Wiki 导出；`main` 上的文档变更通过检查后自动同步 Wiki |
 
 Windows CI 只跑 Release，因此 Windows 上的 Debug 回归需要本地执行。跨平台结论必须来自各自平台的实际运行，不能从 Windows 结果推断。
+
+Documentation 也提供手动触发入口。关闭 `publish` 输入可只执行检查；开启时从 `Docs/` 单向同步到 Wiki。同步失败时查看 Publish wiki 任务中的 Git 诊断。
 
 ## 调试渲染问题
 

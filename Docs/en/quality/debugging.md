@@ -70,8 +70,11 @@ Precompiled headers should only carry stable base headers. Putting Assimp, ImGui
 | Build Linux | Debug and Release |
 | Build MacOS | Debug and Release |
 | Metal Threading Validation | Metal thread ownership validation |
+| Documentation | Strict handbook checks, synchronization tool tests, and Wiki export; documentation changes on `main` publish the Wiki after validation |
 
 Windows CI runs Release only, so Windows Debug regressions are a local responsibility. Cross-platform conclusions must come from an actual run on each platform, never inferred from Windows results.
+
+Documentation also supports manual dispatch. Disable the `publish` input to run validation only; enable it to synchronize the Wiki from `Docs/`. If synchronization fails, inspect the Git diagnostics in the Publish wiki job.
 
 ## Debugging rendering problems
 

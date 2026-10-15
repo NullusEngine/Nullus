@@ -1,19 +1,19 @@
 # 文档重构验收记录
 
-验收日期：2026-10-14（Asia/Shanghai）。源码基线：`96c005af`。文档及工具修订尚未提交；本记录只覆盖实际执行的检查。
+本地验收日期：2026-10-14；远端发布验收日期：2026-10-15（Asia/Shanghai）。引擎源码基线：`96c005af`。首批 117 个文档及工具文件已在提交 `20272ea6` 推送到 `main`，双语 CI 说明在 `28fb5e61` 推送；本记录只覆盖实际执行的检查。
 
 ## 结论
 
-文档静态检查、同步工具回归、示例编译、选定原生测试，以及实际 Wiki 发布与远端核对通过。**整体验收尚未通过**：完整桌面操作清单尚未逐项执行，首次组合验证模式的退出等待尚未关闭，PR 与 `main` 上的自动发布尚未运行。
+文档静态检查、同步工具回归、示例编译、选定原生测试、实际 Wiki 发布与远端核对，以及 `main` 自动发布和手动重复发布通过。**整体验收尚未通过**：完整桌面操作清单尚未逐项执行，首次组合验证模式的退出等待尚未关闭。
 
 ## 结构与内容
 
-- 19 章、41 个主题、82 个逐页对应的中英文正文，最终严格检查计 8,508 行。
+- 19 章、41 个主题、82 个逐页对应的中英文正文，加入 CI 说明后的严格检查计 8,514 行。
 - Prefab 已独立成章；旧 `zh-CN-scene-prefabs` / `en-scene-prefabs` Wiki 地址保留迁移页。
 - 最小完整示例覆盖创建项目、场景、C#、OBJ 导入、Prefab 和可选 UI。
 - 已按源码修正菜单路径、创建/挂载脚本、Prefab Stage 保存与未保存保护边界、禁用的 Asset Browser 菜单，以及 C#/Lua 不同的接口表面。
 - 本轮未修改引擎实现；两份反射内部 Markdown 仅更新文档链接。
-- 交付范围共 117 个文件：89 个新增、5 个修改、23 篇旧文档删除。现有工作树、历史工作树和临时目录没有纳入清理或提交。
+- 首次交付范围共 117 个文件：89 个新增、5 个修改、23 篇旧文档删除；后续验收更新仅涉及本报告及双语调试与测试页。现有工作树、历史工作树和临时目录没有纳入清理或提交。
 
 ## 已执行验证
 
@@ -34,7 +34,9 @@
 | Wiki 实际网页 | 首页、中英文侧栏、Prefab/英文 UI/编辑器工作区正文通过；实际点击侧栏、语言切换与旧地址迁移链接成功；共享截图已加载 | `wiki-browser.json`、`wiki-home.png`、`wiki-ui.png`、`wiki-editor.png` |
 | 再次发布 | 没有额外提交，显示 `nothing to publish` | `wiki-publish-repeat.log` |
 | 变更卫生 | 已跟踪文件 `git diff --check` 通过；新增文件无尾随空白；110 个仓库 Markdown 中无已删除文档链接 | `git-whitespace.log`、`change-audit.json` |
-| GitHub Actions 本地配置 | YAML 解析及 9 项关键结构检查通过；远端运行待验收 | `workflow-check.json`、`remote-workflows.json` |
+| GitHub Actions 本地配置 | YAML 解析及 9 项关键结构检查通过 | `workflow-check.json` |
+| main 自动发布 | 两次 push 的检查/发布任务均成功；第二次使用 `GITHUB_TOKEN` 实际写入两页 Wiki | `ci-38664028743-jobs.json`、`ci-38664159252-jobs.json`、`ci-publish-changed.log` |
+| 手动重复发布 | 检查/发布任务均成功，显示 `nothing to publish`，Wiki 无新增提交 | `ci-manual-run.json`、`ci-publish-manual.log` |
 
 测试回归覆盖 Prefab、UI、EditorScript、ScriptRuntime、Launcher、项目启动设置、对象图与资产数据库。首轮因未显式设置 DXC 路径跳过的 13 项，在设置仓库 `Tools/DXC/1.9.2602/bin/x64/dxc.exe` 后全部通过。剩余 6 项跳过涉及 3 项符号链接条件、Autodesk FBX SDK、按需模型性能测试和未启用的 LuaPanda；跳过不计作通过。
 
@@ -43,13 +45,23 @@
 ## Wiki 发布核对
 
 - 远端：`https://github.com/NullusEngine/Nullus.wiki.git`，真实默认分支为 `master`。
-- 最终远端提交：`2ace41de21aac136825e6449582c0e1133195ccd`。
+- 本地首次发布核对提交：`2ace41de21aac136825e6449582c0e1133195ccd`；Actions 实际写入验收提交：`36780d014400a64a614d4afe3736da253b8a86d8`。后续报告状态修订由同一流程同步，当前远端对象核对结果另存 `wiki-verification.json`。
 - 既有 Wiki Git 历史保留；旧正文地址生成双语迁移链接；仅删除生成清单管理的过时文件。
 - `Home` 和 `_Sidebar` 均包含全部 82 个正文入口，每个正文的语言切换均指向对应页。
 - 直接通过 `git cat-file --batch` 读取远端提交的原始对象，全体 95 个生成文件与本地导出相同。Windows 工作树和 `git archive` 的换行转换不用于判断原始对象差异。
 - 独立无头 Chrome 实际加载 5 个 Wiki 页面，均 HTTP 200；页面可见，生成侧栏的 83 个链接含全部 82 个正文入口及首页。实际点击首页侧栏、两种方向的语言切换及旧 Prefab 地址的迁移链接，目标正文均可见。编辑器共享截图加载为 3840×2088。另通过 HTTP 直接读取首页、Prefab、英文 UI、旧 Prefab 地址与共享图片，均为 200。
 - 再次实际执行 `publish` 返回无变化，远端提交未增加。`diff --wiki` 同样显示已同步。
-- 此次实际发布使用本机 GitHub 身份完成；**不作为 GitHub Actions 的 `GITHUB_TOKEN` 发布已经通过的证据**。
+- 首次本地发布使用本机 GitHub 身份。随后已单独验收 Actions 的 `GITHUB_TOKEN` 写入：日志确认 `2 wiki file(s) changed` 和成功推送至 `master`；手动再次运行确认 `nothing to publish`。
+
+## GitHub Actions 远端验收
+
+| 运行 | 触发与源码提交 | 结果 |
+| --- | --- | --- |
+| [38664028743](https://github.com/NullusEngine/Nullus/actions/runs/38664028743) | push，`20272ea6` | Validate handbook / Publish wiki 均成功；Wiki 已同步，无新提交 |
+| [38664159252](https://github.com/NullusEngine/Nullus/actions/runs/38664159252) | push，`28fb5e61` | 两项任务均成功；`GITHUB_TOKEN` 更新两页，Wiki 生成 `36780d0` |
+| [38664358685](https://github.com/NullusEngine/Nullus/actions/runs/38664358685) | workflow_dispatch，`28fb5e61`，publish=true | 两项任务均成功；无额外 Wiki 提交 |
+
+用户明确确认直接提交 `main`，因此本次没有另建 PR。PR 的检查入口仍在工作流中配置，实际执行的是同一 Validate handbook 任务的 push 和手动入口；不声称另外执行过 PR 事件。
 
 ## 可复查命令
 
@@ -95,9 +107,8 @@ Tools/BuildCleanEnvironment.cmd cmake --build build --config Debug --target Edit
 ## 关闭整体验收的门槛
 
 1. 完成上述完整桌面工作流，并对首轮组合模式退出等待做独立问题归属与后续验收。
-2. 经批准提交并推送这批文档及发布工具，运行 PR 文档检查。
-3. 在远端 `main` 实际运行 Documentation 工作流，确认 `GITHUB_TOKEN` 可发布到 Wiki；再次运行确认没有新提交，并核对手动触发入口。
+2. 若需要单独验收 PR 事件，在后续真实文档 PR 中核对同一 Validate handbook 任务；本次经用户批准直接提交 `main`。
 
-工作流的本地检查已确认 `main` 路径触发、手动入口、发布任务 `contents: write`、`GITHUB_TOKEN`、检查任务依赖与串行执行。远端当前只有已有构建/Metal 工作流，新 Documentation 工作流尚未提交，无法据本地配置宣称自动发布通过。
+工作流的本地检查已确认 `main` 路径触发、手动入口、发布任务 `contents: write`、`GITHUB_TOKEN`、检查任务依赖与串行执行。远端 push 自动发布、真实 Wiki 写入以及手动重复发布均已通过，不再列为未验收项。
 
 Windows / DX12 的证据不能推出 Linux、macOS 或其它图形后端已经通过。10 个 C# 示例的编译检查也不等于全部 API 示例、Lua 调试器或桌面脚本断点已经运行验证。

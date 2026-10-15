@@ -102,7 +102,7 @@ Of 496 selected tests covering Prefabs, UI, the script runtime, editor scripting
 
 The current Debug Editor completed OBJ import, generated resources and an instance, activated a C# assembly, and produced a DX12 frame readback in an isolated project. Separate 30-frame and readback runs both exited naturally with code 0. The first run combined both validation modes and waited during shutdown; thread stacks were saved. Passing the separate runs does not close that combined-path issue.
 
-The full desktop exercise, shutdown on the combined path, and documentation publishing on `main` require separate acceptance. Commands, log locations, skip reasons, and Wiki synchronization results are recorded in the repository's `Tools/Docs/ACCEPTANCE.md`. This is evidence for this run, not a support claim for other platforms.
+On 2026-10-15, Documentation validation and automatic synchronization on `main` passed. The publishing job used `GITHUB_TOKEN` to update two Wiki pages, and a subsequent manual run created no additional commit. The full desktop exercise and shutdown on the combined path require separate acceptance. Commands, log locations, skip reasons, and Wiki synchronization results are recorded in the repository's `Tools/Docs/ACCEPTANCE.md`. This is evidence for this run, not a support claim for other platforms.
 
 ## Further reading
 

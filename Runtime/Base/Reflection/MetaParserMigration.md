@@ -1,6 +1,6 @@
 # MetaParser 迁移说明（已切换到 C# 路线）
 
-> Current verified workflow: `Docs/Reflection/ReflectionWorkflow.zh-CN.md` and `Docs/Reflection/ReflectionWorkflow.en.md`
+> Current verified workflow: `Docs/zh-CN/architecture/reflection-serialization.md` and `Docs/en/architecture/reflection-serialization.md`
 
 ## 结论（重要）
 

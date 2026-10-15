@@ -1,6 +1,6 @@
 # Reflection Phase 1（可用版）开发约束
 
-> Current verified workflow: `Docs/Reflection/ReflectionWorkflow.zh-CN.md` and `Docs/Reflection/ReflectionWorkflow.en.md`
+> Current verified workflow: `Docs/zh-CN/architecture/reflection-serialization.md` and `Docs/en/architecture/reflection-serialization.md`
 
 ## 目标
 - 以当前维护中的 MetaParser 工作流为基础记录一期约束
@@ -20,7 +20,7 @@
 3. 反射头文件需位于 `Runtime/` 下（MetaParser 当前扫描范围）。
 4. 是否纳入反射，按“消费者驱动”原则判断，而不是按“是否继承某个基类”一刀切。
 
-> 当前维护中的完整规则，请优先以 `Docs/Reflection/` 下的双语文档为准。
+> 当前维护中的完整规则，请优先以 `Docs/zh-CN/architecture/reflection-serialization.md` 与 `Docs/en/architecture/reflection-serialization.md` 为准。
 
 ## 推荐样例
 见：`Runtime/Base/Reflection/ReflectionObjectSample.h`

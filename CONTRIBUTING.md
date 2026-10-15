@@ -42,7 +42,10 @@ Before opening a pull request:
 - keep the change focused on one topic;
 - follow the existing code style and naming patterns;
 - include tests when the change affects behavior;
-- update documentation when user-facing behavior changes;
+- update documentation when user-facing behavior changes: the bilingual handbook
+  lives in `Docs/` and is the source for the generated GitHub Wiki, so edit
+  `Docs/zh-CN/` and `Docs/en/` together and run
+  `python Tools/Docs/nullus_docs.py check`;
 - do not hand-edit generated files under `Runtime/*/Gen/`;
 - do not add third-party code, assets, binaries, or SDK files unless their
   license is clear and compatible with this repository;

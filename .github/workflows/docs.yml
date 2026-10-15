@@ -1,0 +1,89 @@
+name: Documentation
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+    paths:
+      - 'Docs/**'
+      - 'Tools/Docs/**'
+      - '.github/workflows/docs.yml'
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: 'Publish the generated wiki after validating it'
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: docs-wiki
+  cancel-in-progress: false
+
+jobs:
+  check:
+    name: Validate handbook
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        timeout-minutes: 5
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+
+      - name: Validate the bilingual documentation tree
+        run: python Tools/Docs/nullus_docs.py check --strict
+
+      - name: Test documentation checks and wiki synchronization
+        run: python -m unittest discover -s Tools/Docs -p 'test_*.py' -v
+
+      - name: Render the wiki tree
+        run: python Tools/Docs/nullus_docs.py export --out "${{ runner.temp }}/wiki-out" --prune
+
+      - name: Summarize
+        run: |
+          {
+            echo "### Documentation"
+            echo ""
+            echo "- Handbook check passed"
+            echo "- Wiki pages rendered: $(find "${{ runner.temp }}/wiki-out" -maxdepth 1 -name '*.md' | wc -l)"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  publish:
+    name: Publish wiki
+    needs: check
+    if: github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.publish)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        timeout-minutes: 5
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+
+      - name: Publish the wiki from Docs/
+        env:
+          WIKI_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          git config --global user.name 'github-actions[bot]'
+          git config --global user.email 'github-actions[bot]@users.noreply.github.com'
+          python Tools/Docs/nullus_docs.py publish \
+            --remote "https://x-access-token:${WIKI_TOKEN}@github.com/${{ github.repository }}.wiki.git"
+
+      - name: Summarize
+        run: |
+          {
+            echo "### Wiki"
+            echo ""
+            echo "Published from \`Docs/\` at ${{ github.sha }}"
+          } >> "$GITHUB_STEP_SUMMARY"

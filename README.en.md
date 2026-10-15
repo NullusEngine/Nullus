@@ -143,19 +143,27 @@ If a host environment reports `MSB6001` because both `Path` and `PATH` exist, us
 - Windows selects `DX12` by default.
 - Linux / WSL selects `Vulkan` by default. In WSL, run `./build_wsl_vulkan.sh --install-deps` once for script prerequisites, then run `./build_wsl_vulkan.sh`.
 - macOS selects `Metal` by default.
-- DX11 and OpenGL remain migration-stage backends and are explicitly gated out of the current runtime mainline; do not target them for project delivery.
+- DX11 and OpenGL are explicitly gated: startup reports them as unsupported and exits cleanly; do not target them for project delivery.
 
-## Learn More
+## Documentation
 
-- [Multi-backend RHI architecture](Docs/Rendering/RHIMultiBackendArchitecture.md)
-- [Threaded rendering and the UE 5.7.4 migration](Docs/Rendering/UE574ThreadingMigration.md)
-- [HLSL and resource-binding conventions](Docs/Rendering/ShaderConventions.md)
-- [HZB occlusion validation](Docs/Rendering/HZBOcclusionValidation.md)
-- [C# / Lua scripting API](Docs/Scripting/ScriptingApi.en.md)
-- [C# script debugging guide](Docs/Scripting/ScriptDebugging.en.md)
-- [Reflection workflow](Docs/Reflection/ReflectionWorkflow.en.md)
-- [Native JobSystem](Docs/Jobs.md)
-- [Testing guide](Docs/Testing.md)
+The full handbook lives in `Docs/` and is published bilingually to the [Wiki](https://github.com/NullusEngine/Nullus/wiki). The wiki is generated from `Docs/`; do not edit wiki pages directly.
+
+- [Getting to Know Nullus](Docs/en/start/overview.md)
+- [Environment and Build](Docs/en/getting-started/build.md)
+- [Your First Project](Docs/en/getting-started/first-project.md)
+- [Using the Editor](Docs/en/editor/workspace.md)
+- [Scenes and Objects](Docs/en/scene/objects.md)
+- [Assets and Content Pipeline](Docs/en/assets/pipeline.md)
+- [Rendering, Materials, and Lighting](Docs/en/rendering/overview.md)
+- [Large Scenes and Resource Management](Docs/en/large-scenes/visibility-occlusion.md)
+- [Gameplay and Scripting](Docs/en/scripting/overview.md)
+- [User Interface](Docs/en/ui/overview.md)
+- [Platforms, Builds, and Releases](Docs/en/platform-build/platforms.md)
+- [Extending the Engine](Docs/en/architecture/modules.md)
+- [Debugging, Performance, and Quality](Docs/en/quality/debugging.md)
+- [Reference](Docs/en/reference/layout-cli.md)
+- [Roadmap](Docs/en/roadmap/index.md)
 
 ## Cross-Platform And CI
 

@@ -1,0 +1,480 @@
+{
+  "version": 1,
+  "repository": "NullusEngine/Nullus",
+  "defaultBranch": "main",
+  "entryPage": "start/overview",
+  "languages": [
+    {
+      "id": "zh-CN",
+      "label": "中文",
+      "dir": "zh-CN",
+      "wikiSuffix": "zh-CN"
+    },
+    {
+      "id": "en",
+      "label": "English",
+      "dir": "en",
+      "wikiSuffix": "en"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "start",
+      "title": {
+        "zh-CN": "认识 Nullus",
+        "en": "Getting to Know Nullus"
+      },
+      "pages": [
+        {
+          "id": "overview",
+          "title": {
+            "zh-CN": "引擎概览",
+            "en": "Engine Overview"
+          }
+        },
+        {
+          "id": "concepts",
+          "title": {
+            "zh-CN": "核心概念与术语",
+            "en": "Core Concepts and Terminology"
+          }
+        }
+      ]
+    },
+    {
+      "id": "getting-started",
+      "title": {
+        "zh-CN": "安装与快速入门",
+        "en": "Install and Quick Start"
+      },
+      "pages": [
+        {
+          "id": "build",
+          "title": {
+            "zh-CN": "环境准备与构建",
+            "en": "Environment and Build"
+          }
+        },
+        {
+          "id": "first-project",
+          "title": {
+            "zh-CN": "第一个项目",
+            "en": "Your First Project"
+          }
+        }
+      ]
+    },
+    {
+      "id": "editor",
+      "title": {
+        "zh-CN": "使用编辑器",
+        "en": "Using the Editor"
+      },
+      "pages": [
+        {
+          "id": "workspace",
+          "title": {
+            "zh-CN": "编辑器工作区",
+            "en": "Editor Workspace"
+          }
+        },
+        {
+          "id": "interaction",
+          "title": {
+            "zh-CN": "视口操作与快捷键",
+            "en": "Viewport Controls and Shortcuts"
+          }
+        },
+        {
+          "id": "settings",
+          "title": {
+            "zh-CN": "编辑器与项目设置",
+            "en": "Editor and Project Settings"
+          }
+        }
+      ]
+    },
+    {
+      "id": "scene",
+      "title": {
+        "zh-CN": "场景与对象",
+        "en": "Scenes and Objects"
+      },
+      "pages": [
+        {
+          "id": "objects",
+          "title": {
+            "zh-CN": "场景、GameObject 与组件",
+            "en": "Scenes, GameObjects, and Components"
+          }
+        },
+        {
+          "id": "lifecycle",
+          "title": {
+            "zh-CN": "生命周期与激活状态",
+            "en": "Lifecycle and Activation"
+          }
+        }
+      ]
+    },
+    {
+      "id": "prefab",
+      "title": {
+        "zh-CN": "Prefab 工作流",
+        "en": "Prefab Workflow"
+      },
+      "pages": [
+        {
+          "id": "workflow",
+          "title": {
+            "zh-CN": "Prefab 工作流",
+            "en": "Prefab Workflow"
+          }
+        }
+      ]
+    },
+    {
+      "id": "assets",
+      "title": {
+        "zh-CN": "资产与内容管线",
+        "en": "Assets and Content Pipeline"
+      },
+      "pages": [
+        {
+          "id": "pipeline",
+          "title": {
+            "zh-CN": "Asset Browser 与导入",
+            "en": "Asset Browser and Import"
+          }
+        },
+        {
+          "id": "models-textures",
+          "title": {
+            "zh-CN": "模型、网格与纹理",
+            "en": "Models, Meshes, and Textures"
+          }
+        },
+        {
+          "id": "references",
+          "title": {
+            "zh-CN": "引用、工件与缓存",
+            "en": "References, Artifacts, and Caches"
+          }
+        }
+      ]
+    },
+    {
+      "id": "rendering",
+      "title": {
+        "zh-CN": "渲染、材质与光照",
+        "en": "Rendering, Materials, and Lighting"
+      },
+      "pages": [
+        {
+          "id": "overview",
+          "title": {
+            "zh-CN": "渲染概览",
+            "en": "Rendering Overview"
+          }
+        },
+        {
+          "id": "cameras-lights",
+          "title": {
+            "zh-CN": "相机、光源与画面输出",
+            "en": "Cameras, Lights, and Output"
+          }
+        },
+        {
+          "id": "materials",
+          "title": {
+            "zh-CN": "材质与 ShaderLab",
+            "en": "Materials and ShaderLab"
+          }
+        },
+        {
+          "id": "backends",
+          "title": {
+            "zh-CN": "图形后端与大场景特性",
+            "en": "Graphics Backends and Large-Scene Features"
+          }
+        }
+      ]
+    },
+    {
+      "id": "large-scenes",
+      "title": {
+        "zh-CN": "大场景与资源管理",
+        "en": "Large Scenes and Resource Management"
+      },
+      "pages": [
+        {
+          "id": "visibility-occlusion",
+          "title": {
+            "zh-CN": "可见性与遮挡剔除",
+            "en": "Visibility and Occlusion"
+          }
+        },
+        {
+          "id": "lod-hlod",
+          "title": {
+            "zh-CN": "LOD 与 HLOD",
+            "en": "LOD and HLOD"
+          }
+        },
+        {
+          "id": "streaming",
+          "title": {
+            "zh-CN": "资源驻留与预算",
+            "en": "Residency and Budgets"
+          }
+        }
+      ]
+    },
+    {
+      "id": "scripting",
+      "title": {
+        "zh-CN": "游戏逻辑与脚本",
+        "en": "Gameplay and Scripting"
+      },
+      "pages": [
+        {
+          "id": "overview",
+          "title": {
+            "zh-CN": "脚本系统概览",
+            "en": "Scripting Overview"
+          }
+        },
+        {
+          "id": "api",
+          "title": {
+            "zh-CN": "脚本 API 参考",
+            "en": "Scripting API Reference"
+          }
+        },
+        {
+          "id": "debugging",
+          "title": {
+            "zh-CN": "脚本调试与热重载",
+            "en": "Script Debugging and Hot Reload"
+          }
+        }
+      ]
+    },
+    {
+      "id": "ui",
+      "title": {
+        "zh-CN": "用户界面",
+        "en": "User Interface"
+      },
+      "pages": [
+        {
+          "id": "overview",
+          "title": {
+            "zh-CN": "UI 系统概览",
+            "en": "UI Overview"
+          }
+        },
+        {
+          "id": "designer",
+          "title": {
+            "zh-CN": "UI Designer 与编辑器扩展",
+            "en": "UI Designer and Editor Extensions"
+          }
+        }
+      ]
+    },
+    {
+      "id": "animation",
+      "title": {
+        "zh-CN": "动画与角色",
+        "en": "Animation and Characters"
+      },
+      "pages": [
+        {
+          "id": "roadmap",
+          "title": {
+            "zh-CN": "动画现状与规划",
+            "en": "Animation Status and Plans"
+          }
+        }
+      ]
+    },
+    {
+      "id": "physics",
+      "title": {
+        "zh-CN": "物理与交互",
+        "en": "Physics and Interaction"
+      },
+      "pages": [
+        {
+          "id": "roadmap",
+          "title": {
+            "zh-CN": "物理现状与规划",
+            "en": "Physics Status and Plans"
+          }
+        }
+      ]
+    },
+    {
+      "id": "audio-vfx",
+      "title": {
+        "zh-CN": "音频、特效与媒体",
+        "en": "Audio, Visual Effects, and Media"
+      },
+      "pages": [
+        {
+          "id": "roadmap",
+          "title": {
+            "zh-CN": "音频与特效现状及规划",
+            "en": "Audio and VFX Status and Plans"
+          }
+        }
+      ]
+    },
+    {
+      "id": "ai-networking",
+      "title": {
+        "zh-CN": "AI 与联网",
+        "en": "AI and Networking"
+      },
+      "pages": [
+        {
+          "id": "roadmap",
+          "title": {
+            "zh-CN": "AI 与联网现状及规划",
+            "en": "AI and Networking Status and Plans"
+          }
+        }
+      ]
+    },
+    {
+      "id": "platform-build",
+      "title": {
+        "zh-CN": "平台、构建与发布",
+        "en": "Platforms, Builds, and Releases"
+      },
+      "pages": [
+        {
+          "id": "platforms",
+          "title": {
+            "zh-CN": "平台支持矩阵",
+            "en": "Platform Support"
+          }
+        },
+        {
+          "id": "runtime",
+          "title": {
+            "zh-CN": "Game 运行时与资产清单",
+            "en": "Game Runtime and Asset Manifests"
+          }
+        }
+      ]
+    },
+    {
+      "id": "architecture",
+      "title": {
+        "zh-CN": "扩展与引擎架构",
+        "en": "Extending the Engine"
+      },
+      "pages": [
+        {
+          "id": "modules",
+          "title": {
+            "zh-CN": "模块结构",
+            "en": "Module Structure"
+          }
+        },
+        {
+          "id": "reflection-serialization",
+          "title": {
+            "zh-CN": "反射与序列化",
+            "en": "Reflection and Serialization"
+          }
+        },
+        {
+          "id": "jobs-threading",
+          "title": {
+            "zh-CN": "任务系统与线程模型",
+            "en": "Jobs and Threading"
+          }
+        },
+        {
+          "id": "editor-extensions",
+          "title": {
+            "zh-CN": "编辑器脚本扩展",
+            "en": "Editor Script Extensions"
+          }
+        }
+      ]
+    },
+    {
+      "id": "quality",
+      "title": {
+        "zh-CN": "调试、性能与质量",
+        "en": "Debugging, Performance, and Quality"
+      },
+      "pages": [
+        {
+          "id": "debugging",
+          "title": {
+            "zh-CN": "调试与测试",
+            "en": "Debugging and Testing"
+          }
+        },
+        {
+          "id": "profiling",
+          "title": {
+            "zh-CN": "性能分析与图形调试",
+            "en": "Profiling and Graphics Debugging"
+          }
+        }
+      ]
+    },
+    {
+      "id": "reference",
+      "title": {
+        "zh-CN": "参考手册",
+        "en": "Reference"
+      },
+      "pages": [
+        {
+          "id": "layout-cli",
+          "title": {
+            "zh-CN": "目录结构与命令行",
+            "en": "Project Layout and Command Line"
+          }
+        },
+        {
+          "id": "build-options",
+          "title": {
+            "zh-CN": "构建选项",
+            "en": "Build Options"
+          }
+        }
+      ]
+    },
+    {
+      "id": "roadmap",
+      "title": {
+        "zh-CN": "示例与发展路线",
+        "en": "Examples and Roadmap"
+      },
+      "pages": [
+        {
+          "id": "minimal-example",
+          "title": {
+            "zh-CN": "最小完整示例",
+            "en": "Minimal Complete Example"
+          }
+        },
+        {
+          "id": "index",
+          "title": {
+            "zh-CN": "功能状态矩阵",
+            "en": "Feature Status Matrix"
+          }
+        }
+      ]
+    }
+  ]
+}

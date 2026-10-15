@@ -143,19 +143,27 @@ cmake --build build --config Debug --target Editor
 - Windows 默认选择 `DX12`。
 - Linux / WSL 默认选择 `Vulkan`；首次在 WSL 中可使用 `./build_wsl_vulkan.sh --install-deps` 安装脚本所需依赖，再运行 `./build_wsl_vulkan.sh`。
 - macOS 构建默认选择 `Metal`。
-- DX11 与 OpenGL 代码仍在迁移中，当前被显式限制为非主线运行时后端，不应作为项目交付目标。
+- DX11 与 OpenGL 已被显式限制：启动时报告不受支持并正常退出，不应作为项目交付目标。
 
-## 深入了解
+## 文档
 
-- [多后端 RHI 架构](Docs/Rendering/RHIMultiBackendArchitecture.md)
-- [多线程渲染与 UE 5.7.4 线程迁移](Docs/Rendering/UE574ThreadingMigration.md)
-- [HLSL 与资源绑定约定](Docs/Rendering/ShaderConventions.md)
-- [HZB 遮挡剔除验证](Docs/Rendering/HZBOcclusionValidation.md)
-- [C# / Lua 脚本 API](Docs/Scripting/ScriptingApi.zh-CN.md)
-- [C# 脚本调试指南](Docs/Scripting/ScriptDebugging.zh-CN.md)
-- [反射工作流](Docs/Reflection/ReflectionWorkflow.zh-CN.md)
-- [原生 JobSystem](Docs/Jobs.md)
-- [测试说明](Docs/Testing.md)
+完整手册保存在 `Docs/`，并以中英双语发布到 [Wiki](https://github.com/NullusEngine/Nullus/wiki)。Wiki 由 `Docs/` 生成，请不要直接编辑 Wiki 页面。
+
+- [认识 Nullus](Docs/zh-CN/start/overview.md)
+- [环境准备与构建](Docs/zh-CN/getting-started/build.md)
+- [第一个项目](Docs/zh-CN/getting-started/first-project.md)
+- [使用编辑器](Docs/zh-CN/editor/workspace.md)
+- [场景与对象](Docs/zh-CN/scene/objects.md)
+- [资产与内容管线](Docs/zh-CN/assets/pipeline.md)
+- [渲染、材质与光照](Docs/zh-CN/rendering/overview.md)
+- [大场景与资源管理](Docs/zh-CN/large-scenes/visibility-occlusion.md)
+- [游戏逻辑与脚本](Docs/zh-CN/scripting/overview.md)
+- [用户界面](Docs/zh-CN/ui/overview.md)
+- [平台、构建与发布](Docs/zh-CN/platform-build/platforms.md)
+- [扩展与引擎架构](Docs/zh-CN/architecture/modules.md)
+- [调试、性能与质量](Docs/zh-CN/quality/debugging.md)
+- [参考手册](Docs/zh-CN/reference/layout-cli.md)
+- [发展路线](Docs/zh-CN/roadmap/index.md)
 
 ## 跨平台与 CI
 

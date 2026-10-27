@@ -139,11 +139,11 @@ namespace NLS::Engine::Rendering
 		[[nodiscard]] const LargeSceneSettings& GetLargeSceneSettings() const;
 			const std::shared_ptr<NLS::Render::RHI::RHIBindingSet>& GetLightGridGraphicsPassBindingSet() const;
         void SetDistanceFieldDebugSettings(Render::DistanceField::DistanceFieldDebugSettings settings)
-        { m_distanceFieldDebug.store(std::make_shared<const Render::DistanceField::DistanceFieldDebugSettings>(settings)); }
+        { std::atomic_store(&m_distanceFieldDebug, std::make_shared<const Render::DistanceField::DistanceFieldDebugSettings>(settings)); }
         Render::DistanceField::DistanceFieldDebugSettings GetDistanceFieldDebugSettings() const
-        { return *m_distanceFieldDebug.load(); }
+        { return *std::atomic_load(&m_distanceFieldDebug); }
         Render::DistanceField::DistanceFieldStats GetDistanceFieldStats() const
-        { auto system = m_distanceFieldSystem.load(); return system ? system->GetStats() : Render::DistanceField::DistanceFieldStats{}; }
+        { auto system = std::atomic_load(&m_distanceFieldSystem); return system ? system->GetStats() : Render::DistanceField::DistanceFieldStats{}; }
 			NLS::Render::FrameGraph::LightGridCompileContext BuildLightGridCompileContext(
 				bool hasSkyboxTexture = false) const;
 			NLS::Render::FrameGraph::LightGridCompileContext BuildLightGridCompileContext(
@@ -520,8 +520,9 @@ namespace NLS::Engine::Rendering
 		std::string m_sceneFallbackShaderResourcePath;
 		RenderScene m_renderScene;
             ParticleSceneRenderer m_particleRenderer;
-        std::atomic<std::shared_ptr<Render::DistanceField::DistanceFieldSystem>> m_distanceFieldSystem;
-        std::atomic<std::shared_ptr<const Render::DistanceField::DistanceFieldDebugSettings>> m_distanceFieldDebug{
+        // Publish immutable snapshots through the portable shared_ptr atomic operations.
+        std::shared_ptr<Render::DistanceField::DistanceFieldSystem> m_distanceFieldSystem;
+        std::shared_ptr<const Render::DistanceField::DistanceFieldDebugSettings> m_distanceFieldDebug{
             std::make_shared<const Render::DistanceField::DistanceFieldDebugSettings>()};
         std::shared_ptr<const uint64_t> m_distanceFieldViewLifetime =
             Render::DistanceField::DistanceFieldSystem::CreateViewLifetime();

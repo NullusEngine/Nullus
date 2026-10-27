@@ -1,5 +1,7 @@
 #include "UI/Controls/TextControl.h"
 
+#include <imgui_internal.h>
+
 namespace NLS::UI::Controls
 {
 namespace

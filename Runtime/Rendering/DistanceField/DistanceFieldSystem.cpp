@@ -110,7 +110,7 @@ namespace NLS::Render::DistanceField
         std::shared_ptr<RHIDevice> device;
         mutable std::mutex mutex;
         DistanceFieldStats stats;
-        std::atomic<std::shared_ptr<const DistanceFieldStats>> published{std::make_shared<const DistanceFieldStats>()};
+        std::shared_ptr<const DistanceFieldStats> published{std::make_shared<const DistanceFieldStats>()};
         std::shared_ptr<UploadContext> uploads;
         std::shared_ptr<RHITexture> meshAtlas,pageAtlas;
         std::shared_ptr<RHITextureView> meshView,pageView;
@@ -456,12 +456,12 @@ namespace NLS::Render::DistanceField
     uint64_t DistanceFieldSystem::AllocateViewId() { return nextViewId.fetch_add(1); }
     std::shared_ptr<const uint64_t> DistanceFieldSystem::CreateViewLifetime()
     { return std::shared_ptr<const uint64_t>(new uint64_t(AllocateViewId()),[](const uint64_t* id){ delete id; ++runtimeRevision; }); }
-    DistanceFieldStats DistanceFieldSystem::GetStats() const { return *m_impl->published.load(); }
+    DistanceFieldStats DistanceFieldSystem::GetStats() const { return *std::atomic_load(&m_impl->published); }
 
     DistanceFieldFrameResources DistanceFieldSystem::BuildFrame(DistanceFieldFrameInput input)
     {
         auto& impl=*m_impl; std::lock_guard lock(impl.mutex);
-        struct Publish { Impl& impl; ~Publish() { impl.published.store(std::make_shared<const DistanceFieldStats>(impl.stats)); } } publish{impl};
+        struct Publish { Impl& impl; ~Publish() { std::atomic_store(&impl.published, std::make_shared<const DistanceFieldStats>(impl.stats)); } } publish{impl};
         const auto begin=std::chrono::steady_clock::now();
         DistanceFieldFrameResources result;
         ++impl.serial; impl.stats.uploadedBytes=0; impl.stats.dirtyPages=0; impl.stats.diagnostic.clear();

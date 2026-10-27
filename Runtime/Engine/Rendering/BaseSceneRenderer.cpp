@@ -2312,7 +2312,7 @@ void BaseSceneRenderer::AppendDistanceFieldScenePass(Render::Context::RenderScen
     if (!device || !device->GetCapabilities().SupportsFeature(Render::RHI::RHIDeviceFeature::DistanceFields))
         return;
     auto system = df::DistanceFieldSystem::Get(device);
-    m_distanceFieldSystem.store(system);
+    std::atomic_store(&m_distanceFieldSystem, system);
     df::DistanceFieldFrameInput input;
     input.viewId = *m_distanceFieldViewLifetime;
     input.viewLifetime = m_distanceFieldViewLifetime;

@@ -112,8 +112,8 @@ namespace NLS::Render::Resources
 		uint64_t GetInstanceId() const;
 		uint64_t GetContentRevision() const;
 		static uint64_t GetGlobalMutationEpoch() noexcept;
-            void SetSourceArtifactPath(std::string path) { m_sourceArtifactPath.store(std::make_shared<const std::string>(std::move(path))); }
-            std::string GetSourceArtifactPath() const { auto path = m_sourceArtifactPath.load(); return path ? *path : std::string{}; }
+            void SetSourceArtifactPath(std::string path) { std::atomic_store(&m_sourceArtifactPath, std::make_shared<const std::string>(std::move(path))); }
+            std::string GetSourceArtifactPath() const { auto path = std::atomic_load(&m_sourceArtifactPath); return path ? *path : std::string{}; }
 		uint32_t GetLODCount() const;
 		Mesh* GetLODMesh(uint32_t lodIndex);
 		const Mesh* GetLODMesh(uint32_t lodIndex) const;
@@ -166,7 +166,8 @@ namespace NLS::Render::Resources
 		Geometry::Bounds m_bounds;
 		uint64_t m_instanceId = 0u;
 		uint64_t m_contentRevision = 1u;
-        std::atomic<std::shared_ptr<const std::string>> m_sourceArtifactPath;
+        // Use shared_ptr atomic operations for libc++ implementations without atomic<shared_ptr>.
+        std::shared_ptr<const std::string> m_sourceArtifactPath;
 		std::vector<std::unique_ptr<Mesh>> m_lodResources;
 		std::vector<float> m_lodScreenSizes {1.0f};
 		uint32_t m_minLOD = 0u;

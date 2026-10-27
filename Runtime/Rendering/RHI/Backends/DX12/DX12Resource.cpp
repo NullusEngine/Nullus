@@ -2321,7 +2321,18 @@ namespace NLS::Render::Backend
 			};
 		}
 
-        if (!fullTextureUpdate || (!NLS::Render::RHI::IsTextureFormatCompressed(textureDesc.format) && textureDesc.format != NLS::Render::RHI::TextureFormat::RGB8))
+        const auto uploadRequest = fullTextureUpdate
+            ? NLS::Render::RHI::DX12::BuildDX12InitialTextureUploadRequest(textureDesc, desc.data)
+            : NLS::Render::RHI::DX12::DX12InitialUploadRequest{};
+        const auto& subresources = uploadRequest.texturePlan.subresources;
+        const bool tightlyPackedSingleSubresource = subresources.size() == 1u &&
+            (desc.rowPitch == 0u || desc.rowPitch == subresources.front().rowPitch) &&
+            (desc.slicePitch == 0u || desc.slicePitch ==
+                subresources.front().slicePitch / (std::max)(subresources.front().depth, 1u));
+        // Preserve deferred batch submission for tightly packed whole-texture updates.
+        // The region path still handles custom source pitches and individual subresources.
+        if (!fullTextureUpdate || (!NLS::Render::RHI::IsTextureFormatCompressed(textureDesc.format) &&
+            textureDesc.format != NLS::Render::RHI::TextureFormat::RGB8 && !tightlyPackedSingleSubresource))
 		{
 			NLS::Render::RHI::ResourceState finalState = textureDesc.usage != NLS::Render::RHI::TextureUsageFlags::None
 				? ResolveUploadedTextureState(textureDesc)
@@ -2346,8 +2357,6 @@ namespace NLS::Render::Backend
 			return { NLS::Render::RHI::RHIUpdateStatusCode::Success, {} };
 		}
 
-		const auto uploadRequest =
-			NLS::Render::RHI::DX12::BuildDX12InitialTextureUploadRequest(textureDesc, desc.data);
 		if (uploadRequest.dataSize == 0u || uploadRequest.dataSize > desc.dataSize)
 		{
 			return {

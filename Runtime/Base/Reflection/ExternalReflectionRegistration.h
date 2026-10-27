@@ -89,7 +89,7 @@
             {                                                             \
                 ::NLS::meta::ReflectionModuleRegistry::Add(               \
                     ::NLS::meta::HashTypeKey(__FILE__), __FILE__,         \
-                    &functionName);                                       \
+                    &functionName, ::NLS::meta::HashTypeKey(#functionName)); \
             }                                                             \
         };                                                                \
         static registrarName NLS_META_EXTERNAL_JOIN(g_, registrarName);   \

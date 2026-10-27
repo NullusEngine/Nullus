@@ -1,4 +1,5 @@
 #include <gtest/gtest.h>
+#include <algorithm>
 #include <fstream>
 #include "MaterialCompiler/MaterialCooker.h"
 #include "MaterialCompiler/MaterialGraph.h"
@@ -35,7 +36,8 @@ TEST(MaterialCookerTests, PublishesOnlyUsedStaticVariantsAndLoadsWithoutAuthorin
     options.compiler.generatedPath=root/"Build"/"Material.hlsl";options.compiler.cacheDatabasePath=(root/"Build"/"Cache.tsv").string();
     options.compiler.includeDirectories={(std::filesystem::path(NLS_ROOT_DIR)/"App"/"Assets"/"Engine"/"Shaders").string()};
     options.compiler.targets={R::ShaderCompiler::ShaderTargetPlatform::DXIL,R::ShaderCompiler::ShaderTargetPlatform::SPIRV};
-    options.compiler.variantBudget=1;options.compiler.generateGlsl=false;
+    // One used static-keyword combination has static and skinned geometry variants.
+    options.compiler.variantBudget=2;options.compiler.generateGlsl=false;
     R::Assets::TextureArtifactData texture;texture.width=texture.height=1;texture.format=R::RHI::TextureFormat::RGBA8;
     R::Assets::TextureArtifactMip mip;mip.width=mip.height=1;mip.rowPitch=mip.slicePitch=4;mip.pixels={255,255,255,255};texture.mips={mip};
     const auto textureId=A::AssetId::New();const auto native=R::Assets::SerializeTextureArtifact(texture);
@@ -56,8 +58,14 @@ TEST(MaterialCookerTests, PublishesOnlyUsedStaticVariantsAndLoadsWithoutAuthorin
     A::RegisterRuntimeAuthorizedArtifactPath(A::TryMakePortableContentArtifactPath(path.generic_string()));
     auto* runtime=R::Resources::Loaders::MaterialLoader::Create(path.string(),load);
     ASSERT_NE(runtime,nullptr);ASSERT_TRUE(runtime->IsValid());
-    EXPECT_EQ(runtime->GetShader()->GetCompiledArtifacts().size(),4);
-    EXPECT_EQ(runtime->GetShaderLabKeywords().Hash(),runtime->GetShader()->GetCompiledArtifacts().front().keywordHash);
+    const auto& artifacts=runtime->GetShader()->GetCompiledArtifacts();
+    EXPECT_EQ(artifacts.size(),8u);
+    const auto staticHash=runtime->GetShaderLabKeywords().Hash();
+    auto skinnedKeywords=runtime->GetShaderLabKeywords();skinnedKeywords.Enable("NLS_SKINNED");
+    const auto skinnedHash=skinnedKeywords.Hash();
+    EXPECT_TRUE(std::any_of(artifacts.begin(),artifacts.end(),[&](const auto& stage){return stage.keywordHash==staticHash;}));
+    EXPECT_TRUE(std::any_of(artifacts.begin(),artifacts.end(),[&](const auto& stage){return stage.keywordHash==skinnedHash;}));
+    for(const auto& stage:artifacts)EXPECT_TRUE(stage.keywordHash==staticHash || stage.keywordHash==skinnedHash);
     EXPECT_NE(runtime->ResolveShaderForLightMode("Picking"),nullptr);
     const auto* textureRecord=database.Find(textureId,"texture:main","editor");ASSERT_NE(textureRecord,nullptr);
     EXPECT_EQ(runtime->GetTextureResourcePath(M::MaterialGraphBindingName(12)),textureRecord->artifactPath);

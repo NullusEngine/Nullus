@@ -1,5 +1,6 @@
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <memory>
 #include <string>
 #include <vector>
@@ -30,6 +31,31 @@ namespace
         }
         return targets;
     }
+}
+
+TEST(ReflectedValueBackendTests, ContentPropertyTraversalVisitsEveryPathOnce)
+{
+    EnsureUIDocumentInspectorReflection();
+    const auto lifetime = std::make_shared<int>(0);
+    auto backend = std::make_shared<ReflectedValueBackend>(meta::Variant(UIDocumentContentEdit {}), lifetime);
+    SerializedObject object(MakeTargets(1u), backend);
+    ASSERT_TRUE(object.IsValid()) << object.GetLastError();
+
+    std::vector<std::string> paths;
+    auto iterator = object.GetIterator();
+    bool enterChildren = true;
+    while (iterator.NextVisible(enterChildren))
+    {
+        const std::string path(iterator.GetPropertyPath());
+        ASSERT_EQ(std::find(paths.begin(), paths.end(), path), paths.end()) << path;
+        ASSERT_LT(paths.size(), 64u);
+        paths.push_back(path);
+        enterChildren = iterator.HasChildren();
+    }
+    EXPECT_NE(std::find(paths.begin(), paths.end(), "Value.texture.subAssetKey"), paths.end());
+    EXPECT_NE(std::find(paths.begin(), paths.end(), "Value.font.resourcePath"), paths.end());
+    EXPECT_NE(std::find(paths.begin(), paths.end(), "Value.nineSlice.bottom"), paths.end());
+    EXPECT_NE(std::find(paths.begin(), paths.end(), "Value.requiresRenderTarget"), paths.end());
 }
 
 TEST(ReflectedValueBackendTests, MultipleValuesShowMixedFieldsAndApplyToEveryTarget)

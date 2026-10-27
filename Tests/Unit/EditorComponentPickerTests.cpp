@@ -332,10 +332,16 @@ TEST_F(ReflectionRuntimeTestFixture, SearchFilteringIsCaseInsensitiveAndSupports
 {
     auto actor = MakeGameObject();
 
-    const std::vector<ComponentSearchEntry> entries = ComponentSearchPanel::BuildComponentEntries(&actor, "mesh renderer");
+    const auto expected = ComponentSearchPanel::BuildComponentEntries(&actor, "mesh renderer");
+    const auto entries = ComponentSearchPanel::BuildComponentEntries(&actor, "MeSh   ReNdErEr");
 
-    ASSERT_EQ(entries.size(), 1u);
-    EXPECT_EQ(entries.front().displayName, "Mesh Renderer");
+    ASSERT_TRUE(ContainsDisplayName(expected, "Mesh Renderer"));
+    ASSERT_EQ(entries.size(), expected.size());
+    for (size_t index = 0u; index < entries.size(); ++index)
+    {
+        EXPECT_EQ(entries[index].componentType, expected[index].componentType);
+        EXPECT_EQ(entries[index].displayName, expected[index].displayName);
+    }
 }
 
 TEST_F(ReflectionRuntimeTestFixture, PickerViewModeUsesCategoriesForEmptyQueryAndResultsForSearch)

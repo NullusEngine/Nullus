@@ -3,6 +3,7 @@
 #include "Reflection/Object.h"
 #include "Reflection/ArrayWrapper.h"
 #include "Reflection/ReflectionDiagnostics.h"
+#include "Reflection/ReflectionModule.h"
 #include "Reflection/RuntimeMetaProperties.h"
 #include "Reflection/TestObject.h"
 
@@ -476,4 +477,38 @@ TEST_F(ReflectionRuntimeTestFixture, RegistersRenderEnumAndStructReflectionTypes
 
     for (const TypeExpectation& expectation : expectations)
         ExpectReflectedType(expectation);
+}
+
+namespace
+{
+std::array<int, 2> firstModuleRegistration {};
+std::array<int, 2> duplicateModuleRegistration {};
+std::array<int, 2> otherModuleRegistration {};
+}
+
+TEST_F(ReflectionRuntimeTestFixture, ExternalModuleRegistrationUsesStableCallbackIdentity)
+{
+    using namespace NLS::meta;
+    constexpr auto moduleKey = HashTypeKey("ReflectionRuntimeCoreTests.ModuleIdentity");
+    constexpr auto firstKey = HashTypeKey("FirstCallback");
+    constexpr auto otherKey = HashTypeKey("OtherCallback");
+    ReflectionModuleRegistry::Unload(moduleKey);
+    firstModuleRegistration = {};
+    duplicateModuleRegistration = {};
+    otherModuleRegistration = {};
+
+    ReflectionModuleRegistry::Add(moduleKey, "ModuleIdentity",
+        [](ReflectionDatabase&, ReflectionRegistrationPhase phase)
+        { ++firstModuleRegistration[phase == ReflectionRegistrationPhase::Declare ? 0u : 1u]; }, firstKey);
+    ReflectionModuleRegistry::Add(moduleKey, "ModuleIdentity",
+        [](ReflectionDatabase&, ReflectionRegistrationPhase phase)
+        { ++duplicateModuleRegistration[phase == ReflectionRegistrationPhase::Declare ? 0u : 1u]; }, firstKey);
+    ReflectionModuleRegistry::Add(moduleKey, "ModuleIdentity",
+        [](ReflectionDatabase&, ReflectionRegistrationPhase phase)
+        { ++otherModuleRegistration[phase == ReflectionRegistrationPhase::Declare ? 0u : 1u]; }, otherKey);
+
+    EXPECT_EQ(firstModuleRegistration, (std::array<int, 2> {1, 1}));
+    EXPECT_EQ(duplicateModuleRegistration, (std::array<int, 2> {0, 0}));
+    EXPECT_EQ(otherModuleRegistration, (std::array<int, 2> {1, 1}));
+    ReflectionModuleRegistry::Unload(moduleKey);
 }

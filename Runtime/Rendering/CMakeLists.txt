@@ -59,7 +59,9 @@ target_include_directories(NLS_StaticMeshBuild PUBLIC
   $<BUILD_INTERFACE:${NLS_ROOT_DIR}/Runtime>
   $<BUILD_INTERFACE:${NLS_ROOT_DIR}/Runtime/Rendering>)
 target_link_libraries(NLS_StaticMeshBuild PUBLIC NLS_Render PRIVATE meshoptimizer)
-set_target_properties(NLS_StaticMeshBuild PROPERTIES FOLDER "Runtime/Build")
+set_target_properties(NLS_StaticMeshBuild PROPERTIES
+  FOLDER "Runtime/Build"
+  POSITION_INDEPENDENT_CODE ON)
 
 if(Vulkan_FOUND)
   target_link_libraries(NLS_Render PUBLIC Vulkan::Vulkan)

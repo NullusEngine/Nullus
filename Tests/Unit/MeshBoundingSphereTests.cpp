@@ -390,7 +390,7 @@ TEST(MeshArtifactTests, SerializationPreservesExplicitZeroRadiusBoundingSphere)
     EXPECT_FLOAT_EQ(artifact->boundingSphere.radius, 0.0f);
 }
 
-TEST(MeshArtifactTests, VersionTwoHeaderAndBoundsUseStableFieldOrder)
+TEST(MeshArtifactTests, VersionThreePackedHeaderAndBoundsUseStableFieldOrder)
 {
     NLS::Render::Assets::MeshArtifactData mesh;
     mesh.materialIndex = 0x01020304u;
@@ -402,10 +402,8 @@ TEST(MeshArtifactTests, VersionTwoHeaderAndBoundsUseStableFieldOrder)
 
     const std::vector<uint8_t> expectedPrefix{
         0x4Eu, 0x4Eu, 0x4Du, 0x48u,
-        0x02u, 0x00u, 0x00u, 0x00u,
-        static_cast<uint8_t>(sizeof(NLS::Render::Geometry::Vertex) & 0xFFu),
-        static_cast<uint8_t>((sizeof(NLS::Render::Geometry::Vertex) >> 8u) & 0xFFu),
-        0x00u, 0x00u,
+        0x03u, 0x00u, 0x00u, 0x00u,
+        0x20u, 0x00u, 0x00u, 0x00u,
         0x00u, 0x00u, 0x00u, 0x00u,
         0x00u, 0x00u, 0x00u, 0x00u,
         0x04u, 0x03u, 0x02u, 0x01u,

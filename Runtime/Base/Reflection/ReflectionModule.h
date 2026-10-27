@@ -24,6 +24,7 @@ namespace NLS::meta
         TypeKey key = InvalidTypeKey;
         const char* name = nullptr;
         ReflectionRegisterFunction function = nullptr;
+        TypeKey registrationKey = InvalidTypeKey;
     };
 
     class NLS_BASE_API ReflectionModuleRegistry
@@ -31,6 +32,8 @@ namespace NLS::meta
     public:
         static void Add(ReflectionRegisterFunction function);
         static void Add(TypeKey moduleKey, const char* moduleName, ReflectionRegisterFunction function);
+        static void Add(TypeKey moduleKey, const char* moduleName, ReflectionRegisterFunction function,
+            TypeKey registrationKey);
         static void RegisterAll(ReflectionDatabase &db);
         static void Unload(TypeKey moduleKey);
     };

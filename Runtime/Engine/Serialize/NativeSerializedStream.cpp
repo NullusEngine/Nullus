@@ -743,8 +743,11 @@ bool WriteScalar(
             }
             slot = references.Intern(std::move(entry));
         }
+        // Scene PPtrs need the local-identifier fallback below before generic asset codecs.
         else if (const auto* handler = Internal::FindPPtrObjectGraphHandler(value.GetType());
-            handler != nullptr && handler->serializeValue != nullptr)
+            handler != nullptr && handler->serializeValue != nullptr &&
+            value.GetType() != NLS_TYPEOF(PPtr<GameObject>) &&
+            value.GetType() != NLS_TYPEOF(PPtr<Components::Component>))
         {
             try
             {

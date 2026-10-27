@@ -36,6 +36,12 @@ namespace NLS::meta
 
     void ReflectionModuleRegistry::Add(TypeKey moduleKey, const char* moduleName, ReflectionRegisterFunction function)
     {
+        Add(moduleKey, moduleName, function, InvalidTypeKey);
+    }
+
+    void ReflectionModuleRegistry::Add(TypeKey moduleKey, const char* moduleName, ReflectionRegisterFunction function,
+        TypeKey registrationKey)
+    {
         if (!function)
             return;
 
@@ -44,13 +50,18 @@ namespace NLS::meta
             const auto found = std::find_if(
                 modules.begin(),
                 modules.end(),
-                [function](const ReflectionModuleDescriptor &module)
+                [moduleKey, registrationKey, function](const ReflectionModuleDescriptor &module)
                 {
-                    return module.function == function;
+                    // Header registrations have different function addresses in each
+                    // shared library. Keep their stable identity separate from the
+                    // owner module, which may legitimately contain many callbacks.
+                    return module.function == function ||
+                        (registrationKey != InvalidTypeKey && module.key == moduleKey &&
+                         module.registrationKey == registrationKey);
                 });
             if (found == modules.end())
             {
-                modules.push_back({ moduleKey, moduleName, function });
+                modules.push_back({ moduleKey, moduleName, function, registrationKey });
                 if (auto *db = ReflectionDatabase::TryGet())
                 {
                     function(*db, ReflectionRegistrationPhase::Declare);

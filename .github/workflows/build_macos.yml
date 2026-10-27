@@ -46,6 +46,35 @@ jobs:
           dotnet restore Managed/Nullus.GameScriptsEditor/Nullus.GameScriptsEditor.csproj --nologo
           dotnet restore Managed/Nullus.Editor/Nullus.Editor.csproj --nologo
 
+      - name: Install native shader compiler
+        timeout-minutes: 15
+        shell: bash
+        run: |
+          set -euo pipefail
+          sdk_version="1.4.335.1"
+          installer_root="${RUNNER_TEMP}/nullus-vulkan-installer"
+          sdk_root="${RUNNER_TEMP}/nullus-vulkan-sdk"
+          mkdir -p "$installer_root"
+          curl --fail --location --retry 3 --retry-delay 5 \
+            "https://sdk.lunarg.com/sdk/download/${sdk_version}/mac/vulkansdk-macos-${sdk_version}.zip" \
+            -o "${RUNNER_TEMP}/nullus-vulkan-sdk.zip"
+          unzip -q "${RUNNER_TEMP}/nullus-vulkan-sdk.zip" -d "$installer_root"
+          installer_app="$(find "$installer_root" -maxdepth 3 -type d -name '*.app' -print -quit)"
+          test -n "$installer_app"
+          installer_executable="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$installer_app/Contents/Info.plist")"
+          "$installer_app/Contents/MacOS/$installer_executable" \
+            --root "$sdk_root" --accept-licenses --default-answer --confirm-command install copy_only=1
+          dxc_path="${sdk_root}/macOS/bin/dxc"
+          test -x "$dxc_path"
+          export DYLD_LIBRARY_PATH="${sdk_root}/macOS/lib:${DYLD_LIBRARY_PATH:-}"
+          "$dxc_path" --version
+          printf '[numthreads(1,1,1)] void main(uint3 id : SV_DispatchThreadID) {}\n' > "${RUNNER_TEMP}/nullus-dxc-check.hlsl"
+          "$dxc_path" -E main -T cs_6_0 -Fo "${RUNNER_TEMP}/nullus-dxc-check.dxil" "${RUNNER_TEMP}/nullus-dxc-check.hlsl"
+          "$dxc_path" -spirv -E main -T cs_6_0 -Fo "${RUNNER_TEMP}/nullus-dxc-check.spv" "${RUNNER_TEMP}/nullus-dxc-check.hlsl"
+          # Export only compiler paths so CMake keeps the existing backend selection.
+          echo "DXC_PATH=$dxc_path" >> "$GITHUB_ENV"
+          echo "DYLD_LIBRARY_PATH=$DYLD_LIBRARY_PATH" >> "$GITHUB_ENV"
+
       - name: Build
         timeout-minutes: 240
         shell: bash

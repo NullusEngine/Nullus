@@ -916,6 +916,7 @@ TEST(CollectionProperties, UserMatrixUsesTheMatrixDrawerAndEditsOneCellAcrossTar
     io.DisplaySize = {1200, 900};
     io.DeltaTime = 1.f / 60;
     io.ConfigInputTrickleEventQueue = false;
+    io.ConfigMacOSXBehaviors = false;
     unsigned char* pixels;
     int w, h;
     io.Fonts->GetTexDataAsRGBA32(&pixels, &w, &h);

@@ -21,6 +21,7 @@
 #include <vector>
 
 #include "Rendering/Settings/GraphicsBackendUtils.h"
+#include "Platform/Process/Process.h"
 
 namespace
 {
@@ -210,14 +211,14 @@ TEST_F(GameLaunchArgsTests, LoadsRuntimeAssetDatabaseFromProjectArtifactDB)
     manifest.sourceAssetId = NLS::Core::Assets::AssetId(assetId);
     manifest.importerId = "scene-model";
     manifest.importerVersion = 1u;
-    manifest.targetPlatform = "win64";
+    manifest.targetPlatform = NLS::Platform::Process::CurrentArtifactPlatformTag();
     manifest.primarySubAssetKey = "mesh:Body";
     manifest.subAssets.push_back({
         manifest.sourceAssetId,
         "mesh:Body",
         NLS::Core::Assets::ArtifactType::Mesh,
         "mesh",
-        "win64",
+        NLS::Platform::Process::CurrentArtifactPlatformTag(),
         RuntimeArtifactPath(kHeroArtifactHash),
         "sha256:" + std::string(kHeroArtifactHash),
         "Body"
@@ -257,14 +258,14 @@ TEST_F(GameLaunchArgsTests, RuntimeAssetDatabaseLoadedFromArtifactDbUsesArtifact
     manifest.sourceAssetId = modelId;
     manifest.importerId = "scene-model";
     manifest.importerVersion = 1u;
-    manifest.targetPlatform = "win64";
+    manifest.targetPlatform = NLS::Platform::Process::CurrentArtifactPlatformTag();
     manifest.primarySubAssetKey = "prefab:Hero";
     manifest.subAssets.push_back({
         modelId,
         "prefab:Hero",
         NLS::Core::Assets::ArtifactType::Prefab,
         "prefab",
-        "win64",
+        NLS::Platform::Process::CurrentArtifactPlatformTag(),
         RuntimeArtifactPath(kHeroArtifactHash),
         "sha256:" + std::string(kHeroArtifactHash),
         "Hero"
@@ -275,7 +276,7 @@ TEST_F(GameLaunchArgsTests, RuntimeAssetDatabaseLoadedFromArtifactDbUsesArtifact
         "material:Body",
         NLS::Core::Assets::ArtifactType::Material,
         "material",
-        "win64",
+        NLS::Platform::Process::CurrentArtifactPlatformTag(),
         RuntimeArtifactPath(kMaterialArtifactHash),
         "sha256:" + std::string(kMaterialArtifactHash),
         "Body"
@@ -310,14 +311,14 @@ TEST_F(GameLaunchArgsTests, LoadsRuntimeAssetDatabaseByIgnoringEditorTargetRecor
     winManifest.sourceAssetId = winAssetId;
     winManifest.importerId = "scene-model";
     winManifest.importerVersion = 1u;
-    winManifest.targetPlatform = "win64";
+    winManifest.targetPlatform = NLS::Platform::Process::CurrentArtifactPlatformTag();
     winManifest.primarySubAssetKey = "mesh:Body";
     winManifest.subAssets.push_back({
         winAssetId,
         "mesh:Body",
         NLS::Core::Assets::ArtifactType::Mesh,
         "mesh",
-        "win64",
+        NLS::Platform::Process::CurrentArtifactPlatformTag(),
         RuntimeArtifactPath(kHeroArtifactHash),
         "sha256:" + std::string(kHeroArtifactHash),
         "Body"
@@ -437,14 +438,14 @@ TEST_F(GameLaunchArgsTests, RejectsRuntimeArtifactDatabaseMismatchedArtifactMeta
     manifest.sourceAssetId = NLS::Core::Assets::AssetId(assetId);
     manifest.importerId = "material";
     manifest.importerVersion = 1u;
-    manifest.targetPlatform = "win64";
+    manifest.targetPlatform = NLS::Platform::Process::CurrentArtifactPlatformTag();
     manifest.primarySubAssetKey = "material:Hero";
     manifest.subAssets.push_back({
         manifest.sourceAssetId,
         "material:Hero",
         NLS::Core::Assets::ArtifactType::Material,
         "shader",
-        "win64",
+        NLS::Platform::Process::CurrentArtifactPlatformTag(),
         RuntimeArtifactPath(kHeroArtifactHash),
         "sha256:" + std::string(kHeroArtifactHash),
         "Hero"
@@ -532,7 +533,7 @@ TEST_F(GameLaunchArgsTests, RuntimeMaterialPrewarmSelectsRuntimeShaderPassInstea
     const auto runtimePath = LibraryArtifactPath(
         "47b24ab4b128645b99328e0a68370de1202b0ba370eafc30e8bb0b0b7cf8b5ae");
     ArtifactDatabase database;
-    for (const auto& target : {std::string("editor"), std::string("win64")})
+    for (const auto& target : {std::string("editor"), std::string(NLS::Platform::Process::CurrentArtifactPlatformTag())})
     {
         ArtifactManifest shader;
         shader.sourceAssetId = shaderId;
@@ -548,7 +549,7 @@ TEST_F(GameLaunchArgsTests, RuntimeMaterialPrewarmSelectsRuntimeShaderPassInstea
     ArtifactWriteRequest material;
     material.sourceAssetId = AssetId(NLS::Guid::New());
     material.importerId = "material";
-    material.targetPlatform = "win64";
+    material.targetPlatform = NLS::Platform::Process::CurrentArtifactPlatformTag();
     material.primarySubAssetKey = "material:Runtime";
     const std::string payload = "shaderLabMaterialVersion=1\nshader=" + shaderSource + "\n";
     material.artifacts.emplace_back(material.primarySubAssetKey, ArtifactType::Material,
@@ -577,7 +578,7 @@ TEST_F(GameLaunchArgsTests, RuntimeMaterialPrewarmSelectsRuntimeShaderPassInstea
     MaterialManager materials;
 
     NLS::Engine::Assets::RuntimeAssetManifest runtime;
-    runtime.targetPlatform = "win64";
+    runtime.targetPlatform = NLS::Platform::Process::CurrentArtifactPlatformTag();
     runtime.roots.push_back({material.sourceAssetId, material.primarySubAssetKey});
     const auto& artifact = written.manifest.subAssets.front();
     runtime.entries.push_back({material.sourceAssetId, material.primarySubAssetKey,
@@ -630,14 +631,14 @@ TEST_F(GameLaunchArgsTests, RuntimeShaderManagerRejectsUnmanifestedContentArtifa
     manifest.sourceAssetId = assetId;
     manifest.importerId = "shader";
     manifest.importerVersion = 1u;
-    manifest.targetPlatform = "win64";
+    manifest.targetPlatform = NLS::Platform::Process::CurrentArtifactPlatformTag();
     manifest.primarySubAssetKey = "shader:Listed";
     manifest.subAssets.push_back({
         assetId,
         "shader:Listed",
         NLS::Core::Assets::ArtifactType::Shader,
         "shader",
-        "win64",
+        NLS::Platform::Process::CurrentArtifactPlatformTag(),
         LibraryArtifactPath(listedHash),
         "sha256:" + listedHash,
         "Listed"
@@ -843,14 +844,14 @@ TEST_F(GameLaunchArgsTests, RuntimeAssetDatabaseLoadedFromArtifactDbPreservesDep
     prefabManifest.sourceAssetId = prefabId;
     prefabManifest.importerId = "prefab";
     prefabManifest.importerVersion = 1u;
-    prefabManifest.targetPlatform = "win64";
+    prefabManifest.targetPlatform = NLS::Platform::Process::CurrentArtifactPlatformTag();
     prefabManifest.primarySubAssetKey = "prefab:Hero";
     prefabManifest.subAssets.push_back({
         prefabId,
         "prefab:Hero",
         NLS::Core::Assets::ArtifactType::Prefab,
         "prefab",
-        "win64",
+        NLS::Platform::Process::CurrentArtifactPlatformTag(),
         prefabArtifactPath,
         "sha256:" + std::string(prefabHash),
         "Hero"
@@ -865,14 +866,14 @@ TEST_F(GameLaunchArgsTests, RuntimeAssetDatabaseLoadedFromArtifactDbPreservesDep
     materialManifest.sourceAssetId = materialId;
     materialManifest.importerId = "material";
     materialManifest.importerVersion = 1u;
-    materialManifest.targetPlatform = "win64";
+    materialManifest.targetPlatform = NLS::Platform::Process::CurrentArtifactPlatformTag();
     materialManifest.primarySubAssetKey = "material:Body";
     materialManifest.subAssets.push_back({
         materialId,
         "material:Body",
         NLS::Core::Assets::ArtifactType::Material,
         "material",
-        "win64",
+        NLS::Platform::Process::CurrentArtifactPlatformTag(),
         materialArtifactPath,
         "sha256:" + std::string(materialHash),
         "Body"
@@ -916,7 +917,7 @@ TEST_F(GameLaunchArgsTests, RuntimeArtifactDatabasePrewarmsEmbeddedMaterialsForS
     {
         Material* LoadArtifactWithoutTextures(const std::string& path, const std::string& target) override
         {
-            EXPECT_EQ(target, "win64");
+            EXPECT_EQ(target, NLS::Platform::Process::CurrentArtifactPlatformTag());
             loadedPaths.push_back(path);
             return reinterpret_cast<Material*>(1);
         }
@@ -934,14 +935,14 @@ TEST_F(GameLaunchArgsTests, RuntimeArtifactDatabasePrewarmsEmbeddedMaterialsForS
     ArtifactManifest model;
     model.sourceAssetId = modelId;
     model.importerId = "model-scene";
-    model.targetPlatform = "win64";
+    model.targetPlatform = NLS::Platform::Process::CurrentArtifactPlatformTag();
     model.primarySubAssetKey = "prefab:Model";
     model.subAssets.push_back({modelId, model.primarySubAssetKey, ArtifactType::Prefab,
-        "prefab", "win64", prefabPath, ContentHashForArtifactPath(prefabPath), "Model"});
+        "prefab", NLS::Platform::Process::CurrentArtifactPlatformTag(), prefabPath, ContentHashForArtifactPath(prefabPath), "Model"});
     model.subAssets.push_back({modelId, "mesh:Body", ArtifactType::Mesh,
-        "mesh", "win64", prefabPath, ContentHashForArtifactPath(prefabPath), "Body"});
+        "mesh", NLS::Platform::Process::CurrentArtifactPlatformTag(), prefabPath, ContentHashForArtifactPath(prefabPath), "Body"});
     model.subAssets.push_back({materialId, "material:Body", ArtifactType::Material,
-        "material", "win64", materialPath, ContentHashForArtifactPath(materialPath), "Body"});
+        "material", NLS::Platform::Process::CurrentArtifactPlatformTag(), materialPath, ContentHashForArtifactPath(materialPath), "Body"});
     ArtifactDatabase database;
     database.UpsertManifest(model, "Assets/Models/Model.gltf", ArtifactRecordStatus::UpToDate);
     model.sourceAssetId = unrelatedId;

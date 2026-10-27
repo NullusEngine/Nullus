@@ -25,10 +25,17 @@ void ValidateSkinning(bool vulkan,bool useStockAttributes=false)
 {
     namespace R=NLS::Render;namespace G=R::RHI;namespace A=NLS::Animation;
     struct Window{GLFWwindow* handle=nullptr;~Window(){if(handle){glfwDestroyWindow(handle);glfwTerminate();}}}window;
-    if(vulkan){ASSERT_TRUE(glfwInit());glfwWindowHint(GLFW_CLIENT_API,GLFW_NO_API);glfwWindowHint(GLFW_VISIBLE,GLFW_FALSE);window.handle=glfwCreateWindow(32,32,"Animation GPU validation",nullptr,nullptr);ASSERT_NE(window.handle,nullptr);}
+    if(vulkan)
+    {
+        if(!glfwInit()) GTEST_SKIP()<<"Vulkan WSI initialization unavailable";
+        glfwWindowHint(GLFW_CLIENT_API,GLFW_NO_API);glfwWindowHint(GLFW_VISIBLE,GLFW_FALSE);
+        window.handle=glfwCreateWindow(32,32,"Animation GPU validation",nullptr,nullptr);
+        if(!window.handle){glfwTerminate();GTEST_SKIP()<<"Vulkan WSI window unavailable";}
+    }
     R::Settings::DriverSettings settings;settings.graphicsBackend=vulkan?R::Settings::EGraphicsBackend::VULKAN:R::Settings::EGraphicsBackend::DX12;settings.platformWindow=window.handle;settings.debugMode=false;
     R::Context::Driver driver(settings);R::Context::DriverTestAccess::PauseThreadedRenderingWorkers(driver);
-    auto device=R::Context::DriverRendererAccess::GetExplicitDevice(driver);ASSERT_TRUE(device&&device->IsBackendReady());
+    auto device=R::Context::DriverRendererAccess::GetExplicitDevice(driver);
+    if(!device||!device->IsBackendReady()) GTEST_SKIP()<<"Requested graphics backend unavailable";
     NLS::Core::ServiceLocator::Provide(driver);NLS::Core::ResourceManagement::ShaderManager manager;NLS::Core::ServiceLocator::Provide(manager);
     struct Services{~Services(){NLS::Core::ServiceLocator::Remove<NLS::Core::ResourceManagement::ShaderManager>();NLS::Core::ServiceLocator::Remove<R::Context::Driver>();}}services;
     const auto root=std::filesystem::temp_directory_path()/("NullusAnimationGpu-"+NLS::Guid::New().ToString());std::filesystem::create_directories(root);

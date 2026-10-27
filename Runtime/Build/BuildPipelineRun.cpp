@@ -502,7 +502,7 @@ BuildOutcome BuildPipeline::Run(const BuildRequest& request, BuildReport& report
         // 2. Freeze inputs, then collect dependencies against them.
         report.inputHash = ComputeBuildInputHash(context);
         const auto assetsListingBefore = Detail::HashDirectoryListing(context.projectAssetsPath, true);
-        const auto databaseListingBefore = Detail::HashDirectoryListing(context.artifactDatabasePath, true);
+        const auto databaseListingBefore = Detail::HashDirectoryListing(context.artifactDatabasePath, true, "lock.mdb");
 
         {
             PhaseScope phase(report, "collect-dependencies", context);
@@ -547,7 +547,7 @@ BuildOutcome BuildPipeline::Run(const BuildRequest& request, BuildReport& report
         if (platform != nullptr)
         {
             const auto assetsListingAfter = Detail::HashDirectoryListing(context.projectAssetsPath, true);
-            const auto databaseListingAfter = Detail::HashDirectoryListing(context.artifactDatabasePath, true);
+            const auto databaseListingAfter = Detail::HashDirectoryListing(context.artifactDatabasePath, true, "lock.mdb");
             if (assetsListingAfter != assetsListingBefore || databaseListingAfter != databaseListingBefore)
             {
                 report.AddDiagnostic(

@@ -30,6 +30,8 @@ struct CollectionGui
         io.DisplaySize = {1000, 900};
         io.DeltaTime = 1.f / 60;
         io.ConfigInputTrickleEventQueue = false;
+        // Generic cases exercise Ctrl/Delete; the Mac-specific case opts in below.
+        io.ConfigMacOSXBehaviors = false;
         unsigned char* pixels;
         int w, h;
         io.Fonts->GetTexDataAsRGBA32(&pixels, &w, &h);

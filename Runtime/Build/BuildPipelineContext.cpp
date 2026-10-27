@@ -195,7 +195,8 @@ std::string ComputeBuildInputHash(const BuildContext& context)
     addText(SerializeBuildProfile(context.profile));
     addText(ReadTextFileOrEmpty(context.projectFile));
     addText(Detail::HashDirectoryListing(context.projectAssetsPath, true));
-    addText(Detail::HashDirectoryListing(context.artifactDatabasePath, true));
+    // LMDB readers update lock.mdb without changing any database content.
+    addText(Detail::HashDirectoryListing(context.artifactDatabasePath, true, "lock.mdb"));
     if (!context.playerTemplatePath.empty())
         addText(Detail::HashDirectoryListing(context.playerTemplatePath, false));
     return NLS::Core::Assets::ToHexString(hasher.Finalize());

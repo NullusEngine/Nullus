@@ -4,6 +4,7 @@
 
 #include <filesystem>
 #include <string>
+#include <string_view>
 
 namespace NLS::Build
 {
@@ -22,7 +23,8 @@ std::string ReadIniValue(const std::string& iniText, const std::string& key, con
 std::string SetIniValue(std::string iniText, const std::string& key, const std::string& value);
 
 // Deterministic listings: relative path, size, and last-write time.
-std::string HashDirectoryListing(const std::filesystem::path& root, bool recursive);
+std::string HashDirectoryListing(const std::filesystem::path& root, bool recursive,
+    std::string_view excludedRelativePath = {});
 std::string ReadTextFileOrEmpty(const std::filesystem::path& path);
 } // namespace Detail
 } // namespace NLS::Build

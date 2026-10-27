@@ -136,7 +136,8 @@ std::string SetIniValue(std::string iniText, const std::string& key, const std::
     return result;
 }
 
-std::string HashDirectoryListing(const std::filesystem::path& root, const bool recursive)
+std::string HashDirectoryListing(const std::filesystem::path& root, const bool recursive,
+    const std::string_view excludedRelativePath)
 {
     NLS::Core::Assets::Sha256Hasher hasher;
     std::error_code error;
@@ -150,7 +151,7 @@ std::string HashDirectoryListing(const std::filesystem::path& root, const bool r
     {
         std::error_code relativeError;
         const auto relative = std::filesystem::relative(info.path, root, relativeError);
-        if (relativeError)
+        if (relativeError || relative.generic_string() == excludedRelativePath)
             continue;
         std::error_code timeError;
         const auto writeTime = std::filesystem::last_write_time(info.path, timeError);

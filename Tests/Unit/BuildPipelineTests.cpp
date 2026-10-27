@@ -457,3 +457,38 @@ TEST(BuildPipelineTests, WindowsAdapterProducesAndSelfTestsAZip)
     std::filesystem::remove_all(fixture.root, cleanupError);
 }
 #endif
+
+TEST(BuildPipelineTests, InputHashIgnoresReaderLockChangesAndTracksDatabaseContent)
+{
+    const auto root = MakeTemporaryDirectory("input-hash");
+    struct Cleanup
+    {
+        std::filesystem::path root;
+        ~Cleanup() { std::error_code ignored; std::filesystem::remove_all(root, ignored); }
+    } cleanup {root};
+    BuildContext context;
+    context.projectFile = root / "Test.nullus";
+    context.projectAssetsPath = root / "Assets";
+    context.artifactDatabasePath = root / "Library" / "ArtifactDB";
+    WriteFile(context.projectFile, "name=Input hash\n");
+    WriteFile(context.projectAssetsPath / "Scene.scene", "scene");
+    ArtifactDatabase database;
+    ASSERT_TRUE(database.Save(context.artifactDatabasePath));
+    const auto beforeRead = NLS::Build::ComputeBuildInputHash(context);
+    ArtifactDatabase reader;
+    ASSERT_TRUE(reader.Load(context.artifactDatabasePath));
+    const auto lockPath = context.artifactDatabasePath / "lock.mdb";
+    std::filesystem::last_write_time(lockPath,
+        std::filesystem::last_write_time(lockPath) + std::chrono::seconds(1));
+    EXPECT_EQ(NLS::Build::ComputeBuildInputHash(context), beforeRead);
+
+    // A new asset record changes data.mdb and must still invalidate the snapshot.
+    ArtifactManifest manifest;
+    manifest.sourceAssetId = AssetId::New();
+    manifest.importerId = "input-hash-test";
+    manifest.targetPlatform = "editor";
+    database.UpsertManifest(manifest, "Assets/Other.asset",
+        NLS::Core::Assets::ArtifactRecordStatus::UpToDate);
+    ASSERT_TRUE(database.Save(context.artifactDatabasePath));
+    EXPECT_NE(NLS::Build::ComputeBuildInputHash(context), beforeRead);
+}

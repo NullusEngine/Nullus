@@ -311,12 +311,21 @@ static void ValidateParticleScenes(bool vulkan, bool spriteMaterials = false, bo
         }
         EXPECT_NE(images[0],images[1]);
         ASSERT_EQ(observed.size(),5u);
+        // Other render features may append passes after the particle pass.
+        std::vector<const context::RenderPassCommandInput*> spritePasses;
+        for (const auto& package : observed)
+        {
+            const auto pass = std::find_if(package.passCommandInputs.begin(),package.passCommandInputs.end(),
+                [](const auto& input) { return input.debugName == "VfxSceneSprites"; });
+            ASSERT_NE(pass,package.passCommandInputs.end());
+            spritePasses.push_back(&*pass);
+        }
         EXPECT_GT(observed[3].opaqueDrawCount,0u);
         const auto opaque = std::find_if(observed[3].passCommandInputs.begin(),observed[3].passCommandInputs.end(),[](const auto& pass)
             { return pass.kind == context::RenderPassCommandKind::Opaque || pass.kind == context::RenderPassCommandKind::GBuffer; });
         ASSERT_NE(opaque,observed[3].passCommandInputs.end()); ASSERT_FALSE(opaque->recordedDrawCommands.empty());
         EXPECT_TRUE(opaque->recordedDrawCommands[0].pipeline->GetDesc().depthStencilState.depthWrite);
-        const auto& occludedSprites = observed[3].passCommandInputs.back();
+        const auto& occludedSprites = *spritePasses[3];
         EXPECT_FALSE(occludedSprites.clearDepth); EXPECT_EQ(occludedSprites.depthStencilAttachmentView,opaque->depthStencilAttachmentView);
         for (size_t index = 0; index < 2; ++index)
         {
@@ -368,9 +377,9 @@ static void ValidateParticleScenes(bool vulkan, bool spriteMaterials = false, bo
         // The captured packages retain all buffers after component removal.
         component->OnDestroy(); EXPECT_EQ(component->CaptureFrame(),nullptr);
         if (meshRenderer) materialServices.meshes.UnloadResources();
-        EXPECT_TRUE(observed[0].passCommandInputs.back().recordedDrawCommands[0].resourceOwner);
+        EXPECT_TRUE(spritePasses[0]->recordedDrawCommands[0].resourceOwner);
         for (size_t view = 0; view < observed.size(); ++view)
-            for (const auto& command : observed[view].passCommandInputs.back().recordedDrawCommands)
+            for (const auto& command : spritePasses[view]->recordedDrawCommands)
             {
                 VFX::ParticleViewStatistics statistics;
                 rhi::RHIBufferReadbackDesc request; request.source = command.indirectArguments;
@@ -389,8 +398,8 @@ static void ValidateParticleScenes(bool vulkan, bool spriteMaterials = false, bo
                 }
             }
         std::shared_ptr<rhi::RHIBuffer> previousViewKeys;
-        for (const auto& package : {&observed[0],&observed[1]})
-            for (const auto& command : package->passCommandInputs.back().recordedDrawCommands)
+        for (const auto* pass : {spritePasses[0],spritePasses[1]})
+            for (const auto& command : pass->recordedDrawCommands)
             {
                 const auto& entries = command.passBindingSet->GetDesc().entries;
                 const auto keys = std::find_if(entries.begin(),entries.end(),[](const auto& entry)
@@ -398,7 +407,7 @@ static void ValidateParticleScenes(bool vulkan, bool spriteMaterials = false, bo
                 ASSERT_NE(keys,entries.end());
                 // Mesh slots in a view share sorted indices; different views own
                 // independent index buffers even while consuming the same frame.
-                if (!meshRenderer || &command == &package->passCommandInputs.back().recordedDrawCommands.front())
+                if (!meshRenderer || &command == &pass->recordedDrawCommands.front())
                     EXPECT_NE(keys->buffer,previousViewKeys);
                 previousViewKeys = keys->buffer;
                 std::array<std::array<uint32_t,4>,2> sorted{};

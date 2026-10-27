@@ -11,6 +11,7 @@
 #include <chrono>
 #include <cmath>
 #include <fstream>
+#include <iterator>
 #include <limits>
 #include <string>
 
@@ -21,21 +22,66 @@ namespace
 constexpr uint32_t kMeshArtifactMagic = 0x484D4E4Eu; // "NNMH" little-endian.
 constexpr uint32_t kMeshArtifactVersion = 1u;
 constexpr uint32_t kMeshArtifactVersionWithBoundingSphere = 2u;
+constexpr uint32_t kMeshArtifactVersionPacked = 3u;
 constexpr uint32_t kMeshArtifactContainerSchemaVersion = 3u;
 constexpr uint32_t kMeshArtifactBundleMagic = 0x444F4C4Eu; // "NLOD"
 constexpr uint32_t kMeshArtifactBundleVersion = 2u;
 
+// Vertex format v3. Positions and UVs stay full precision; the three basis
+// vectors are stored as signed normalized bytes, and indices use 16 bits when
+// the mesh fits. This roughly halves mesh artifact size without changing the
+// runtime's float vertex layout.
+struct PackedMeshVertex
+{
+    float position[3];
+    float texCoords[2];
+    int8_t normals[3];
+    int8_t tangent[3];
+    int8_t bitangent[3];
+    uint8_t padding[3];
+};
+
+static_assert(sizeof(PackedMeshVertex) == 32u);
+static_assert(sizeof(Geometry::Vertex) == 56u);
+
 struct MeshArtifactHeader
 {
     uint32_t magic = kMeshArtifactMagic;
-    uint32_t version = kMeshArtifactVersionWithBoundingSphere;
-    uint32_t vertexStride = sizeof(Geometry::Vertex);
+    uint32_t version = kMeshArtifactVersionPacked;
+    uint32_t vertexStride = sizeof(PackedMeshVertex);
     uint32_t vertexCount = 0u;
     uint32_t indexCount = 0u;
     uint32_t materialIndex = 0u;
 };
 
 static_assert(sizeof(MeshArtifactHeader) == 24u);
+
+constexpr uint32_t MeshVertexStride(const uint32_t version)
+{
+    return version >= kMeshArtifactVersionPacked
+        ? sizeof(PackedMeshVertex)
+        : sizeof(Geometry::Vertex);
+}
+
+constexpr uint32_t MeshIndexStride(const uint32_t version, const uint32_t vertexCount)
+{
+    return version >= kMeshArtifactVersionPacked && vertexCount <= 0xFFFFu
+        ? sizeof(uint16_t)
+        : sizeof(uint32_t);
+}
+
+int8_t QuantizeNormalComponent(const float value)
+{
+    if (!std::isfinite(value))
+        return 0;
+    const auto clamped = std::clamp(value, -1.0f, 1.0f);
+    return static_cast<int8_t>(std::lround(clamped * 127.0f));
+}
+
+float DequantizeNormalComponent(const int8_t value)
+{
+    return static_cast<float>(value) / 127.0f;
+}
 
 constexpr uint32_t kNativeArtifactMagic = 0x41534C4Eu;
 constexpr uint32_t kNativeArtifactContainerVersion = 1u;
@@ -139,8 +185,9 @@ bool ReadHeader(const ByteView bytes, MeshArtifactHeader& header)
 
     return header.magic == kMeshArtifactMagic &&
         (header.version == kMeshArtifactVersion ||
-            header.version == kMeshArtifactVersionWithBoundingSphere) &&
-        header.vertexStride == sizeof(Geometry::Vertex);
+            header.version == kMeshArtifactVersionWithBoundingSphere ||
+            header.version == kMeshArtifactVersionPacked) &&
+        header.vertexStride == MeshVertexStride(header.version);
 }
 
 bool ReadNativeArtifactHeaderPreview(
@@ -220,16 +267,50 @@ std::vector<uint8_t> SerializeMeshArtifactPayload(const MeshArtifactData& mesh)
         ? mesh.boundingSphere
         : Geometry::ComputeBoundingSphere(mesh.vertices);
 
+    const bool use16BitIndices =
+        MeshIndexStride(header.version, header.vertexCount) == sizeof(uint16_t);
+    const uint64_t indexBytes =
+        static_cast<uint64_t>(header.indexCount) *
+        static_cast<uint64_t>(use16BitIndices ? sizeof(uint16_t) : sizeof(uint32_t));
+
     std::vector<uint8_t> bytes;
     bytes.reserve(
         sizeof(MeshArtifactHeader) +
         sizeof(float) * 4u +
-        mesh.vertices.size() * sizeof(Geometry::Vertex) +
-        mesh.indices.size() * sizeof(uint32_t));
+        mesh.vertices.size() * sizeof(PackedMeshVertex) +
+        static_cast<size_t>(indexBytes));
     AppendHeader(bytes, header);
     AppendBoundingSphere(bytes, boundingSphere);
-    AppendArray(bytes, mesh.vertices);
-    AppendArray(bytes, mesh.indices);
+
+    std::vector<PackedMeshVertex> packedVertices;
+    packedVertices.reserve(mesh.vertices.size());
+    for (const auto& vertex : mesh.vertices)
+    {
+        PackedMeshVertex packed {};
+        std::copy(std::begin(vertex.position), std::end(vertex.position), packed.position);
+        std::copy(std::begin(vertex.texCoords), std::end(vertex.texCoords), packed.texCoords);
+        for (uint32_t component = 0u; component < 3u; ++component)
+        {
+            packed.normals[component] = QuantizeNormalComponent(vertex.normals[component]);
+            packed.tangent[component] = QuantizeNormalComponent(vertex.tangent[component]);
+            packed.bitangent[component] = QuantizeNormalComponent(vertex.bitangent[component]);
+        }
+        packedVertices.push_back(packed);
+    }
+    AppendArray(bytes, packedVertices);
+
+    if (use16BitIndices)
+    {
+        std::vector<uint16_t> indices;
+        indices.reserve(mesh.indices.size());
+        for (const auto index : mesh.indices)
+            indices.push_back(static_cast<uint16_t>(index));
+        AppendArray(bytes, indices);
+    }
+    else
+    {
+        AppendArray(bytes, mesh.indices);
+    }
     return bytes;
 }
 
@@ -255,7 +336,9 @@ struct MeshArtifactPayloadLayout
     uint64_t vertexBytes = 0u;
     uint64_t indexBytes = 0u;
     size_t dataOffset = 0u;
+    uint32_t indexStride = sizeof(uint32_t);
     bool hasBoundingSphere = false;
+    bool packed = false;
 };
 
 std::optional<MeshArtifactPayloadLayout> ParseMeshArtifactPayloadLayout(
@@ -266,10 +349,12 @@ std::optional<MeshArtifactPayloadLayout> ParseMeshArtifactPayloadLayout(
     if (!ReadHeader(payloadPrefix, layout.header))
         return std::nullopt;
 
+    layout.packed = layout.header.version >= kMeshArtifactVersionPacked;
+    layout.indexStride = MeshIndexStride(layout.header.version, layout.header.vertexCount);
     layout.vertexBytes =
-        static_cast<uint64_t>(layout.header.vertexCount) * sizeof(Geometry::Vertex);
+        static_cast<uint64_t>(layout.header.vertexCount) * layout.header.vertexStride;
     layout.indexBytes =
-        static_cast<uint64_t>(layout.header.indexCount) * sizeof(uint32_t);
+        static_cast<uint64_t>(layout.header.indexCount) * layout.indexStride;
     const auto boundsBytes = layout.header.version >= kMeshArtifactVersionWithBoundingSphere
         ? sizeof(float) * 4u
         : 0u;
@@ -292,6 +377,59 @@ std::optional<MeshArtifactPayloadLayout> ParseMeshArtifactPayloadLayout(
         layout.hasBoundingSphere = true;
     }
     return layout;
+}
+
+void DecodePackedVertices(
+    const uint8_t* data,
+    const size_t vertexCount,
+    std::vector<Geometry::Vertex>& vertices)
+{
+    vertices.resize(vertexCount);
+    for (size_t vertexIndex = 0u; vertexIndex < vertexCount; ++vertexIndex)
+    {
+        PackedMeshVertex packed {};
+        std::memcpy(
+            &packed,
+            data + vertexIndex * sizeof(PackedMeshVertex),
+            sizeof(PackedMeshVertex));
+        auto& vertex = vertices[vertexIndex];
+        std::copy(std::begin(packed.position), std::end(packed.position), vertex.position);
+        std::copy(std::begin(packed.texCoords), std::end(packed.texCoords), vertex.texCoords);
+        for (uint32_t component = 0u; component < 3u; ++component)
+        {
+            vertex.normals[component] = DequantizeNormalComponent(packed.normals[component]);
+            vertex.tangent[component] = DequantizeNormalComponent(packed.tangent[component]);
+            vertex.bitangent[component] = DequantizeNormalComponent(packed.bitangent[component]);
+        }
+    }
+}
+
+void DecodePackedIndices(
+    const uint8_t* data,
+    const size_t indexCount,
+    const uint32_t indexStride,
+    std::vector<uint32_t>& indices)
+{
+    indices.resize(indexCount);
+    if (indexStride == sizeof(uint16_t))
+    {
+        for (size_t index = 0u; index < indexCount; ++index)
+        {
+            uint16_t value = 0u;
+            std::memcpy(&value, data + index * sizeof(uint16_t), sizeof(value));
+            indices[index] = value;
+        }
+    }
+    else
+    {
+        if (indexCount > 0u)
+        {
+            std::memcpy(
+                indices.data(),
+                data,
+                indexCount * sizeof(uint32_t));
+        }
+    }
 }
 
 std::optional<MeshArtifactData> DeserializeMeshArtifactInternal(
@@ -337,23 +475,39 @@ std::optional<MeshArtifactData> DeserializeMeshArtifactInternal(
     mesh.hasBoundingSphere = layout->hasBoundingSphere;
 
     const auto payloadCopyBegin = std::chrono::steady_clock::now();
-    mesh.vertices.resize(layout->header.vertexCount);
-    mesh.indices.resize(layout->header.indexCount);
     size_t offset = layout->dataOffset;
-    if (!mesh.vertices.empty())
+    if (layout->packed)
     {
-        std::memcpy(
-            mesh.vertices.data(),
+        DecodePackedVertices(
             payload.data + offset,
-            static_cast<size_t>(layout->vertexBytes));
+            layout->header.vertexCount,
+            mesh.vertices);
         offset += static_cast<size_t>(layout->vertexBytes);
-    }
-    if (!mesh.indices.empty())
-    {
-        std::memcpy(
-            mesh.indices.data(),
+        DecodePackedIndices(
             payload.data + offset,
-            static_cast<size_t>(layout->indexBytes));
+            layout->header.indexCount,
+            layout->indexStride,
+            mesh.indices);
+    }
+    else
+    {
+        mesh.vertices.resize(layout->header.vertexCount);
+        mesh.indices.resize(layout->header.indexCount);
+        if (!mesh.vertices.empty())
+        {
+            std::memcpy(
+                mesh.vertices.data(),
+                payload.data + offset,
+                static_cast<size_t>(layout->vertexBytes));
+            offset += static_cast<size_t>(layout->vertexBytes);
+        }
+        if (!mesh.indices.empty())
+        {
+            std::memcpy(
+                mesh.indices.data(),
+                payload.data + offset,
+                static_cast<size_t>(layout->indexBytes));
+        }
     }
     NLS::Core::Assets::RecordArtifactLoadTelemetry({
         NLS::Core::Assets::ArtifactLoadTelemetryStage::NativeArtifactPayloadCopy,
@@ -399,10 +553,10 @@ std::optional<MeshArtifactData> LoadContentAddressedMeshArtifactDirect(
     }
 
     std::error_code fileSizeError;
-    const auto fileSize = std::filesystem::file_size(path, fileSizeError);
-    if (fileSizeError ||
-        prefix->payloadOffset > fileSize ||
-        prefix->payloadSize != fileSize - prefix->payloadOffset)
+    const auto fileSize = Detail::GetArtifactFileSize(path);
+    if (!fileSize.has_value() ||
+        prefix->payloadOffset > *fileSize ||
+        prefix->payloadSize != *fileSize - prefix->payloadOffset)
     {
         return std::nullopt;
     }
@@ -422,8 +576,18 @@ std::optional<MeshArtifactData> LoadContentAddressedMeshArtifactDirect(
     mesh.boundingSphere = layout->boundingSphere;
     mesh.hasBoundingSphere = layout->hasBoundingSphere;
     const auto allocationBegin = std::chrono::steady_clock::now();
-    mesh.vertices.resize(layout->header.vertexCount);
-    mesh.indices.resize(layout->header.indexCount);
+    std::vector<uint8_t> packedVertices;
+    std::vector<uint8_t> packedIndices;
+    if (layout->packed)
+    {
+        packedVertices.resize(static_cast<size_t>(layout->vertexBytes));
+        packedIndices.resize(static_cast<size_t>(layout->indexBytes));
+    }
+    else
+    {
+        mesh.vertices.resize(layout->header.vertexCount);
+        mesh.indices.resize(layout->header.indexCount);
+    }
     const auto allocationEnd = std::chrono::steady_clock::now();
     NLS::Core::Assets::RecordArtifactLoadTelemetry({
         NLS::Core::Assets::ArtifactLoadTelemetryStage::NativeArtifactPayloadCopy,
@@ -432,8 +596,14 @@ std::optional<MeshArtifactData> LoadContentAddressedMeshArtifactDirect(
     auto cpuDeserializeElapsed = allocationEnd - cpuDeserializeBegin;
 
     const std::array<Detail::ArtifactFileReadRange, 2u> ranges {{
-        {mesh.vertices.empty() ? nullptr : mesh.vertices.data(), static_cast<size_t>(layout->vertexBytes)},
-        {mesh.indices.empty() ? nullptr : mesh.indices.data(), static_cast<size_t>(layout->indexBytes)}
+        {layout->packed
+                ? static_cast<void*>(packedVertices.data())
+                : static_cast<void*>(mesh.vertices.data()),
+            static_cast<size_t>(layout->vertexBytes)},
+        {layout->packed
+                ? static_cast<void*>(packedIndices.data())
+                : static_cast<void*>(mesh.indices.data()),
+            static_cast<size_t>(layout->indexBytes)}
     }};
     const auto payloadReadBegin = std::chrono::steady_clock::now();
     if (!Detail::ReadArtifactFileRanges(
@@ -446,11 +616,26 @@ std::optional<MeshArtifactData> LoadContentAddressedMeshArtifactDirect(
     }
     const auto payloadReadElapsed = std::chrono::steady_clock::now() - payloadReadBegin;
 
+    if (layout->packed)
+    {
+        const auto decodeBegin = std::chrono::steady_clock::now();
+        DecodePackedVertices(
+            packedVertices.data(),
+            layout->header.vertexCount,
+            mesh.vertices);
+        DecodePackedIndices(
+            packedIndices.data(),
+            layout->header.indexCount,
+            layout->indexStride,
+            mesh.indices);
+        cpuDeserializeElapsed += std::chrono::steady_clock::now() - decodeBegin;
+    }
+
     NLS::Core::Assets::RecordArtifactLoadTelemetry({
         NLS::Core::Assets::ArtifactLoadTelemetryStage::NativeArtifactFileRead,
         std::chrono::duration_cast<std::chrono::microseconds>(
             prefixReadElapsed + payloadReadElapsed),
-        static_cast<size_t>(fileSize),
+        static_cast<size_t>(*fileSize),
         path.generic_string()});
     if (layout->header.version < kMeshArtifactVersionWithBoundingSphere)
     {
@@ -492,9 +677,8 @@ std::optional<MeshArtifactHeaderPreview> ReadMeshArtifactHeaderPreview(
     // bounded prefix can be read. Keep their established compatibility path;
     // imported native bundles take the lightweight path below.
     {
-        std::ifstream input(path, std::ios::binary);
         uint32_t magic = 0u;
-        if (input.read(reinterpret_cast<char*>(&magic), sizeof(magic)) &&
+        if (Detail::ReadArtifactFilePrefix(path, &magic, sizeof(magic)) &&
             magic == kMeshArtifactBundleMagic)
         {
             const auto bundle = LoadMeshArtifactBundle(path);
@@ -652,25 +836,17 @@ std::optional<MeshArtifactHeaderPreview> ReadMeshArtifactHeaderPreview(
 
 bool IsMeshArtifactFile(const std::filesystem::path& path)
 {
-    std::ifstream input(path, std::ios::binary);
-    if (!input)
+    uint32_t prefixMagic = 0u;
+    if (!Detail::ReadArtifactFilePrefix(path, &prefixMagic, sizeof(prefixMagic)))
         return false;
 
-    uint32_t prefixMagic = 0u;
-    input.read(reinterpret_cast<char*>(&prefixMagic), sizeof(prefixMagic));
-    if (input.gcount() == static_cast<std::streamsize>(sizeof(prefixMagic)) &&
-        prefixMagic == kMeshArtifactBundleMagic)
+    if (prefixMagic == kMeshArtifactBundleMagic)
     {
         return LoadMeshArtifactBundle(path).has_value();
     }
-    input.clear();
-    input.seekg(0, std::ios::beg);
 
     std::array<uint8_t, kNativeArtifactHeaderSize> headerBytes {};
-    input.read(
-        reinterpret_cast<char*>(headerBytes.data()),
-        static_cast<std::streamsize>(headerBytes.size()));
-    if (input.gcount() != static_cast<std::streamsize>(headerBytes.size()))
+    if (!Detail::ReadArtifactFilePrefix(path, headerBytes.data(), headerBytes.size()))
         return false;
 
     NativeArtifactHeaderPreview header;
@@ -681,11 +857,10 @@ bool IsMeshArtifactFile(const std::filesystem::path& path)
         return false;
     }
 
-    std::error_code error;
-    const auto fileSize = std::filesystem::file_size(path, error);
-    return !error &&
-        header.payloadOffset <= fileSize &&
-        header.payloadSize == fileSize - header.payloadOffset;
+    const auto fileSize = Detail::GetArtifactFileSize(path);
+    return fileSize.has_value() &&
+        header.payloadOffset <= *fileSize &&
+        header.payloadSize == *fileSize - header.payloadOffset;
 }
 
 std::optional<MeshArtifactData> LoadMeshArtifact(const std::filesystem::path& path)

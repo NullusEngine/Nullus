@@ -1,0 +1,492 @@
+{
+  "category": "Forces",
+  "deprecated": false,
+  "description": "Pulls particles towards the closest point on a line segment.",
+  "exposedVersion": "f48b9d9e-3b4b-2f43-9264-4b9bb8e43dac",
+  "id": "fe4b02fe-63d8-9b2f-1d95-9f2b9424c674",
+  "kind": "Module",
+  "name": "Line Attraction Force",
+  "suggested": false,
+  "version": 2,
+  "versions": [
+    {
+      "attributes": [
+        {
+          "default": [
+            0.0,
+            0.0,
+            0.0,
+            0.0
+          ],
+          "name": "Particles.PhysicsForce",
+          "type": 2
+        }
+      ],
+      "calls": [],
+      "capabilities": 0,
+      "description": "Pulls particles towards the closest point on a line segment.",
+      "graph": {
+        "id": "f9b61978-b19a-4cbb-90a6-bc71f688f559",
+        "nextNodeId": 22,
+        "nodes": [
+          {
+            "id": 1,
+            "inputs": [],
+            "name": "Module.Line Start",
+            "operation": 2,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 2,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 2,
+            "inputs": [],
+            "name": "Module.Line End",
+            "operation": 2,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 2,
+            "value": [
+              0.0,
+              0.0,
+              1.0,
+              0.0
+            ]
+          },
+          {
+            "id": 3,
+            "inputs": [
+              2,
+              1
+            ],
+            "name": "",
+            "operation": 7,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 2,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 4,
+            "inputs": [
+              3,
+              3
+            ],
+            "name": "",
+            "operation": 20,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 0,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 5,
+            "inputs": [],
+            "name": "",
+            "operation": 0,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 0,
+            "value": [
+              9.999999960041972e-13,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 6,
+            "inputs": [
+              4,
+              5
+            ],
+            "name": "",
+            "operation": 11,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 0,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 7,
+            "inputs": [],
+            "name": "Particles.Position",
+            "operation": 1,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 2,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 8,
+            "inputs": [
+              7,
+              1
+            ],
+            "name": "",
+            "operation": 7,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 2,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 9,
+            "inputs": [
+              8,
+              3
+            ],
+            "name": "",
+            "operation": 20,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 0,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 10,
+            "inputs": [
+              9,
+              6
+            ],
+            "name": "",
+            "operation": 9,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 0,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 11,
+            "inputs": [],
+            "name": "",
+            "operation": 0,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 0,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 12,
+            "inputs": [],
+            "name": "",
+            "operation": 0,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 0,
+            "value": [
+              1.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 13,
+            "inputs": [
+              10,
+              11,
+              12
+            ],
+            "name": "",
+            "operation": 12,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 0,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 14,
+            "inputs": [
+              3,
+              13
+            ],
+            "name": "",
+            "operation": 8,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 2,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 15,
+            "inputs": [
+              1,
+              14
+            ],
+            "name": "",
+            "operation": 6,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 2,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 16,
+            "inputs": [
+              15,
+              7
+            ],
+            "name": "",
+            "operation": 7,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 2,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 17,
+            "inputs": [],
+            "name": "Module.Attraction Strength",
+            "operation": 2,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 0,
+            "value": [
+              10.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 18,
+            "inputs": [
+              16,
+              17
+            ],
+            "name": "",
+            "operation": 8,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 2,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 19,
+            "inputs": [],
+            "name": "Particles.PhysicsForce",
+            "operation": 1,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 2,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 20,
+            "inputs": [
+              19,
+              18
+            ],
+            "name": "",
+            "operation": 6,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 2,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 21,
+            "inputs": [
+              20
+            ],
+            "name": "Particles.PhysicsForce",
+            "operation": 22,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 2,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          }
+        ],
+        "stage": 1
+      },
+      "id": "f48b9d9e-3b4b-2f43-9264-4b9bb8e43dac",
+      "inputs": [
+        {
+          "default": [
+            0.0,
+            0.0,
+            0.0,
+            0.0
+          ],
+          "id": "e6d56a93-b9fd-c4a4-ac96-c987aa91dffd",
+          "name": "Line Start",
+          "static": false,
+          "type": 2
+        },
+        {
+          "default": [
+            0.0,
+            0.0,
+            1.0,
+            0.0
+          ],
+          "id": "d98da48d-ba1b-5c9d-8f2c-a5a31f4159c4",
+          "name": "Line End",
+          "static": false,
+          "type": 2
+        },
+        {
+          "default": [
+            10.0,
+            0.0,
+            0.0,
+            0.0
+          ],
+          "id": "6ff9967a-da5c-3624-e10f-05198f69747f",
+          "metadata": {
+            "displayName": "",
+            "hasRange": false,
+            "maximum": 0.0,
+            "minimum": 0.0,
+            "step": 0.0,
+            "tooltip": "Acceleration applied towards the closest point on the line.",
+            "unit": "cm/s2",
+            "visibleIf": ""
+          },
+          "name": "Attraction Strength",
+          "static": false,
+          "type": 0
+        }
+      ],
+      "major": 1,
+      "minor": 0,
+      "provides": [],
+      "requiresBefore": [],
+      "stages": [
+        5,
+        7
+      ],
+      "switches": []
+    }
+  ],
+  "visible": true
+}

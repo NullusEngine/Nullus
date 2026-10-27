@@ -1,4 +1,6 @@
 #include "Assets/AssetDatabaseFacade.h"
+#include <AnimationCompiler/AnimationSourceCompiler.h>
+#include "Rendering/Assets/DistanceFieldArtifact.h"
 
 #include "Assets/ArtifactDatabase.h"
 #include "Assets/ArtifactDatabaseManifestUtils.h"
@@ -14,18 +16,30 @@
 #include "Assets/TextureEncoding/DirectXTexTextureEncoder.h"
 #include "Guid.h"
 #include "Engine/Assets/PrefabAsset.h"
+#include "Engine/Serialize/ObjectGraphDocument.h"
 #include "Engine/UI/UIDocument.h"
+#include "Engine/UI/UIDocumentResourceResolver.h"
+#include <VFX/VfxGraph.h>
+#include <VFXCompiler/VfxCompiler.h>
+#include <VFXCompiler/VfxStackCompiler.h>
+#include <VFXCompiler/VfxShaderCompiler.h>
 #include "Engine/UI/UILocalizationTable.h"
 #include "Engine/UI/UIStyleSheet.h"
 #include "Profiling/PerformanceStageStats.h"
 #include "Profiling/Profiler.h"
 #include "Rendering/Assets/ShaderArtifact.h"
+#include "Rendering/Assets/MaterialAsset.h"
+#include "MaterialCompiler/MaterialShaderCompiler.h"
+#include "MaterialCompiler/MaterialGraph.h"
 #include "Rendering/Assets/TextureArtifact.h"
 #include "Rendering/Assets/TextureBuildSettings.h"
 #include "Rendering/Assets/TextureEncoder.h"
 #include "Rendering/Assets/TextureFormatResolver.h"
 #include "Rendering/Assets/TextureMipGenerator.h"
 #include "Rendering/Resources/ShaderReflectionMerge.h"
+#include "Rendering/Resources/SpirvShaderReflection.h"
+#include "Rendering/Resources/ParticleMaterialInterface.h"
+#include "Rendering/Resources/MaterialSerialization.h"
 #include "Rendering/Resources/ShaderType.h"
 #include "Rendering/ShaderCompiler/ShaderCompiler.h"
 #include "Rendering/ShaderLab/ShaderLabParser.h"
@@ -634,7 +648,12 @@ bool ShouldPublishKnownCurrentManifestSnapshotForAssetType(
     return assetType == AssetType::ModelScene ||
         assetType == AssetType::Prefab ||
         assetType == AssetType::Shader ||
+        assetType == AssetType::ShaderGraph ||
         assetType == AssetType::UIDocument ||
+        assetType == AssetType::VfxSystem ||
+        assetType == AssetType::AnimationClip || assetType == AssetType::AnimationGraph ||
+        assetType == AssetType::BlendSpace || assetType == AssetType::BoneMask ||
+        assetType == AssetType::VfxScript || assetType == AssetType::VfxEmitter ||
         assetType == AssetType::UIStyleSheet ||
         assetType == AssetType::LocalizationTable;
 }
@@ -768,7 +787,9 @@ bool HasCurrentShaderCompilerToolchainDependency(
     const NLS::Core::Assets::ArtifactManifest& manifest,
     const NLS::Core::Assets::AssetType assetType)
 {
-    if (assetType != NLS::Core::Assets::AssetType::Shader)
+    if (assetType != NLS::Core::Assets::AssetType::Shader &&
+        assetType != NLS::Core::Assets::AssetType::ShaderGraph &&
+        assetType != NLS::Core::Assets::AssetType::VfxSystem)
         return true;
 
     const auto dependency = BuildShaderCompilerToolchainDependency();
@@ -1264,6 +1285,10 @@ NLS::Render::ShaderCompiler::ShaderCompilationInput MakeShaderCompilationInput(
         appendIncludeDirectory(originalParent);
         appendIncludeDirectory(originalParent.parent_path());
     }
+    appendIncludeDirectory(NLS::Platform::Process::ResolveInstallResourceRoots().engineAssetsRoot/"Shaders");
+#if defined(NLS_ROOT_DIR)
+    appendIncludeDirectory(std::filesystem::path(NLS_ROOT_DIR)/"App/Assets/Engine/Shaders");
+#endif
     options.macros = NLS::Render::ShaderLab::BuildShaderLabKeywordMacros(keywords);
     return {sourcePath.string(), stage, std::move(options)};
 }
@@ -1391,6 +1416,8 @@ std::vector<NLS::Render::ShaderLab::ShaderLabKeywordSet> BuildShaderLabImportKey
         }
         if (options.empty())
             return;
+        if(variants.size()>4096/options.size())
+            throw std::runtime_error("Engine multi_compile variants exceed the hard allocation limit");
 
         std::vector<ShaderLabKeywordSet> expanded;
         expanded.reserve(variants.size() * options.size());
@@ -1429,116 +1456,60 @@ std::vector<NLS::Render::ShaderLab::ShaderLabKeywordSet> BuildShaderLabImportKey
     return variants;
 }
 
+std::filesystem::path MaterialVariantRequestPath(const std::filesystem::path& source,const EditorAssetRoot* root)
+{
+    const auto library=root?GetEditorAssetRootLibraryPath(*root):source.parent_path()/"Library";
+    return library/"ShaderCache"/"MaterialVariants"/(std::to_string(StableShaderLabCacheHash(source.generic_string()))+".json");
+}
+std::vector<NLS::Render::ShaderLab::ShaderLabKeywordSet> ReadMaterialVariantRequests(const std::filesystem::path& source,const EditorAssetRoot* root)
+{
+    using Json=nlohmann::json;std::vector<NLS::Render::ShaderLab::ShaderLabKeywordSet> result;
+    const auto path=MaterialVariantRequestPath(source,root);
+    if(!std::filesystem::exists(path))return result;
+    const auto values=Json::parse(ReadTextFile(path));
+    for(const auto& value:values)
+    {NLS::Render::ShaderLab::ShaderLabKeywordSet keywords;for(const auto& name:value)keywords.Enable(name.get<std::string>());result.push_back(std::move(keywords));}
+    return result;
+}
+size_t MaterialVariantBudget(const std::filesystem::path& source)
+{
+    const auto meta=NLS::Core::Assets::AssetMeta::Load(NLS::Core::Assets::GetAssetMetaPath(source));
+    if(meta)if(const auto found=meta->settings.find("materialVariantBudget");found!=meta->settings.end())
+        return std::clamp<size_t>(std::stoull(found->second),1,4096);
+    return 128;
+}
+
 NLS::Render::Assets::ShaderArtifact CompileShaderLabPassArtifact(
     const std::filesystem::path& sourcePath,
     const std::string& editorAssetPath,
     const std::string& subAssetKey,
     const EditorAssetRoot* assetRoot,
-    const NLS::Render::ShaderLab::ShaderLabPassDesc& pass)
+    const NLS::Render::ShaderLab::ShaderLabPassDesc& pass,
+    const NLS::Render::Resources::MaterialParameterSchema& schema)
 {
-    using NLS::Render::ShaderCompiler::ShaderStage;
-    using NLS::Render::ShaderCompiler::ShaderTargetPlatform;
-
-    NLS::Render::Assets::ShaderArtifact artifact;
-    artifact.sourcePath = editorAssetPath;
-    artifact.subAssetKey = subAssetKey;
-    artifact.targetPlatform = "editor";
-    if (const auto lightMode = pass.tags.values.find("LightMode");
-        lightMode != pass.tags.values.end())
-    {
-        artifact.shaderLabLightMode = lightMode->second;
-    }
-    artifact.shaderLabPassState = pass.state;
-
-    const auto compileSourceText = NLS::Render::ShaderLab::BuildShaderLabHlslForCompile(pass);
-    auto compilePath = ShaderLabImportSourcePath(sourcePath, assetRoot, subAssetKey, editorAssetPath);
-    compilePath = compilePath.parent_path() /
-        (compilePath.stem().generic_string() + "_" + SanitizeShaderLabPassKey(pass.name) + ".hlsl");
-    std::filesystem::create_directories(compilePath.parent_path());
-    {
-        std::ofstream output(compilePath, std::ios::binary | std::ios::trunc);
-        output << compileSourceText;
-        if (!output)
-        {
-            artifact.stages.push_back(MakeFailedShaderLabImportStage(
-                compilePath.generic_string() + ": failed to write generated ShaderLab HLSL."));
-            return artifact;
-        }
-    }
-
-    auto buildInputs = [&](const NLS::Render::ShaderLab::ShaderLabKeywordSet& keywords)
-    {
-        std::vector<NLS::Render::ShaderCompiler::ShaderCompilationInput> inputs;
-        if (!pass.vertexEntry.empty())
-        {
-            inputs.push_back(MakeShaderCompilationInput(compilePath, ShaderStage::Vertex, ShaderTargetPlatform::DXIL, pass.vertexEntry, "vs_6_0", sourcePath, keywords));
-            inputs.push_back(MakeShaderCompilationInput(compilePath, ShaderStage::Vertex, ShaderTargetPlatform::SPIRV, pass.vertexEntry, "vs_6_0", sourcePath, keywords));
-        }
-        if (!pass.fragmentEntry.empty())
-        {
-            inputs.push_back(MakeShaderCompilationInput(compilePath, ShaderStage::Pixel, ShaderTargetPlatform::DXIL, pass.fragmentEntry, "ps_6_0", sourcePath, keywords));
-            inputs.push_back(MakeShaderCompilationInput(compilePath, ShaderStage::Pixel, ShaderTargetPlatform::SPIRV, pass.fragmentEntry, "ps_6_0", sourcePath, keywords));
-        }
-        if (!pass.computeEntry.empty())
-        {
-            inputs.push_back(MakeShaderCompilationInput(compilePath, ShaderStage::Compute, ShaderTargetPlatform::DXIL, pass.computeEntry, "cs_6_0", sourcePath, keywords));
-            inputs.push_back(MakeShaderCompilationInput(compilePath, ShaderStage::Compute, ShaderTargetPlatform::SPIRV, pass.computeEntry, "cs_6_0", sourcePath, keywords));
-        }
-        return inputs;
-    };
-
-    NLS::Render::ShaderCompiler::ShaderCompiler compiler;
-    compiler.SetCacheDatabasePath(ShaderCacheDatabasePathForAssetRoot(assetRoot));
-
-    const auto keywordVariants = BuildShaderLabImportKeywordVariants(pass);
-    const auto defaultVariant = std::find_if(
-        keywordVariants.begin(),
-        keywordVariants.end(),
-        [](const NLS::Render::ShaderLab::ShaderLabKeywordSet& keywords)
-        {
-            return keywords.Hash() == 0u;
-        });
-    const NLS::Render::ShaderLab::ShaderLabKeywordSet defaultKeywords =
-        defaultVariant != keywordVariants.end()
-            ? *defaultVariant
-            : NLS::Render::ShaderLab::ShaderLabKeywordSet {};
-    const auto defaultInputs = buildInputs(defaultKeywords);
-    const auto defaultOutputs = compiler.CompileBatch(defaultInputs);
-    artifact.stages.reserve(defaultOutputs.size() * std::max<size_t>(keywordVariants.size(), 1u));
-    std::vector<NLS::Render::ShaderCompiler::ShaderCompilationInput> reflectionInputs;
-    reflectionInputs.reserve(artifact.stages.capacity());
-    for (size_t index = 0u; index < defaultOutputs.size() && index < defaultInputs.size(); ++index)
-    {
-        artifact.stages.push_back(MakeShaderArtifactStage(defaultInputs[index], defaultOutputs[index], defaultKeywords.Hash()));
-        reflectionInputs.push_back(defaultInputs[index]);
-    }
-
-    for (const auto& keywords : keywordVariants)
-    {
-        if (keywords.Hash() == defaultKeywords.Hash())
-            continue;
-        const auto variantInputs = buildInputs(keywords);
-        const auto variantOutputs = compiler.CompileBatch(variantInputs);
-        for (size_t index = 0u; index < variantOutputs.size() && index < variantInputs.size(); ++index)
-        {
-            artifact.stages.push_back(MakeShaderArtifactStage(variantInputs[index], variantOutputs[index], keywords.Hash()));
-            reflectionInputs.push_back(variantInputs[index]);
-        }
-    }
-
-    std::string reflectionDiagnostics;
-    if (!ReflectImportedShaderStagesDxilFirst(compiler, reflectionInputs, artifact.stages, artifact.reflection, &reflectionDiagnostics))
-    {
-        artifact.reflection = {};
-        artifact.stages.push_back(MakeFailedShaderLabImportStage(
-            reflectionDiagnostics.empty()
-                ? "Shader reflection merge failed."
-                : reflectionDiagnostics));
-    }
-
-    NLS::Render::Assets::AppendGlslShaderArtifactStages(artifact);
-
-    return artifact;
+    NLS::MaterialCompiler::MaterialShaderCompileOptions options;
+    options.sourcePath = sourcePath;
+    options.sourceIdentity = editorAssetPath;
+    options.subAssetKey = subAssetKey;
+    options.generatedPath = ShaderLabImportSourcePath(sourcePath,assetRoot,subAssetKey,editorAssetPath);
+    options.generatedPath = options.generatedPath.parent_path() /
+        (options.generatedPath.stem().generic_string()+"_"+SanitizeShaderLabPassKey(pass.name)+".hlsl");
+    options.cacheDatabasePath = ShaderCacheDatabasePathForAssetRoot(assetRoot);
+    options.includeDirectories = MakeShaderCompilationInput(options.generatedPath,
+        NLS::Render::ShaderCompiler::ShaderStage::Vertex,
+        NLS::Render::ShaderCompiler::ShaderTargetPlatform::DXIL,"VSMain","vs_6_0",sourcePath).options.includeDirectories;
+    options.variants = BuildShaderLabImportKeywordVariants(pass);
+    const auto requests=ReadMaterialVariantRequests(sourcePath,assetRoot);
+    const auto base=options.variants;
+    for(const auto& request:requests)for(const auto& engine:base)
+    {auto combined=request;for(const auto& keyword:engine.ToVector())combined.Enable(keyword);options.variants.push_back(std::move(combined));}
+    options.variantBudget=MaterialVariantBudget(sourcePath);
+    auto frozen=std::make_shared<NLS::MaterialCompiler::MaterialDependencySnapshot>();
+    frozen->context="shaderlab-import";
+    const auto key="file:"+std::filesystem::absolute(sourcePath).lexically_normal().generic_string();
+    frozen->sources[key]={key,sourcePath,ReadTextFile(sourcePath),SourceFileContentHash(NLS::Core::Assets::GetAssetMetaPath(sourcePath)),0,{}};
+    options.dependencies=frozen;
+    return NLS::MaterialCompiler::CompileMaterialPass(pass,options,schema);
 }
 
 ImportedShaderLabArtifactPayloads ImportShaderLabArtifactPayloads(
@@ -1591,6 +1562,9 @@ ImportedShaderLabArtifactPayloads ImportShaderLabArtifactPayloads(
     }
 
     size_t passOrdinal = 0u;
+    const auto shaderMeta = NLS::Core::Assets::AssetMeta::Load(NLS::Core::Assets::GetAssetMetaPath(sourcePath));
+    const auto parameterOwner = shaderMeta ? shaderMeta->id.ToString() : editorAssetPath;
+    const auto parameterSchema = NLS::MaterialCompiler::BuildMaterialParameterSchema(parsed.asset,parameterOwner);
     auto appendPass = [&](const NLS::Render::ShaderLab::ShaderLabPassDesc& pass)
     {
         const auto lightMode = pass.tags.values.find("LightMode");
@@ -1611,7 +1585,8 @@ ImportedShaderLabArtifactPayloads ImportShaderLabArtifactPayloads(
             editorAssetPath,
             subAssetKey,
             assetRoot,
-            pass);
+            pass,parameterSchema);
+        payload.artifact.parameterSchema = parameterSchema;
         if (!NLS::Render::Assets::HasUsableShaderArtifactStage(payload.artifact) ||
             HasFailedShaderArtifactStage(payload.artifact))
         {
@@ -1964,6 +1939,9 @@ std::string ToArtifactTypeKey(const NLS::Core::Assets::ArtifactType type)
     case ArtifactType::Shader: return "shader";
     case ArtifactType::Audio: return "audio";
     case ArtifactType::UIDocument: return "ui-document";
+    case ArtifactType::VfxSystem: return "vfx-system";
+    case ArtifactType::VfxScript: return "vfx-script";
+    case ArtifactType::VfxEmitter: return "vfx-emitter";
     case ArtifactType::UIStyleSheet: return "ui-style-sheet";
     case ArtifactType::Font: return "font";
     case ArtifactType::LocalizationTable: return "localization";
@@ -2313,7 +2291,8 @@ std::optional<NLS::Core::Assets::ArtifactManifest> ImportStandaloneMaterialArtif
     const std::filesystem::path& artifactRoot,
     const std::filesystem::path& stagingRoot,
     std::optional<NLS::Core::Assets::ArtifactManifest> previousManifest,
-    NLS::Core::Assets::AssetDiagnostics& diagnostics)
+    NLS::Core::Assets::AssetDiagnostics& diagnostics,
+    const std::function<std::optional<std::vector<NLS::Core::Assets::AssetDependencyRecord>>(std::string&)>& resolveDependencies)
 {
     const auto sourceBytes = ReadBinaryFile(absolutePath);
     const auto sourceContainer = NLS::Core::Assets::ReadNativeArtifactContainer(
@@ -2332,7 +2311,7 @@ std::optional<NLS::Core::Assets::ArtifactManifest> ImportStandaloneMaterialArtif
         return std::nullopt;
     }
 
-    const std::string payloadText(sourceContainer->payload.begin(), sourceContainer->payload.end());
+    std::string payloadText(sourceContainer->payload.begin(), sourceContainer->payload.end());
     if (payloadText.find("shaderLabMaterialVersion=1") != 0u)
     {
         diagnostics.push_back({
@@ -2345,6 +2324,8 @@ std::optional<NLS::Core::Assets::ArtifactManifest> ImportStandaloneMaterialArtif
         return std::nullopt;
     }
 
+    auto dependencies = resolveDependencies(payloadText);
+    if (!dependencies) return std::nullopt;
     return ImportSingleNativeArtifact(
         record,
         meta,
@@ -2357,9 +2338,9 @@ std::optional<NLS::Core::Assets::ArtifactManifest> ImportStandaloneMaterialArtif
         NLS::Core::Assets::ArtifactType::Material,
         "material",
         absolutePath.stem().generic_string(),
-        sourceContainer->payload,
+        std::vector<uint8_t>(payloadText.begin(),payloadText.end()),
         std::move(previousManifest),
-        diagnostics);
+        diagnostics,"editor",{},std::move(*dependencies));
 }
 
 }
@@ -2648,12 +2629,16 @@ bool AssetDatabaseFacade::ImportAssetsWithParallelModelPreparation(
 
     std::vector<std::string> serialAssetPaths;
     std::vector<std::string> parallelModelAssetPaths;
+    std::vector<std::string> animationAssetPaths;
     serialAssetPaths.reserve(assetPaths.size());
     parallelModelAssetPaths.reserve(assetPaths.size());
     for (const auto& assetPath : assetPaths)
     {
         const auto* record = FindRecordByEditorAssetPath(assetPath);
         const auto meta = LoadMetaForPath(assetPath);
+        if(record&&(record->assetType==NLS::Core::Assets::AssetType::AnimationClip||record->assetType==NLS::Core::Assets::AssetType::AnimationGraph||
+            record->assetType==NLS::Core::Assets::AssetType::BlendSpace||record->assetType==NLS::Core::Assets::AssetType::BoneMask))
+        {animationAssetPaths.push_back(assetPath);continue;}
         if (!record || !meta.has_value() ||
             record->assetType != NLS::Core::Assets::AssetType::ModelScene)
         {
@@ -2664,6 +2649,22 @@ bool AssetDatabaseFacade::ImportAssetsWithParallelModelPreparation(
     }
 
     bool allSucceeded = true;
+    const auto importAnimations=[&]()
+    {
+        if(animationAssetPaths.empty())return true;
+        if(!FlushArtifactDatabaseCache())return false;
+        auto rank=[](const std::string& path)
+        {const auto type=NLS::Core::Assets::InferAssetType(path);return type==NLS::Core::Assets::AssetType::AnimationClip?0:type==NLS::Core::Assets::AssetType::AnimationGraph?2:1;};
+        std::stable_sort(animationAssetPaths.begin(),animationAssetPaths.end(),[&](const auto& a,const auto& b){return rank(a)<rank(b);});
+        bool succeeded=true;
+        for(const auto& path:animationAssetPaths)
+        {
+            const bool imported=forceReimport?ReimportAsset(path,&progressTracker,{},batchTotalAssets,false):ImportAsset(path,&progressTracker,batchTotalAssets,false);
+            succeeded=imported&&succeeded;
+            if(!FlushArtifactDatabaseCache())succeeded=false;
+        }
+        return succeeded;
+    };
     for (const auto& assetPath : serialAssetPaths)
     {
         const auto imported = forceReimport
@@ -2673,7 +2674,7 @@ bool AssetDatabaseFacade::ImportAssetsWithParallelModelPreparation(
             allSucceeded = false;
     }
     if (parallelModelAssetPaths.empty())
-        return allSucceeded;
+        return importAnimations()&&allSucceeded;
 
     std::vector<PreparedModelWork> workItems;
     workItems.reserve(parallelModelAssetPaths.size());
@@ -2815,7 +2816,7 @@ bool AssetDatabaseFacade::ImportAssetsWithParallelModelPreparation(
         if (!imported)
             allSucceeded = false;
     }
-    return allSucceeded;
+    return importAnimations()&&allSucceeded;
 }
 
 bool AssetDatabaseFacade::ImportAsset(
@@ -3657,7 +3658,11 @@ std::optional<NLS::Core::Assets::ArtifactManifest> AssetDatabaseFacade::GetArtif
         const auto& manifests = ManifestsBySource();
         const auto manifest = manifests.find(record->id);
         if (manifest != manifests.end())
+        {
+            NLS::Render::DistanceField::RegisterDistanceFieldManifest(manifest->second,
+                GetArtifactRootForAssetPath(record->absolutePath));
             return manifest->second;
+        }
     }
 
     return LoadPersistedArtifactManifestForRecord(*record);
@@ -5535,7 +5540,16 @@ bool AssetDatabaseFacade::RefreshSingle(
         return true;
     }
 
-    if (record->assetType == NLS::Core::Assets::AssetType::Shader)
+    if(record->assetType==NLS::Core::Assets::AssetType::ShaderFunction)
+    {
+        NLS::MaterialCompiler::MaterialGraphAsset function;std::string error;
+        if(!NLS::MaterialCompiler::DeserializeMaterialGraph(ReadTextFile(absolutePath),function,error) || !function.function)
+        {AddDiagnostic(NLS::Core::Assets::AssetDiagnosticSeverity::Error,"material-function-invalid",absolutePath,error.empty()?"Asset is not a material function":error);return false;}
+        // Functions are build inputs. Calling graphs own their frozen source
+        // hashes and compile them inline; there is no runtime function loader.
+        return true;
+    }
+    if (record->assetType == NLS::Core::Assets::AssetType::Shader || record->assetType == NLS::Core::Assets::AssetType::ShaderGraph)
     {
         const auto artifactRoot = GetArtifactRootForAssetPath(absolutePath);
         const auto stagingRoot = GetArtifactStagingRootForAssetPath(absolutePath);
@@ -5563,7 +5577,55 @@ bool AssetDatabaseFacade::RefreshSingle(
             progressTracker->ReportProgress(job, ImportPhase::SourceParse, 0.05, "Compiling shader source");
 
         std::vector<ImportedShaderArtifactPayload> shaderArtifacts;
-        if (ToLower(absolutePath.extension().generic_string()) == ".shader")
+        std::vector<NLS::Core::Assets::AssetDependencyRecord> graphDependencies;
+        if(record->assetType==NLS::Core::Assets::AssetType::ShaderGraph)
+        {
+            NLS::MaterialCompiler::MaterialGraphAsset graph;
+            std::string error;
+            if(!NLS::MaterialCompiler::DeserializeMaterialGraph(ReadTextFile(absolutePath),graph,error))
+            {AddDiagnostic(NLS::Core::Assets::AssetDiagnosticSeverity::Error,"material-graph-invalid",absolutePath,error);return false;}
+            auto frozen=std::make_shared<NLS::MaterialCompiler::MaterialDependencySnapshot>();
+            frozen->context="material-graph-import";
+            const auto key=absolutePath.generic_string();
+            frozen->sources[key]={key,absolutePath,ReadTextFile(absolutePath),{},0,{}};
+            const auto functions=[&](const NLS::Render::Assets::MaterialAssetReference& reference)->std::optional<NLS::MaterialCompiler::MaterialGraphAsset>
+            {
+                const auto path=reference.guid.empty()?reference.path:GUIDToAssetPath(reference.guid);
+                const auto physical=ResolveAssetPath(path);
+                const auto source=ReadTextFile(physical);
+                NLS::MaterialCompiler::MaterialGraphAsset function;
+                if(!NLS::MaterialCompiler::DeserializeMaterialGraph(source,function,error))return std::nullopt;
+                const auto sourceKey=physical.generic_string();
+                frozen->sources[sourceKey]={sourceKey,physical,source,{},0,{}};
+                AddUniqueDependency(graphDependencies,{NLS::Core::Assets::AssetDependencyKind::SourceFileHash,path,SourceFileContentHash(physical)});
+                return function;
+            };
+            const auto generated=NLS::MaterialCompiler::GenerateMaterialGraphShader(graph,functions);
+            if(!generated.Succeeded())
+            {AddDiagnostic(NLS::Core::Assets::AssetDiagnosticSeverity::Error,"material-graph-compile-failed",absolutePath,generated.diagnostics[0].message);return false;}
+            for(const auto& sub:generated.shader.subShaders)for(const auto& pass:sub.passes)
+            {
+                NLS::MaterialCompiler::MaterialShaderCompileOptions options;
+                options.sourcePath=absolutePath;options.sourceIdentity=editorAssetPath;
+                options.subAssetKey=pass.name=="Forward" || pass.name=="ParticleSprite"?subAssetKey:subAssetKey+"/"+pass.name;
+                options.generatedPath=ShaderLabImportSourcePath(absolutePath,assetRoot,options.subAssetKey,editorAssetPath);
+                options.generatedPath=options.generatedPath.parent_path()/(options.generatedPath.stem().string()+"_"+pass.name+".hlsl");
+                options.cacheDatabasePath=ShaderCacheDatabasePathForAssetRoot(assetRoot);
+                options.includeDirectories=MakeShaderCompilationInput(options.generatedPath,NLS::Render::ShaderCompiler::ShaderStage::Vertex,
+                    NLS::Render::ShaderCompiler::ShaderTargetPlatform::DXIL,"VSMain","vs_6_0",absolutePath).options.includeDirectories;
+                NLS::Render::ShaderLab::ShaderLabKeywordSet keywords;
+                for(const auto& parameter:graph.parameters)if(parameter.isStatic && std::get<bool>(parameter.value))
+                    keywords.Enable(NLS::MaterialCompiler::MaterialGraphBindingName(parameter.id,true));
+                options.variants=ReadMaterialVariantRequests(absolutePath,assetRoot);options.variants.push_back(keywords);options.dependencies=frozen;
+                options.variantBudget=MaterialVariantBudget(absolutePath);
+                auto artifact=NLS::MaterialCompiler::CompileMaterialPass(pass,options,generated.schema);
+                if(!NLS::Render::Assets::HasUsableShaderArtifactStage(artifact) || HasFailedShaderArtifactStage(artifact))
+                {for(const auto& stage:artifact.stages)if(!stage.output.diagnostics.empty())error+=stage.output.diagnostics+"\n";
+                    AddDiagnostic(NLS::Core::Assets::AssetDiagnosticSeverity::Error,"material-graph-pass-failed",absolutePath,error);return false;}
+                shaderArtifacts.push_back({options.subAssetKey,graph.name+" "+pass.name,std::move(artifact)});
+            }
+        }
+        else if (ToLower(absolutePath.extension().generic_string()) == ".shader")
         {
             auto shaderLabImport = ImportShaderLabArtifactPayloads(
                 absolutePath,
@@ -5649,6 +5711,7 @@ bool AssetDatabaseFacade::RefreshSingle(
                 shaderArtifact.artifact);
         }
         AddUniqueDependency(writeRequest.dependencies, BuildShaderCompilerToolchainDependency());
+        for(auto& dependency:graphDependencies)AddUniqueDependency(writeRequest.dependencies,std::move(dependency));
 
         if (progressTracker && job.IsValid())
             progressTracker->ReportProgress(job, ImportPhase::ArtifactWrite, 0.85, "Writing shader artifact");
@@ -5713,6 +5776,229 @@ bool AssetDatabaseFacade::RefreshSingle(
         return true;
     }
 
+    if (record->assetType == NLS::Core::Assets::AssetType::VfxScript || record->assetType == NLS::Core::Assets::AssetType::VfxEmitter)
+    {
+        ImportJobId job = existingJob;
+        if (progressTracker && !job.IsValid()) job = progressTracker->BeginJob(meta->id,ToEditorAssetPath(absolutePath),"editor",1u);
+        const auto failLibrary = [&](const std::string& message)
+        {
+            AddDiagnostic(NLS::Core::Assets::AssetDiagnosticSeverity::Error,"assetdatabase-vfx-library-invalid",absolutePath,message);
+            if (progressTracker && job.IsValid()) progressTracker->FinishJob(job,ImportJobTerminalStatus::Failed,m_diagnostics);
+            return false;
+        };
+        const bool script = record->assetType == NLS::Core::Assets::AssetType::VfxScript;
+        std::string text,name,error;
+        if (script)
+        {
+            NLS::VFX::Authoring::ScriptAsset source;
+            if (!NLS::VFX::Authoring::LoadScript(absolutePath,source,error)) return failLibrary(error);
+            text = NLS::VFX::Authoring::SerializeScript(source); name = source.name;
+        }
+        else
+        {
+            NLS::VFX::Authoring::EmitterSource source;
+            if (!NLS::VFX::Authoring::LoadEmitterSource(absolutePath,source,error)) return failLibrary(error);
+            text = NLS::VFX::Authoring::SerializeEmitterSource(source); name = source.name;
+        }
+        const auto artifactRoot = GetArtifactRootForAssetPath(absolutePath), stagingRoot = GetArtifactStagingRootForAssetPath(absolutePath);
+        if (artifactRoot.empty() || stagingRoot.empty() || !CanSaveArtifactManifestForAssetPath(absolutePath)) return failLibrary("VFX library artifact destination is unavailable");
+        std::lock_guard publishLock(GetArtifactPublishMutex(artifactRoot)); ArtifactRootRollback rollback(artifactRoot);
+        if (!rollback.Prepare()) return failLibrary("Cannot prepare VFX library artifact publication");
+        const auto type = script ? NLS::Core::Assets::ArtifactType::VfxScript : NLS::Core::Assets::ArtifactType::VfxEmitter;
+        const std::string loader = script ? "vfx-script" : "vfx-emitter";
+        const std::vector<uint8_t> bytes(text.begin(),text.end());
+        const auto manifest = ImportSingleNativeArtifact(*record,*meta,absolutePath,ToEditorAssetPath(absolutePath),
+            ToEditorAssetPath(NLS::Core::Assets::GetAssetMetaPath(absolutePath)),artifactRoot,stagingRoot,
+            loader+":"+absolutePath.stem().generic_string(),type,loader,name,bytes,LoadPreviousArtifactManifestForRecord(*record),m_diagnostics,"editor");
+        if (!manifest || !SaveArtifactManifestForAssetPath(absolutePath,*manifest))
+        {
+            std::error_code restoreError;
+            if (!rollback.Restore(&restoreError)) ReportArtifactRollbackRestoreFailure(m_diagnostics,artifactRoot,restoreError);
+            return failLibrary("Cannot publish VFX library asset");
+        }
+        AddArtifactManifest(*manifest); rollback.Commit();
+        if (progressTracker && job.IsValid()) progressTracker->FinishJob(job,ImportJobTerminalStatus::Succeeded,{});
+        return true;
+    }
+    if (record->assetType == NLS::Core::Assets::AssetType::VfxSystem)
+    {
+        ImportJobId job = existingJob;
+        if (progressTracker && !job.IsValid())
+            job = progressTracker->BeginJob(meta->id,ToEditorAssetPath(absolutePath),"editor",1u);
+        const auto failVfxImport = [&](const char* code, const std::string& message)
+        {
+            AddDiagnostic(NLS::Core::Assets::AssetDiagnosticSeverity::Error,code,absolutePath,message);
+            if (progressTracker && job.IsValid()) progressTracker->FinishJob(job,ImportJobTerminalStatus::Failed,m_diagnostics);
+            return false;
+        };
+        if (progressTracker && job.IsValid())
+            progressTracker->ReportProgress(job,ImportPhase::SourceParse,0.1,"Compiling particle system");
+        NLS::VFX::SystemAsset asset;
+        NLS::VFX::CompiledSystem compiledSystem;
+        std::vector<NLS::VFX::Authoring::SourceDependency> sourceDependencies;
+        std::string error;
+        const bool next = NLS::VFX::Authoring::IsSystemSource(ReadTextFile(absolutePath));
+        bool valid = false;
+        if (next)
+        {
+            NLS::VFX::Authoring::System source;
+            std::vector<NLS::VFX::Authoring::Issue> issues;
+            valid = NLS::VFX::Authoring::Load(absolutePath,source,error);
+            if (valid)
+            {
+                NLS::VFX::Authoring::SourceLibrary library;
+                std::vector<std::filesystem::path> sourceRoots; for (const auto& root : m_roots) sourceRoots.push_back(root.path);
+                valid = library.Refresh(sourceRoots,error);
+                if (valid) valid = NLS::VFX::Authoring::Compile(source,library,compiledSystem,sourceDependencies,issues);
+                if (!valid && !issues.empty()) error = issues.front().message;
+                else asset = compiledSystem.asset;
+            }
+        }
+        else valid = NLS::VFX::LoadSystem(absolutePath,asset,error);
+        std::vector<NLS::Core::Assets::AssetDependencyRecord> vfxDependencies{BuildShaderCompilerToolchainDependency()};
+        for (const auto& dependency : sourceDependencies) if (!dependency.path.empty())
+        {
+            AddUniqueDependency(vfxDependencies,{NLS::Core::Assets::AssetDependencyKind::SourceFileHash,ToEditorAssetPath(dependency.path),SourceFileContentHash(dependency.path)});
+            if (const auto sourceMeta = NLS::Core::Assets::AssetMeta::Load(NLS::Core::Assets::GetAssetMetaPath(dependency.path)))
+                AddUniqueDependency(vfxDependencies,{NLS::Core::Assets::AssetDependencyKind::SourceAssetGuid,sourceMeta->id.ToString(),{}});
+        }
+        if (valid)
+            for (const auto& emitter : asset.emitters)
+            {
+                std::vector<std::pair<NLS::VFX::AssetReference,NLS::Core::Assets::ArtifactType>> references{
+                    {emitter.sprite.material,NLS::Core::Assets::ArtifactType::Material},
+                    {emitter.sprite.texture,NLS::Core::Assets::ArtifactType::Texture}};
+                if (emitter.renderer == NLS::VFX::RendererType::Mesh)
+                {
+                    for (const auto& mesh : emitter.mesh.meshes) references.push_back({mesh,NLS::Core::Assets::ArtifactType::Mesh});
+                    for (const auto& material : emitter.mesh.materials) references.push_back({material,NLS::Core::Assets::ArtifactType::Material});
+                }
+                for (const auto& [reference,type] : references)
+                {
+                    if (reference.Empty()) continue;
+                    const auto dependencyPath = GUIDToAssetPath(reference.guid);
+                    const auto manifest = GetArtifactManifestForAssetPath(dependencyPath);
+                    const NLS::Core::Assets::ImportedArtifact* resolved = nullptr;
+                    if (manifest)
+                        for (const auto& artifact : manifest->subAssets)
+                        {
+                            const auto id = artifact.sourceAssetId.IsValid() ? artifact.sourceAssetId : manifest->sourceAssetId;
+                            if (id.ToString() == reference.guid && NLS::Engine::Serialize::MakeLocalIdentifierInFile(id.GetGuid(),artifact.subAssetKey) == reference.localId)
+                            { resolved = &artifact; break; }
+                        }
+                    if (!resolved || resolved->artifactType != type || ResolveArtifactPathAtPath(dependencyPath,resolved->subAssetKey).empty())
+                        return failVfxImport("assetdatabase-vfx-reference-invalid","Particle reference must identify a typed imported mesh, material or 2D texture: "+reference.guid);
+                    AddUniqueDependency(vfxDependencies,{NLS::Core::Assets::AssetDependencyKind::ImportedArtifact,reference.guid,resolved->subAssetKey});
+                    // Invalidation follows the source GUID; runtime packaging follows
+                    // the typed artifact identity and retains transitive texture dependencies.
+                    AddUniqueDependency(vfxDependencies,{NLS::Core::Assets::AssetDependencyKind::SourceAssetGuid,manifest->sourceAssetId.ToString(),{}});
+                    if (type == NLS::Core::Assets::ArtifactType::Material && emitter.sprite.useMaterialShader)
+                    {
+                        const auto material = NLS::Core::Assets::ReadNativeArtifactPayloadTextFromFile(
+                            ResolveArtifactPathAtPath(dependencyPath,resolved->subAssetKey),NLS::Core::Assets::ArtifactType::Material,1);
+                        if (!material) return failVfxImport("assetdatabase-vfx-material-invalid","Cannot read the particle material artifact");
+                        bool domain = false;
+                        for (const auto& dependency : material->metadata.dependencies)
+                        {
+                            if (dependency.kind != NLS::Core::Assets::AssetDependencyKind::ImportedArtifact) continue;
+                            const auto assetPath = GUIDToAssetPath(dependency.value);
+                            const auto item = LoadSubAssetAtPath(assetPath,dependency.hashOrVersion);
+                            if (!item) return failVfxImport("assetdatabase-vfx-material-reference","Particle material dependency is missing: "+dependency.value);
+                            const auto artifactPath = ResolveArtifactPathAtPath(item->assetPath,item->subAssetKey);
+                            if (item->artifactType == NLS::Core::Assets::ArtifactType::Shader)
+                            {
+                                const auto shader = NLS::Render::Assets::LoadShaderArtifact(artifactPath);
+                                if (!shader || shader->shaderLabLightMode != "ParticleSprite") continue;
+                                std::string validation;
+                                if (!NLS::Render::Resources::ValidateParticleSpriteReflection(shader->reflection,validation))
+                                    return failVfxImport("assetdatabase-vfx-material-abi",validation);
+                                for (const auto& binding : emitter.sprite.materialParameters)
+                                {
+                                    const auto property = std::find_if(shader->reflection.properties.begin(),shader->reflection.properties.end(),[&](const auto& property)
+                                    { return property.name == binding.materialParameter && property.bindingSpace == 2 && property.kind == NLS::Render::Resources::ShaderResourceKind::Value; });
+                                    const auto expected = static_cast<NLS::Render::Resources::UniformType>(static_cast<uint32_t>(NLS::Render::Resources::UniformType::UNIFORM_FLOAT)+static_cast<uint32_t>(binding.type));
+                                    if (property == shader->reflection.properties.end() || property->type != expected || property->arraySize != 1)
+                                        return failVfxImport("assetdatabase-vfx-material-binding","Invalid particle material parameter binding: "+binding.materialParameter);
+                                }
+                                domain = true;
+                            }
+                            else if (item->artifactType != NLS::Core::Assets::ArtifactType::Texture) continue;
+                            AddUniqueDependency(vfxDependencies,{NLS::Core::Assets::AssetDependencyKind::ImportedArtifact,item->assetId.ToString(),item->subAssetKey});
+                            AddUniqueDependency(vfxDependencies,{NLS::Core::Assets::AssetDependencyKind::SourceAssetGuid,item->assetId.ToString(),{}});
+                        }
+                        if (!domain) return failVfxImport("assetdatabase-vfx-material-domain","Selected material has no imported ParticleSprite shader pass");
+                    }
+                }
+            }
+        if (valid)
+        {
+            std::vector<NLS::VFX::Diagnostic> diagnostics;
+            valid = next || NLS::VFX::CompileSystem(asset,compiledSystem,diagnostics);
+            if (valid)
+            {
+                const std::array targets{NLS::Render::RHI::NativeBackendType::DX12,NLS::Render::RHI::NativeBackendType::Vulkan,NLS::Render::RHI::NativeBackendType::Metal};
+                valid = NLS::VFX::CompilePlatformPrograms(compiledSystem,targets,
+                    GetArtifactRootForAssetPath(absolutePath).parent_path()/"VfxShaderCache",diagnostics);
+            }
+            if (!valid) error = diagnostics.front().message;
+        }
+        if (!valid)
+        {
+            return failVfxImport("assetdatabase-vfx-source-invalid",error);
+        }
+        const auto artifactRoot = GetArtifactRootForAssetPath(absolutePath);
+        const auto stagingRoot = GetArtifactStagingRootForAssetPath(absolutePath);
+        if (artifactRoot.empty() || stagingRoot.empty() || !CanSaveArtifactManifestForAssetPath(absolutePath))
+            return failVfxImport("assetdatabase-vfx-artifact-unwritable","Particle artifact destination is unavailable");
+        const auto source = NLS::VFX::SerializeCompiledSystem(compiledSystem,false);
+        const std::vector<uint8_t> bytes(source.begin(),source.end());
+        std::lock_guard publishLock(GetArtifactPublishMutex(artifactRoot));
+        ArtifactRootRollback rollback(artifactRoot);
+        if (!rollback.Prepare()) return failVfxImport("assetdatabase-vfx-rollback-prepare-failed","Cannot prepare particle artifact publication");
+        if (progressTracker && job.IsValid())
+            progressTracker->ReportProgress(job,ImportPhase::ArtifactWrite,0.8,"Publishing particle program");
+        const auto manifest = ImportSingleNativeArtifact(*record,*meta,absolutePath,ToEditorAssetPath(absolutePath),
+            ToEditorAssetPath(NLS::Core::Assets::GetAssetMetaPath(absolutePath)),artifactRoot,stagingRoot,
+            "vfx-system:"+absolutePath.stem().generic_string(),NLS::Core::Assets::ArtifactType::VfxSystem,"vfx-system",
+            asset.name,bytes,LoadPreviousArtifactManifestForRecord(*record),m_diagnostics,"editor",
+            {},std::move(vfxDependencies));
+        if (!manifest || !SaveArtifactManifestForAssetPath(absolutePath,*manifest))
+        {
+            std::error_code restoreError;
+            if (!rollback.Restore(&restoreError)) ReportArtifactRollbackRestoreFailure(m_diagnostics,artifactRoot,restoreError);
+            return failVfxImport("assetdatabase-vfx-artifact-write-failed","Cannot publish the compiled particle program");
+        }
+        AddArtifactManifest(*manifest);
+        rollback.Commit();
+        if (progressTracker && job.IsValid()) progressTracker->FinishJob(job,ImportJobTerminalStatus::Succeeded,{});
+        return true;
+    }
+
+    if (record->assetType == NLS::Core::Assets::AssetType::AnimationClip ||
+        record->assetType == NLS::Core::Assets::AssetType::AnimationGraph ||
+        record->assetType == NLS::Core::Assets::AssetType::BlendSpace ||
+        record->assetType == NLS::Core::Assets::AssetType::BoneMask)
+    {
+        const auto artifactRoot=GetArtifactRootForAssetPath(absolutePath);
+        const auto stagingRoot=GetArtifactStagingRootForAssetPath(absolutePath);
+        NLS::Core::Assets::ArtifactDatabase snapshot;
+        if(!snapshot.Load(GetArtifactDatabasePathForAssetPath(absolutePath)))
+        {AddDiagnostic(NLS::Core::Assets::AssetDiagnosticSeverity::Error,"animation-database-unavailable",absolutePath,"Animation dependency database is unavailable");return false;}
+        auto projectRoot=artifactRoot;
+        while(!projectRoot.empty()&&projectRoot.filename()!="Library")
+        {auto parent=projectRoot.parent_path();if(parent==projectRoot){projectRoot.clear();break;}projectRoot=parent;}
+        projectRoot=projectRoot.parent_path();
+        NLS::AnimationCompiler::SourceCompileResult compiled;std::string error;
+        if(!NLS::AnimationCompiler::CompileSource(projectRoot,snapshot,"editor",absolutePath,ReadTextFile(absolutePath),compiled,error))
+        {AddDiagnostic(NLS::Core::Assets::AssetDiagnosticSeverity::Error,"animation-compile-failed",absolutePath,error);return false;}
+        std::lock_guard publishLock(GetArtifactPublishMutex(artifactRoot));ArtifactRootRollback rollback(artifactRoot);if(!rollback.Prepare())return false;
+        const auto manifest=ImportSingleNativeArtifact(*record,*meta,absolutePath,ToEditorAssetPath(absolutePath),
+            ToEditorAssetPath(NLS::Core::Assets::GetAssetMetaPath(absolutePath)),artifactRoot,stagingRoot,
+            compiled.payload.subAssetKey,compiled.payload.artifactType,compiled.payload.loaderId,
+            compiled.payload.displayName,compiled.payload.payload,LoadPreviousArtifactManifestForRecord(*record),m_diagnostics,"editor",{},std::move(compiled.dependencies));
+        if(!manifest||!SaveArtifactManifestForAssetPath(absolutePath,*manifest)){std::error_code ignored;rollback.Restore(&ignored);return false;}
+        AddArtifactManifest(*manifest);rollback.Commit();return true;
+    }
     if (record->assetType == NLS::Core::Assets::AssetType::UIDocument ||
         record->assetType == NLS::Core::Assets::AssetType::UIStyleSheet ||
         record->assetType == NLS::Core::Assets::AssetType::LocalizationTable)
@@ -5754,10 +6040,12 @@ bool AssetDatabaseFacade::RefreshSingle(
         bool valid = false;
         std::string diagnosticPath;
         std::string diagnosticMessage;
+        std::optional<NLS::Engine::UI::UIDocument> parsedUIDocument;
         if (record->assetType == NLS::Core::Assets::AssetType::UIDocument)
         {
             std::vector<NLS::Engine::UI::UIDocumentDiagnostic> diagnostics;
-            valid = NLS::Engine::UI::UIDocument::LoadFromJson(sourceText, &diagnostics).has_value();
+            parsedUIDocument = NLS::Engine::UI::UIDocument::LoadFromJson(sourceText, &diagnostics);
+            valid = parsedUIDocument.has_value();
             if (!diagnostics.empty())
             {
                 diagnosticPath = diagnostics.front().path;
@@ -5799,6 +6087,141 @@ bool AssetDatabaseFacade::RefreshSingle(
             if (progressTracker && job.IsValid())
                 progressTracker->FinishJob(job, ImportJobTerminalStatus::Failed, m_diagnostics);
             return false;
+        }
+
+        // UI resources are durable asset references. Record them as build
+        // dependencies so the cooker pulls the texture/font artifacts into the
+        // runtime package; a missing or mismatched reference is a warning so an
+        // existing document remains importable while the asset is being fixed.
+        std::vector<NLS::Core::Assets::AssetDependencyRecord> uiResourceDependencies;
+        if (parsedUIDocument.has_value())
+        {
+            std::vector<NLS::Engine::UI::UITextureReference> textures;
+            std::vector<NLS::Engine::UI::UIFontReference> fonts;
+            NLS::Engine::UI::CollectUIResourceReferences(
+                *parsedUIDocument,
+                textures,
+                fonts);
+
+            const auto addResourceDependency = [&](const auto& reference,
+                                                   const NLS::Core::Assets::AssetType expectedType,
+                                                   const NLS::Core::Assets::ArtifactType expectedArtifactType,
+                                                   const char* kind)
+            {
+                const auto& assetId = reference.GetAssetId();
+                if (!assetId.IsValid())
+                {
+                    AddDiagnostic(
+                        NLS::Core::Assets::AssetDiagnosticSeverity::Warning,
+                        "ui-resource-reference-invalid",
+                        absolutePath,
+                        std::string("UI ") + kind + " reference has no valid asset id.");
+                    return;
+                }
+
+                const auto guid = assetId.ToString();
+                const auto path = GUIDToAssetPath(guid);
+                if (path.empty())
+                {
+                    AddDiagnostic(
+                        NLS::Core::Assets::AssetDiagnosticSeverity::Warning,
+                        "ui-resource-reference-missing",
+                        absolutePath,
+                        std::string("UI ") + kind + " asset " + guid + " is not in the asset database.");
+                    return;
+                }
+
+                const auto* target = FindRecordByEditorAssetPath(path);
+                if (target == nullptr)
+                {
+                    AddDiagnostic(
+                        NLS::Core::Assets::AssetDiagnosticSeverity::Warning,
+                        "ui-resource-reference-missing",
+                        absolutePath,
+                        std::string("UI ") + kind + " asset is not registered: " + path);
+                    return;
+                }
+                if (target->assetType != expectedType)
+                {
+                    AddDiagnostic(
+                        NLS::Core::Assets::AssetDiagnosticSeverity::Warning,
+                        "ui-resource-reference-type-mismatch",
+                        absolutePath,
+                        std::string("UI ") + kind + " reference points at " + path +
+                            " which is not the expected asset type.");
+                    return;
+                }
+
+                // Keep the source dependency even when the target artifact has
+                // not been imported yet; the asset database uses it to reimport
+                // this document once the texture/font becomes available.
+                AddUniqueDependency(
+                    uiResourceDependencies,
+                    {
+                        NLS::Core::Assets::AssetDependencyKind::SourceAssetGuid,
+                        guid,
+                        {}
+                    });
+
+                // Record the exact imported sub-asset the document references;
+                // the runtime manifest builder follows ImportedArtifact edges,
+                // not source-GUID edges, when selecting packaged artifacts.
+                std::string artifactSubAssetKey = reference.GetSubAssetKey();
+                if (!artifactSubAssetKey.empty())
+                {
+                    const auto subAsset = LoadSubAssetAtPath(path, artifactSubAssetKey);
+                    if (!subAsset.has_value() ||
+                        subAsset->artifactType != expectedArtifactType)
+                    {
+                        artifactSubAssetKey.clear();
+                    }
+                }
+                if (artifactSubAssetKey.empty())
+                {
+                    const auto mainAsset = LoadMainAssetAtPath(path);
+                    if (!mainAsset.has_value() ||
+                        mainAsset->artifactType != expectedArtifactType ||
+                        mainAsset->subAssetKey.empty())
+                    {
+                        AddDiagnostic(
+                            NLS::Core::Assets::AssetDiagnosticSeverity::Warning,
+                            "ui-resource-artifact-missing",
+                            absolutePath,
+                            std::string("UI ") + kind + " asset has no imported " +
+                                (expectedArtifactType == NLS::Core::Assets::ArtifactType::Texture
+                                    ? "texture"
+                                    : "font") +
+                                " artifact yet: " + path);
+                        return;
+                    }
+                    artifactSubAssetKey = mainAsset->subAssetKey;
+                }
+
+                AddUniqueDependency(
+                    uiResourceDependencies,
+                    {
+                        NLS::Core::Assets::AssetDependencyKind::ImportedArtifact,
+                        guid,
+                        artifactSubAssetKey
+                    });
+            };
+
+            for (const auto& texture : textures)
+            {
+                addResourceDependency(
+                    texture,
+                    NLS::Core::Assets::AssetType::Texture,
+                    NLS::Core::Assets::ArtifactType::Texture,
+                    "texture");
+            }
+            for (const auto& font : fonts)
+            {
+                addResourceDependency(
+                    font,
+                    NLS::Core::Assets::AssetType::Font,
+                    NLS::Core::Assets::ArtifactType::Font,
+                    "font");
+            }
         }
 
         NLS::Core::Assets::ArtifactType artifactType = NLS::Core::Assets::ArtifactType::Unknown;
@@ -5856,7 +6279,8 @@ bool AssetDatabaseFacade::RefreshSingle(
             std::move(previousManifest),
             m_diagnostics,
             "editor",
-            NLS::Core::Assets::ComputeNativeArtifactPayloadHash(sourceBytes));
+            NLS::Core::Assets::ComputeNativeArtifactPayloadHash(sourceBytes),
+            std::move(uiResourceDependencies));
         if (!manifest.has_value())
         {
             std::error_code restoreError;
@@ -5917,6 +6341,108 @@ bool AssetDatabaseFacade::RefreshSingle(
         if (progressTracker && job.IsValid())
             progressTracker->ReportProgress(job, ImportPhase::SourceParse, 0.05, "Importing native asset source");
 
+        auto resolveMaterialDependencies = [&](std::string& payload) -> std::optional<std::vector<NLS::Core::Assets::AssetDependencyRecord>>
+                {
+                    std::vector<NLS::Core::Assets::AssetDependencyRecord> dependencies;
+                    if (payload.find("\nmaterialAssetVersion=2\n") != std::string::npos)
+                    {
+                        using namespace NLS::Render::Assets;
+                        std::string error;
+                        auto asset = DeserializeMaterialAsset(payload,error);
+                        if (!asset)
+                        { AddDiagnostic(NLS::Core::Assets::AssetDiagnosticSeverity::Error,"material-asset-invalid",absolutePath,error); return std::nullopt; }
+                        asset->identity = {record->id.ToString(),"material:main",editorAssetPath};
+                        auto provider = [&](const MaterialAssetReference& reference) -> std::optional<MaterialAsset>
+                        {
+                            const auto parentPath = reference.guid.empty() ? reference.path : GUIDToAssetPath(reference.guid);
+                            if (parentPath.empty()) return std::nullopt;
+                            auto parentFile = ResolveAssetPath(parentPath);
+                            if (parentFile.extension() != ".mat" || !reference.subAssetKey.empty() && reference.subAssetKey != "material:main")
+                                parentFile = ResolveArtifactPathAtPath(parentPath,reference.subAssetKey);
+                            const auto parentBytes = ReadBinaryFile(parentFile);
+                            const auto parentContainer = NLS::Core::Assets::ReadNativeArtifactContainer(parentBytes,
+                                NLS::Core::Assets::ArtifactType::Material,1u);
+                            if (!parentContainer) return std::nullopt;
+                            auto parent = DeserializeMaterialAsset(std::string_view(
+                                reinterpret_cast<const char*>(parentContainer->payload.data()),parentContainer->payload.size()),error);
+                            if (parent) parent->identity = reference;
+                            return parent;
+                        };
+                        auto resolved = MaterialAssetResolver::Resolve(*asset,provider,error);
+                        if (!resolved)
+                        { AddDiagnostic(NLS::Core::Assets::AssetDiagnosticSeverity::Error,"material-inheritance-invalid",absolutePath,error); return std::nullopt; }
+                        if (!resolved->shader.guid.empty())
+                            resolved->shader.path = GUIDToAssetPath(resolved->shader.guid);
+                        if (resolved->shader.path.empty())
+                        { AddDiagnostic(NLS::Core::Assets::AssetDiagnosticSeverity::Error,"material-shader-missing",absolutePath,"Root shader reference cannot be resolved"); return std::nullopt; }
+                        if(!resolved->staticParameters.empty())
+                        {
+                            const auto shaderFile=ResolveAssetPath(resolved->shader.path);
+                            const auto* shaderRoot=FindEditorAssetRootForAbsolutePath(m_roots,shaderFile);
+                            auto variants=ReadMaterialVariantRequests(shaderFile,shaderRoot);
+                            NLS::Render::ShaderLab::ShaderLabKeywordSet keywords;
+                            if(shaderFile.extension()==".shadergraph")
+                            {NLS::MaterialCompiler::MaterialGraphAsset graph;
+                                if(!NLS::MaterialCompiler::DeserializeMaterialGraph(ReadTextFile(shaderFile),graph,error))return std::nullopt;
+                                for(const auto& parameter:graph.parameters)if(parameter.isStatic && std::get<bool>(parameter.value))
+                                    keywords.Enable(NLS::MaterialCompiler::MaterialGraphBindingName(parameter.id,true));}
+                            for(const auto& [name,value]:resolved->staticParameters){if(value)keywords.Enable(name);else keywords.Disable(name);}
+                            if(std::none_of(variants.begin(),variants.end(),[&](const auto& variant){return variant.ToVector()==keywords.ToVector();}))
+                            {
+                                if(variants.size()>=MaterialVariantBudget(shaderFile))
+                                {AddDiagnostic(NLS::Core::Assets::AssetDiagnosticSeverity::Error,"material-variant-budget-exceeded",shaderFile,"Used material variants exceed materialVariantBudget");return std::nullopt;}
+                                variants.push_back(keywords);nlohmann::json values=nlohmann::json::array();
+                                for(const auto& variant:variants)values.push_back(variant.ToVector());
+                                const auto requests=MaterialVariantRequestPath(shaderFile,shaderRoot);std::filesystem::create_directories(requests.parent_path());
+                                if(!NLS::Render::ShaderCompiler::WriteShaderArtifactTextAtomic(requests.generic_string(),values.dump(),&error) ||
+                                    !ReimportAsset(resolved->shader.path,nullptr,{},1,false))return std::nullopt;
+                            }
+                        }
+                        for (const auto& parent : resolved->ancestry)
+                            if (!parent.guid.empty() && parent.guid != record->id.ToString())
+                                AddUniqueDependency(dependencies,{NLS::Core::Assets::AssetDependencyKind::SourceAssetGuid,parent.guid,{}});
+                        payload = BuildResolvedMaterialPayload(*resolved);
+                        payload+="materialAssetSource="+NLS::Render::Resources::EscapeMaterialField(SerializeMaterialAsset(*asset))+"\n";
+                    }
+                    for (const auto& reference : NLS::Render::Resources::CollectSerializedMaterialAssetReferences(payload))
+                    {
+                        std::string texturePath;
+                        for (const auto& item : LoadAllAssetsAtPath(reference.path))
+                        {
+                            if (item.artifactType != (reference.shader ? NLS::Core::Assets::ArtifactType::Shader : NLS::Core::Assets::ArtifactType::Texture)) continue;
+                            AddUniqueDependency(dependencies,{NLS::Core::Assets::AssetDependencyKind::ImportedArtifact,item.assetId.ToString(),item.subAssetKey});
+                            AddUniqueDependency(dependencies,{NLS::Core::Assets::AssetDependencyKind::SourceAssetGuid,item.assetId.ToString(),{}});
+                            if (!reference.shader && texturePath.empty()) texturePath = item.artifactPath;
+                        }
+                        if (!reference.shader && !texturePath.empty())
+                        {
+                            const auto encoded = NLS::Render::Resources::EscapeMaterialField(reference.path);
+                            const auto position = payload.find("property "+reference.parameter+" Texture2D "+encoded);
+                            if (position != std::string::npos)
+                                payload.replace(position+std::string("property "+reference.parameter+" Texture2D ").size(),encoded.size(),NLS::Render::Resources::EscapeMaterialField(texturePath));
+                        }
+                    }
+                    return dependencies;
+                };
+        std::string originalMaterialPayload,preparedMaterialPayload;
+        std::vector<NLS::Core::Assets::AssetDependencyRecord> preparedMaterialDependencies;
+        if(record->assetType==NLS::Core::Assets::AssetType::Material)
+        {
+            const auto bytes=ReadBinaryFile(absolutePath);
+            const auto native=NLS::Core::Assets::ReadNativeArtifactContainer(bytes,NLS::Core::Assets::ArtifactType::Material,1);
+            if(!native)
+            {
+                AddDiagnostic(NLS::Core::Assets::AssetDiagnosticSeverity::Error,
+                    "assetdatabase-material-source-native-container-required",absolutePath,"Expected a native material container");
+                if (progressTracker && job.IsValid()) progressTracker->FinishJob(job,ImportJobTerminalStatus::Failed,m_diagnostics);
+                return false;
+            }
+            originalMaterialPayload.assign(native->payload.begin(),native->payload.end());preparedMaterialPayload=originalMaterialPayload;
+            const auto dependencies=resolveMaterialDependencies(preparedMaterialPayload);
+            if(!dependencies)return false;
+            preparedMaterialDependencies=*dependencies;
+        }
+
         std::lock_guard publishLock(GetArtifactPublishMutex(artifactRoot));
         ArtifactRootRollback artifactRollback(artifactRoot);
         if (!artifactRollback.Prepare())
@@ -5951,7 +6477,12 @@ bool AssetDatabaseFacade::RefreshSingle(
                 artifactRoot,
                 stagingRoot,
                 std::move(previousManifest),
-                m_diagnostics);
+                m_diagnostics,[&](std::string& payload)->std::optional<std::vector<NLS::Core::Assets::AssetDependencyRecord>>
+                {
+                    if(payload!=originalMaterialPayload)
+                    {AddDiagnostic(NLS::Core::Assets::AssetDiagnosticSeverity::Error,"material-source-changed",absolutePath,"Material changed while preparing its dependencies");return std::nullopt;}
+                    payload=preparedMaterialPayload;return preparedMaterialDependencies;
+                });
         if (!manifest.has_value())
         {
             std::error_code restoreError;
@@ -5979,6 +6510,116 @@ bool AssetDatabaseFacade::RefreshSingle(
 
         AddArtifactManifest(std::move(*manifest));
         artifactRollback.Commit();
+        if (record->assetType == NLS::Core::Assets::AssetType::Texture)
+        {
+            // Live UI documents resolve textures through the shared resolver;
+            // drop its cached view so the next tick reloads the new artifact.
+            if (auto resolver = NLS::Engine::UI::GetUIDocumentResourceResolver())
+                resolver->InvalidateAsset(record->id);
+        }
+        if (progressTracker && job.IsValid())
+            progressTracker->FinishJob(job, ImportJobTerminalStatus::Succeeded, {});
+        return true;
+    }
+
+    if (record->assetType == NLS::Core::Assets::AssetType::Font)
+    {
+        const auto artifactRoot = GetArtifactRootForAssetPath(absolutePath);
+        const auto stagingRoot = GetArtifactStagingRootForAssetPath(absolutePath);
+        const auto editorAssetPath = ToEditorAssetPath(absolutePath);
+        const auto editorMetaPath = ToEditorAssetPath(NLS::Core::Assets::GetAssetMetaPath(absolutePath));
+        if (artifactRoot.empty() ||
+            stagingRoot.empty() ||
+            !CanSaveArtifactManifestForAssetPath(absolutePath))
+        {
+            AddDiagnostic(
+                NLS::Core::Assets::AssetDiagnosticSeverity::Error,
+                "assetdatabase-font-artifact-manifest-unwritable",
+                GetArtifactManifestPathForAssetPath(absolutePath),
+                "Imported font artifact manifest cannot be written.");
+            return false;
+        }
+
+        auto payload = ReadBinaryFile(absolutePath);
+        if (payload.empty())
+        {
+            AddDiagnostic(
+                NLS::Core::Assets::AssetDiagnosticSeverity::Error,
+                "assetdatabase-font-source-read-failed",
+                absolutePath,
+                "Font source file could not be read or is empty.");
+            return false;
+        }
+        const auto payloadHash = NLS::Core::Assets::ComputeNativeArtifactPayloadHash(payload);
+
+        ImportJobId job = existingJob;
+        if (progressTracker && !job.IsValid())
+            job = progressTracker->BeginJob(meta->id, editorAssetPath, "editor", 1u);
+        if (progressTracker && job.IsValid())
+            progressTracker->ReportProgress(job, ImportPhase::ArtifactWrite, 0.85, "Writing font artifact");
+
+        auto previousManifest = LoadPreviousArtifactManifestForRecord(*record);
+        std::lock_guard publishLock(GetArtifactPublishMutex(artifactRoot));
+        ArtifactRootRollback artifactRollback(artifactRoot);
+        if (!artifactRollback.Prepare())
+        {
+            AddDiagnostic(
+                NLS::Core::Assets::AssetDiagnosticSeverity::Error,
+                "assetdatabase-font-artifact-rollback-prepare-failed",
+                artifactRoot,
+                "Previous imported font artifact root could not be prepared for rollback.");
+            if (progressTracker && job.IsValid())
+                progressTracker->FinishJob(job, ImportJobTerminalStatus::Failed, m_diagnostics);
+            return false;
+        }
+
+        const auto subAssetKey = "font:" + absolutePath.stem().generic_string();
+        auto manifest = ImportSingleNativeArtifact(
+            *record,
+            *meta,
+            absolutePath,
+            editorAssetPath,
+            editorMetaPath,
+            artifactRoot,
+            stagingRoot,
+            subAssetKey,
+            NLS::Core::Assets::ArtifactType::Font,
+            "font",
+            absolutePath.stem().generic_string(),
+            std::move(payload),
+            std::move(previousManifest),
+            m_diagnostics,
+            "editor",
+            payloadHash);
+        if (!manifest.has_value())
+        {
+            std::error_code restoreError;
+            if (!artifactRollback.Restore(&restoreError))
+                ReportArtifactRollbackRestoreFailure(m_diagnostics, artifactRoot, restoreError);
+            if (progressTracker && job.IsValid())
+                progressTracker->FinishJob(job, ImportJobTerminalStatus::Failed, m_diagnostics);
+            return false;
+        }
+
+        if (!SaveArtifactManifestForAssetPath(absolutePath, *manifest))
+        {
+            std::error_code restoreError;
+            if (!artifactRollback.Restore(&restoreError))
+                ReportArtifactRollbackRestoreFailure(m_diagnostics, artifactRoot, restoreError);
+            AddDiagnostic(
+                NLS::Core::Assets::AssetDiagnosticSeverity::Error,
+                "assetdatabase-font-artifact-manifest-write-failed",
+                GetArtifactManifestPathForAssetPath(absolutePath),
+                "Imported font artifact manifest could not be written.");
+            if (progressTracker && job.IsValid())
+                progressTracker->FinishJob(job, ImportJobTerminalStatus::Failed, m_diagnostics);
+            return false;
+        }
+
+        AddArtifactManifest(std::move(*manifest));
+        artifactRollback.Commit();
+        if (auto resolver = NLS::Engine::UI::GetUIDocumentResourceResolver())
+            resolver->InvalidateAsset(record->id);
         if (progressTracker && job.IsValid())
             progressTracker->FinishJob(job, ImportJobTerminalStatus::Succeeded, {});
         return true;
@@ -6564,6 +7205,13 @@ void AssetDatabaseFacade::LoadPersistedArtifactManifests()
             record.assetType != NLS::Core::Assets::AssetType::Texture &&
             record.assetType != NLS::Core::Assets::AssetType::Material &&
             record.assetType != NLS::Core::Assets::AssetType::UIDocument &&
+            record.assetType != NLS::Core::Assets::AssetType::VfxSystem &&
+            record.assetType != NLS::Core::Assets::AssetType::VfxScript &&
+            record.assetType != NLS::Core::Assets::AssetType::VfxEmitter &&
+            record.assetType != NLS::Core::Assets::AssetType::AnimationClip &&
+            record.assetType != NLS::Core::Assets::AssetType::AnimationGraph &&
+            record.assetType != NLS::Core::Assets::AssetType::BlendSpace &&
+            record.assetType != NLS::Core::Assets::AssetType::BoneMask &&
             record.assetType != NLS::Core::Assets::AssetType::UIStyleSheet &&
             record.assetType != NLS::Core::Assets::AssetType::LocalizationTable)
         {
@@ -6677,6 +7325,8 @@ std::optional<NLS::Core::Assets::ArtifactManifest> AssetDatabaseFacade::LoadPers
 
     {
         std::lock_guard manifestLock(m_manifestMutex);
+        NLS::Render::DistanceField::RegisterDistanceFieldManifest(*persistedManifest,
+            GetArtifactRootForAssetPath(record.absolutePath));
         MutableManifestsBySource()[record.id] = *persistedManifest;
         PublishCurrentStateLocked();
     }
@@ -6876,6 +7526,9 @@ void AssetDatabaseFacade::PublishArtifactManifestToMemory(
     const bool markKnownCurrent)
 {
     const auto assetPath = GUIDToAssetPath(manifest.sourceAssetId.ToString());
+    if (!assetPath.empty())
+        NLS::Render::DistanceField::RegisterDistanceFieldManifest(manifest,
+            GetArtifactRootForAssetPath(ResolveAssetPath(assetPath)));
     {
         std::lock_guard manifestLock(m_manifestMutex);
         auto& storedManifest = MutableManifestsBySource()[manifest.sourceAssetId];

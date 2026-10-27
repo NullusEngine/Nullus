@@ -19,6 +19,7 @@ namespace
 TEST(EditorPipelineStatePresetsTests, OverlayPresetDisablesDepthWritingDepthTestAndCulling)
 {
     NLS::Render::Data::PipelineState baseState;
+    baseState.rasterizationMode = NLS::Render::Settings::ERasterizationMode::LINE;
     baseState.depthWriting = true;
     baseState.depthTest = true;
     baseState.culling = true;
@@ -30,11 +31,13 @@ TEST(EditorPipelineStatePresetsTests, OverlayPresetDisablesDepthWritingDepthTest
     EXPECT_FALSE(overlayState.depthTest);
     EXPECT_FALSE(overlayState.culling);
     EXPECT_FALSE(overlayState.blending);
+    EXPECT_EQ(overlayState.rasterizationMode, NLS::Render::Settings::ERasterizationMode::FILL);
 }
 
 TEST(EditorPipelineStatePresetsTests, TransparentOverlayPresetEnablesBlending)
 {
     NLS::Render::Data::PipelineState baseState;
+    baseState.rasterizationMode = NLS::Render::Settings::ERasterizationMode::LINE;
     baseState.depthWriting = true;
     baseState.depthTest = true;
     baseState.culling = true;
@@ -46,6 +49,7 @@ TEST(EditorPipelineStatePresetsTests, TransparentOverlayPresetEnablesBlending)
     EXPECT_FALSE(overlayState.depthTest);
     EXPECT_FALSE(overlayState.culling);
     EXPECT_TRUE(overlayState.blending);
+    EXPECT_EQ(overlayState.rasterizationMode, NLS::Render::Settings::ERasterizationMode::FILL);
 }
 
 TEST(EditorPipelineStatePresetsTests, NoDepthPresetOnlyDisablesDepthTest)
@@ -65,6 +69,7 @@ TEST(EditorPipelineStatePresetsTests, NoDepthPresetOnlyDisablesDepthTest)
 TEST(EditorPipelineStatePresetsTests, OutlineStencilPresetConfiguresStencilWriteAndBackfaceCulling)
 {
     NLS::Render::Data::PipelineState baseState;
+    baseState.rasterizationMode = NLS::Render::Settings::ERasterizationMode::LINE;
     const auto stencilState = NLS::Editor::Rendering::CreateEditorOutlineStencilPipelineState(baseState, 0xFFu, 3);
 
     EXPECT_TRUE(stencilState.stencilTest);
@@ -78,6 +83,7 @@ TEST(EditorPipelineStatePresetsTests, OutlineStencilPresetConfiguresStencilWrite
     EXPECT_FALSE(stencilState.depthTest);
     EXPECT_TRUE(stencilState.culling);
     EXPECT_EQ(stencilState.cullFace, NLS::Render::Settings::ECullFace::BACK);
+    EXPECT_EQ(stencilState.rasterizationMode, NLS::Render::Settings::ERasterizationMode::FILL);
 }
 
 TEST(EditorPipelineStatePresetsTests, OutlineStrokePresetConfiguresLineRasterizationAndStencilCompare)

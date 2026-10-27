@@ -71,6 +71,9 @@ function(nls_configure_test_target target_name)
         NLS_UI
         NLS_Engine
         NLS_Scripting
+        NLS_VFX
+        NLS_VFXCompiler
+        NLS_Physics
         GameProject
         LauncherProject
         DirectXTex::DirectXTex
@@ -78,13 +81,19 @@ function(nls_configure_test_target target_name)
 
     # Unit tests exercise automatic ComponentEditor descriptor discovery too.
     # EditorProject is static, so retain descriptor-only implementation units.
-    if(MSVC)
-        target_link_libraries(${target_name} PRIVATE EditorProject)
-        target_link_options(${target_name} PRIVATE "/WHOLEARCHIVE:$<TARGET_FILE:EditorProject>")
-    elseif(APPLE)
-        target_link_libraries(${target_name} PRIVATE "-Wl,-force_load,$<TARGET_FILE:EditorProject>" EditorProject)
+    # Focused suites can opt out (NO_WHOLE_ARCHIVE) to avoid linking unrelated
+    # editor panels whose feature modules are still under construction.
+    if(NOT "NO_WHOLE_ARCHIVE" IN_LIST ARGN)
+        if(MSVC)
+            target_link_libraries(${target_name} PRIVATE EditorProject)
+            target_link_options(${target_name} PRIVATE "/WHOLEARCHIVE:$<TARGET_FILE:EditorProject>")
+        elseif(APPLE)
+            target_link_libraries(${target_name} PRIVATE "-Wl,-force_load,$<TARGET_FILE:EditorProject>" EditorProject)
+        else()
+            target_link_libraries(${target_name} PRIVATE "-Wl,--whole-archive" EditorProject "-Wl,--no-whole-archive")
+        endif()
     else()
-        target_link_libraries(${target_name} PRIVATE "-Wl,--whole-archive" EditorProject "-Wl,--no-whole-archive")
+        target_link_libraries(${target_name} PRIVATE EditorProject)
     endif()
 
     nls_target_precompile_headers(${target_name} "${CMAKE_SOURCE_DIR}/Tests/NullusTestsPch.h")

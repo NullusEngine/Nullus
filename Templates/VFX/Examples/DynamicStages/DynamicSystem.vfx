@@ -1,0 +1,257 @@
+{
+  "emitters": [
+    {
+      "id": "848e49a8-85e8-481a-851a-d2114427f40c",
+      "enabled": true,
+      "position": [
+        0,
+        0
+      ],
+      "stacks": [],
+      "parent": {
+        "asset": "22f39daf-9217-46b6-a26c-fafa2bcdff4d",
+        "version": "30c3f7ff-9ad5-4bdc-9694-83acf4b2de5e"
+      },
+      "stackOverrides": [
+        {
+          "stack": "1aa13619-892c-4c67-897e-bc4fe8a30788",
+          "iterations": 3,
+          "name": "Dynamic Offset"
+        }
+      ]
+    }
+  ],
+  "id": "fcc83d3f-c32f-4347-9232-3a68ed859e27",
+  "kind": "System",
+  "name": "Dynamic Stage Controls",
+  "parameters": [
+    {
+      "id": "7653035c-af95-4973-a220-00fba977cc06",
+      "name": "User.Offset",
+      "type": 2,
+      "value": [
+        0.0015,
+        0,
+        0,
+        0
+      ]
+    },
+    {
+      "id": "566f45fc-a43c-4be6-b0fe-5525a5912813",
+      "name": "User.StageEnabled",
+      "type": 0,
+      "value": [
+        1,
+        0,
+        0,
+        0
+      ]
+    },
+    {
+      "id": "6e44f852-0742-448f-9048-b9d4ed0d674e",
+      "name": "User.StageIterations",
+      "type": 0,
+      "value": [
+        3,
+        0,
+        0,
+        0
+      ]
+    }
+  ],
+  "runtime": {
+    "emitters": [
+      {
+        "attributes": [
+          {
+            "default": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ],
+            "name": "Particles.Position",
+            "type": 2
+          },
+          {
+            "default": [
+              0.0,
+              3.0,
+              0.0,
+              0.0
+            ],
+            "name": "Particles.Velocity",
+            "type": 2
+          },
+          {
+            "default": [
+              1.0,
+              0.5,
+              0.10000000149011612,
+              1.0
+            ],
+            "name": "Particles.Color",
+            "type": 3
+          },
+          {
+            "default": [
+              0.05000000074505806,
+              0.0,
+              0.0,
+              0.0
+            ],
+            "name": "Particles.Size",
+            "type": 0
+          },
+          {
+            "default": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ],
+            "name": "Particles.Age",
+            "type": 0
+          },
+          {
+            "default": [
+              2.0,
+              0.0,
+              0.0,
+              0.0
+            ],
+            "name": "Particles.Lifetime",
+            "type": 0
+          }
+        ],
+        "bursts": [],
+        "capacity": 256,
+        "collision": {
+          "enabled": false,
+          "friction": 0.0,
+          "layers": 4294967295,
+          "radius": 0.0,
+          "restitution": 0.5
+        },
+        "duration": 5.0,
+        "frustumCulling": true,
+        "id": "848e49a8-85e8-481a-851a-d2114427f40c",
+        "initialCapacity": 16,
+        "interpolatedSpawning": true,
+        "looping": true,
+        "mesh": {
+          "defaultOrientation": [
+            0.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "defaultScale": [
+            1.0,
+            1.0,
+            1.0,
+            0.0
+          ],
+          "lodIndex": -1,
+          "materials": [],
+          "meshIndexAttribute": "Particles.MeshIndex",
+          "meshes": [],
+          "orientationAttribute": "Particles.MeshOrientation",
+          "scaleAttribute": "Particles.Scale"
+        },
+        "name": "Dynamic GPU Emitter",
+        "renderer": 0,
+        "seed": 1,
+        "simulationStages": [],
+        "sortByViewDepth": false,
+        "spawn": {
+          "id": "a783fb2d-2cdd-49c3-b87d-0a4d2f944145",
+          "nextNodeId": 3,
+          "nodes": [],
+          "stage": 0
+        },
+        "spawnRate": 100.0,
+        "sprite": {
+          "alignment": 0,
+          "alphaCutoff": 0.3330000042915344,
+          "blend": 0,
+          "blendSubImages": false,
+          "circularMask": true,
+          "dynamicParameters": [
+            {
+              "attribute": "Particles.DynamicMaterialParameter",
+              "default": [
+                1.0,
+                1.0,
+                1.0,
+                1.0
+              ],
+              "fallbackParameter": ""
+            },
+            {
+              "attribute": "Particles.DynamicMaterialParameter1",
+              "default": [
+                1.0,
+                1.0,
+                1.0,
+                1.0
+              ],
+              "fallbackParameter": ""
+            },
+            {
+              "attribute": "Particles.DynamicMaterialParameter2",
+              "default": [
+                1.0,
+                1.0,
+                1.0,
+                1.0
+              ],
+              "fallbackParameter": ""
+            },
+            {
+              "attribute": "Particles.DynamicMaterialParameter3",
+              "default": [
+                1.0,
+                1.0,
+                1.0,
+                1.0
+              ],
+              "fallbackParameter": ""
+            }
+          ],
+          "emissive": 1.0,
+          "material": {
+            "guid": "",
+            "localId": 0
+          },
+          "materialParameters": [],
+          "softDistance": 0.0,
+          "subImagesX": 1,
+          "subImagesY": 1,
+          "texture": {
+            "guid": "",
+            "localId": 0
+          },
+          "tint": [
+            1.0,
+            1.0,
+            1.0,
+            1.0
+          ],
+          "useMaterialShader": false
+        },
+        "target": 1,
+        "update": {
+          "id": "b4b571ef-f6ce-4fcd-9faf-160c99db3999",
+          "nextNodeId": 7,
+          "nodes": [],
+          "stage": 1
+        }
+      }
+    ],
+    "id": "fcc83d3f-c32f-4347-9232-3a68ed859e27",
+    "name": "Dynamic Stage Controls",
+    "version": 1
+  },
+  "version": 3
+}

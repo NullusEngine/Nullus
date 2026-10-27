@@ -1,0 +1,134 @@
+{
+  "category": "Emitter",
+  "deprecated": false,
+  "description": "Controls emitter duration and looping.",
+  "exposedVersion": "23f5d98d-71c2-cc34-0e34-968468ff4a05",
+  "id": "7c675a9c-1c16-18a4-b3cf-823fd8284a69",
+  "kind": "Module",
+  "name": "Emitter State",
+  "suggested": false,
+  "version": 2,
+  "versions": [
+    {
+      "attributes": [],
+      "calls": [],
+      "capabilities": 0,
+      "description": "Controls emitter duration and looping.",
+      "graph": {
+        "id": "48f65c27-9adc-41b2-a653-1ce4b1694f30",
+        "nextNodeId": 5,
+        "nodes": [
+          {
+            "id": 1,
+            "inputs": [],
+            "name": "Module.Duration",
+            "operation": 2,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 0,
+            "value": [
+              5.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 2,
+            "inputs": [],
+            "name": "Module.Loop",
+            "operation": 2,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 0,
+            "value": [
+              1.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 3,
+            "inputs": [
+              1
+            ],
+            "name": "Emitter.Duration",
+            "operation": 22,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 0,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 4,
+            "inputs": [
+              2
+            ],
+            "name": "Emitter.Loop",
+            "operation": 22,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 0,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          }
+        ],
+        "stage": 4
+      },
+      "id": "23f5d98d-71c2-cc34-0e34-968468ff4a05",
+      "inputs": [
+        {
+          "default": [
+            5.0,
+            0.0,
+            0.0,
+            0.0
+          ],
+          "id": "f4f031e3-3d6a-7327-817e-97b0e43629e8",
+          "name": "Duration",
+          "static": false,
+          "type": 0
+        },
+        {
+          "default": [
+            1.0,
+            0.0,
+            0.0,
+            0.0
+          ],
+          "id": "bc12f8cf-fa9b-4e21-ee0d-ad94b0212fc6",
+          "name": "Loop",
+          "static": false,
+          "type": 0
+        }
+      ],
+      "major": 1,
+      "minor": 0,
+      "provides": [],
+      "requiresBefore": [],
+      "stages": [
+        3
+      ],
+      "switches": []
+    }
+  ],
+  "visible": true
+}

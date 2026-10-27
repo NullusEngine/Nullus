@@ -1,0 +1,174 @@
+{
+  "category": "Location",
+  "deprecated": false,
+  "description": "Samples a box centered at the specified position.",
+  "exposedVersion": "ad50ce3f-d0f7-368b-af04-03498de05d50",
+  "id": "0492f6a3-250e-b103-db67-b63f06649974",
+  "kind": "Module",
+  "name": "Box Location",
+  "suggested": false,
+  "version": 2,
+  "versions": [
+    {
+      "attributes": [],
+      "calls": [],
+      "capabilities": 0,
+      "description": "Samples a box centered at the specified position.",
+      "graph": {
+        "id": "9ba20018-b14c-4164-b210-120170e700f3",
+        "nextNodeId": 7,
+        "nodes": [
+          {
+            "id": 1,
+            "inputs": [],
+            "name": "",
+            "operation": 5,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 2,
+            "value": [
+              1.0,
+              1.0,
+              1.0,
+              0.0
+            ]
+          },
+          {
+            "id": 2,
+            "inputs": [],
+            "name": "Module.Center",
+            "operation": 2,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 2,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 3,
+            "inputs": [],
+            "name": "Module.Extent",
+            "operation": 2,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 2,
+            "value": [
+              0.5,
+              0.5,
+              0.5,
+              0.0
+            ]
+          },
+          {
+            "id": 4,
+            "inputs": [
+              1,
+              3
+            ],
+            "name": "",
+            "operation": 8,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 2,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 5,
+            "inputs": [
+              2,
+              4
+            ],
+            "name": "",
+            "operation": 6,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 2,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 6,
+            "inputs": [
+              5
+            ],
+            "name": "Particles.Position",
+            "operation": 22,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 2,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          }
+        ],
+        "stage": 0
+      },
+      "id": "ad50ce3f-d0f7-368b-af04-03498de05d50",
+      "inputs": [
+        {
+          "default": [
+            0.0,
+            0.0,
+            0.0,
+            0.0
+          ],
+          "id": "33be751a-e952-7e6f-7676-c1c9ce82d1c6",
+          "name": "Center",
+          "static": false,
+          "type": 2
+        },
+        {
+          "default": [
+            0.5,
+            0.5,
+            0.5,
+            0.0
+          ],
+          "id": "4f981278-c9ba-d836-748a-2ec2e11ea5eb",
+          "name": "Extent",
+          "static": false,
+          "type": 2
+        }
+      ],
+      "major": 1,
+      "minor": 0,
+      "provides": [],
+      "requiresBefore": [
+        "Initialize Particle"
+      ],
+      "stages": [
+        4
+      ],
+      "switches": []
+    }
+  ],
+  "visible": true
+}

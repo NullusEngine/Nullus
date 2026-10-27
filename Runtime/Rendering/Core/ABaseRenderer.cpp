@@ -11,6 +11,7 @@
 #include <type_traits>
 #include "Profiling/Profiler.h"
 #include "Rendering/Core/ABaseRenderer.h"
+#include "Rendering/Animation/SkinnedMeshRenderProxy.h"
 #include "Rendering/Buffers/Framebuffer.h"
 #include "Rendering/Buffers/MultiFramebuffer.h"
 #include "Rendering/Buffers/UniformBuffer.h"
@@ -1345,6 +1346,9 @@ bool ABaseRenderer::PrepareRecordedDraw(
     PreparedRecordedDraw& outDraw) const
 {
     auto material = p_drawable.material;
+    std::shared_ptr<Resources::Material> skinningMaterial;
+    if(material && p_drawable.mesh && p_drawable.mesh->GetSkinningFrame())
+    {skinningMaterial=p_drawable.mesh->GetSkinningFrame()->ResolveMaterial(*material);material=skinningMaterial.get();}
     if (material == nullptr)
     {
         LogRecordedDrawPreparationState(m_driver, "pso", "material_null", p_drawable);
@@ -1652,6 +1656,7 @@ void ABaseRenderer::PopulatePreparedRecordedDrawFromStaticBase(
     outDraw.commandBuffer = std::move(commandBuffer);
     outDraw.pipeline = staticBase.pipeline;
     outDraw.materialBindingSet = staticBase.materialBindingSet;
+    outDraw.materialResourceOwner = staticBase.materialResourceOwner;
     outDraw.passBindingSet = staticBase.passBindingSet;
     outDraw.mesh = staticBase.mesh;
     outDraw.instanceCount = drawable.instanceCount != 0u
@@ -2175,6 +2180,7 @@ std::shared_ptr<const ABaseRenderer::PreparedRecordedDrawStaticBase> ABaseRender
     staticBase->passBindingSet = passBindingSet;
     staticBase->mesh = std::move(rhiMesh);
     staticBase->gpuInstances = material.GetGPUInstances();
+    staticBase->materialResourceOwner=material.CaptureRuntimeResource(device,effectiveShader);
     EraseStalePreparedRecordedDrawStaticBaseEntries(finalKey);
     auto [entry, inserted] = m_preparedRecordedDrawStaticBaseCache.emplace(finalKey, std::move(staticBase));
     if (inserted)
@@ -2273,7 +2279,7 @@ bool ABaseRenderer::PrepareRecordedDraw(
     const auto staticBase = ResolvePreparedRecordedDrawStaticBase(
         "overrides",
         p_drawable,
-        effectiveMaterial,
+        mesh->GetSkinningFrame()?*mesh->GetSkinningFrame()->ResolveMaterial(effectiveMaterial):effectiveMaterial,
         pipelineOverrides,
         depthCompareOverride,
         effectivePipelineState,
@@ -2374,6 +2380,7 @@ bool ABaseRenderer::QueueThreadedRecordedDraw(
     drawCommand.objectBindingSet = std::move(preparedDraw.objectBindingSet);
     drawCommand.passBindingSet = std::move(preparedDraw.passBindingSet);
     drawCommand.materialBindingSet = std::move(preparedDraw.materialBindingSet);
+    drawCommand.resourceOwner = std::move(preparedDraw.materialResourceOwner);
     drawCommand.mesh = std::move(preparedDraw.mesh);
     drawCommand.instanceCount = preparedDraw.instanceCount;
     drawCommand.vertexStart = preparedDraw.vertexStart;

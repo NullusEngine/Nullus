@@ -54,6 +54,7 @@ struct InspectorObjectReferencePickerConfig
     std::function<void()> ping;
     std::function<bool()> clear;
     std::function<std::vector<InspectorObjectReferencePickerItem>()> buildItems;
+    std::function<void()> open;
 };
 
 // Draws the engine-style object field shared by Inspector custom editors and

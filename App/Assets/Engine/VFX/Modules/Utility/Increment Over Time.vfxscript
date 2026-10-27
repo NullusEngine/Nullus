@@ -1,0 +1,171 @@
+{
+  "category": "Utility",
+  "deprecated": false,
+  "description": "Increases the bound value each frame by delta time times a user rate.",
+  "exposedVersion": "f1d95ffb-b2fc-9adf-401c-f38ad5ee3394",
+  "id": "72e7a9f5-fe31-e48b-c013-4f32f282e47c",
+  "kind": "Module",
+  "name": "Increment Over Time",
+  "suggested": false,
+  "version": 2,
+  "versions": [
+    {
+      "attributes": [
+        {
+          "default": [
+            0.0,
+            0.0,
+            0.0,
+            0.0
+          ],
+          "name": "Particles.IncrementCounter",
+          "type": 0
+        }
+      ],
+      "calls": [],
+      "capabilities": 0,
+      "description": "Increases the bound value each frame by delta time times a user rate.",
+      "graph": {
+        "id": "ae00e7c4-fa31-4e18-9b96-61580d149fdf",
+        "nextNodeId": 7,
+        "nodes": [
+          {
+            "id": 1,
+            "inputs": [],
+            "name": "Particles.IncrementCounter",
+            "operation": 1,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 0,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 2,
+            "inputs": [],
+            "name": "",
+            "operation": 3,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 0,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 3,
+            "inputs": [],
+            "name": "Module.Increment",
+            "operation": 2,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 0,
+            "value": [
+              1.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 4,
+            "inputs": [
+              2,
+              3
+            ],
+            "name": "",
+            "operation": 8,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 0,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 5,
+            "inputs": [
+              1,
+              4
+            ],
+            "name": "",
+            "operation": 6,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 0,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 6,
+            "inputs": [
+              5
+            ],
+            "name": "Particles.IncrementCounter",
+            "operation": 22,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 0,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          }
+        ],
+        "stage": 1
+      },
+      "id": "f1d95ffb-b2fc-9adf-401c-f38ad5ee3394",
+      "inputs": [
+        {
+          "default": [
+            1.0,
+            0.0,
+            0.0,
+            0.0
+          ],
+          "id": "e8d9c33f-ba5e-d51f-5d3c-b2988ea456ac",
+          "name": "Increment",
+          "static": false,
+          "type": 0
+        }
+      ],
+      "major": 1,
+      "minor": 0,
+      "provides": [],
+      "requiresBefore": [],
+      "stages": [
+        5
+      ],
+      "switches": []
+    }
+  ],
+  "visible": true
+}

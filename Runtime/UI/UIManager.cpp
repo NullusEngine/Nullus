@@ -589,7 +589,11 @@ bool UIManager::LoadFont(const std::string& p_id, const std::string& p_path, flo
 
         if (fontInstance)
         {
-            Icons::EnsureFontAwesomeIconFontLoaded(p_fontSize * m_uiScale, fontInstance);
+            if (m_fontIconCodepoints.empty())
+                Icons::EnsureFontAwesomeIconFontLoaded(p_fontSize * m_uiScale, fontInstance);
+            else
+                Icons::EnsureFontAwesomeIconFontLoaded(
+                    p_fontSize * m_uiScale, fontInstance, m_fontIconCodepoints);
             m_fonts.emplace(p_id, FontEntry{ p_path, p_fontSize, fontInstance });
             ImGui::GetIO().Fonts->Build();
             NotifyFontAtlasChanged();
@@ -598,6 +602,22 @@ bool UIManager::LoadFont(const std::string& p_id, const std::string& p_path, flo
     }
 
     return false;
+}
+
+void UIManager::SetFontIconCodepoints(std::vector<ImWchar> p_codepoints)
+{
+    std::sort(p_codepoints.begin(), p_codepoints.end());
+    p_codepoints.erase(std::unique(p_codepoints.begin(), p_codepoints.end()), p_codepoints.end());
+    p_codepoints.erase(
+        std::remove_if(p_codepoints.begin(), p_codepoints.end(), [](const ImWchar value) { return value == 0; }),
+        p_codepoints.end());
+
+    if (p_codepoints == m_fontIconCodepoints)
+        return;
+
+    m_fontIconCodepoints = std::move(p_codepoints);
+    if (!m_fonts.empty())
+        RebuildFonts();
 }
 
 bool UIManager::UnloadFont(const std::string& p_id)
@@ -853,6 +873,45 @@ void* UIManager::ResolveTextureId(const std::shared_ptr<NLS::Render::RHI::RHITex
     return nativeHandle.IsValid() ? nativeHandle.handle : nullptr;
 }
 
+NLS::Render::UI::UiTextureId UIManager::RegisterStaticTextureView(
+    const std::shared_ptr<NLS::Render::RHI::RHITextureView>& textureView)
+{
+    if (textureView == nullptr)
+        return {};
+
+    if (ShouldPublishUiSnapshotToFrameGraph())
+    {
+        if (auto* driver = NLS::Render::Context::TryGetLocatedDriver())
+        {
+            return NLS::Render::Context::DriverUIAccess::RegisterUiTextureView(
+                *driver,
+                textureView,
+                NLS::Render::UI::UiTextureSynchronizationScope::PreviousFrameOrStatic);
+        }
+    }
+
+    return {};
+}
+
+void UIManager::ReleaseStaticTextureView(
+    const std::shared_ptr<NLS::Render::RHI::RHITextureView>& textureView)
+{
+    if (textureView == nullptr)
+        return;
+
+    if (ShouldPublishUiSnapshotToFrameGraph())
+    {
+        if (auto* driver = NLS::Render::Context::TryGetLocatedDriver())
+        {
+            NLS::Render::Context::DriverUIAccess::ReleaseUiTextureView(*driver, textureView);
+            return;
+        }
+    }
+
+    if (m_uiBridge != nullptr)
+        m_uiBridge->ReleaseTextureViewHandle(textureView);
+}
+
 void UIManager::NotifySwapchainWillResize()
 {
     if (ShouldPublishUiSnapshotToFrameGraph())
@@ -966,7 +1025,13 @@ void UIManager::RebuildFonts()
     {
         font.instance = io.Fonts->AddFontFromFileTTF(font.path.c_str(), font.baseSize * m_uiScale);
         if (font.instance != nullptr)
-            Icons::EnsureFontAwesomeIconFontLoaded(font.baseSize * m_uiScale, font.instance);
+        {
+            if (m_fontIconCodepoints.empty())
+                Icons::EnsureFontAwesomeIconFontLoaded(font.baseSize * m_uiScale, font.instance);
+            else
+                Icons::EnsureFontAwesomeIconFontLoaded(
+                    font.baseSize * m_uiScale, font.instance, m_fontIconCodepoints);
+        }
     }
 
     if (!m_currentFontId.empty())

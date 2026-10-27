@@ -1,0 +1,1211 @@
+{
+  "category": "Constraints",
+  "deprecated": false,
+  "description": "Keeps the particle at the configured pendulum length and applies spring-driven correction.",
+  "exposedVersion": "f2bfc27a-e73c-9192-c96e-2b0dbd54628b",
+  "id": "88c598d4-189e-65de-3d09-f041f0fd887b",
+  "kind": "Module",
+  "name": "Pendulum Constraint",
+  "suggested": false,
+  "version": 4,
+  "versions": [
+    {
+      "attributes": [
+        {
+          "default": [
+            0.0,
+            0.0,
+            0.0,
+            0.0
+          ],
+          "name": "Particles.PendulumPivot",
+          "type": 2
+        },
+        {
+          "default": [
+            0.0,
+            -1.0,
+            0.0,
+            0.0
+          ],
+          "name": "Particles.PendulumRestAxis",
+          "type": 2
+        },
+        {
+          "default": [
+            1.0,
+            0.0,
+            0.0,
+            0.0
+          ],
+          "name": "Particles.PendulumLength",
+          "type": 0
+        },
+        {
+          "default": [
+            0.0,
+            0.0,
+            0.0,
+            0.0
+          ],
+          "name": "Particles.PendulumSpring",
+          "type": 0
+        },
+        {
+          "default": [
+            20.0,
+            0.0,
+            0.0,
+            0.0
+          ],
+          "name": "Particles.PendulumTightness",
+          "type": 0
+        }
+      ],
+      "calls": [],
+      "capabilities": 0,
+      "description": "Keeps the particle at the configured pendulum length and applies spring-driven correction.",
+      "graph": {
+        "id": "7a176ea2-4823-4a03-be50-6cec30e70de8",
+        "nextNodeId": 59,
+        "nodes": [
+          {
+            "id": 1,
+            "inputs": [],
+            "name": "Particles.Position",
+            "operation": 1,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 2,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 2,
+            "inputs": [],
+            "name": "Particles.Velocity",
+            "operation": 1,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 2,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 3,
+            "inputs": [],
+            "name": "Particles.PendulumPivot",
+            "operation": 1,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 2,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 4,
+            "inputs": [],
+            "name": "Particles.PendulumLength",
+            "operation": 1,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 0,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 5,
+            "inputs": [],
+            "name": "",
+            "operation": 0,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 0,
+            "value": [
+              9.999999974752427e-07,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 6,
+            "inputs": [
+              4,
+              5
+            ],
+            "name": "",
+            "operation": 11,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 0,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 7,
+            "inputs": [
+              1,
+              3
+            ],
+            "name": "",
+            "operation": 7,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 2,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 8,
+            "inputs": [
+              7
+            ],
+            "name": "",
+            "operation": 19,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 0,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 9,
+            "inputs": [],
+            "name": "",
+            "operation": 0,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 0,
+            "value": [
+              9.999999974752427e-07,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 10,
+            "inputs": [
+              8,
+              9
+            ],
+            "name": "",
+            "operation": 11,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 0,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 11,
+            "inputs": [
+              7,
+              10
+            ],
+            "name": "",
+            "operation": 9,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 2,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 12,
+            "inputs": [],
+            "name": "Particles.PendulumRestAxis",
+            "operation": 1,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 2,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 13,
+            "inputs": [
+              12
+            ],
+            "name": "",
+            "operation": 18,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 2,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 14,
+            "inputs": [
+              11,
+              13
+            ],
+            "name": "",
+            "operation": 20,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 0,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 15,
+            "inputs": [],
+            "name": "",
+            "operation": 0,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 0,
+            "value": [
+              -1.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 16,
+            "inputs": [],
+            "name": "",
+            "operation": 0,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 0,
+            "value": [
+              1.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 17,
+            "inputs": [
+              14,
+              15,
+              16
+            ],
+            "name": "",
+            "operation": 12,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 0,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 18,
+            "inputs": [],
+            "name": "Module.Angle Constraint",
+            "operation": 2,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 0,
+            "value": [
+              45.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 19,
+            "inputs": [],
+            "name": "",
+            "operation": 0,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 0,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 20,
+            "inputs": [],
+            "name": "",
+            "operation": 0,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 0,
+            "value": [
+              180.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 21,
+            "inputs": [
+              18,
+              19,
+              20
+            ],
+            "name": "",
+            "operation": 12,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 0,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 22,
+            "inputs": [],
+            "name": "",
+            "operation": 0,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 0,
+            "value": [
+              0.01745329238474369,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 23,
+            "inputs": [
+              21,
+              22
+            ],
+            "name": "",
+            "operation": 8,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 0,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 24,
+            "inputs": [
+              23
+            ],
+            "name": "",
+            "operation": 15,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 0,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 25,
+            "inputs": [],
+            "name": "",
+            "operation": 0,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 0,
+            "value": [
+              1.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 26,
+            "inputs": [
+              24,
+              24
+            ],
+            "name": "",
+            "operation": 8,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 0,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 27,
+            "inputs": [
+              25,
+              26
+            ],
+            "name": "",
+            "operation": 7,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 0,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 28,
+            "inputs": [],
+            "name": "",
+            "operation": 0,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 0,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 29,
+            "inputs": [
+              27,
+              28
+            ],
+            "name": "",
+            "operation": 11,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 0,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 30,
+            "inputs": [
+              29
+            ],
+            "name": "",
+            "operation": 17,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 0,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 31,
+            "inputs": [
+              13,
+              17
+            ],
+            "name": "",
+            "operation": 8,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 2,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 32,
+            "inputs": [
+              11,
+              31
+            ],
+            "name": "",
+            "operation": 7,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 2,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 33,
+            "inputs": [
+              32
+            ],
+            "name": "",
+            "operation": 18,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 2,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 34,
+            "inputs": [
+              13,
+              24
+            ],
+            "name": "",
+            "operation": 8,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 2,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 35,
+            "inputs": [
+              33,
+              30
+            ],
+            "name": "",
+            "operation": 8,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 2,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 36,
+            "inputs": [
+              34,
+              35
+            ],
+            "name": "",
+            "operation": 6,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 2,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 37,
+            "inputs": [
+              17,
+              24
+            ],
+            "name": "",
+            "operation": 27,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 5,
+            "value": false
+          },
+          {
+            "id": 38,
+            "inputs": [],
+            "name": "Module.Use Angle Constraint",
+            "operation": 2,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 0,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 39,
+            "inputs": [],
+            "name": "",
+            "operation": 0,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 0,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 40,
+            "inputs": [
+              38,
+              39
+            ],
+            "name": "",
+            "operation": 29,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 5,
+            "value": false
+          },
+          {
+            "id": 41,
+            "inputs": [
+              37,
+              36,
+              11
+            ],
+            "name": "",
+            "operation": 34,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 2,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 42,
+            "inputs": [
+              40,
+              41,
+              11
+            ],
+            "name": "",
+            "operation": 34,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 2,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 43,
+            "inputs": [
+              42,
+              6
+            ],
+            "name": "",
+            "operation": 8,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 2,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 44,
+            "inputs": [
+              3,
+              43
+            ],
+            "name": "",
+            "operation": 6,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 2,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 45,
+            "inputs": [],
+            "name": "Particles.PendulumSpring",
+            "operation": 1,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 0,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 46,
+            "inputs": [],
+            "name": "",
+            "operation": 0,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 0,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 47,
+            "inputs": [
+              45,
+              46
+            ],
+            "name": "",
+            "operation": 29,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 5,
+            "value": false
+          },
+          {
+            "id": 48,
+            "inputs": [
+              44,
+              1
+            ],
+            "name": "",
+            "operation": 7,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 2,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 49,
+            "inputs": [],
+            "name": "Particles.PendulumTightness",
+            "operation": 1,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 0,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 50,
+            "inputs": [],
+            "name": "",
+            "operation": 0,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 0,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 51,
+            "inputs": [
+              49,
+              50
+            ],
+            "name": "",
+            "operation": 11,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 0,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 52,
+            "inputs": [],
+            "name": "",
+            "operation": 3,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 0,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 53,
+            "inputs": [
+              51,
+              52
+            ],
+            "name": "",
+            "operation": 8,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 0,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 54,
+            "inputs": [
+              48,
+              53
+            ],
+            "name": "",
+            "operation": 8,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 2,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 55,
+            "inputs": [
+              2,
+              54
+            ],
+            "name": "",
+            "operation": 6,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 2,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 56,
+            "inputs": [
+              47,
+              55,
+              2
+            ],
+            "name": "",
+            "operation": 34,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 2,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 57,
+            "inputs": [
+              44
+            ],
+            "name": "Particles.Position",
+            "operation": 22,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 2,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 58,
+            "inputs": [
+              56
+            ],
+            "name": "Particles.Velocity",
+            "operation": 22,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 2,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          }
+        ],
+        "stage": 1
+      },
+      "id": "f2bfc27a-e73c-9192-c96e-2b0dbd54628b",
+      "inputs": [
+        {
+          "default": [
+            0.0,
+            0.0,
+            0.0,
+            0.0
+          ],
+          "id": "5ee333ef-4fb3-1b86-aa8a-44b1514779cd",
+          "metadata": {
+            "displayName": "",
+            "hasRange": false,
+            "maximum": 0.0,
+            "minimum": 0.0,
+            "step": 0.0,
+            "tooltip": "Limits the pendulum swing to the angle below.",
+            "unit": "",
+            "visibleIf": ""
+          },
+          "name": "Use Angle Constraint",
+          "static": false,
+          "type": 0
+        },
+        {
+          "default": [
+            45.0,
+            0.0,
+            0.0,
+            0.0
+          ],
+          "id": "fca4a828-044f-b08b-8be4-9585975d638c",
+          "metadata": {
+            "displayName": "",
+            "hasRange": true,
+            "maximum": 180.0,
+            "minimum": 0.0,
+            "step": 0.10000000149011612,
+            "tooltip": "Maximum swing angle from the rest axis.",
+            "unit": "deg",
+            "visibleIf": "Use Angle Constraint"
+          },
+          "name": "Angle Constraint",
+          "static": false,
+          "type": 0
+        }
+      ],
+      "major": 1,
+      "minor": 0,
+      "provides": [],
+      "requiresBefore": [],
+      "stages": [
+        5,
+        7
+      ],
+      "switches": []
+    }
+  ],
+  "visible": true
+}

@@ -4,6 +4,7 @@
 #include <string>
 #include <functional>
 #include <unordered_map>
+#include <vector>
 
 #include "UI/InfiniteDragCursorLease.h"
 #include "Rendering/RHI/Utils/RHIUIBridge.h"
@@ -79,6 +80,11 @@ public:
      * @param p_fontSize
      */
     bool LoadFont(const std::string& p_id, const std::string& p_path, float p_fontSize);
+
+    // Sets the FontAwesome codepoints the application wants merged into every
+    // UI font. Runtime/UI does not include editor headers; the editor registers
+    // the subset it actually uses. An empty list keeps the legacy full range.
+    void SetFontIconCodepoints(std::vector<ImWchar> p_codepoints);
 
     /**
      * Unload a font (Returns true on success)
@@ -183,6 +189,14 @@ public:
 
     NLS::Render::RHI::NativeHandle ResolveTextureView(const std::shared_ptr<NLS::Render::RHI::RHITextureView>& textureView);
     void* ResolveTextureId(const std::shared_ptr<NLS::Render::RHI::RHITextureView>& textureView);
+
+    // Registers a static texture view with the frame-graph UI texture registry
+    // and returns the engine-native, generation-carrying id used by the editor
+    // icon system. Returns an invalid id when the legacy ImGui backend path is
+    // active (the editor renders through the frame-graph overlay).
+    NLS::Render::UI::UiTextureId RegisterStaticTextureView(
+        const std::shared_ptr<NLS::Render::RHI::RHITextureView>& textureView);
+    void ReleaseStaticTextureView(const std::shared_ptr<NLS::Render::RHI::RHITextureView>& textureView);
     void NotifySwapchainWillResize();
     void ReleaseTextureViewHandle(const std::shared_ptr<NLS::Render::RHI::RHITextureView>& textureView);
     bool UsesFrameGraphOverlayRendering() const;
@@ -271,6 +285,7 @@ private:
     ImGuiPlatformBackend m_platformBackend = ImGuiPlatformBackend::GLFW;
     std::unique_ptr<NLS::Render::RHI::RHIUIBridge> m_uiBridge;
     std::unordered_map<std::string, FontEntry> m_fonts;
+    std::vector<ImWchar> m_fontIconCodepoints;
     std::string m_currentFontId;
     std::string m_layoutSaveFilename = "imgui.ini";
     EStyle m_currentStyle = EStyle::IM_DARK_STYLE;

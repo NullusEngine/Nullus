@@ -275,6 +275,10 @@ std::string InferResolvedAssetTypeFromPropertyContext(
         return "Mesh";
     if (TypeNameHasSuffix(object.typeName, "MeshRenderer") && propertyName == "materials")
         return "Material";
+    if (TypeNameHasSuffix(object.typeName, "ParticleSystemComponent") && propertyName == "system")
+        return "ParticleSystem";
+    if ((TypeNameHasSuffix(object.typeName,"AnimatorComponent")&&propertyName=="animation") ||
+        (TypeNameHasSuffix(object.typeName,"SkinnedMeshRenderer")&&propertyName=="mesh"))return "Animation";
     return {};
 }
 
@@ -292,6 +296,8 @@ std::string InferResolvedAssetType(const PrefabAssetReference& assetReference)
         return "Texture";
     if (path.rfind("shader:", 0) == 0)
         return "Shader";
+    if (path.rfind("vfx-system:", 0) == 0)
+        return "ParticleSystem";
     if (path.rfind("prefab:", 0) == 0)
         return "Prefab";
     return "Asset";
@@ -1306,6 +1312,11 @@ std::string PrefabResolvedAssetTypeForArtifactType(const NLS::Core::Assets::Arti
     case ArtifactType::Shader: return "Shader";
     case ArtifactType::Scene: return "Scene";
     case ArtifactType::Audio: return "Audio";
+    case ArtifactType::VfxSystem: return "ParticleSystem";
+    case ArtifactType::SkeletalMesh:
+    case ArtifactType::AnimationGraph:
+    case ArtifactType::BlendSpace:
+    case ArtifactType::BoneMask: return "Animation";
     case ArtifactType::Prefab:
     case ArtifactType::Unknown:
     case ArtifactType::Count:

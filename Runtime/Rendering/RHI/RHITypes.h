@@ -105,6 +105,7 @@ namespace NLS::Render::RHI
 		bool requiresAlignedTopLevelBlocks = false;
 		bool supportsUnalignedBlockTextures = false;
 		std::string diagnosticReason;
+        bool storageRead = false;
 	};
 
 	inline constexpr size_t TextureFormatToIndex(const TextureFormat format)
@@ -369,6 +370,11 @@ namespace NLS::Render::RHI
 		// deliberately separate from ParallelCommandTranslation: a backend can
 		// translate in parallel while still requiring a dedicated submit thread.
 		RhiTasksMode,
+			DrawIndirect,
+			DrawIndexedIndirect,
+			DispatchIndirect,
+			IndirectFirstInstance,
+            DistanceFields,
 		Count
 	};
 

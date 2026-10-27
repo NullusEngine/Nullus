@@ -366,6 +366,7 @@ namespace NLS::Engine::Serialize
                 }
             }
 
+            BindLocalObjectReferences(context);
             scene->AddGameObjects(sceneGameObjects);
 
             if (progressCallback)
@@ -716,6 +717,7 @@ namespace NLS::Engine::Serialize
                     "FixupInternalReferences",
                     Profiling::PerformanceStageThread::Main);
                 size_t parentFixupCount = 0u;
+                BindLocalObjectReferences(context);
                 if (compiledPlan != nullptr)
                 {
                     for (const auto& gameObjectPlan : compiledPlan->gameObjects)
@@ -2004,6 +2006,10 @@ namespace NLS::Engine::Serialize
 
                 if (policy &&
                     policy->deferAssetReferenceResolution &&
+                    // Animation components retain stable IDs themselves and
+                    // retry resolution during their scene animation update.
+                    // The mesh/material hint pass does not handle these IDs.
+                    field.GetType() != NLS_TYPEOF(PPtr<Assets::AnimationAsset>) &&
                     (ContainsAssetReference(property.value) || IsDeferredAssetProperty(record, property.name)))
                 {
                     continue;
@@ -2344,6 +2350,71 @@ namespace NLS::Engine::Serialize
             }
 
             return EngineObjectReferenceApplyResult::NotObjectReferenceField;
+        }
+
+        // Local references belong to this instantiation, never the global
+        // PersistentManager. Resolve after every component has been allocated
+        // so forward references and multiple instances of one prefab are safe.
+        template <typename T>
+        static void BindLocalObjectReferenceField(
+            NLS::meta::Variant& instance,
+            const NLS::meta::Field& field,
+            const PropertyValue& value,
+            const InstanceContext& context,
+            bool array)
+        {
+            auto resolve = [&context](const PropertyValue& item) -> PPtr<T>
+            {
+                if (item.GetKind() != PropertyValue::Kind::ObjectReference)
+                    return {};
+                const auto& reference = item.GetObjectReference();
+                if (reference.guid.IsValid())
+                    return PPtr<T>(PersistentManager::Instance().ObjectIdentifierToInstanceID(reference));
+                const auto id = context.document->ResolveObjectReference(reference);
+                if (!id)
+                    return {};
+                if constexpr (std::is_same_v<T, GameObject>)
+                {
+                    const auto found = context.gameObjects.find(*id);
+                    return found == context.gameObjects.end() ? PPtr<T>{} : PPtr<T>(found->second);
+                }
+                else
+                {
+                    const auto found = context.components.find(*id);
+                    return found == context.components.end() ? PPtr<T>{} : PPtr<T>(found->second);
+                }
+            };
+            if (array && value.GetKind() == PropertyValue::Kind::Array)
+            {
+                NLS::Array<PPtr<T>> references;
+                for (const auto& item : value.GetArray())
+                    references.push_back(resolve(item));
+                field.SetValue(instance, NLS::meta::Variant(references));
+            }
+            else if (!array && value.GetKind() == PropertyValue::Kind::ObjectReference)
+                field.SetValue(instance, NLS::meta::Variant(resolve(value)));
+        }
+
+        static void BindLocalObjectReferences(InstanceContext& context)
+        {
+            for (const auto& [component, record] : context.componentBindings)
+            {
+                auto instance = NLS::meta::Variant(component, NLS::meta::variant_policy::WrapObject{});
+                const auto type = component->GetType();
+                for (const auto& property : record->properties)
+                {
+                    const auto field = type.GetField(property.name);
+                    if (!field.IsValid() || field.IsReadOnly())
+                        continue;
+                    const auto fieldType = field.GetType();
+                    const bool array = fieldType.IsArray();
+                    const auto target = array ? fieldType.GetArrayType() : fieldType;
+                    if (target == NLS_TYPEOF(PPtr<GameObject>))
+                        BindLocalObjectReferenceField<GameObject>(instance, field, property.value, context, array);
+                    else if (target == NLS_TYPEOF(PPtr<Components::Component>))
+                        BindLocalObjectReferenceField<Components::Component>(instance, field, property.value, context, array);
+                }
+            }
         }
 
         static void ResolveRuntimeAssetReference(

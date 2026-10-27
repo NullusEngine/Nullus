@@ -145,7 +145,7 @@ constexpr uint32_t kPreparedPrefabSerializationFormatVersion = 1u;
 constexpr uint32_t kPreparedPrefabDependencyManifestVersion = 1u;
 constexpr size_t kMaxModelTextureMappingDependencyFingerprintCacheEntries = 512u;
 constexpr size_t kMaxModelTextureMappingArtifactDatabaseTextureIndexCacheEntries = 8u;
-constexpr uint32_t kPersistentModelTextureMappingArtifactDatabaseTextureIndexSchemaVersion = 1u;
+constexpr uint32_t kPersistentModelTextureMappingArtifactDatabaseTextureIndexSchemaVersion = 2u;
 constexpr uintmax_t kMaxPersistentModelTextureMappingArtifactDatabaseTextureIndexCacheBytes = 4u * 1024u * 1024u;
 constexpr size_t kMaxPersistentPreparedPrefabCacheEntries = 512u;
 constexpr uintmax_t kMaxPersistentPreparedPrefabCacheBytes = 256u * 1024u * 1024u;
@@ -246,11 +246,61 @@ std::string FileStamp(const std::filesystem::path& path)
     return std::to_string(size) + ":" + std::to_string(writeTimeTicks);
 }
 
+// A load validates hundreds of dependencies against one authoritative database
+// snapshot. Keep it scoped to the operation so a later reimport is always seen.
+struct PrefabArtifactDatabaseSnapshot
+{
+    std::optional<NLS::Core::Assets::ArtifactDatabase> database;
+    bool attempted = false;
+};
+
+thread_local PrefabArtifactDatabaseSnapshot* g_prefabArtifactDatabaseSnapshot = nullptr;
+
+class ScopedPrefabArtifactDatabaseSnapshot final
+{
+public:
+    ScopedPrefabArtifactDatabaseSnapshot()
+        : m_previous(g_prefabArtifactDatabaseSnapshot)
+    {
+        if (m_previous == nullptr)
+            g_prefabArtifactDatabaseSnapshot = &m_snapshot;
+    }
+
+    ~ScopedPrefabArtifactDatabaseSnapshot()
+    {
+        g_prefabArtifactDatabaseSnapshot = m_previous;
+    }
+
+private:
+    PrefabArtifactDatabaseSnapshot m_snapshot;
+    PrefabArtifactDatabaseSnapshot* m_previous;
+};
+
 std::optional<NLS::Core::Assets::ArtifactManifest> LoadArtifactManifestForSource(
     const std::filesystem::path& projectRoot,
     const NLS::Core::Assets::AssetId sourceAssetId,
     const std::string& targetPlatform = "editor")
 {
+    if (g_prefabArtifactDatabaseSnapshot != nullptr)
+    {
+        auto& snapshot = *g_prefabArtifactDatabaseSnapshot;
+        if (!snapshot.attempted)
+        {
+            snapshot.attempted = true;
+            NLS::Base::Profiling::PerformanceStageScope scope(
+                NLS::Base::Profiling::PerformanceStageDomain::Prefab,
+                "LoadPrefabArtifactDatabaseSnapshot",
+                NLS::Base::Profiling::PerformanceStageThread::Main);
+            const auto databasePath = GetProjectArtifactDatabasePath(projectRoot);
+            std::lock_guard databaseLock(GetProjectArtifactDatabaseManifestMutex(databasePath));
+            snapshot.database.emplace();
+            if (!snapshot.database->Load(databasePath))
+                snapshot.database.reset();
+        }
+        return snapshot.database.has_value()
+            ? snapshot.database->BuildManifestForSource(sourceAssetId, targetPlatform)
+            : std::nullopt;
+    }
     return LoadArtifactManifestFromProjectArtifactDB(projectRoot, sourceAssetId, targetPlatform);
 }
 
@@ -766,16 +816,19 @@ std::optional<ModelTextureAssetCandidate> BuildModelTextureMappingCandidateForEd
     candidate.rootIndex = 0u;
     candidate.nameQuery = nameQuery;
 
-    const auto manifest = LoadArtifactManifestForSource(projectRoot, meta->id);
+    const auto textureTargetPlatform = ResolveModelTextureBuildTargetPlatform(targetPlatform);
+    auto manifest = LoadArtifactManifestForSource(projectRoot, meta->id, textureTargetPlatform);
+    if (!manifest.has_value())
+        manifest = LoadArtifactManifestForSource(projectRoot, meta->id);
     if (manifest.has_value())
     {
         const auto exactTextureArtifact = std::find_if(
             manifest->subAssets.begin(),
             manifest->subAssets.end(),
-            [&targetPlatform](const NLS::Core::Assets::ImportedArtifact& artifact)
+            [&textureTargetPlatform](const NLS::Core::Assets::ImportedArtifact& artifact)
             {
                 return artifact.artifactType == NLS::Core::Assets::ArtifactType::Texture &&
-                    artifact.targetPlatform == targetPlatform;
+                    artifact.targetPlatform == textureTargetPlatform;
             });
         auto textureArtifact = exactTextureArtifact;
         if (textureArtifact == manifest->subAssets.end())
@@ -872,6 +925,7 @@ std::shared_ptr<const ModelTextureMappingArtifactDatabaseLookupIndex> BuildModel
     ++ModelTextureMappingDependencyArtifactDatabaseLoadCountForTestingStorage();
 #endif
 
+    const auto textureTargetPlatform = ResolveModelTextureBuildTargetPlatform(targetPlatform);
     std::unordered_map<std::string, const NLS::Core::Assets::ArtifactDatabaseRecord*> selectedTextureRecords;
     for (const auto& record : artifactDatabase.GetRecords())
     {
@@ -884,11 +938,11 @@ std::shared_ptr<const ModelTextureMappingArtifactDatabaseLookupIndex> BuildModel
         const auto selectionKey = record.sourceAssetId.ToString() + "\n" + record.subAssetKey;
         const auto selected = selectedTextureRecords.find(selectionKey);
         if (selected != selectedTextureRecords.end() &&
-            selected->second->targetPlatform == targetPlatform)
+            selected->second->targetPlatform == textureTargetPlatform)
         {
             continue;
         }
-        if (selected == selectedTextureRecords.end() || record.targetPlatform == targetPlatform)
+        if (selected == selectedTextureRecords.end() || record.targetPlatform == textureTargetPlatform)
             selectedTextureRecords[selectionKey] = &record;
     }
 
@@ -3014,7 +3068,7 @@ std::optional<NLS::Core::Assets::ArtifactManifest> LoadFastManifest(
     telemetry.path = GetProjectArtifactDatabasePath(projectRoot).generic_string();
     NLS::Core::Assets::RecordArtifactLoadTelemetry(telemetry);
 
-    return LoadArtifactManifestFromProjectArtifactDB(projectRoot, sourceAssetId);
+    return LoadArtifactManifestForSource(projectRoot, sourceAssetId);
 }
 
 std::vector<uint8_t> ReadAllBytes(const std::filesystem::path& path)
@@ -4001,6 +4055,7 @@ std::filesystem::path EditorAssetDragDropBridge::ProjectRoot() const
 std::optional<UnifiedPrefabLoadKey> EditorAssetDragDropBridge::BuildUnifiedPrefabLoadKey(
     const UnifiedPrefabLoadRequest& request) const
 {
+    const ScopedPrefabArtifactDatabaseSnapshot databaseSnapshot;
     const auto projectRoot = ProjectRoot();
     auto source = NormalizePrefabSourceIdentity(
         projectRoot,
@@ -4137,7 +4192,9 @@ bool EditorAssetDragDropBridge::IsImportedPrefabHotCacheKeyCurrent(
         UnifiedPrefabLoadMode::FinalDrop,
         UnifiedPrefabOwnerKind::SceneInstance,
         assetPath);
-    request.requiredReadiness = UnifiedPrefabReadiness::MeshMaterialTextureReady;
+    request.requiredReadiness = hotCacheKey.rendererArtifactReadinessRequired
+        ? UnifiedPrefabReadiness::MeshMaterialTextureReady
+        : UnifiedPrefabReadiness::PrefabGraphOnly;
     request.allowPending = false;
 
     const auto currentKey = BuildUnifiedPrefabLoadKey(request);
@@ -4194,6 +4251,7 @@ UnifiedPrefabLoadResult EditorAssetDragDropBridge::LoadUnifiedPrefab(
 UnifiedPrefabSharedLoadResult EditorAssetDragDropBridge::LoadUnifiedPrefabShared(
     const UnifiedPrefabLoadRequest& request) const
 {
+    const ScopedPrefabArtifactDatabaseSnapshot databaseSnapshot;
     const auto begin = std::chrono::steady_clock::now();
     UnifiedPrefabSharedLoadResult result;
 
@@ -4890,10 +4948,8 @@ EditorAssetDragDropBridgeResult EditorAssetDragDropBridge::DropImportedAssetHand
     if (assetPath.empty())
         return {};
 
-    bool attemptedReimport = false;
     auto reimportAsset = [&]() -> std::optional<EditorAssetDragDropBridgeResult>
     {
-        attemptedReimport = true;
         AssetImporterFacade importer(MakeProjectEditorAssetRoots(ProjectRoot()));
         const bool imported = progressTracker
             ? importer.SaveAndReimport(assetPath, *progressTracker)
@@ -4918,12 +4974,6 @@ EditorAssetDragDropBridgeResult EditorAssetDragDropBridge::DropImportedAssetHand
         return std::nullopt;
     };
 
-    if (payload.imported == 0u)
-    {
-        if (auto failure = reimportAsset(); failure.has_value())
-            return *failure;
-    }
-
     auto result = DropImportedAssetHandleIntoHierarchy(
         payload,
         scene,
@@ -4932,10 +4982,10 @@ EditorAssetDragDropBridgeResult EditorAssetDragDropBridge::DropImportedAssetHand
         parent,
         progressTracker);
     const auto shouldReimportAfterInitialDrop =
-        !attemptedReimport &&
         !result.dragDrop.diagnostics.empty() &&
         (result.dragDrop.diagnostics.front().code == "dragdrop-renderer-dependency-missing" ||
-         result.dragDrop.diagnostics.front().code == "dragdrop-asset-artifact-missing");
+         result.dragDrop.diagnostics.front().code == "dragdrop-asset-artifact-missing" ||
+         result.dragDrop.diagnostics.front().code == "dragdrop-asset-import-pending");
     if (shouldReimportAfterInitialDrop)
     {
         if (auto failure = reimportAsset(); failure.has_value())

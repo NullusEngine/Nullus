@@ -360,6 +360,11 @@ namespace NLS::Render::Backend
 			capabilities.SetFeature(RHIDeviceFeature::BackendReady, true);
 			capabilities.SetFeature(RHIDeviceFeature::Graphics, true);
 			capabilities.SetFeature(RHIDeviceFeature::Compute, true);
+            capabilities.SetFeature(RHIDeviceFeature::DistanceFields, true);
+				capabilities.SetFeature(RHIDeviceFeature::DrawIndirect, true);
+				capabilities.SetFeature(RHIDeviceFeature::DrawIndexedIndirect, true);
+				capabilities.SetFeature(RHIDeviceFeature::DispatchIndirect, true);
+				capabilities.SetFeature(RHIDeviceFeature::IndirectFirstInstance, true);
 			capabilities.SetFeature(
 				RHIDeviceFeature::AsyncCompute,
 				false,

@@ -4,17 +4,23 @@ The editor is both a consumer and a stress test of the UI system. This page cove
 
 ## UI Document Designer
 
-### Create a screen interface
+### Create and edit a screen interface
 
 Prerequisites: an editor built with `NLS_ENABLE_GAME_UI=ON` and an open, saved, runnable scene.
 
 1. Right-click in a project directory in the Asset Browser, choose `Create > UI Document`, and name it `HUD`. The editor creates a `.ui` file and opens UI Designer. Double-click the file to reopen it, or find the panel under `Window > UI Designer`.
-2. Select the root in the designer Hierarchy and click `Panel` under `Controls` to add a child. Set `Name` to `StatusPanel`, `Layout > Size` to `(320, 100)`, and `Style > Background` to an opaque color.
-3. Confirm that the panel appears in the preview. Click `Save` and check for `Saved`. `Undo` / `Redo` revert or restore design operations; `Reload` reads the document from disk.
-4. Create an empty scene object named `HUD` and add `UICanvasComponent` through the Inspector's component selector. Drag the `.ui` file onto `Document` and set `Render Mode` to `Screen Overlay`.
-5. Save the scene and enter Play. A colored panel should appear over the Game View. For text, add Text/Button, fill in `Text`, and configure a project font resource. For script control, give elements unique names and look them up through the Canvas API.
+2. Search or click a control in the Palette to create it as a child of the selected element. You can also drag a control onto the canvas to create and position it at the drop point.
+3. Drag an element on the canvas to change its `offsetMin`, and drag any of the eight handles to resize. Grid snapping and alignment guides are toggled in the toolbar. When the parent uses `Stack`, `Flex` or `Grid`, position is owned by the layout and the handles report that direct manipulation is unavailable.
+4. The Inspector edits the full layout record (anchors, pivot, offsets, size, min/max size, margin, padding, spacing, aspect ratio, flexGrow, grid columns, clipping), style (background/text color, opacity, visible/enabled/interactive) and content (text, password, font size). Fields are driven by an editor-side reflected view model, so they share the scene Inspector's property widgets and metadata; mixed fields across a multi-selection show `—` and edits apply to every selected element. The 3x3 anchor presets re-anchor without moving the current rect.
+5. The Hierarchy supports inline rename with `F2` / double-click, drag reorder and reparent (dropping into the dragged subtree is rejected), a row context menu (add, duplicate, delete, show/hide, ordering) and per-row visibility toggles.
+6. Shortcuts: `Del` delete, `Ctrl+D` duplicate, `Ctrl+C/V` copy/paste, arrow keys nudge 1px (`Shift` 10px), `F` frame all, `Shift+F` frame selection, `Ctrl+±` zoom, `Ctrl+0` 100%, `Ctrl+S` save, `Esc` cancel the active gesture.
+7. Saving writes the `.ui` document. Documents with warnings can be saved; validation errors disable saving. Clicking a row in Problems selects and frames the element. Closing, switching or reloading a dirty document asks Save / Discard / Cancel, and an external file change shows a Reload / Keep Local banner.
+8. Create an empty scene object named `HUD` and add `UICanvasComponent` through the Inspector's component selector. Drag the `.ui` file onto `Document` and set `Render Mode` to `Screen Overlay`.
+9. Save the scene and enter Play. The Game View shows the same layout as the designer canvas. For script control, give elements unique names and look them up through the Canvas API.
 
-The designer exposes names, text, layout mode/size/spacing, and background color. Controls do not yet cover every schema field; some styling and resource configuration still require JSON edits. Successful parsing establishes format validity; fonts, input, and final output still need target-backend runtime checks.
+The canvas preview uses the runtime `UIDocument` / `UIElement` layout engine: the instance is rebuilt when the document revision changes, and once the font atlas is uploaded it draws the same glyph quads as the Game View. Texture and font asset pickers and nine-slice borders remain follow-up work.
+
+Designer state (grid, snapping, guides, wireframe, hidden elements) lives under the `Editor/UI Designer` settings category.
 
 The editor provides a `UIDocumentDesigner` panel for opening and editing UI documents:
 

@@ -85,6 +85,10 @@ Inspector 由反射元数据驱动：字段类型决定控件，属性是否有 
 
 需要相应构建开关才能显示实时数据。启用方式与读数解释见[性能分析与图形调试](../quality/profiling.md)。
 
+### Icon Browser
+
+`Window > Icon Browser` 是开发调试窗口：按 ID/tag/alias 搜索，预览尺寸档位、交互状态与 Dark/Light 图标主题，过滤 Missing/Unused，查看纹理 generation 与加载诊断，并支持 `Reload editor icons` 热重载。运行时不读取 `Tools/Icons` manifest。
+
 ## 面板与脚本扩展
 
 项目内的编辑器脚本可以注册自定义 Inspector、工具窗口与菜单项，注册结果会出现在 `Window` 和 `Tools` 菜单下。写法见[编辑器脚本扩展](../architecture/editor-extensions.md)。

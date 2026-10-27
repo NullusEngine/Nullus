@@ -191,6 +191,14 @@ AssetHotReloadPolicy GetHotReloadPolicy(ArtifactType artifactType)
     case ArtifactType::Skin:
     case ArtifactType::AnimationClip:
     case ArtifactType::MorphTarget:
+    case ArtifactType::VfxSystem:
+    case ArtifactType::VfxScript:
+    case ArtifactType::VfxEmitter:
+    case ArtifactType::MeshDistanceField:
+    case ArtifactType::SkeletalMesh:
+    case ArtifactType::AnimationGraph:
+    case ArtifactType::BlendSpace:
+    case ArtifactType::BoneMask:
         return AssetHotReloadPolicy::MarkInstancesDirty;
     case ArtifactType::Scene:
     case ArtifactType::Audio:

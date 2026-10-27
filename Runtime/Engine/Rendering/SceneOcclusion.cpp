@@ -58,6 +58,7 @@ namespace NLS::Engine::Rendering
 			HashFloat(seed, record.modelBounds.size.x);
 			HashFloat(seed, record.modelBounds.size.y);
 			HashFloat(seed, record.modelBounds.size.z);
+            HashFloat(seed,record.maximumWorldDisplacement);
 			return ToNonZeroGeneration(seed);
 		}
 
@@ -149,7 +150,13 @@ namespace NLS::Engine::Rendering
 			if (!source.primitive.depthWriteEligible || input.viewportWidth == 0u || input.viewportHeight == 0u)
 				return std::nullopt;
 
-			const auto modelCorners = NLS::Render::Geometry::BuildBoundsCorners(source.modelBounds);
+                auto bounds=source.modelBounds;
+                auto matrix=source.worldMatrix;
+                if(source.maximumWorldDisplacement>0)
+                {bounds=NLS::Render::Geometry::TransformBounds(bounds,matrix);
+                    const auto padding=source.maximumWorldDisplacement*2.f;bounds.size+=Maths::Vector3(padding,padding,padding);
+                    matrix=Maths::Matrix4::Identity;}
+                const auto modelCorners = NLS::Render::Geometry::BuildBoundsCorners(bounds);
 
 			SceneOcclusionPrimitivePacket packet;
 			packet.screenMinX = std::numeric_limits<float>::max();
@@ -161,7 +168,7 @@ namespace NLS::Engine::Rendering
 
 			for (const auto& modelCorner : modelCorners)
 			{
-				const auto sample = NLS::Render::Geometry::TransformPoint(source.worldMatrix, modelCorner);
+                    const auto sample = NLS::Render::Geometry::TransformPoint(matrix, modelCorner);
 				float screenX = 0.0f;
 				float screenY = 0.0f;
 				float depth = 1.0f;
@@ -701,6 +708,7 @@ namespace NLS::Engine::Rendering
 			source.primitive.depthWriteEligibilityGeneration = HashDepthWriteEligibilityGeneration(record);
 			source.primitive.depthWriteEligible = true;
 			source.modelBounds = record.modelBounds;
+            source.maximumWorldDisplacement=record.maximumWorldDisplacement;
 			source.worldMatrix = record.worldMatrix;
 			result.sources.push_back(source);
 		}

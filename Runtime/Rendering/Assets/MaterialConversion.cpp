@@ -343,6 +343,13 @@ MaterialSamplerState ConvertSampler(const ImportedSceneTextureSampler& source)
 
 bool IsSupportedTextureEncoding(const ImportedSceneNamedRecord& texture)
 {
+    if (texture.embedded ||
+        texture.uri.rfind("data:", 0u) == 0u ||
+        (!texture.uri.empty() && texture.uri.front() == '*'))
+    {
+        return true;
+    }
+
     const auto mime = ToLower(texture.mimeType);
     if (mime.empty() || mime == "image/png" || mime == "image/jpeg" || mime == "image/jpg" || mime == "image/tga")
         return true;

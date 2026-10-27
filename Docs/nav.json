@@ -197,6 +197,13 @@
             "zh-CN": "图形后端与大场景特性",
             "en": "Graphics Backends and Large-Scene Features"
           }
+        },
+        {
+          "id": "distance-fields",
+          "title": {
+            "zh-CN": "距离场",
+            "en": "Distance Fields"
+          }
         }
       ]
     },
@@ -296,6 +303,20 @@
             "zh-CN": "动画现状与规划",
             "en": "Animation Status and Plans"
           }
+        },
+        {
+          "id": "workflow",
+          "title": {
+            "zh-CN": "动画制作工作流",
+            "en": "Animation Authoring Workflow"
+          }
+        },
+        {
+          "id": "validation",
+          "title": {
+            "zh-CN": "动画验证",
+            "en": "Animation Validation"
+          }
         }
       ]
     },
@@ -327,6 +348,13 @@
           "title": {
             "zh-CN": "音频与特效现状及规划",
             "en": "Audio and VFX Status and Plans"
+          }
+        },
+        {
+          "id": "particles",
+          "title": {
+            "zh-CN": "粒子制作工作流",
+            "en": "Particle Authoring Workflow"
           }
         }
       ]
@@ -366,6 +394,13 @@
           "title": {
             "zh-CN": "Game 运行时与资产清单",
             "en": "Game Runtime and Asset Manifests"
+          }
+        },
+        {
+          "id": "packaging",
+          "title": {
+            "zh-CN": "Player 打包与分发",
+            "en": "Player Packaging and Distribution"
           }
         }
       ]

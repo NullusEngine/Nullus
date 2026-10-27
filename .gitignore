@@ -1,6 +1,9 @@
 # CMake build directory
 [Bb]uild/
 Build*/
+# The packaging layer is source, not a build tree.
+!Runtime/Build/
+!Runtime/Build/**
 obj/
 out/
 *.o

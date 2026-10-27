@@ -1,0 +1,145 @@
+{
+  "version": 2,
+  "kind": "Function",
+  "id": "24a99397-2c47-4295-b30f-39fee821dd86",
+  "name": "Dynamic Iteration Weight",
+  "category": "Simulation Stages",
+  "description": "",
+  "visible": true,
+  "suggested": false,
+  "deprecated": false,
+  "exposedVersion": "68e86e7b-b425-4c0f-afa5-6737574aa486",
+  "versions": [
+    {
+      "id": "68e86e7b-b425-4c0f-afa5-6737574aa486",
+      "major": 1,
+      "minor": 0,
+      "description": "",
+      "stages": [
+        7
+      ],
+      "inputs": [],
+      "graph": {
+        "id": "a638ecca-8a64-469f-b623-4a19feb21de7",
+        "stage": 2,
+        "nextNodeId": 7,
+        "nodes": [
+          {
+            "id": 1,
+            "operation": 23,
+            "type": 0,
+            "inputs": [],
+            "name": "",
+            "value": [
+              0,
+              0,
+              0,
+              0
+            ],
+            "position": [
+              0,
+              0
+            ]
+          },
+          {
+            "id": 2,
+            "operation": 24,
+            "type": 0,
+            "inputs": [],
+            "name": "",
+            "value": [
+              0,
+              0,
+              0,
+              0
+            ],
+            "position": [
+              0,
+              140
+            ]
+          },
+          {
+            "id": 3,
+            "operation": 0,
+            "type": 0,
+            "inputs": [],
+            "name": "",
+            "value": [
+              1,
+              0,
+              0,
+              0
+            ],
+            "position": [
+              200,
+              220
+            ]
+          },
+          {
+            "id": 4,
+            "operation": 6,
+            "type": 0,
+            "inputs": [
+              1,
+              2
+            ],
+            "name": "",
+            "value": [
+              0,
+              0,
+              0,
+              0
+            ],
+            "position": [
+              220,
+              0
+            ]
+          },
+          {
+            "id": 5,
+            "operation": 6,
+            "type": 0,
+            "inputs": [
+              4,
+              3
+            ],
+            "name": "",
+            "value": [
+              0,
+              0,
+              0,
+              0
+            ],
+            "position": [
+              440,
+              0
+            ]
+          },
+          {
+            "id": 6,
+            "operation": 22,
+            "type": 0,
+            "inputs": [
+              5
+            ],
+            "name": "Output",
+            "value": [
+              0,
+              0,
+              0,
+              0
+            ],
+            "position": [
+              660,
+              0
+            ]
+          }
+        ]
+      },
+      "calls": [],
+      "switches": [],
+      "provides": [],
+      "requiresBefore": []
+    }
+  ]
+}

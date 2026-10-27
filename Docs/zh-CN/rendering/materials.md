@@ -132,11 +132,21 @@ Shader "Nullus/StandardPBR"
 
 ## 编辑器中的材质工作流
 
-- 在 Inspector 中选中材质资源即可编辑渲染状态、着色器与 uniform 参数；
-- 参数项由材质当前的 uniform 数据生成，不会出现着色器里不存在的手工项；
-- 改动即时生效并进入撤销栈；
-- 保存与重载是显式的资源动作；
-- Asset Browser 为材质提供 GPU 缩略图，可在 Asset View 中打开球体预览。
+从 Asset Browser 打开 `.mat`，在 Material Editor 中编辑材质参数和源依赖。`.shader` 使用 ShaderLab/HLSL 编辑区，`.shadergraph` 提供 Nodes 与 Source JSON。Asset View 提供独立预览。
+
+| 动作 | 结果 |
+| --- | --- |
+| 编辑参数或节点 | 更新 Working 文档并进入撤销历史；成功编译后可预览 |
+| Save / Save source | 写入源文件，更新 Saved 状态 |
+| `Compile` / `Compile / Preview` | 编译当前工作内容并检查诊断 |
+| Apply to Scene | 把成功编译的工作快照应用到场景，更新 Applied 状态 |
+| Save and Apply | 保存后应用；任一步失败都需要处理诊断 |
+| Revert Working | 丢弃工作修改，恢复保存内容 |
+| Publish resources | 对已应用材质发布资源产物 |
+
+Save 与 Apply 是独立动作：保存不表示场景已换用该版本，预览成功也不表示已保存。编译失败时保留上一份有效场景结果。
+
+参数来自目标变体的反射布局。ShaderGraph、ShaderLab、纹理和材质依赖随编译快照冻结，Cook 后 Player 消费已发布工件；不要用编辑器临时结果替代目标平台的编译和验证。
 
 ## ShaderLab 重载
 

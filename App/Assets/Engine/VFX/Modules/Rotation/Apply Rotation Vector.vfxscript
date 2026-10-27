@@ -1,0 +1,2046 @@
+{
+  "category": "Rotation",
+  "deprecated": false,
+  "description": "Converts an angular velocity into a quaternion and multiplies it into the mesh orientation.",
+  "exposedVersion": "a6df8c85-9587-0b90-54da-e5c239aaff23",
+  "id": "b05a5e4a-eabf-493c-81f1-e0c58a792e73",
+  "kind": "Module",
+  "name": "Apply Rotation Vector",
+  "suggested": false,
+  "version": 4,
+  "versions": [
+    {
+      "attributes": [
+        {
+          "default": [
+            0.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "name": "Particles.MeshOrientation",
+          "type": 3
+        }
+      ],
+      "calls": [],
+      "capabilities": 0,
+      "description": "Converts an angular velocity into a quaternion and multiplies it into the mesh orientation.",
+      "graph": {
+        "id": "790a60c9-c709-4767-ad9c-93b3b5a22415",
+        "nextNodeId": 105,
+        "nodes": [
+          {
+            "id": 1,
+            "inputs": [],
+            "name": "Module.Rotational Velocity",
+            "operation": 2,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 2,
+            "value": [
+              0.0,
+              90.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 2,
+            "inputs": [
+              1
+            ],
+            "name": "",
+            "operation": 19,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 0,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 3,
+            "inputs": [],
+            "name": "",
+            "operation": 0,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 0,
+            "value": [
+              9.999999974752427e-07,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 4,
+            "inputs": [
+              2,
+              3
+            ],
+            "name": "",
+            "operation": 29,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 5,
+            "value": false
+          },
+          {
+            "id": 5,
+            "inputs": [
+              1
+            ],
+            "name": "",
+            "operation": 18,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 2,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 6,
+            "inputs": [],
+            "name": "",
+            "operation": 3,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 0,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 7,
+            "inputs": [
+              2,
+              6
+            ],
+            "name": "",
+            "operation": 8,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 0,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 8,
+            "inputs": [],
+            "name": "",
+            "operation": 0,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 0,
+            "value": [
+              0.01745329238474369,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 9,
+            "inputs": [
+              7,
+              8
+            ],
+            "name": "",
+            "operation": 8,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 0,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 10,
+            "inputs": [],
+            "name": "",
+            "operation": 0,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 0,
+            "value": [
+              0.5,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 11,
+            "inputs": [
+              9,
+              10
+            ],
+            "name": "",
+            "operation": 8,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 0,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 12,
+            "inputs": [
+              11
+            ],
+            "name": "",
+            "operation": 14,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 0,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 13,
+            "inputs": [
+              11
+            ],
+            "name": "",
+            "operation": 15,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 0,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 14,
+            "inputs": [],
+            "name": "",
+            "operation": 0,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 2,
+            "value": [
+              0.0,
+              0.0,
+              1.0,
+              0.0
+            ]
+          },
+          {
+            "id": 15,
+            "inputs": [
+              5,
+              14
+            ],
+            "name": "",
+            "operation": 20,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 0,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 16,
+            "inputs": [
+              15,
+              12
+            ],
+            "name": "",
+            "operation": 8,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 0,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 17,
+            "inputs": [],
+            "name": "",
+            "operation": 0,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 2,
+            "value": [
+              0.0,
+              1.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 18,
+            "inputs": [
+              5,
+              17
+            ],
+            "name": "",
+            "operation": 20,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 0,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 19,
+            "inputs": [
+              18,
+              12
+            ],
+            "name": "",
+            "operation": 8,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 0,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 20,
+            "inputs": [],
+            "name": "",
+            "operation": 0,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 2,
+            "value": [
+              1.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 21,
+            "inputs": [
+              5,
+              20
+            ],
+            "name": "",
+            "operation": 20,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 0,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 22,
+            "inputs": [
+              21,
+              12
+            ],
+            "name": "",
+            "operation": 8,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 0,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 23,
+            "inputs": [],
+            "name": "",
+            "operation": 0,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 3,
+            "value": [
+              1.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 24,
+            "inputs": [
+              23,
+              22
+            ],
+            "name": "",
+            "operation": 8,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 3,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 25,
+            "inputs": [],
+            "name": "",
+            "operation": 0,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 3,
+            "value": [
+              0.0,
+              1.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 26,
+            "inputs": [
+              25,
+              19
+            ],
+            "name": "",
+            "operation": 8,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 3,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 27,
+            "inputs": [],
+            "name": "",
+            "operation": 0,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 3,
+            "value": [
+              0.0,
+              0.0,
+              1.0,
+              0.0
+            ]
+          },
+          {
+            "id": 28,
+            "inputs": [
+              27,
+              16
+            ],
+            "name": "",
+            "operation": 8,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 3,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 29,
+            "inputs": [],
+            "name": "",
+            "operation": 0,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 3,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ]
+          },
+          {
+            "id": 30,
+            "inputs": [
+              29,
+              13
+            ],
+            "name": "",
+            "operation": 8,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 3,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 31,
+            "inputs": [
+              28,
+              30
+            ],
+            "name": "",
+            "operation": 6,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 3,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 32,
+            "inputs": [
+              26,
+              31
+            ],
+            "name": "",
+            "operation": 6,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 3,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 33,
+            "inputs": [
+              24,
+              32
+            ],
+            "name": "",
+            "operation": 6,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 3,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 34,
+            "inputs": [],
+            "name": "",
+            "operation": 0,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 3,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ]
+          },
+          {
+            "id": 35,
+            "inputs": [],
+            "name": "Particles.MeshOrientation",
+            "operation": 1,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 3,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 36,
+            "inputs": [
+              4,
+              33,
+              34
+            ],
+            "name": "",
+            "operation": 34,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 3,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 37,
+            "inputs": [],
+            "name": "",
+            "operation": 0,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 3,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ]
+          },
+          {
+            "id": 38,
+            "inputs": [
+              36,
+              37
+            ],
+            "name": "",
+            "operation": 20,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 0,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 39,
+            "inputs": [],
+            "name": "",
+            "operation": 0,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 3,
+            "value": [
+              1.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 40,
+            "inputs": [
+              36,
+              39
+            ],
+            "name": "",
+            "operation": 20,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 0,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 41,
+            "inputs": [],
+            "name": "",
+            "operation": 0,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 3,
+            "value": [
+              0.0,
+              1.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 42,
+            "inputs": [
+              36,
+              41
+            ],
+            "name": "",
+            "operation": 20,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 0,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 43,
+            "inputs": [],
+            "name": "",
+            "operation": 0,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 3,
+            "value": [
+              0.0,
+              0.0,
+              1.0,
+              0.0
+            ]
+          },
+          {
+            "id": 44,
+            "inputs": [
+              36,
+              43
+            ],
+            "name": "",
+            "operation": 20,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 0,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 45,
+            "inputs": [],
+            "name": "",
+            "operation": 0,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 3,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ]
+          },
+          {
+            "id": 46,
+            "inputs": [
+              35,
+              45
+            ],
+            "name": "",
+            "operation": 20,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 0,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 47,
+            "inputs": [],
+            "name": "",
+            "operation": 0,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 3,
+            "value": [
+              1.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 48,
+            "inputs": [
+              35,
+              47
+            ],
+            "name": "",
+            "operation": 20,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 0,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 49,
+            "inputs": [],
+            "name": "",
+            "operation": 0,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 3,
+            "value": [
+              0.0,
+              1.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 50,
+            "inputs": [
+              35,
+              49
+            ],
+            "name": "",
+            "operation": 20,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 0,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 51,
+            "inputs": [],
+            "name": "",
+            "operation": 0,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 3,
+            "value": [
+              0.0,
+              0.0,
+              1.0,
+              0.0
+            ]
+          },
+          {
+            "id": 52,
+            "inputs": [
+              35,
+              51
+            ],
+            "name": "",
+            "operation": 20,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 0,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 53,
+            "inputs": [],
+            "name": "",
+            "operation": 0,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 0,
+            "value": [
+              -1.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 54,
+            "inputs": [
+              48,
+              53
+            ],
+            "name": "",
+            "operation": 8,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 0,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 55,
+            "inputs": [],
+            "name": "",
+            "operation": 0,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 0,
+            "value": [
+              -1.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 56,
+            "inputs": [
+              50,
+              55
+            ],
+            "name": "",
+            "operation": 8,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 0,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 57,
+            "inputs": [],
+            "name": "",
+            "operation": 0,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 0,
+            "value": [
+              -1.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 58,
+            "inputs": [
+              52,
+              57
+            ],
+            "name": "",
+            "operation": 8,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 0,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 59,
+            "inputs": [
+              38,
+              46
+            ],
+            "name": "",
+            "operation": 8,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 0,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 60,
+            "inputs": [
+              40,
+              54
+            ],
+            "name": "",
+            "operation": 8,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 0,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 61,
+            "inputs": [
+              42,
+              56
+            ],
+            "name": "",
+            "operation": 8,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 0,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 62,
+            "inputs": [
+              44,
+              58
+            ],
+            "name": "",
+            "operation": 8,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 0,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 63,
+            "inputs": [
+              59,
+              60
+            ],
+            "name": "",
+            "operation": 6,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 0,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 64,
+            "inputs": [
+              63,
+              61
+            ],
+            "name": "",
+            "operation": 6,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 0,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 65,
+            "inputs": [
+              64,
+              62
+            ],
+            "name": "",
+            "operation": 6,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 0,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 66,
+            "inputs": [],
+            "name": "",
+            "operation": 0,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 0,
+            "value": [
+              -1.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 67,
+            "inputs": [
+              48,
+              66
+            ],
+            "name": "",
+            "operation": 8,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 0,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 68,
+            "inputs": [
+              38,
+              52
+            ],
+            "name": "",
+            "operation": 8,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 0,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 69,
+            "inputs": [
+              44,
+              46
+            ],
+            "name": "",
+            "operation": 8,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 0,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 70,
+            "inputs": [
+              40,
+              50
+            ],
+            "name": "",
+            "operation": 8,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 0,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 71,
+            "inputs": [
+              42,
+              67
+            ],
+            "name": "",
+            "operation": 8,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 0,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 72,
+            "inputs": [
+              68,
+              69
+            ],
+            "name": "",
+            "operation": 6,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 0,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 73,
+            "inputs": [
+              72,
+              70
+            ],
+            "name": "",
+            "operation": 6,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 0,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 74,
+            "inputs": [
+              73,
+              71
+            ],
+            "name": "",
+            "operation": 6,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 0,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 75,
+            "inputs": [],
+            "name": "",
+            "operation": 0,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 0,
+            "value": [
+              -1.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 76,
+            "inputs": [
+              52,
+              75
+            ],
+            "name": "",
+            "operation": 8,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 0,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 77,
+            "inputs": [
+              38,
+              50
+            ],
+            "name": "",
+            "operation": 8,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 0,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 78,
+            "inputs": [
+              42,
+              46
+            ],
+            "name": "",
+            "operation": 8,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 0,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 79,
+            "inputs": [
+              44,
+              48
+            ],
+            "name": "",
+            "operation": 8,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 0,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 80,
+            "inputs": [
+              40,
+              76
+            ],
+            "name": "",
+            "operation": 8,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 0,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 81,
+            "inputs": [
+              77,
+              78
+            ],
+            "name": "",
+            "operation": 6,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 0,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 82,
+            "inputs": [
+              81,
+              79
+            ],
+            "name": "",
+            "operation": 6,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 0,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 83,
+            "inputs": [
+              82,
+              80
+            ],
+            "name": "",
+            "operation": 6,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 0,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 84,
+            "inputs": [],
+            "name": "",
+            "operation": 0,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 0,
+            "value": [
+              -1.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 85,
+            "inputs": [
+              50,
+              84
+            ],
+            "name": "",
+            "operation": 8,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 0,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 86,
+            "inputs": [
+              38,
+              48
+            ],
+            "name": "",
+            "operation": 8,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 0,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 87,
+            "inputs": [
+              40,
+              46
+            ],
+            "name": "",
+            "operation": 8,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 0,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 88,
+            "inputs": [
+              42,
+              52
+            ],
+            "name": "",
+            "operation": 8,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 0,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 89,
+            "inputs": [
+              44,
+              85
+            ],
+            "name": "",
+            "operation": 8,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 0,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 90,
+            "inputs": [
+              86,
+              87
+            ],
+            "name": "",
+            "operation": 6,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 0,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 91,
+            "inputs": [
+              90,
+              88
+            ],
+            "name": "",
+            "operation": 6,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 0,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 92,
+            "inputs": [
+              91,
+              89
+            ],
+            "name": "",
+            "operation": 6,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 0,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 93,
+            "inputs": [],
+            "name": "",
+            "operation": 0,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 3,
+            "value": [
+              1.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 94,
+            "inputs": [
+              93,
+              92
+            ],
+            "name": "",
+            "operation": 8,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 3,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 95,
+            "inputs": [],
+            "name": "",
+            "operation": 0,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 3,
+            "value": [
+              0.0,
+              1.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 96,
+            "inputs": [
+              95,
+              83
+            ],
+            "name": "",
+            "operation": 8,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 3,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 97,
+            "inputs": [],
+            "name": "",
+            "operation": 0,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 3,
+            "value": [
+              0.0,
+              0.0,
+              1.0,
+              0.0
+            ]
+          },
+          {
+            "id": 98,
+            "inputs": [
+              97,
+              74
+            ],
+            "name": "",
+            "operation": 8,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 3,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 99,
+            "inputs": [],
+            "name": "",
+            "operation": 0,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 3,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ]
+          },
+          {
+            "id": 100,
+            "inputs": [
+              99,
+              65
+            ],
+            "name": "",
+            "operation": 8,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 3,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 101,
+            "inputs": [
+              98,
+              100
+            ],
+            "name": "",
+            "operation": 6,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 3,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 102,
+            "inputs": [
+              96,
+              101
+            ],
+            "name": "",
+            "operation": 6,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 3,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 103,
+            "inputs": [
+              94,
+              102
+            ],
+            "name": "",
+            "operation": 6,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 3,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 104,
+            "inputs": [
+              103
+            ],
+            "name": "Particles.MeshOrientation",
+            "operation": 22,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 3,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          }
+        ],
+        "stage": 1
+      },
+      "id": "a6df8c85-9587-0b90-54da-e5c239aaff23",
+      "inputs": [
+        {
+          "default": [
+            0.0,
+            90.0,
+            0.0,
+            0.0
+          ],
+          "id": "2528a14d-5c02-d9ef-ec98-2badcc79b4dc",
+          "metadata": {
+            "displayName": "",
+            "hasRange": false,
+            "maximum": 0.0,
+            "minimum": 0.0,
+            "step": 0.0,
+            "tooltip": "Angular velocity converted into a mesh orientation delta.",
+            "unit": "deg/s",
+            "visibleIf": ""
+          },
+          "name": "Rotational Velocity",
+          "static": false,
+          "type": 2
+        }
+      ],
+      "major": 1,
+      "minor": 0,
+      "provides": [],
+      "requiresBefore": [],
+      "stages": [
+        5
+      ],
+      "switches": []
+    }
+  ],
+  "visible": true
+}

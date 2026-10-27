@@ -1364,11 +1364,22 @@ namespace NLS::Render::Context
             (void)Detail::RecordPendingTextureRuntimeUploads(impl, frameContext, commandBuffer);
 
             impl.uiOverlayRenderer.SetTextureRegistry(&impl.uiTextureRegistry);
+            const auto& backbufferView = frameContext.swapchainBackbufferView;
+            if (backbufferView == nullptr || backbufferView->GetTexture() == nullptr)
+            {
+                errorMessage = "UI overlay pass cannot resolve the acquired swapchain backbuffer";
+                return std::nullopt;
+            }
+            RHI::RHIRenderTargetLayoutDesc renderTargetLayout;
+            renderTargetLayout.colorFormats = { backbufferView->GetDesc().format };
+            renderTargetLayout.colorSpaces = { backbufferView->GetDesc().colorSpace };
+            renderTargetLayout.sampleCount = std::max(1u, backbufferView->GetTexture()->GetDesc().sampleCount);
             const auto prepareResult = impl.uiOverlayRenderer.PrepareFrameResources(
                 *impl.explicitDevice,
                 commandBuffer,
                 *passInput.uiDrawDataSnapshot,
-                frameContextIndex);
+                frameContextIndex,
+                renderTargetLayout);
             if (!prepareResult.success)
             {
                 errorMessage = prepareResult.message.empty()
@@ -2787,6 +2798,9 @@ namespace NLS::Render::Context
                     }
                 }
             }
+            if (!recordablePassInput.computeDispatchInputs.empty())
+                recordedWorkUnit.recordedComputeDispatchCount += Detail::RecordComputeDispatches(
+                    *commandBuffer,recordablePassInput.computeDispatchInputs,true);
             if (!Detail::BeginPassCommandPlan(
                 *commandBuffer,
                 frameContext.swapchainBackbufferView,
@@ -3789,6 +3803,8 @@ namespace NLS::Render::Context
                     }
                 }
             }
+            if (!recordablePassInput.computeDispatchInputs.empty())
+                Detail::RecordComputeDispatches(*frameContext.commandBuffer,recordablePassInput.computeDispatchInputs,true);
             if (!Detail::BeginPassCommandPlan(
                 *frameContext.commandBuffer,
                 frameContext.swapchainBackbufferView,
@@ -5770,6 +5786,8 @@ namespace NLS::Render::Context
                             }
                         }
                     }
+                    if (!recordablePassInput.computeDispatchInputs.empty())
+                        Detail::RecordComputeDispatches(*frameContext.commandBuffer,recordablePassInput.computeDispatchInputs,true);
                     if (!Detail::BeginPassCommandPlan(
                         *frameContext.commandBuffer,
                         frameContext.swapchainBackbufferView,
@@ -6328,6 +6346,12 @@ namespace NLS::Render::Context
             recordingSucceeded &&
             submissionFrame.currentFrameQueueOperationFailureCount == 0u &&
             submissionFrame.deviceLostDetected == false;
+        if(submissionFrame.submittedSuccessfully)
+        {
+            for(const auto& command:renderScenePackage.recordedDrawCommands)if(command.mesh)command.mesh->NotifySubmitted(renderScenePackage.frameId);
+            for(const auto& pass:renderScenePackage.passCommandInputs)
+                for(const auto& command:pass.recordedDrawCommands)if(command.mesh)command.mesh->NotifySubmitted(renderScenePackage.frameId);
+        }
         BeginPostSubmitBufferReadbacks(
             impl,
             renderScenePackage,

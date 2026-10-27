@@ -1183,6 +1183,7 @@ TEST(UploadContextTests, DX12BackendUploadContextRecordsRealBackendWork)
         {
             RhiCommandListExecutor::Get().Shutdown(
                 RhiFlushFlags::Dispatch | RhiFlushFlags::Translate | RhiFlushFlags::Submit, this);
+            RhiCommandListExecutor::Get().ResetForTesting();
         }
     } lane;
     auto& executor = RhiCommandListExecutor::Get();

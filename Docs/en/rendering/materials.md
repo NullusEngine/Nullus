@@ -132,11 +132,21 @@ New shaders should reuse these headers rather than copying implementations.
 
 ## Material workflow in the editor
 
-- Selecting a material asset in the Inspector edits render state, shader, and uniform parameters.
-- Parameter rows come from the material's current uniform data, so no hand-written entries can drift from the shader.
-- Changes take effect immediately and enter the undo stack.
-- Saving and reloading are explicit resource actions.
-- The Asset Browser provides GPU thumbnails, and a sphere preview opens in the Asset View.
+Open a `.mat` from the Asset Browser and edit its parameters and source dependencies in Material Editor. A `.shader` uses the ShaderLab/HLSL editor; a `.shadergraph` exposes Nodes and Source JSON. Asset View provides a separate preview.
+
+| Action | Result |
+| --- | --- |
+| Edit parameters or nodes | Change the Working document and undo history; successful compilation provides a preview |
+| Save / Save source | Write source and update Saved state |
+| `Compile` / `Compile / Preview` | Compile the working content and report diagnostics |
+| Apply to Scene | Publish the successfully compiled snapshot to the scene and update Applied state |
+| Save and Apply | Save, then apply; handle diagnostics from either step |
+| Revert Working | Discard working changes and restore saved content |
+| Publish resources | Publish resource artifacts for an applied material |
+
+Save and Apply are separate: saving does not mean the scene uses that version, and a successful preview is not a saved document. Compilation failure retains the previous valid scene result.
+
+Parameter rows come from the target variant's reflected layout. ShaderGraph, ShaderLab, texture, and material dependencies are frozen in compilation snapshots. The cooked Player consumes published artifacts; temporary editor results do not replace target compilation and validation.
 
 ## ShaderLab reload
 

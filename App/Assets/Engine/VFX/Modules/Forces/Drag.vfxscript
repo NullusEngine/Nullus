@@ -1,0 +1,182 @@
+{
+  "category": "Forces",
+  "deprecated": false,
+  "description": "Accumulates linear drag for the force solver.",
+  "exposedVersion": "ba8ec550-2809-4ba5-b93c-36972a4ae488",
+  "id": "33e0c226-07f1-5691-67f9-d0a46cb6f5d0",
+  "kind": "Module",
+  "name": "Drag",
+  "suggested": false,
+  "version": 2,
+  "versions": [
+    {
+      "attributes": [
+        {
+          "default": [
+            0.0,
+            0.0,
+            0.0,
+            0.0
+          ],
+          "name": "Particles.PhysicsDrag",
+          "type": 0
+        }
+      ],
+      "calls": [],
+      "capabilities": 0,
+      "description": "Accumulates linear drag for the force solver.",
+      "graph": {
+        "id": "db8eea09-6806-4993-ac0d-5eb97dc06af0",
+        "nextNodeId": 7,
+        "nodes": [
+          {
+            "id": 1,
+            "inputs": [],
+            "name": "Module.Drag",
+            "operation": 2,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 0,
+            "value": [
+              0.10000000149011612,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 2,
+            "inputs": [],
+            "name": "",
+            "operation": 0,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 0,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 3,
+            "inputs": [
+              1,
+              2
+            ],
+            "name": "",
+            "operation": 11,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 0,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 4,
+            "inputs": [],
+            "name": "Particles.PhysicsDrag",
+            "operation": 1,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 0,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 5,
+            "inputs": [
+              4,
+              3
+            ],
+            "name": "",
+            "operation": 6,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 0,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 6,
+            "inputs": [
+              5
+            ],
+            "name": "Particles.PhysicsDrag",
+            "operation": 22,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 0,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          }
+        ],
+        "stage": 1
+      },
+      "id": "ba8ec550-2809-4ba5-b93c-36972a4ae488",
+      "inputs": [
+        {
+          "default": [
+            0.10000000149011612,
+            0.0,
+            0.0,
+            0.0
+          ],
+          "id": "a2a62406-bc6e-ff16-bfa6-2c7538c6e5d9",
+          "metadata": {
+            "displayName": "",
+            "hasRange": true,
+            "maximum": 1000.0,
+            "minimum": 0.0,
+            "step": 0.009999999776482582,
+            "tooltip": "Linear drag applied by the force solver.",
+            "unit": "1/s",
+            "visibleIf": ""
+          },
+          "name": "Drag",
+          "static": false,
+          "type": 0
+        }
+      ],
+      "major": 1,
+      "minor": 0,
+      "provides": [],
+      "requiresBefore": [],
+      "stages": [
+        5,
+        7
+      ],
+      "switches": []
+    }
+  ],
+  "visible": true
+}

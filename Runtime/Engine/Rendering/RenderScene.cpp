@@ -32,6 +32,8 @@
 #include "Rendering/Data/DrawableInstanceCount.h"
 #include "Rendering/Data/ObjectDataLimits.h"
 #include "Rendering/Resources/Material.h"
+#include "Rendering/Resources/MaterialInstance.h"
+#include "Rendering/Resources/TextureCube.h"
 #include "Rendering/Resources/Mesh.h"
 #include "Rendering/Resources/Shader.h"
 #include "Rendering/Resources/Texture2D.h"
@@ -49,6 +51,12 @@ namespace NLS::Engine::Rendering
 {
 	namespace
 	{
+        float MaterialWorldDisplacement(const NLS::Render::Resources::Material* material)
+        {
+            const auto* shader=material?material->GetShader():nullptr;
+            const auto contract=shader?shader->GetMaterialInterface():nullptr;
+            return contract && contract->usesWorldPositionOffset?contract->maximumWorldDisplacement:0.f;
+        }
 		uint64_t MakeSceneProxyKey(const SceneProxyHandle handle)
 		{
 			return (static_cast<uint64_t>(handle.index) << 32u) |
@@ -400,12 +408,16 @@ namespace
 				continue;
 
 			const auto* parameter = material.GetParameterBlock().TryGet(uniformName);
+            if(parameter && parameter->type()==typeid(NLS::Render::Resources::TextureCube*))
+            {const auto* cube=std::any_cast<NLS::Render::Resources::TextureCube*>(*parameter);
+                if(!cube || !cube->GetTextureHandle())return false;continue;}
 			if (parameter == nullptr || parameter->type() != typeid(NLS::Render::Resources::Texture2D*))
 				return false;
 
 			const auto* boundTexture = std::any_cast<NLS::Render::Resources::Texture2D*>(*parameter);
 			if (boundTexture == nullptr || boundTexture->GetTextureHandle() == nullptr)
 				return false;
+            if(texturePath=="white" || texturePath=="black" || texturePath=="bump")continue;
 
 			if (textureManager != nullptr)
 			{
@@ -441,15 +453,26 @@ namespace
 	{
 		// Binding may change the resolved-texture state, so the per-frame memo must be dropped.
 		cache.declaredTexturesResolvedByMaterial.erase(&material);
-		if (!NLS::Core::ServiceLocator::Contains<NLS::Core::ResourceManagement::TextureManager>())
-			return false;
-
 		bool boundAny = false;
-		auto& textureManager = NLS_SERVICE(NLS::Core::ResourceManagement::TextureManager);
 		for (const auto& [uniformName, texturePath] : material.GetTextureResourcePaths())
 		{
 			if (texturePath.empty())
 				continue;
+            const auto* existing=material.GetParameterBlock().TryGet(uniformName);
+            if((texturePath=="white" || texturePath=="black" || texturePath=="bump") && existing && existing->type()==typeid(NLS::Render::Resources::Texture2D*))
+            {const auto* texture=std::any_cast<NLS::Render::Resources::Texture2D*>(*existing);
+                if(!texture || !texture->GetTextureHandle())
+                {std::string error;boundAny|=NLS::Render::Resources::ApplyMaterialParameter(material,uniformName,texturePath,error);}
+                continue;}
+            if(existing && existing->type()==typeid(NLS::Render::Resources::TextureCube*))
+            {
+                const auto* cube=std::any_cast<NLS::Render::Resources::TextureCube*>(*existing);
+                if(!cube || !cube->GetTextureHandle())
+                {std::string error;boundAny|=NLS::Render::Resources::ApplyMaterialCubeTexture(material,uniformName,texturePath,error);}
+                continue;
+            }
+            if(!NLS::Core::ServiceLocator::Contains<NLS::Core::ResourceManagement::TextureManager>())continue;
+            auto& textureManager=NLS_SERVICE(NLS::Core::ResourceManagement::TextureManager);
 
 				auto* texture = FindCachedDeclaredTexture(textureManager, texturePath, cache, stats);
 				if (texture == nullptr || texture->GetTextureHandle() == nullptr)
@@ -1727,6 +1750,7 @@ bool RenderScene::SynchronizeProxyPrimitives(
 		const auto previousStamp = primitive.lastInputStamp;
 		const auto previousBounds = primitive.modelBoundingSphere;
 		const auto previousModelBounds = primitive.modelBounds;
+        const auto previousDisplacement=primitive.maximumWorldDisplacement;
 		const auto previousWorldMatrix = primitive.worldMatrix;
 		const auto previousUserMatrix = primitive.userMatrix;
 		const auto previousOwnerInstanceId = primitive.ownerInstanceId;
@@ -1756,6 +1780,8 @@ bool RenderScene::SynchronizeProxyPrimitives(
 			? payload.customBoundingSphere
 			: payload.modelBoundingSphere;
 		primitive.modelBounds = payload.modelBounds;
+        primitive.affectDistanceField = payload.affectDistanceField;
+        primitive.distanceFieldMostlyStatic = payload.distanceFieldMostlyStatic;
 		primitive.hasMeshBinding = payload.resources.mesh != nullptr;
 
 		if (previousOwnerInstanceId != NLS::InstanceID_None &&
@@ -1796,6 +1822,7 @@ bool RenderScene::SynchronizeProxyPrimitives(
 			? GetMeshLODRevisionDigestForSynchronization(*primitive.mesh)
 			: 0u;
 		stamp.material = payload.resources.material;
+        primitive.maximumWorldDisplacement=MaterialWorldDisplacement(stamp.material);
 		stamp.materialInstanceId = payload.resources.materialInstanceId;
 		stamp.requestedMaterialInstanceId = payload.resources.requestedMaterialInstanceId;
 		stamp.materialParameterRevision = payload.resources.materialParameterRevision;
@@ -1858,7 +1885,7 @@ bool RenderScene::SynchronizeProxyPrimitives(
 
 		const bool boundsChanged =
 			!AreSameBounds(previousBounds, primitive.modelBoundingSphere) ||
-			!AreSameBounds(previousModelBounds, primitive.modelBounds) ||
+			!AreSameBounds(previousModelBounds, primitive.modelBounds) || previousDisplacement!=primitive.maximumWorldDisplacement ||
 			!AreSameMatrix(previousWorldMatrix, primitive.worldMatrix) ||
 			!AreSameMatrix(previousUserMatrix, primitive.userMatrix);
 		const bool changed = newlyAdded || previousStamp != stamp || boundsChanged;
@@ -2343,7 +2370,7 @@ void RenderScene::AppendPickablePrimitiveDrawSourcesForHandles(
 				primitive.ownerInstanceId,
 				slot.command.mesh,
 				primitive.worldMatrix,
-				slot.command.stateMask
+					slot.command.stateMask,slot.command.material
 			});
 		}
 	}
@@ -2506,8 +2533,10 @@ void RenderScene::RebuildImportedHierarchyHLODRecords()
 			if (!IsPrimitiveHandleLive(child))
 				continue;
 			const auto& primitive = m_primitives[child.index];
-			const auto childWorldBounds =
+			auto childWorldBounds =
 				NLS::Render::Geometry::TransformBounds(primitive.modelBounds, primitive.worldMatrix);
+            const auto padding=primitive.maximumWorldDisplacement*2.f;
+            childWorldBounds.size+=Maths::Vector3(padding,padding,padding);
 			if (clusterWorldBounds.has_value())
 				clusterWorldBounds = NLS::Render::Geometry::UnionBounds(*clusterWorldBounds, childWorldBounds);
 			else
@@ -2685,10 +2714,13 @@ ScenePrimitiveSnapshot RenderScene::CreatePrimitiveSnapshot(const uint64_t frame
 		record.mesh = primitive.mesh;
 		record.modelBoundingSphere = primitive.modelBoundingSphere;
 		record.modelBounds = primitive.modelBounds;
+            record.maximumWorldDisplacement=primitive.maximumWorldDisplacement;
 		record.worldMatrix = primitive.worldMatrix;
 		record.ownerAlive = primitive.ownerAlive;
 		record.ownerActive = primitive.ownerActive;
 		record.userMatrix = primitive.userMatrix;
+        record.affectDistanceField = primitive.affectDistanceField;
+        record.distanceFieldMostlyStatic = primitive.distanceFieldMostlyStatic;
 		record.frustumBehaviour = primitive.frustumBehaviour;
 		record.visibilitySettings = primitive.visibilitySettings;
 		record.lodGroup = primitive.lodGroup;
@@ -2774,10 +2806,13 @@ ScenePrimitiveSnapshot RenderScene::CreatePrimitiveSnapshotForHandles(
 		record.mesh = primitive.mesh;
 		record.modelBoundingSphere = primitive.modelBoundingSphere;
 		record.modelBounds = primitive.modelBounds;
+            record.maximumWorldDisplacement=primitive.maximumWorldDisplacement;
 		record.worldMatrix = primitive.worldMatrix;
 		record.ownerAlive = primitive.ownerAlive;
 		record.ownerActive = primitive.ownerActive;
 		record.userMatrix = primitive.userMatrix;
+        record.affectDistanceField = primitive.affectDistanceField;
+        record.distanceFieldMostlyStatic = primitive.distanceFieldMostlyStatic;
 		record.frustumBehaviour = primitive.frustumBehaviour;
 		record.visibilitySettings = primitive.visibilitySettings;
 		record.lodGroup = primitive.lodGroup;
@@ -3027,6 +3062,7 @@ void RenderScene::SynchronizePrimitive(
 	const auto* previousMesh = primitive.mesh;
 	const auto previousBounds = primitive.modelBoundingSphere;
 	const auto previousModelBounds = primitive.modelBounds;
+    const auto previousDisplacement=primitive.maximumWorldDisplacement;
 	const auto previousWorldMatrix = primitive.worldMatrix;
 	const auto previousUserMatrix = primitive.userMatrix;
 	const auto previousFrustumBehaviour = primitive.frustumBehaviour;
@@ -3047,6 +3083,8 @@ void RenderScene::SynchronizePrimitive(
 		primitive.worldPosition = {};
 	}
 	primitive.userMatrix = meshRenderer->GetUserMatrix();
+    primitive.affectDistanceField = meshRenderer->GetAffectDistanceField();
+    primitive.distanceFieldMostlyStatic = meshRenderer->GetDistanceFieldMostlyStatic();
 	auto* meshFilter = primitive.owner != nullptr
 		? primitive.owner->GetComponent<Components::MeshFilter>()
 		: nullptr;
@@ -3098,6 +3136,8 @@ void RenderScene::SynchronizePrimitive(
 		MarkCommandOffsetTableDirty();
 	primitive.cachedCommands.resize(1u);
 	auto* material = ResolveMaterialForMesh(primitive, *primitive.mesh, options, stats, declaredTextureCache);
+    primitive.maximumWorldDisplacement=MaterialWorldDisplacement(material);
+    if(previousDisplacement!=primitive.maximumWorldDisplacement)++stats.boundsDirtyPrimitiveCount;
 	if (material == nullptr || !material->IsValid())
 	{
 		const bool wasValid = primitive.cachedCommands[0].valid;
@@ -3133,7 +3173,7 @@ void RenderScene::SynchronizePrimitive(
 		previousVisibilitySettings.minDrawDistance != primitive.visibilitySettings.minDrawDistance ||
 		previousVisibilitySettings.maxDrawDistance != primitive.visibilitySettings.maxDrawDistance ||
 		!AreSameBounds(previousBounds, primitive.modelBoundingSphere) ||
-		!AreSameBounds(previousModelBounds, primitive.modelBounds) ||
+		!AreSameBounds(previousModelBounds, primitive.modelBounds) || previousDisplacement!=primitive.maximumWorldDisplacement ||
 		!AreSameMatrix(previousWorldMatrix, primitive.worldMatrix) ||
 		!AreSameMatrix(previousUserMatrix, primitive.userMatrix) ||
 		commandInputChanged)
@@ -3405,9 +3445,10 @@ bool RenderScene::IsPrimitiveVisible(
 	if (primitive.frustumBehaviour == Components::MeshRenderer::EFrustumBehaviour::DISABLED)
 		return true;
 
-	return options.frustum->BoundsInFrustum(
-		primitive.modelBounds,
-		primitive.worldMatrix);
+        if(primitive.maximumWorldDisplacement<=0)return options.frustum->BoundsInFrustum(primitive.modelBounds,primitive.worldMatrix);
+        auto bounds=NLS::Render::Geometry::TransformBounds(primitive.modelBounds,primitive.worldMatrix);
+        const auto padding=primitive.maximumWorldDisplacement*2.f;bounds.size+=Maths::Vector3(padding,padding,padding);
+        return options.frustum->BoundsInFrustum(bounds,Maths::Matrix4::Identity);
 }
 
 bool RenderScene::IsMeshVisible(
@@ -3423,7 +3464,10 @@ bool RenderScene::IsMeshVisible(
 		return true;
 	}
 
-	return options.frustum->BoundsInFrustum(mesh.GetBounds(), primitive.worldMatrix);
+        if(primitive.maximumWorldDisplacement<=0)return options.frustum->BoundsInFrustum(mesh.GetBounds(),primitive.worldMatrix);
+        auto bounds=NLS::Render::Geometry::TransformBounds(mesh.GetBounds(),primitive.worldMatrix);
+        const auto padding=primitive.maximumWorldDisplacement*2.f;bounds.size+=Maths::Vector3(padding,padding,padding);
+        return options.frustum->BoundsInFrustum(bounds,Maths::Matrix4::Identity);
 }
 
 const std::vector<size_t>& RenderScene::GetMeshBaseIndices(uint64_t* touchedPrimitiveCount) const

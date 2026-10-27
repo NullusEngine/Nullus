@@ -1,0 +1,146 @@
+{
+  "category": "Beam",
+  "deprecated": false,
+  "description": "Sets the ribbon width along the beam using its link order.",
+  "exposedVersion": "91b24adb-e85d-d8cc-5f8d-8a7b4b1ff273",
+  "id": "2bfc5277-422d-6378-9c6f-0d5b5d8f8cf3",
+  "kind": "Module",
+  "name": "Beam Width",
+  "suggested": false,
+  "version": 2,
+  "versions": [
+    {
+      "attributes": [
+        {
+          "default": [
+            0.0,
+            0.0,
+            0.0,
+            0.0
+          ],
+          "name": "Particles.RibbonWidth",
+          "type": 0
+        }
+      ],
+      "calls": [],
+      "capabilities": 0,
+      "description": "Sets the ribbon width along the beam using its link order.",
+      "graph": {
+        "id": "5070ac37-b94a-4625-991c-0fc0e70069b1",
+        "nextNodeId": 5,
+        "nodes": [
+          {
+            "id": 1,
+            "inputs": [],
+            "name": "Module.Width",
+            "operation": 2,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 0,
+            "value": [
+              0.10000000149011612,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 2,
+            "inputs": [],
+            "name": "Module.Scale",
+            "operation": 2,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 0,
+            "value": [
+              1.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 3,
+            "inputs": [
+              1,
+              2
+            ],
+            "name": "",
+            "operation": 8,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 0,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 4,
+            "inputs": [
+              3
+            ],
+            "name": "Particles.RibbonWidth",
+            "operation": 22,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 0,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          }
+        ],
+        "stage": 1
+      },
+      "id": "91b24adb-e85d-d8cc-5f8d-8a7b4b1ff273",
+      "inputs": [
+        {
+          "default": [
+            0.10000000149011612,
+            0.0,
+            0.0,
+            0.0
+          ],
+          "id": "dc6b775d-0e05-778d-9e7a-eb15e18eaeaa",
+          "name": "Width",
+          "static": false,
+          "type": 0
+        },
+        {
+          "default": [
+            1.0,
+            0.0,
+            0.0,
+            0.0
+          ],
+          "id": "dab69454-cc33-e983-957d-ebb011d5b1cc",
+          "name": "Scale",
+          "static": false,
+          "type": 0
+        }
+      ],
+      "major": 1,
+      "minor": 0,
+      "provides": [],
+      "requiresBefore": [],
+      "stages": [
+        5
+      ],
+      "switches": []
+    }
+  ],
+  "visible": true
+}

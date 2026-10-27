@@ -6,6 +6,7 @@ nls_add_runtime_target(
   ${NLS_ThirdParty_DIR}/ImGui
   LIBS
   NLS_Core
+  NLS_AnimationCompiler
   NLS_Platform
   ImGui
   Autodesk::FbxSdk
@@ -16,6 +17,12 @@ nls_add_runtime_target(
   spirv-cross-util
   )
 
+target_sources(NLS_Render PRIVATE
+  Assets/MaterialAsset.cpp
+  Resources/MaterialParameterSchema.cpp
+  Resources/MaterialInstance.cpp
+  Resources/SpirvShaderReflection.cpp)
+
 if(TARGET AutodeskFbxSdkRuntime)
   add_dependencies(NLS_Render AutodeskFbxSdkRuntime)
 endif()
@@ -25,6 +32,7 @@ if(_nls_render_sources)
   set(_nls_static_mesh_build_sources
     "${CMAKE_CURRENT_SOURCE_DIR}/Assets/MeshReduction.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/Assets/StaticMeshBuilder.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/Assets/DistanceFieldBuilder.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/Assets/StaticMeshCookBuilder.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/Assets/StaticMeshLODSettings.cpp")
   list(REMOVE_ITEM _nls_render_sources ${_nls_static_mesh_build_sources})

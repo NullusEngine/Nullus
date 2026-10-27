@@ -1,0 +1,429 @@
+{
+  "category": "Location",
+  "deprecated": false,
+  "description": "Places the particle on a circle around a center point, in degrees.",
+  "exposedVersion": "6393d61a-d5e6-0da9-3e25-6357e5fee7b2",
+  "id": "73aee40d-764e-6b35-e9ef-f4862710b2e2",
+  "kind": "Module",
+  "name": "Rotate Around Point",
+  "suggested": false,
+  "version": 2,
+  "versions": [
+    {
+      "attributes": [],
+      "calls": [],
+      "capabilities": 0,
+      "description": "Places the particle on a circle around a center point, in degrees.",
+      "graph": {
+        "id": "5fc38a3b-9a89-458b-9712-500fdb48a655",
+        "nextNodeId": 20,
+        "nodes": [
+          {
+            "id": 1,
+            "inputs": [],
+            "name": "Module.Angle",
+            "operation": 2,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 0,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 2,
+            "inputs": [],
+            "name": "",
+            "operation": 0,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 0,
+            "value": [
+              0.01745329238474369,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 3,
+            "inputs": [
+              1,
+              2
+            ],
+            "name": "",
+            "operation": 8,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 0,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 4,
+            "inputs": [
+              3
+            ],
+            "name": "",
+            "operation": 14,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 0,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 5,
+            "inputs": [],
+            "name": "",
+            "operation": 0,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 0,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 6,
+            "inputs": [
+              3
+            ],
+            "name": "",
+            "operation": 15,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 0,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 7,
+            "inputs": [],
+            "name": "",
+            "operation": 0,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 2,
+            "value": [
+              1.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 8,
+            "inputs": [
+              7,
+              6
+            ],
+            "name": "",
+            "operation": 8,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 2,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 9,
+            "inputs": [],
+            "name": "",
+            "operation": 0,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 2,
+            "value": [
+              0.0,
+              1.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 10,
+            "inputs": [
+              9,
+              5
+            ],
+            "name": "",
+            "operation": 8,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 2,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 11,
+            "inputs": [],
+            "name": "",
+            "operation": 0,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 2,
+            "value": [
+              0.0,
+              0.0,
+              1.0,
+              0.0
+            ]
+          },
+          {
+            "id": 12,
+            "inputs": [
+              11,
+              4
+            ],
+            "name": "",
+            "operation": 8,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 2,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 13,
+            "inputs": [
+              10,
+              12
+            ],
+            "name": "",
+            "operation": 6,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 2,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 14,
+            "inputs": [
+              8,
+              13
+            ],
+            "name": "",
+            "operation": 6,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 2,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 15,
+            "inputs": [],
+            "name": "Module.Radius",
+            "operation": 2,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 0,
+            "value": [
+              1.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 16,
+            "inputs": [
+              14,
+              15
+            ],
+            "name": "",
+            "operation": 8,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 2,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 17,
+            "inputs": [],
+            "name": "Module.Center",
+            "operation": 2,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 2,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 18,
+            "inputs": [
+              17,
+              16
+            ],
+            "name": "",
+            "operation": 6,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 2,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 19,
+            "inputs": [
+              18
+            ],
+            "name": "Particles.Position",
+            "operation": 22,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 2,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          }
+        ],
+        "stage": 0
+      },
+      "id": "6393d61a-d5e6-0da9-3e25-6357e5fee7b2",
+      "inputs": [
+        {
+          "default": [
+            0.0,
+            0.0,
+            0.0,
+            0.0
+          ],
+          "id": "d1577b30-f10c-8691-6a19-986843411f7c",
+          "name": "Center",
+          "static": false,
+          "type": 2
+        },
+        {
+          "default": [
+            1.0,
+            0.0,
+            0.0,
+            0.0
+          ],
+          "id": "ee1a440b-5ca4-225e-2778-69b09978136b",
+          "name": "Radius",
+          "static": false,
+          "type": 0
+        },
+        {
+          "default": [
+            0.0,
+            0.0,
+            0.0,
+            0.0
+          ],
+          "id": "eaa42666-cf59-e74b-90a9-7c17e7be7eb0",
+          "name": "Angle",
+          "static": false,
+          "type": 0
+        }
+      ],
+      "major": 1,
+      "minor": 0,
+      "provides": [],
+      "requiresBefore": [
+        "Initialize Particle"
+      ],
+      "stages": [
+        4
+      ],
+      "switches": []
+    }
+  ],
+  "visible": true
+}

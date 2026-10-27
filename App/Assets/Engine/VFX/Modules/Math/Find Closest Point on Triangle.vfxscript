@@ -1,0 +1,310 @@
+{
+  "category": "Math",
+  "deprecated": false,
+  "description": "Writes how close the bound triangle's closest point is to the particle.",
+  "exposedVersion": "09617d8d-c62d-fa1a-03b4-7b6782deee63",
+  "id": "2352446f-d412-5eb6-2ed0-27e53c3154a3",
+  "kind": "Module",
+  "name": "Find Closest Point on Triangle",
+  "suggested": false,
+  "version": 2,
+  "versions": [
+    {
+      "attributes": [
+        {
+          "default": [
+            0.0,
+            0.0,
+            0.0,
+            0.0
+          ],
+          "name": "Particles.TriangleDistance",
+          "type": 0
+        }
+      ],
+      "calls": [],
+      "capabilities": 0,
+      "description": "Writes how close the bound triangle's closest point is to the particle.",
+      "graph": {
+        "id": "4b665e05-427e-4e7e-8a1d-0d231b06e697",
+        "nextNodeId": 13,
+        "nodes": [
+          {
+            "id": 1,
+            "inputs": [],
+            "name": "Module.Vertex A",
+            "operation": 2,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 2,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 2,
+            "inputs": [],
+            "name": "Module.Vertex B",
+            "operation": 2,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 2,
+            "value": [
+              1.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 3,
+            "inputs": [],
+            "name": "Module.Vertex C",
+            "operation": 2,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 2,
+            "value": [
+              0.0,
+              1.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 4,
+            "inputs": [
+              2,
+              1
+            ],
+            "name": "",
+            "operation": 7,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 2,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 5,
+            "inputs": [
+              3,
+              1
+            ],
+            "name": "",
+            "operation": 7,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 2,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 6,
+            "inputs": [
+              4,
+              5
+            ],
+            "name": "",
+            "operation": 21,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 2,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 7,
+            "inputs": [
+              6
+            ],
+            "name": "",
+            "operation": 18,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 2,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 8,
+            "inputs": [],
+            "name": "Particles.Position",
+            "operation": 1,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 2,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 9,
+            "inputs": [
+              8,
+              1
+            ],
+            "name": "",
+            "operation": 7,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 2,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 10,
+            "inputs": [
+              7,
+              9
+            ],
+            "name": "",
+            "operation": 20,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 0,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 11,
+            "inputs": [
+              10
+            ],
+            "name": "",
+            "operation": 16,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 0,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 12,
+            "inputs": [
+              11
+            ],
+            "name": "Particles.TriangleDistance",
+            "operation": 22,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 0,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          }
+        ],
+        "stage": 1
+      },
+      "id": "09617d8d-c62d-fa1a-03b4-7b6782deee63",
+      "inputs": [
+        {
+          "default": [
+            0.0,
+            0.0,
+            0.0,
+            0.0
+          ],
+          "id": "01ca26a9-e52b-9350-1773-39d67c82ef0f",
+          "name": "Vertex A",
+          "static": false,
+          "type": 2
+        },
+        {
+          "default": [
+            1.0,
+            0.0,
+            0.0,
+            0.0
+          ],
+          "id": "01ca29a9-e52b-9869-1773-3ad67c82f0c2",
+          "name": "Vertex B",
+          "static": false,
+          "type": 2
+        },
+        {
+          "default": [
+            0.0,
+            1.0,
+            0.0,
+            0.0
+          ],
+          "id": "01ca28a9-e52b-96b6-1773-3bd67c82f275",
+          "name": "Vertex C",
+          "static": false,
+          "type": 2
+        }
+      ],
+      "major": 1,
+      "minor": 0,
+      "provides": [],
+      "requiresBefore": [],
+      "stages": [
+        5
+      ],
+      "switches": []
+    }
+  ],
+  "visible": true
+}

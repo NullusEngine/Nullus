@@ -71,7 +71,9 @@ namespace NLS::Engine::Rendering
 
 		NLS::Render::Geometry::Bounds ExtractWorldBounds(const ScenePrimitiveSnapshotRecord& record)
 		{
-			return NLS::Render::Geometry::TransformBounds(record.modelBounds, record.worldMatrix);
+                auto bounds=NLS::Render::Geometry::TransformBounds(record.modelBounds, record.worldMatrix);
+                const auto padding=record.maximumWorldDisplacement*2.f;
+                bounds.size+=Maths::Vector3(padding,padding,padding);return bounds;
 		}
 
 		float DistanceToBounds(const Maths::Vector3& point, const NLS::Render::Geometry::Bounds& bounds)

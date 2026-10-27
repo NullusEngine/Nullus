@@ -44,6 +44,7 @@
 #include <Utils/PathParser.h>
 #include <Utils/String.h>
 #include <Utils/SystemCalls.h>
+#include <Platform/Process/Process.h>
 
 #include "Core/EditorActions.h"
 #include "Undo/EditorUndoService.h"
@@ -5577,7 +5578,7 @@ std::optional<std::string> Editor::Core::EditorActions::SelectBuildFolder()
     }
 }
 
-void Editor::Core::EditorActions::Build(bool p_autoRun, bool p_tempFolder)
+void Editor::Core::EditorActions::Build(bool p_autoRun, bool p_tempFolder, const std::string& p_profileId)
 {
     std::string destinationFolder;
 
@@ -5599,140 +5600,87 @@ void Editor::Core::EditorActions::Build(bool p_autoRun, bool p_tempFolder)
     else
         return; // Operation cancelled (No folder selected)
 
-    BuildAtLocation(m_context.projectSettings.Get<bool>("dev_build") ? "Development" : "Shipping", destinationFolder, p_autoRun);
+    BuildAtLocation("", destinationFolder, p_autoRun, p_profileId);
 }
 
-void Editor::Core::EditorActions::BuildAtLocation(const std::string& p_configuration, const std::string p_buildPath, bool p_autoRun)
+void Editor::Core::EditorActions::BuildAtLocation(
+    const std::string& p_configuration,
+    const std::string p_buildPath,
+    bool p_autoRun,
+    const std::string& p_profileId)
 {
-    std::string buildPath(p_buildPath);
-    std::string executableName = m_context.projectSettings.Get<std::string>("executable_name") + ".exe";
+    (void)p_configuration;
 
-    bool failed = false;
-
-    NLS_LOG_INFO("Preparing to build at location: \"" + buildPath + "\"");
-
-    std::filesystem::remove_all(buildPath);
-
-    if (std::filesystem::create_directory(buildPath))
+    // The packaging pipeline must see saved scenes and assets: a build that
+    // silently mixed an unsaved editor state with cooked content would ship
+    // something the user never saw. Persist first, then hand the project to
+    // NullusBuild so the editor and CI run the exact same code path.
+    if (!PromptSaveCurrentSceneIfDirty())
+        return;
+    if (m_context.sceneManager.HasUnsavedSceneChanges())
     {
-        NLS_LOG_INFO("Build directory created");
-
-        if (std::filesystem::create_directory(buildPath + "Data/"))
-        {
-            NLS_LOG_INFO("Data directory created");
-
-            if (std::filesystem::create_directory(buildPath + "Data/User/"))
-            {
-                NLS_LOG_INFO("Data/User directory created");
-
-                std::error_code err;
-
-                std::filesystem::copy(m_context.projectFilePath, buildPath + "Data/User/Game.ini", err);
-
-                if (!err)
-                {
-                    NLS_LOG_INFO("Data/User/Game.ini file generated");
-
-                    std::filesystem::copy(m_context.projectAssetsPath, buildPath + "Data/User/Assets/", std::filesystem::copy_options::recursive, err);
-
-                    if (!std::filesystem::exists(buildPath + "Data/User/Assets/" + (m_context.projectSettings.Get<std::string>("start_scene"))))
-                    {
-                        NLS_LOG_ERROR("Failed to find Start Scene at expected path. Verify your Project Setings.");
-                        Dialogs::MessageBox message("Build Failure", "An error occured during the building of your game.\nCheck the console for more information", Dialogs::MessageBox::EMessageType::ERROR, Dialogs::MessageBox::EButtonLayout::OK);
-                        std::filesystem::remove_all(buildPath);
-                        return;
-                    }
-
-                    if (!err)
-                    {
-                        NLS_LOG_INFO("Data/User/Assets/ directory copied");
-
-                        std::filesystem::copy(m_context.engineAssetsPath, buildPath + "Data/Engine/", std::filesystem::copy_options::recursive, err);
-
-                        if (!err)
-                        {
-                            NLS_LOG_INFO("Data/Engine/ directory copied");
-                        }
-                        else
-                        {
-                            NLS_LOG_INFO("Data/Engine/ directory failed to copy");
-                            failed = true;
-                        }
-                    }
-                    else
-                    {
-                        NLS_LOG_ERROR("Data/User/Assets/ directory failed to copy");
-                        failed = true;
-                    }
-                }
-                else
-                {
-                    NLS_LOG_ERROR("Data/User/Game.ini file failed to generate");
-                    failed = true;
-                }
-
-                std::string builderFolder = "Builder\\" + p_configuration + "\\";
-
-                if (std::filesystem::exists(builderFolder))
-                {
-                    std::error_code err;
-
-                    std::filesystem::copy(builderFolder, buildPath, err);
-
-                    if (!err)
-                    {
-                        NLS_LOG_INFO("Builder data (Dlls and executatble) copied");
-
-                        std::filesystem::rename(buildPath + "OvGame.exe", buildPath + executableName, err);
-
-                        if (!err)
-                        {
-                            NLS_LOG_INFO("Game executable renamed to " + executableName);
-
-                            if (p_autoRun)
-                            {
-                                std::string exePath = buildPath + executableName;
-                                NLS_LOG_INFO("Launching the game at location: \"" + exePath + "\"");
-                                if (std::filesystem::exists(exePath))
-                                    Platform::SystemCalls::OpenFile(exePath, buildPath);
-                                else
-                                {
-                                    NLS_LOG_INFO("Failed to start the game: Executable not found");
-                                    failed = true;
-                                }
-                            }
-                        }
-                        else
-                        {
-                            NLS_LOG_ERROR("Game executable failed to rename");
-                            failed = true;
-                        }
-                    }
-                    else
-                    {
-                        NLS_LOG_ERROR("Builder data (Dlls and executatble) failed to copy");
-                        failed = true;
-                    }
-                }
-                else
-                {
-                    const std::string buildConfiguration = p_configuration == "Development" ? "Debug" : "Release";
-                    NLS_LOG_ERROR("Builder folder for \"" + p_configuration + "\" not found. Verify you have compiled Engine source code in '" + buildConfiguration + "' configuration.");
-                    failed = true;
-                }
-            }
-        }
-    }
-    else
-    {
-        NLS_LOG_ERROR("Build directory failed to create");
-        failed = true;
+        Dialogs::MessageBox message(
+            "Build cancelled",
+            "The project still has unsaved changes. Save them before building.",
+            Dialogs::MessageBox::EMessageType::WARNING,
+            Dialogs::MessageBox::EButtonLayout::OK);
+        return;
     }
 
-    if (failed)
+    const auto nullusBuild = NLS::Platform::Process::FindExecutable("NullusBuild.exe");
+    if (!nullusBuild.has_value())
     {
-        std::filesystem::remove_all(buildPath);
-        Dialogs::MessageBox message("Build Failure", "An error occured during the building of your game.\nCheck the console for more information", Dialogs::MessageBox::EMessageType::ERROR, Dialogs::MessageBox::EButtonLayout::OK);
+        NLS_LOG_ERROR("NullusBuild.exe was not found next to the editor. Build the NullusBuild target first.");
+        Dialogs::MessageBox message(
+            "Build Failure",
+            "NullusBuild.exe was not found next to the editor.\n\nBuild the NullusBuild target before packaging.",
+            Dialogs::MessageBox::EMessageType::ERROR,
+            Dialogs::MessageBox::EButtonLayout::OK);
+        return;
+    }
+
+    std::vector<std::string> arguments {
+        "build",
+        "--project", m_context.projectFilePath,
+        "--output", p_buildPath};
+
+    const auto profile = p_profileId.empty()
+        ? m_context.projectSettings.GetOrDefault<std::string>("build_profile", std::string {})
+        : p_profileId;
+    if (!profile.empty())
+    {
+        arguments.push_back("--profile");
+        arguments.push_back(profile);
+    }
+
+    // Pass the editor executable's directory as the player template search
+    // root: the editor ships next to the same Game.exe it was built with.
+    const auto editorDirectory = NLS::Platform::Process::GetCurrentExecutablePath().parent_path();
+    arguments.push_back("--player");
+    arguments.push_back(editorDirectory.string());
+
+    NLS_LOG_INFO("Packaging with NullusBuild: " + nullusBuild->string());
+    const auto launch = NLS::Platform::Process::Launch(*nullusBuild, arguments);
+    if (!launch.success)
+    {
+        NLS_LOG_ERROR("NullusBuild failed to start: " + launch.errorMessage);
+        Dialogs::MessageBox message(
+            "Build Failure",
+            "NullusBuild could not be started:\n" + launch.errorMessage,
+            Dialogs::MessageBox::EMessageType::ERROR,
+            Dialogs::MessageBox::EButtonLayout::OK);
+        return;
+    }
+
+    NLS_LOG_INFO("NullusBuild started; follow the build report under the output directory for results.");
+
+    if (p_autoRun)
+    {
+        Dialogs::MessageBox message(
+            "Build started",
+            "Packaging runs in NullusBuild. Launch the game from the output directory once the build report says the build succeeded.",
+            Dialogs::MessageBox::EMessageType::INFORMATION,
+            Dialogs::MessageBox::EButtonLayout::OK);
     }
 }
 

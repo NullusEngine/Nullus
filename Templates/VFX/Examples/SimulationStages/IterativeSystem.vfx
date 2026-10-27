@@ -1,0 +1,235 @@
+{
+  "emitters": [
+    {
+      "id": "7f16c3b4-612f-4ecc-b0a6-4c36e3a48852",
+      "enabled": true,
+      "position": [
+        0,
+        0
+      ],
+      "stacks": [],
+      "parent": {
+        "asset": "66b73e5d-a8e8-4a31-b9c5-e8905221b35e",
+        "version": "b3ba8cfb-3dcb-483a-be87-3e5a057558d2"
+      },
+      "stackOverrides": [
+        {
+          "stack": "da141951-8541-4624-a62e-d44745037b30",
+          "iterations": 3,
+          "name": "Iterated Offset (Override)"
+        }
+      ]
+    }
+  ],
+  "id": "d41ec04a-d0f1-4b35-95b1-1860e412c4ee",
+  "kind": "System",
+  "name": "Iterative GPU System",
+  "parameters": [
+    {
+      "id": "43223487-c22c-4776-80fe-7812aa88e8ff",
+      "name": "User.Offset",
+      "type": 2,
+      "value": [
+        0.0015,
+        0,
+        0,
+        0
+      ]
+    }
+  ],
+  "runtime": {
+    "emitters": [
+      {
+        "attributes": [
+          {
+            "default": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ],
+            "name": "Particles.Position",
+            "type": 2
+          },
+          {
+            "default": [
+              0.0,
+              3.0,
+              0.0,
+              0.0
+            ],
+            "name": "Particles.Velocity",
+            "type": 2
+          },
+          {
+            "default": [
+              1.0,
+              0.5,
+              0.10000000149011612,
+              1.0
+            ],
+            "name": "Particles.Color",
+            "type": 3
+          },
+          {
+            "default": [
+              0.05000000074505806,
+              0.0,
+              0.0,
+              0.0
+            ],
+            "name": "Particles.Size",
+            "type": 0
+          },
+          {
+            "default": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ],
+            "name": "Particles.Age",
+            "type": 0
+          },
+          {
+            "default": [
+              2.0,
+              0.0,
+              0.0,
+              0.0
+            ],
+            "name": "Particles.Lifetime",
+            "type": 0
+          }
+        ],
+        "bursts": [],
+        "capacity": 256,
+        "collision": {
+          "enabled": false,
+          "friction": 0.0,
+          "layers": 4294967295,
+          "radius": 0.0,
+          "restitution": 0.5
+        },
+        "duration": 5.0,
+        "frustumCulling": true,
+        "id": "7f16c3b4-612f-4ecc-b0a6-4c36e3a48852",
+        "initialCapacity": 16,
+        "interpolatedSpawning": true,
+        "looping": true,
+        "mesh": {
+          "defaultOrientation": [
+            0.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "defaultScale": [
+            1.0,
+            1.0,
+            1.0,
+            0.0
+          ],
+          "lodIndex": -1,
+          "materials": [],
+          "meshIndexAttribute": "Particles.MeshIndex",
+          "meshes": [],
+          "orientationAttribute": "Particles.MeshOrientation",
+          "scaleAttribute": "Particles.Scale"
+        },
+        "name": "Iterative GPU Emitter",
+        "renderer": 0,
+        "seed": 1,
+        "simulationStages": [],
+        "sortByViewDepth": false,
+        "spawn": {
+          "id": "6d0fa6e8-e6c4-4919-aabe-c601b12b62ff",
+          "nextNodeId": 3,
+          "nodes": [],
+          "stage": 0
+        },
+        "spawnRate": 100.0,
+        "sprite": {
+          "alignment": 0,
+          "alphaCutoff": 0.3330000042915344,
+          "blend": 0,
+          "blendSubImages": false,
+          "circularMask": true,
+          "dynamicParameters": [
+            {
+              "attribute": "Particles.DynamicMaterialParameter",
+              "default": [
+                1.0,
+                1.0,
+                1.0,
+                1.0
+              ],
+              "fallbackParameter": ""
+            },
+            {
+              "attribute": "Particles.DynamicMaterialParameter1",
+              "default": [
+                1.0,
+                1.0,
+                1.0,
+                1.0
+              ],
+              "fallbackParameter": ""
+            },
+            {
+              "attribute": "Particles.DynamicMaterialParameter2",
+              "default": [
+                1.0,
+                1.0,
+                1.0,
+                1.0
+              ],
+              "fallbackParameter": ""
+            },
+            {
+              "attribute": "Particles.DynamicMaterialParameter3",
+              "default": [
+                1.0,
+                1.0,
+                1.0,
+                1.0
+              ],
+              "fallbackParameter": ""
+            }
+          ],
+          "emissive": 1.0,
+          "material": {
+            "guid": "",
+            "localId": 0
+          },
+          "materialParameters": [],
+          "softDistance": 0.0,
+          "subImagesX": 1,
+          "subImagesY": 1,
+          "texture": {
+            "guid": "",
+            "localId": 0
+          },
+          "tint": [
+            1.0,
+            1.0,
+            1.0,
+            1.0
+          ],
+          "useMaterialShader": false
+        },
+        "target": 1,
+        "update": {
+          "id": "8d0032ef-9b27-43a2-ba80-cf9c1640f054",
+          "nextNodeId": 7,
+          "nodes": [],
+          "stage": 1
+        }
+      }
+    ],
+    "id": "d41ec04a-d0f1-4b35-95b1-1860e412c4ee",
+    "name": "Iterative GPU System",
+    "version": 1
+  },
+  "version": 2
+}

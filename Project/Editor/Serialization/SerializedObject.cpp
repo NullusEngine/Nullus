@@ -271,12 +271,14 @@ struct SerializedObject::State
     std::vector<std::shared_ptr<Engine::Serialize::SerializedByteStream>> targetStreams;
     SerializedVersionStamp version;
     uint64_t generation = 0u;
+    uint64_t updateEpoch = 0u;
     uint64_t localStructureGeneration = 0u;
     SerializedInspectorMode inspectorMode = SerializedInspectorMode::Normal;
     size_t maxArraySizeForMultiEditing = 64u;
     bool valid = false;
     bool modified = false;
     std::unordered_set<std::string> modifiedPaths;
+    std::unordered_map<std::string,std::vector<std::shared_ptr<Engine::Serialize::SerializedByteStream>>> componentStreams;
     std::unordered_map<std::string, bool> expanded;
     // Structural array edits keep the array property itself usable while the
     // element handles that existed before the edit become stale. Full schema
@@ -444,7 +446,6 @@ bool AppendDefaultStreamValue(
     const Engine::Serialize::SerializedTypeTreeNode& node,
     std::vector<uint8_t>& output)
 {
-    const auto start = output.size();
     if (Engine::Serialize::HasSerializedNodeFlag(node.flags, SerializedNodeFlags::Array))
     {
         const uint32_t count = 0u;
@@ -473,88 +474,116 @@ bool AppendDefaultStreamValue(
     }
     if (Engine::Serialize::HasSerializedNodeFlag(node.flags, SerializedNodeFlags::Align4After))
     {
-        const auto length = output.size() - start;
-        const auto alignedLength = (length + 3u) & ~size_t {3u};
-        output.resize(start + alignedLength, 0u);
+        output.resize((output.size()+3u)&~size_t{3u},0u);
     }
     return true;
 }
 
-bool MutateStreamArray(
-    SerializedObject::State& state,
-    const SerializedPropertyPath& path,
-    const bool invalidateElements,
-    const std::function<bool(
-        std::vector<std::vector<uint8_t>>&,
-        const SerializedTypeTree&,
-        const SerializedTypeTreeNode&)>& operation)
+std::shared_ptr<SerializedByteStream> BuildStagedTargetStream(SerializedObject::State& state,size_t index);
+
+void StageTargetStreams(SerializedObject::State& state,const SerializedPropertyPath& path,
+    std::vector<std::shared_ptr<SerializedByteStream>> streams)
 {
-    if (state.stagedStream == nullptr || state.stagedStream->GetSchema() == nullptr)
-        return false;
-    const auto& tree = *state.stagedStream->GetSchema();
-    const auto arrayCursor = NativeSerializedStreamCodec::ResolveCursor(state.stagedStream, path.ToString());
-    if (!arrayCursor.has_value())
-        return false;
-    const auto* array = tree.FindNode(arrayCursor->GetNodeId());
-    const auto* element = array != nullptr ? tree.GetFirstChild(array->id) : nullptr;
-    if (array == nullptr || element == nullptr ||
-        !Engine::Serialize::HasSerializedNodeFlag(array->flags, SerializedNodeFlags::Array) ||
-        Engine::Serialize::HasSerializedNodeFlag(array->flags, SerializedNodeFlags::FixedBuffer))
-    {
-        return false;
-    }
+    std::string changedPath=path.ToString();
+    for(const auto& modified:state.modifiedPaths)
+        if(IsDescendant(path,PropertyPath(modified)) && modified.size()<changedPath.size()) changedPath=modified;
+    std::erase_if(state.componentStreams,[&](const auto& entry)
+    {return entry.first==changedPath || IsDescendant(PropertyPath(entry.first),PropertyPath(changedPath));});
+    state.stagedStream=CloneStream(streams.front());
+    state.componentStreams[changedPath]=std::move(streams);
+    std::erase_if(state.modifiedPaths,[&](const auto& item)
+    {return item!=changedPath && IsDescendant(PropertyPath(item),PropertyPath(changedPath));});
+    state.modifiedPaths.insert(changedPath);state.modified=true;
+}
 
-    uint32_t count = 0u;
-    if (!arrayCursor->Read(&count, sizeof(count)))
-        return false;
-    std::vector<std::vector<uint8_t>> elements;
-    elements.reserve(count);
-    for (uint32_t index = 0u; index < count; ++index)
-    {
-        const auto elementPath = path.ToString() + ".Array.data[" + std::to_string(index) + "]";
-        const auto cursor = NativeSerializedStreamCodec::ResolveCursor(state.stagedStream, elementPath);
-        if (!cursor.has_value())
-            return false;
-        std::vector<uint8_t> bytes(cursor->GetByteSize());
-        if (!cursor->Read(bytes.data(), bytes.size()))
-            return false;
-        elements.push_back(std::move(bytes));
-    }
-    const auto originalCount = elements.size();
-    if (!operation(elements, tree, *element) || elements.size() > std::numeric_limits<uint32_t>::max())
-        return false;
+struct ArrayElementBytes : std::vector<uint8_t>
+{
+    using std::vector<uint8_t>::vector;
+    size_t alignmentOrigin=0;
+};
 
-    std::vector<uint8_t> replacement;
-    replacement.reserve(arrayCursor->GetByteSize());
-    const auto replacementCount = static_cast<uint32_t>(elements.size());
-    const auto* countBytes = reinterpret_cast<const uint8_t*>(&replacementCount);
-    replacement.insert(replacement.end(), countBytes, countBytes + sizeof(replacementCount));
-    for (const auto& bytes : elements)
-        replacement.insert(replacement.end(), bytes.begin(), bytes.end());
-    if (Engine::Serialize::HasSerializedNodeFlag(array->flags, SerializedNodeFlags::Align4After))
-        replacement.resize((replacement.size() + 3u) & ~size_t {3u}, 0u);
-    if (!state.stagedStream->Replace(
-            arrayCursor->GetByteOffset(), arrayCursor->GetByteSize(), replacement))
+bool MutateArrayStream(std::shared_ptr<SerializedByteStream>& stream,const SerializedPropertyPath& path,
+    const std::function<bool(std::vector<ArrayElementBytes>&,const SerializedTypeTree&,const SerializedTypeTreeNode&)>& operation,
+    size_t& oldCount)
+{
+    if(!stream || !stream->GetSchema()) return false;
+    const auto& tree=*stream->GetSchema();
+    const auto arrayCursor=NativeSerializedStreamCodec::ResolveCursor(stream,path.ToString());
+    if(!arrayCursor) return false;
+    const auto* array=tree.FindNode(arrayCursor->GetNodeId());
+    const auto* element=array?tree.GetFirstChild(array->id):nullptr;
+    if(!array || !element || !Engine::Serialize::HasSerializedNodeFlag(array->flags,SerializedNodeFlags::Array) ||
+        Engine::Serialize::HasSerializedNodeFlag(array->flags,SerializedNodeFlags::FixedBuffer)) return false;
+    uint32_t count=0;if(!arrayCursor->Read(&count,sizeof(count))) return false;
+    oldCount=count;
+    std::vector<ArrayElementBytes> elements;elements.reserve(count);
+    size_t offset=arrayCursor->GetByteOffset()+sizeof(count);
+    for(uint32_t index=0;index<count;++index)
     {
-        return false;
+        const auto size=NativeSerializedStreamCodec::GetValueByteSize(*stream,element->id,offset);
+        if(!size) return false;
+        ArrayElementBytes bytes(*size);bytes.alignmentOrigin=offset;
+        if(*size) std::memcpy(bytes.data(),stream->GetBytes().data()+offset,*size);
+        offset+=*size;elements.push_back(std::move(bytes));
     }
-    if (invalidateElements || elements.size() != originalCount)
+    if(!operation(elements,tree,*element) || elements.size()>static_cast<size_t>(INT32_MAX)) return false;
+    const uint32_t newCount=static_cast<uint32_t>(elements.size());
+    std::vector<uint8_t> replacement;replacement.reserve(arrayCursor->GetByteSize());
+    const auto* sizeBytes=reinterpret_cast<const uint8_t*>(&newCount);replacement.insert(replacement.end(),sizeBytes,sizeBytes+sizeof(newCount));
+    for(const auto& bytes:elements)
     {
-        state.stagedStream->MarkDataChanged(false, true);
-        for (size_t index = 0u; index < originalCount; ++index)
-            state.stalePropertyPaths.insert(path.ToString() + ".Array.data[" + std::to_string(index) + "]");
-        state.localStructureGeneration = std::max(
-            state.localStructureGeneration,
-            state.version.structureGeneration) + 1u;
-        // Properties carry the structure generation observed at creation. Keep
-        // the owner stamp current while a staged array mutation is pending so
-        // pre-existing Array.data[n] cursors are rejected immediately, rather
-        // than only after the next Update()/Apply cycle.
-        state.version = ComputeVersion(state);
+        const size_t destination=arrayCursor->GetByteOffset()+replacement.size();
+        if((bytes.alignmentOrigin&3u)==(destination&3u)) replacement.insert(replacement.end(),bytes.begin(),bytes.end());
+        else
+        {
+            std::vector<uint8_t> repacked;
+            if(!NativeSerializedStreamCodec::RepackValueBytes(tree,element->id,bytes,bytes.alignmentOrigin,destination,repacked)) return false;
+            replacement.insert(replacement.end(),repacked.begin(),repacked.end());
+        }
     }
-    state.modifiedPaths.insert(path.ToString());
-    state.modified = true;
-    return true;
+    if(Engine::Serialize::HasSerializedNodeFlag(array->flags,SerializedNodeFlags::Align4After))
+        replacement.resize(((arrayCursor->GetByteOffset()+replacement.size()+3u)&~size_t{3u})-arrayCursor->GetByteOffset(),0);
+    return stream->Replace(arrayCursor->GetByteOffset(),arrayCursor->GetByteSize(),replacement);
+}
+
+void InvalidateArrayElements(SerializedObject::State& state,const SerializedPropertyPath& path,size_t oldCount)
+{
+    state.stagedStream->MarkDataChanged(false,true);
+    for(size_t index=0;index<oldCount;++index) state.stalePropertyPaths.insert(path.ToString()+".Array.data["+std::to_string(index)+"]");
+    state.localStructureGeneration=(std::max)(state.localStructureGeneration,state.version.structureGeneration)+1;
+    state.version=ComputeVersion(state);
+}
+
+bool MutateStreamArray(SerializedObject::State& state,const SerializedPropertyPath& path,const bool invalidateElements,
+    const std::function<bool(std::vector<ArrayElementBytes>&,const SerializedTypeTree&,const SerializedTypeTreeNode&)>& operation)
+{
+    std::vector<std::shared_ptr<SerializedByteStream>> streams;streams.reserve(state.targetStreams.size());
+    bool changed=false;size_t primaryCount=0;
+    for(size_t index=0;index<state.targetStreams.size();++index)
+    {
+        auto stream=BuildStagedTargetStream(state,index);const auto before=CloneStream(stream);size_t oldCount=0;
+        if(!MutateArrayStream(stream,path,operation,oldCount)) {state.lastError="Array operation is incompatible with one of the selected targets.";return false;}
+        if(index==0) primaryCount=oldCount;
+        changed|=!EquivalentStreams(before,stream);streams.push_back(std::move(stream));
+    }
+    if(!changed || streams.empty()) return false;
+    StageTargetStreams(state,path,std::move(streams));
+    if(invalidateElements) InvalidateArrayElements(state,path,primaryCount);
+    state.lastError.clear();return true;
+}
+
+std::shared_ptr<SerializedByteStream> BuildStagedTargetStream(SerializedObject::State& state,size_t index)
+{
+    if(index>=state.targetStreams.size()) return {};
+    auto stream=CloneStream(state.targetStreams[index]);
+    for(const auto& path:GetMinimalModifiedPaths(state))
+    {
+        const auto found=state.componentStreams.find(path.ToString());
+        const auto source=found!=state.componentStreams.end() && index<found->second.size()?found->second[index]:state.stagedStream;
+        std::string error;
+        if(!CopyStreamPath(source,stream,path,error)) {state.lastError=error;return {};}
+    }
+    return stream;
 }
 
 SerializedStreamChangeSet BuildStreamChangeSet(SerializedObject::State& state)
@@ -567,21 +596,8 @@ SerializedStreamChangeSet BuildStreamChangeSet(SerializedObject::State& state)
         const auto before = index < state.targetStreams.size()
             ? state.targetStreams[index]
             : std::shared_ptr<NLS::Engine::Serialize::SerializedByteStream> {};
-        auto after = CloneStream(before);
-        if (after != nullptr)
-        {
-            for (const auto& path : result.modifiedPaths)
-            {
-                std::string error;
-                if (!CopyStreamPath(state.stagedStream, after, path, error))
-                {
-                    state.lastError = error.empty()
-                        ? "Failed to copy the staged serialized property into every target."
-                        : std::move(error);
-                    return {};
-                }
-            }
-        }
+        auto after = BuildStagedTargetStream(state,index);
+        if(!after) return {};
         if (EquivalentStreams(before, after))
             continue;
 
@@ -955,6 +971,7 @@ void SerializedObject::Reset(
 
 void SerializedObject::Update()
 {
+    if(m_state) ++m_state->updateEpoch;
     if (!m_state || !m_state->valid)
         return;
     if (m_state->backend != nullptr)
@@ -989,6 +1006,7 @@ void SerializedObject::Update()
         m_state->stagedStream = m_state->targetStreams.empty() ? nullptr
             : CloneStream(m_state->targetStreams.front());
         m_state->modifiedPaths.clear();
+        m_state->componentStreams.clear();
         m_state->modified = false;
         m_state->version = ComputeVersion(*m_state);
         return;
@@ -1253,6 +1271,7 @@ bool SerializedObject::ApplyModifiedProperties()
         if (!m_state->lastError.empty())
             return false;
         m_state->modifiedPaths.clear();
+        m_state->componentStreams.clear();
         m_state->modified = false;
         return false;
     }
@@ -1300,6 +1319,7 @@ bool SerializedObject::ApplyModifiedPropertiesWithoutUndo()
         if (!m_state->lastError.empty())
             return false;
         m_state->modifiedPaths.clear();
+        m_state->componentStreams.clear();
         m_state->modified = false;
         return false;
     }
@@ -1322,6 +1342,7 @@ void SerializedObject::DiscardModifiedProperties()
     if (!m_state->targetStreams.empty())
         m_state->stagedStream = CloneStream(m_state->targetStreams.front());
     m_state->modifiedPaths.clear();
+        m_state->componentStreams.clear();
     m_state->modified = false;
 }
 
@@ -1583,6 +1604,18 @@ std::optional<meta::Variant> DecodeStreamValue(
     if (node == nullptr)
         return std::nullopt;
 
+    if(node->kind==Engine::Serialize::SerializedNodeKind::Boolean)
+    {
+        uint8_t value=0;
+        return cursor->Read(&value,sizeof(value))?std::optional<meta::Variant>(meta::Variant(value!=0)):std::nullopt;
+    }
+    if(node->kind==Engine::Serialize::SerializedNodeKind::Enum && node->typeId!=meta::InvalidTypeID)
+    {
+        const meta::Type type(node->typeId,Engine::Serialize::HasSerializedNodeFlag(node->flags,SerializedNodeFlags::Array));uint64_t bits=0;
+        if(type.IsEnum() && cursor->GetByteSize()<=sizeof(bits) && cursor->Read(&bits,cursor->GetByteSize()))
+            return type.GetEnum().FromBits(bits);
+    }
+
     // A cursor is the canonical source for scalar data. Besides avoiding a
     // needless one-node reflection round trip, this keeps hand-authored
     // TypeTrees (whose scalar typeId may intentionally be omitted) readable.
@@ -1619,7 +1652,7 @@ std::optional<meta::Variant> DecodeStreamValue(
     }
     if (node->typeId == meta::InvalidTypeID)
         return std::nullopt;
-    const meta::Type type(node->typeId);
+    const meta::Type type(node->typeId,Engine::Serialize::HasSerializedNodeFlag(node->flags,SerializedNodeFlags::Array));
     const auto schema = NativeSerializedStreamCodec::BuildTypeTree(type, {"value", false});
     if (schema == nullptr)
         return std::nullopt;
@@ -1648,6 +1681,14 @@ bool ReplaceStreamValue(
     if (node == nullptr)
     {
         return false;
+    }
+
+    if(node->kind == Engine::Serialize::SerializedNodeKind::Enum && value.GetType().IsEnum())
+    {
+        if(value.GetType() != meta::Type(node->typeId)) return false;
+        const auto bits=value.GetType().GetEnum().GetBits(value);
+        if(cursor->GetByteSize()>sizeof(bits)) return false;
+        return owner.stagedStream->Write(cursor->GetByteOffset(),&bits,cursor->GetByteSize());
     }
 
     // Scalar leaves are encoded directly by their TypeTree numeric layout.
@@ -1688,7 +1729,7 @@ bool ReplaceStreamValue(
         }
         return false;
     }
-    if (!IsCompatibleType(meta::Type(node->typeId), value.GetType()))
+    if (!IsCompatibleType(meta::Type(node->typeId,Engine::Serialize::HasSerializedNodeFlag(node->flags,SerializedNodeFlags::Array)), value.GetType()))
         return false;
     const auto schema = NativeSerializedStreamCodec::BuildTypeTree(value.GetType(), {"value", false});
     if (schema == nullptr)
@@ -2039,22 +2080,22 @@ size_t SerializedProperty::GetArraySize() const
     return 0u;
 }
 
+std::vector<size_t> SerializedProperty::GetArraySizes() const
+{
+    std::vector<size_t> sizes;if(!m_owner || !IsArray()) return sizes;
+    sizes.reserve(m_owner->targetStreams.size());
+    for(size_t index=0;index<m_owner->targetStreams.size();++index)
+    {
+        const auto stream=m_owner->modified?BuildStagedTargetStream(*m_owner,index):m_owner->targetStreams[index];
+        const auto cursor=NativeSerializedStreamCodec::ResolveCursor(stream,m_path);uint32_t count=0;
+        if(!cursor || !cursor->Read(&count,sizeof(count))) return {};
+        sizes.push_back(count);
+    }
+    return sizes;
+}
 size_t SerializedProperty::GetMinArraySize() const
 {
-    if (m_owner != nullptr && IsArray())
-    {
-        size_t result = std::numeric_limits<size_t>::max();
-        for (const auto& stream : m_owner->targetStreams)
-        {
-            const auto cursor = NativeSerializedStreamCodec::ResolveCursor(stream, m_path);
-            uint32_t count = 0u;
-            if (!cursor.has_value() || !cursor->Read(&count, sizeof(count)))
-                return 0u;
-            result = (std::min)(result, static_cast<size_t>(count));
-        }
-        return result == std::numeric_limits<size_t>::max() ? 0u : result;
-    }
-    return 0u;
+    const auto sizes=GetArraySizes();return sizes.empty()?0:*std::min_element(sizes.begin(),sizes.end());
 }
 
 size_t SerializedProperty::GetFixedBufferSize() const
@@ -2088,6 +2129,13 @@ bool SerializedProperty::HasMultipleDifferentValues() const
 {
     if (!IsValid() || m_owner == nullptr || m_owner->targetStreams.size() < 2u)
         return false;
+
+    if(!m_owner->componentStreams.empty())
+    {
+        const auto values=GetTargetValues();
+        for(size_t i=1;i<values.size();++i) if(!EquivalentVariant(values.front(),values[i])) return true;
+        return false;
+    }
 
     // A staged edit is propagated to every target by BuildStreamChangeSet.
     // Treat that pending delta as the common value instead of comparing the
@@ -2202,6 +2250,74 @@ meta::Variant SerializedProperty::GetValue() const
     return DecodeStreamValue(*m_owner, m_path).value_or(meta::Variant {});
 }
 
+std::vector<meta::Variant> SerializedProperty::GetTargetValues() const
+{
+    std::vector<meta::Variant> values;
+    if(!IsValid() || !m_owner) return values;
+    for(size_t index=0;index<m_owner->targetStreams.size();++index)
+    {
+        SerializedObject::State view;
+        view.stagedStream=BuildStagedTargetStream(*m_owner,index);
+        std::optional<meta::Variant> value;
+        if(PropertyPath(m_path).IsArraySize())
+        {
+            constexpr std::string_view suffix=".Array.size";
+            const auto cursor=NativeSerializedStreamCodec::ResolveCursor(view.stagedStream,std::string_view(m_path).substr(0,m_path.size()-suffix.size()));
+            uint32_t count=0;if(cursor && cursor->Read(&count,sizeof(count))) value=meta::Variant(static_cast<int32_t>(count));
+        }
+        else value=DecodeStreamValue(view,m_path);
+        if(!value) return {};
+        values.push_back(*value);
+    }
+    return values;
+}
+
+bool SerializedProperty::SetValueComponents(const meta::Variant& value,uint64_t components) const
+{
+    if(!IsValid() || !IsEditable() || !value.IsValid() || !components) return false;
+    std::vector<std::shared_ptr<SerializedByteStream>> streams;
+    bool changed=false;
+    for(size_t target=0;target<m_owner->targetStreams.size();++target)
+    {
+        SerializedObject::State view;view.stagedStream=BuildStagedTargetStream(*m_owner,target);
+        auto before=DecodeStreamValue(view,m_path);
+        if(!before || before->GetType()!=value.GetType()) return false;
+        auto candidate=*before;
+        if(value.GetType()==NLS_TYPEOF(Maths::Quaternion))
+        {
+            auto euler=Maths::Quaternion::EulerAngles(candidate.GetValue<Maths::Quaternion>());
+            const auto updated=Maths::Quaternion::EulerAngles(value.GetValue<Maths::Quaternion>());
+            if(components&1) euler.x=updated.x;if(components&2) euler.y=updated.y;if(components&4) euler.z=updated.z;
+            candidate=Maths::Quaternion(euler);
+        }
+        else
+        {
+            size_t component=0;
+            const auto merge=[&](auto&& self,meta::Variant& destination,const meta::Variant& source,int depth)->bool
+            {
+                if(depth>8) return false;
+                const auto fields=source.GetType().GetFields();
+                if(fields.empty())
+                {if(component<64 && (components&(1ull<<component))) destination=source;++component;return true;}
+                for(const auto& field:fields)
+                {
+                    auto child=field.GetValue(destination);const auto next=field.GetValue(source);
+                    if(!child.IsValid() || !next.IsValid() || !self(self,child,next,depth+1)) return false;
+                    if(!field.SetValue(destination,child)) return false;
+                }
+                return true;
+            };
+            if(!merge(merge,candidate,value,0)) return false;
+        }
+        changed|=!EquivalentVariant(*before,candidate);
+        if(!ReplaceStreamValue(view,m_path,candidate)) return false;
+        streams.push_back(std::move(view.stagedStream));
+    }
+    if(!changed || streams.empty()) return false;
+    StageTargetStreams(*m_owner,PropertyPath(m_path),std::move(streams));
+    return true;
+}
+
 bool SerializedProperty::SetValue(const meta::Variant& value) const
 {
     if (!IsValid() || m_owner == nullptr || !IsEditable() || !value.IsValid())
@@ -2216,11 +2332,32 @@ bool SerializedProperty::SetValue(const meta::Variant& value) const
             m_structureGeneration);
         return parent.SetArraySize(static_cast<size_t>(std::max<int64_t>(0, value.ToInt())));
     }
+    const bool arrayValue=IsArray();
+    const size_t oldArrayCount=arrayValue?GetArraySize():0;
+    const bool targetedAncestor=std::any_of(m_owner->componentStreams.begin(),m_owner->componentStreams.end(),[&](const auto& entry)
+    {return entry.first==m_path || IsDescendant(PropertyPath(m_path),PropertyPath(entry.first));});
+    if(targetedAncestor)
+    {
+        std::vector<std::shared_ptr<SerializedByteStream>> streams;bool changed=false;
+        for(size_t index=0;index<m_owner->targetStreams.size();++index)
+        {
+            SerializedObject::State view;view.stagedStream=BuildStagedTargetStream(*m_owner,index);auto before=CloneStream(view.stagedStream);
+            if(!ReplaceStreamValue(view,m_path,value)) return false;
+            changed|=!EquivalentStreams(before,view.stagedStream);streams.push_back(std::move(view.stagedStream));
+        }
+        if(!changed) return false;
+        StageTargetStreams(*m_owner,PropertyPath(m_path),std::move(streams));
+        if(arrayValue) InvalidateArrayElements(*m_owner,PropertyPath(m_path),oldArrayCount);
+        return true;
+    }
+    std::erase_if(m_owner->componentStreams,[&](const auto& entry)
+    {return IsDescendant(PropertyPath(entry.first),PropertyPath(m_path));});
+    const bool wasMixed = HasMultipleDifferentValues();
     const auto before = GetValue();
     if (!ReplaceStreamValue(*m_owner, m_path, value))
         return false;
     const auto after = GetValue();
-    if (EquivalentVariant(before, after))
+    if (!wasMixed && EquivalentVariant(before, after))
         return false;
     for (auto iterator = m_owner->modifiedPaths.begin(); iterator != m_owner->modifiedPaths.end();)
     {
@@ -2231,6 +2368,7 @@ bool SerializedProperty::SetValue(const meta::Variant& value) const
     }
     m_owner->modifiedPaths.insert(m_path);
     m_owner->modified = true;
+    if(arrayValue) InvalidateArrayElements(*m_owner,PropertyPath(m_path),oldArrayCount);
     return true;
 }
 
@@ -2615,19 +2753,19 @@ SerializedProperty SerializedProperty::GetArrayElementAtIndex(const size_t index
 bool SerializedProperty::InsertArrayElementAtIndex(const size_t index) const
 {
     if (!IsArray() || !IsEditable() || m_owner == nullptr || (m_owner->targets.targets.size() > 1u &&
-        GetArraySize() > m_owner->maxArraySizeForMultiEditing))
+        GetMinArraySize() >= m_owner->maxArraySizeForMultiEditing))
         return false;
     const auto size = GetArraySize();
-    if (index > size)
+    if (index > GetMinArraySize() || size >= static_cast<size_t>(INT32_MAX))
         return false;
     return MutateStreamArray(*m_owner, PropertyPath(m_path), true, [index, size](
-        std::vector<std::vector<uint8_t>>& elements,
+        std::vector<ArrayElementBytes>& elements,
         const SerializedTypeTree& tree,
         const SerializedTypeTreeNode& element)
     {
-        std::vector<uint8_t> inserted;
-        if (index < size)
-            inserted = elements[index];
+        ArrayElementBytes inserted;
+        if(index>elements.size()) return false;
+        if(!elements.empty()) inserted=elements[(std::min)(index,elements.size()-1)];
         else if (!AppendDefaultStreamValue(tree, element, inserted))
             return false;
         elements.insert(elements.begin() + static_cast<std::ptrdiff_t>(index), std::move(inserted));
@@ -2640,10 +2778,11 @@ bool SerializedProperty::DeleteArrayElementAtIndex(const size_t index) const
     if (!IsArray() || !IsEditable() || m_owner == nullptr || index >= GetArraySize())
         return false;
     return MutateStreamArray(*m_owner, PropertyPath(m_path), true, [index](
-        std::vector<std::vector<uint8_t>>& elements,
+        std::vector<ArrayElementBytes>& elements,
         const SerializedTypeTree&,
         const SerializedTypeTreeNode& element)
     {
+        if (index >= elements.size()) return false;
         if (element.kind == SerializedNodeKind::ObjectReference &&
             elements[index].size() == sizeof(uint32_t))
         {
@@ -2668,10 +2807,11 @@ bool SerializedProperty::MoveArrayElement(const size_t sourceIndex, const size_t
     if (sourceIndex >= GetArraySize() || destinationIndex >= GetArraySize())
         return false;
     return MutateStreamArray(*m_owner, PropertyPath(m_path), true, [sourceIndex, destinationIndex](
-        std::vector<std::vector<uint8_t>>& elements,
+        std::vector<ArrayElementBytes>& elements,
         const SerializedTypeTree&,
         const SerializedTypeTreeNode&)
     {
+        if(sourceIndex >= elements.size() || destinationIndex >= elements.size()) return false;
         auto element = std::move(elements[sourceIndex]);
         elements.erase(elements.begin() + static_cast<std::ptrdiff_t>(sourceIndex));
         elements.insert(elements.begin() + static_cast<std::ptrdiff_t>(destinationIndex), std::move(element));
@@ -2686,13 +2826,11 @@ bool SerializedProperty::ClearArray() const
 
 bool SerializedProperty::SetArraySize(const size_t size) const
 {
-    if (!IsArray() || !IsEditable() || m_owner == nullptr ||
+    if (!IsArray() || !IsEditable() || m_owner == nullptr || size > static_cast<size_t>(INT32_MAX) ||
         (m_owner->targets.targets.size() > 1u && size > m_owner->maxArraySizeForMultiEditing))
         return false;
-    if (size == GetArraySize())
-        return false;
     return MutateStreamArray(*m_owner, PropertyPath(m_path), true, [size](
-        std::vector<std::vector<uint8_t>>& elements,
+        std::vector<ArrayElementBytes>& elements,
         const SerializedTypeTree& tree,
         const SerializedTypeTreeNode& element)
     {
@@ -2703,13 +2841,63 @@ bool SerializedProperty::SetArraySize(const size_t size) const
         }
         while (elements.size() < size)
         {
-            std::vector<uint8_t> value;
-            if (!AppendDefaultStreamValue(tree, element, value))
-                return false;
+            ArrayElementBytes value;
+            if(!elements.empty()) value=elements.back();
+            else if (!AppendDefaultStreamValue(tree, element, value)) return false;
             elements.push_back(std::move(value));
         }
         return true;
     });
+}
+
+bool SerializedProperty::SetArrayOrder(std::span<const size_t> order) const
+{
+    if(!IsArray() || !IsEditable() || order.size()>GetMinArraySize()) return false;
+    std::vector<bool> seen(order.size(),false);
+    for(const auto index:order) {if(index>=order.size() || seen[index]) return false;seen[index]=true;}
+    const std::vector<size_t> permutation(order.begin(),order.end());
+    return MutateStreamArray(*m_owner,PropertyPath(m_path),true,[&](auto& elements,const auto&,const auto&)
+    {auto before=elements;for(size_t i=0;i<permutation.size();++i) elements[i]=before[permutation[i]];return true;});
+}
+
+bool SerializedProperty::RemoveArrayElements(std::span<const size_t> indices) const
+{
+    if(!IsArray() || !IsEditable() || indices.empty()) return false;
+    std::vector<size_t> selected(indices.begin(),indices.end());std::sort(selected.begin(),selected.end());
+    if(selected.back()>=GetMinArraySize() || std::adjacent_find(selected.begin(),selected.end())!=selected.end()) return false;
+    return MutateStreamArray(*m_owner,PropertyPath(m_path),true,[&](auto& elements,const auto&,const auto&)
+    {for(auto it=selected.rbegin();it!=selected.rend();++it) elements.erase(elements.begin()+static_cast<std::ptrdiff_t>(*it));return true;});
+}
+
+bool SerializedProperty::DuplicateArrayElements(std::span<const size_t> indices) const
+{
+    if(!IsArray() || !IsEditable() || indices.empty()) return false;
+    std::vector<size_t> selected(indices.begin(),indices.end());std::sort(selected.begin(),selected.end());
+    if(selected.back()>=GetMinArraySize() || std::adjacent_find(selected.begin(),selected.end())!=selected.end()) return false;
+    if(GetTargetCount()>1 && GetArraySize()+selected.size()>m_owner->maxArraySizeForMultiEditing) return false;
+    return MutateStreamArray(*m_owner,PropertyPath(m_path),true,[&](auto& elements,const auto&,const auto&)
+    {for(auto it=selected.rbegin();it!=selected.rend();++it) {auto copy=elements[*it];elements.insert(elements.begin()+static_cast<std::ptrdiff_t>(*it+1),std::move(copy));}return true;});
+}
+
+bool SerializedProperty::AppendArrayValues(std::span<const meta::Variant> values) const
+{
+    if(!IsArray() || !IsEditable() || values.empty()) return false;
+    const auto sizes=GetArraySizes();
+    if(sizes.empty() || (GetTargetCount()>1 && *std::max_element(sizes.begin(),sizes.end())+values.size()>m_owner->maxArraySizeForMultiEditing)) return false;
+    std::vector<std::shared_ptr<SerializedByteStream>> streams;bool changed=false;
+    for(size_t index=0;index<sizes.size();++index)
+    {
+        SerializedObject::State view;view.stagedStream=BuildStagedTargetStream(*m_owner,index);
+        size_t oldCount=0;
+        if(!MutateArrayStream(view.stagedStream,PropertyPath(m_path),[&](auto& elements,const auto& tree,const auto& element)
+        {for(size_t i=0;i<values.size();++i) {ArrayElementBytes bytes;if(!AppendDefaultStreamValue(tree,element,bytes)) return false;elements.push_back(std::move(bytes));}return true;},oldCount)) return false;
+        for(size_t item=0;item<values.size();++item)
+            if(!ReplaceStreamValue(view,m_path+".Array.data["+std::to_string(oldCount+item)+"]",values[item])) return false;
+        changed=true;streams.push_back(std::move(view.stagedStream));
+    }
+    if(!changed) return false;
+    StageTargetStreams(*m_owner,PropertyPath(m_path),std::move(streams));
+    InvalidateArrayElements(*m_owner,PropertyPath(m_path),sizes.front());return true;
 }
 
 SerializedProperty SerializedProperty::Copy() const
@@ -2962,6 +3150,22 @@ size_t SerializedProperty::GetTargetCount() const
     if (m_owner == nullptr)
         return 0u;
     return m_owner->targets.targets.size();
+}
+
+SerializedEditSession::SerializedEditSession(SerializedObject* owner,SerializedProperty property)
+    : m_owner(owner),m_property(std::move(property)),m_ownerState(owner->m_state),m_ownerLifetime(owner->m_lifetime),
+      m_updateEpoch(owner->m_state?owner->m_state->updateEpoch:0),m_dataRevision(owner->m_state?owner->m_state->version.dataGeneration:0),
+      m_schemaGeneration(owner->m_state?owner->m_state->generation:0),m_active(static_cast<bool>(m_property))
+{
+}
+
+bool SerializedEditSession::IsActive() const noexcept
+{
+    if(!m_active || m_ownerLifetime.expired() || !m_owner) return false;
+    const auto state=m_ownerState.lock();
+    return state && state==m_owner->m_state && state->valid && state->updateEpoch==m_updateEpoch &&
+        state->generation==m_schemaGeneration && state->version.dataGeneration==m_dataRevision &&
+        ComputeVersion(*state).dataGeneration==m_dataRevision && m_property.IsValid();
 }
 
 SerializedEditSession SerializedObject::BeginEditSession(const std::string_view path)

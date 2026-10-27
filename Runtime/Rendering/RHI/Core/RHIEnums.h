@@ -102,7 +102,8 @@ namespace NLS::Render::RHI
         DepthStencil = 1u << 6,
         Present = 1u << 7,
         Host = 1u << 8,
-        AllGraphics = VertexInput | VertexShader | FragmentShader | RenderTarget | DepthStencil,
+        DrawIndirect = 1u << 9,
+        AllGraphics = VertexInput | VertexShader | FragmentShader | RenderTarget | DepthStencil | DrawIndirect,
         AllCommands = 0xFFFFFFFFu
     };
 
@@ -129,7 +130,8 @@ namespace NLS::Render::RHI
         HostWrite = 1u << 12,
         Present = 1u << 13,
         MemoryRead = 1u << 14,
-        MemoryWrite = 1u << 15
+        MemoryWrite = 1u << 15,
+        IndirectRead = 1u << 16
     };
 
     inline constexpr AccessMask operator|(AccessMask lhs, AccessMask rhs)
@@ -152,7 +154,8 @@ namespace NLS::Render::RHI
         DepthWrite = 1u << 9,
         Present = 1u << 10,
         ShaderReadNonPixel = 1u << 11,
-        GenericRead = CopySrc | VertexBuffer | IndexBuffer | UniformBuffer | ShaderRead
+        IndirectArgument = 1u << 12,
+        GenericRead = CopySrc | VertexBuffer | IndexBuffer | UniformBuffer | ShaderRead | IndirectArgument
     };
 
     inline constexpr ResourceState operator|(ResourceState lhs, ResourceState rhs)

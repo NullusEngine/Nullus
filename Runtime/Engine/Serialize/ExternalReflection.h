@@ -8,6 +8,7 @@
 #include "Serialize/PPtr.h"
 #include "Serialize/PPtrResourceTypes.h"
 #include "Serialize/SerializedSpecialTypes.h"
+#include "UI/UIResourceReference.h"
 #include "UI/UIDocumentReference.h"
 #include "Rendering/ExternalReflection.h"
 
@@ -38,6 +39,18 @@ inline void RegisterSerializeExternalReflection(
     NLS_META_EXTERNAL_BEGIN(NLS::Engine::UI::UIDocumentReference)
         NLS_META_EXTERNAL_FIELD_NAMED(std::string, "assetId", &NLS::Engine::UI::UIDocumentReference::GetAssetIdString, &NLS::Engine::UI::UIDocumentReference::SetAssetIdString);
         NLS_META_EXTERNAL_FIELD_NAMED(std::string, "resourcePath", &NLS::Engine::UI::UIDocumentReference::GetResourcePath, &NLS::Engine::UI::UIDocumentReference::SetResourcePath);
+    NLS_META_EXTERNAL_END();
+
+    NLS_META_EXTERNAL_BEGIN(NLS::Engine::UI::UITextureReference)
+        NLS_META_EXTERNAL_FIELD_NAMED(std::string, "assetId", &NLS::Engine::UI::UITextureReference::GetAssetIdString, &NLS::Engine::UI::UITextureReference::SetAssetIdString);
+        NLS_META_EXTERNAL_FIELD_NAMED(std::string, "subAssetKey", &NLS::Engine::UI::UITextureReference::GetSubAssetKey, &NLS::Engine::UI::UITextureReference::SetSubAssetKey);
+        NLS_META_EXTERNAL_FIELD_NAMED(std::string, "resourcePath", &NLS::Engine::UI::UITextureReference::GetResourcePath, &NLS::Engine::UI::UITextureReference::SetResourcePath);
+    NLS_META_EXTERNAL_END();
+
+    NLS_META_EXTERNAL_BEGIN(NLS::Engine::UI::UIFontReference)
+        NLS_META_EXTERNAL_FIELD_NAMED(std::string, "assetId", &NLS::Engine::UI::UIFontReference::GetAssetIdString, &NLS::Engine::UI::UIFontReference::SetAssetIdString);
+        NLS_META_EXTERNAL_FIELD_NAMED(std::string, "subAssetKey", &NLS::Engine::UI::UIFontReference::GetSubAssetKey, &NLS::Engine::UI::UIFontReference::SetSubAssetKey);
+        NLS_META_EXTERNAL_FIELD_NAMED(std::string, "resourcePath", &NLS::Engine::UI::UIFontReference::GetResourcePath, &NLS::Engine::UI::UIFontReference::SetResourcePath);
     NLS_META_EXTERNAL_END();
 
     NLS_META_EXTERNAL_BEGIN(NLS::Engine::Serialize::FileType)

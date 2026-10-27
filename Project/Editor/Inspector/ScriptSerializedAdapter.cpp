@@ -322,6 +322,7 @@ void ScriptSerializedAdapter::ApplyPropertyPresentation(
         return;
 
     node.fieldId = field->id;
+    node.ownerTypeName = descriptor->name;
     node.aliases = field->aliases;
     node.metadata = BuildEditorPropertyMetadata(*field, descriptor->name);
     if (!node.metadata.displayName.empty())

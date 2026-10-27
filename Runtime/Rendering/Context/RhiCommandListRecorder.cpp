@@ -126,6 +126,41 @@ namespace NLS::Render::Context
         Record("CopyBuffer", [source, destination, region](auto& buffer) { buffer.CopyBuffer(source, destination, region); });
         m_canPrependQueueRelease = false;
     }
+
+    RHI::RHICommandRecordingResult RhiCommandListRecorder::DrawIndirect(const std::shared_ptr<RHI::RHIBuffer>& arguments, uint64_t offset)
+    {
+        if (!m_recording) return {RHI::RHICommandRecordingStatusCode::InvalidArgument,"Indirect draw requires a recording list"};
+        const auto valid = RHI::ValidateIndirectArguments(arguments,offset,sizeof(RHI::RHIDrawIndirectArguments));
+        if (!valid.Succeeded()) return valid;
+        Record("DrawIndirect",[arguments,offset](auto& buffer) { RequireSuccess(buffer.DrawIndirect(arguments,offset)); });
+        m_canPrependQueueRelease = false; return {};
+    }
+
+    RHI::RHICommandRecordingResult RhiCommandListRecorder::DrawIndexedIndirect(const std::shared_ptr<RHI::RHIBuffer>& arguments, uint64_t offset)
+    {
+        if (!m_recording) return {RHI::RHICommandRecordingStatusCode::InvalidArgument,"Indexed indirect draw requires a recording list"};
+        const auto valid = RHI::ValidateIndirectArguments(arguments,offset,sizeof(RHI::RHIDrawIndexedIndirectArguments));
+        if (!valid.Succeeded()) return valid;
+        Record("DrawIndexedIndirect",[arguments,offset](auto& buffer) { RequireSuccess(buffer.DrawIndexedIndirect(arguments,offset)); });
+        m_canPrependQueueRelease = false; return {};
+    }
+
+    RHI::RHICommandRecordingResult RhiCommandListRecorder::DispatchIndirect(const std::shared_ptr<RHI::RHIBuffer>& arguments, uint64_t offset)
+    {
+        if (!m_recording) return {RHI::RHICommandRecordingStatusCode::InvalidArgument,"Indirect dispatch requires a recording list"};
+        const auto valid = RHI::ValidateIndirectArguments(arguments,offset,sizeof(RHI::RHIDispatchIndirectArguments));
+        if (!valid.Succeeded()) return valid;
+        Record("DispatchIndirect",[arguments,offset](auto& buffer) { RequireSuccess(buffer.DispatchIndirect(arguments,offset)); });
+        m_canPrependQueueRelease = false; return {};
+    }
+    RHI::RHICommandRecordingResult RhiCommandListRecorder::WriteTimestamp(const std::shared_ptr<RHI::RHITimestampQuery>& query, uint32_t index)
+    {
+        if (!m_recording || !query || index > 1)
+            return {RHI::RHICommandRecordingStatusCode::InvalidArgument, "Invalid GPU timestamp recording request"};
+        Record("WriteTimestamp", [query,index](auto& buffer) { RequireSuccess(buffer.WriteTimestamp(query,index)); });
+        m_canPrependQueueRelease = false;
+        return {};
+    }
     void RhiCommandListRecorder::CopyBufferToTexture(const RHI::RHIBufferToTextureCopyDesc& desc)
     {
         Record("CopyBufferToTexture", [desc](auto& buffer) { buffer.CopyBufferToTexture(desc); });

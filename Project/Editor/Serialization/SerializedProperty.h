@@ -111,6 +111,11 @@ public:
     [[nodiscard]] std::string GetArrayElementType() const;
     [[nodiscard]] size_t GetArraySize() const;
     [[nodiscard]] size_t GetMinArraySize() const;
+    [[nodiscard]] std::vector<size_t> GetArraySizes() const;
+    bool SetArrayOrder(std::span<const size_t> order) const;
+    bool RemoveArrayElements(std::span<const size_t> indices) const;
+    bool DuplicateArrayElements(std::span<const size_t> indices) const;
+    bool AppendArrayValues(std::span<const meta::Variant> values) const;
     [[nodiscard]] bool IsFixedBuffer() const;
     [[nodiscard]] size_t GetFixedBufferSize() const;
     // Fixed buffers expose a fixed element count and are not resizable; the
@@ -123,6 +128,8 @@ public:
 
     [[nodiscard]] meta::Variant GetValue() const;
     [[nodiscard]] bool SetValue(const meta::Variant& value) const;
+    [[nodiscard]] bool SetValueComponents(const meta::Variant& value,uint64_t components) const;
+    [[nodiscard]] std::vector<meta::Variant> GetTargetValues() const;
 
     // engine-style scalar spellings retained in the native API. The Get*/Set*
     // forms above are the canonical C++ names; these aliases make custom

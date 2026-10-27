@@ -241,7 +241,7 @@ SerializedNodeId AddTypeNode(
     node.serializedName = name;
     node.fieldId = StableFieldId(type, name);
     SetNodeLayout(node, type);
-    if (node.kind == SerializedNodeKind::Generic && type.IsClass() &&
+    if (!type.IsArray() && node.kind == SerializedNodeKind::Generic && type.IsClass() &&
         !IsObjectReferenceType(type) && !type.IsEnum() && type.GetFields().empty())
     {
         node.kind = SerializedNodeKind::Opaque;
@@ -577,9 +577,9 @@ struct ArrayPath
 
 std::optional<ArrayPath> ParseArrayPath(const std::string_view path)
 {
-    const auto marker = path.find(".Array.data[");
-    const auto plain = path.find("[");
-    const auto start = marker != std::string_view::npos ? marker + std::string_view(".Array.data[").size() : plain;
+    const auto marker = path.rfind(".Array.data[");
+    const auto plain = path.rfind("[");
+    const auto start = marker != std::string_view::npos ? marker + std::string_view(".Array.data[").size() : plain==std::string_view::npos?plain:plain+1u;
     if (start == std::string_view::npos || path.empty() || path.back() != ']')
         return std::nullopt;
     const auto digits = path.substr(start, path.size() - start - 1u);
@@ -622,7 +622,7 @@ bool WriteScalar(
     case SerializedNodeKind::Enum:
         if (node.kind == SerializedNodeKind::Enum)
         {
-            const auto numeric = value.ToDouble();
+            const auto numeric = value.GetType().GetEnum().GetBits(value);
             switch (node.numericKind)
             {
             case SerializedNumericKind::Int8: writer.WriteI8(static_cast<int8_t>(numeric)); return true;
@@ -899,13 +899,19 @@ std::optional<meta::Variant> NormalizeDecodedEnum(
 {
     if (node.kind != SerializedNodeKind::Enum || !type.IsEnum())
         return raw;
-    const auto numeric = raw.ToDouble();
-    for (const auto& candidate : type.GetEnum().GetValues())
+    uint64_t bits = 0;
+    switch(node.numericKind)
     {
-        if (std::abs(candidate.ToDouble() - numeric) <= std::numeric_limits<double>::epsilon())
-            return candidate;
+    case SerializedNumericKind::Int8: bits=static_cast<uint64_t>(raw.GetValue<int8_t>());break;
+    case SerializedNumericKind::UInt8: bits=raw.GetValue<uint8_t>();break;
+    case SerializedNumericKind::Int16: bits=static_cast<uint64_t>(raw.GetValue<int16_t>());break;
+    case SerializedNumericKind::UInt16: bits=raw.GetValue<uint16_t>();break;
+    case SerializedNumericKind::UInt32: bits=raw.GetValue<uint32_t>();break;
+    case SerializedNumericKind::Int64: bits=static_cast<uint64_t>(raw.GetValue<int64_t>());break;
+    case SerializedNumericKind::UInt64: bits=raw.GetValue<uint64_t>();break;
+    default: bits=static_cast<uint64_t>(raw.GetValue<int32_t>());break;
     }
-    return std::nullopt;
+    return type.GetEnum().FromBits(bits);
 }
 
 std::optional<meta::Variant> ReadScalar(
@@ -1569,6 +1575,61 @@ bool NativeSerializedStreamCodec::RelocateReferenceSlots(
         error);
 }
 
+std::optional<size_t> NativeSerializedStreamCodec::GetValueByteSize(
+    const SerializedByteStream& stream, SerializedNodeId id, size_t offset)
+{
+    const auto* node=stream.GetSchema()?stream.GetSchema()->FindNode(id):nullptr;
+    return node?CalculateNodeSize(*stream.GetSchema(),*node,stream.GetBytes(),offset):std::nullopt;
+}
+
+bool NativeSerializedStreamCodec::RepackValueBytes(const SerializedTypeTree& tree,SerializedNodeId id,
+    std::span<const uint8_t> bytes,size_t sourceOrigin,size_t destinationOrigin,std::vector<uint8_t>& output)
+{
+    // Only the low bits affect alignment; never allocate a prefix proportional
+    // to an element's position in a large stream.
+    const size_t sourceBase=sourceOrigin&3u,destinationBase=destinationOrigin&3u;
+    std::vector<uint8_t> source(sourceBase,0);
+    source.insert(source.end(),bytes.begin(),bytes.end());
+    std::vector<uint8_t> result;
+    const auto copy=[&](auto&& self,const SerializedTypeTreeNode& node,size_t offset)->std::optional<size_t>
+    {
+        const auto original=CalculateNodeSize(tree,node,source,offset);
+        if(!original) return {};
+        if(HasSerializedNodeFlag(node.flags,SerializedNodeFlags::Array))
+        {
+            uint32_t count=0;if(!ReadU32At(source,offset,count)) return {};
+            result.insert(result.end(),source.begin()+offset,source.begin()+offset+sizeof(count));
+            auto* element=FirstChild(tree,node);if(!element) return {};
+            size_t cursor=offset+sizeof(count);
+            for(uint32_t i=0;i<count;++i)
+            {auto length=self(self,*element,cursor);if(!length) return {};cursor+=*length;}
+        }
+        else if(node.fixedByteSize<0 && node.kind!=SerializedNodeKind::String && FirstChild(tree,node))
+        {
+            size_t cursor=offset;
+            for(auto* child=FirstChild(tree,node);child;child=tree.FindNode(child->nextSibling))
+            {auto length=self(self,*child,cursor);if(!length) return {};cursor+=*length;}
+        }
+        else
+        {
+            auto unpadded=node;
+            unpadded.flags=static_cast<SerializedNodeFlags>(static_cast<uint32_t>(node.flags)&
+                ~static_cast<uint32_t>(SerializedNodeFlags::Align4After));
+            const auto length=CalculateNodeSize(tree,unpadded,source,offset);
+            if(!length) return {};
+            result.insert(result.end(),source.begin()+offset,source.begin()+offset+*length);
+        }
+        if(HasSerializedNodeFlag(node.flags,SerializedNodeFlags::Align4After))
+            result.resize(Align4Size(destinationBase+result.size())-destinationBase,0);
+        return original;
+    };
+    const auto* node=tree.FindNode(id);
+    if(!node) return false;
+    const auto consumed=copy(copy,*node,sourceBase);
+    if(!consumed || *consumed!=bytes.size()) return false;
+    output=std::move(result);return true;
+}
+
 std::optional<SerializedByteCursor> NativeSerializedStreamCodec::ResolveCursor(
     const std::shared_ptr<SerializedByteStream>& stream,
     const std::string_view path)
@@ -1609,12 +1670,29 @@ std::optional<SerializedByteCursor> NativeSerializedStreamCodec::ResolveCursor(
 
     const auto arrayPath = ParseArrayPath(path);
     if (!arrayPath.has_value())
+    {
+        const auto dot=path.rfind('.');
+        if(dot==std::string_view::npos) return std::nullopt;
+        const auto parent=ResolveCursor(stream,path.substr(0,dot));
+        if(!parent) return std::nullopt;
+        const auto* parentNode=stream->GetSchema()->FindNode(parent->GetNodeId());
+        if(!parentNode || HasSerializedNodeFlag(parentNode->flags,SerializedNodeFlags::Array)) return std::nullopt;
+        size_t offset=parent->GetByteOffset();
+        const auto field=path.substr(dot+1);
+        for(auto* child=FirstChild(*stream->GetSchema(),*parentNode);child;
+            child=stream->GetSchema()->FindNode(child->nextSibling))
+        {
+            const auto size=CalculateNodeSize(*stream->GetSchema(),*child,stream->GetBytes(),offset);
+            if(!size) return std::nullopt;
+            if(child->serializedName==field) return SerializedByteCursor(stream,child->id,offset,*size,std::string(path));
+            offset+=*size;
+        }
         return std::nullopt;
-    const auto* arrayNode = stream->GetSchema()->FindPath(arrayPath->parent);
-    if (arrayNode == nullptr || !HasSerializedNodeFlag(arrayNode->flags, SerializedNodeFlags::Array))
-        return std::nullopt;
+    }
     auto parent = ResolveCursor(stream, arrayPath->parent);
-    if (!parent.has_value())
+    if (!parent.has_value()) return std::nullopt;
+    const auto* arrayNode = stream->GetSchema()->FindNode(parent->GetNodeId());
+    if (arrayNode == nullptr || !HasSerializedNodeFlag(arrayNode->flags, SerializedNodeFlags::Array))
         return std::nullopt;
     uint32_t count = 0u;
     if (!parent->Read(&count, sizeof(count)))

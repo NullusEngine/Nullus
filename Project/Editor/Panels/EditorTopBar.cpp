@@ -6,11 +6,12 @@
 #include <string>
 
 #include <ServiceLocator.h>
-#include <UI/Internal/Converter.h>
 #include <UI/UIManager.h>
 
 #include "Core/Editor.h"
 #include "Core/EditorResources.h"
+#include "Icons/EditorTheme.h"
+#include "Icons/IconPainter.h"
 #include "Panels/SceneView.h"
 
 namespace NLS::Editor::Panels
@@ -25,13 +26,6 @@ constexpr float kCompactSceneToolAreaWidth = 108.0f;
 constexpr float kSceneToolComboWidth = 110.0f;
 constexpr float kToolbarLeftPadding = 8.0f;
 constexpr float kToolbarSpacing = 16.0f;
-constexpr float kSceneToolIconSize = 16.0f;
-constexpr float kSceneToolButtonSize = 25.0f;
-
-Maths::Color MakeToolbarHighlight()
-{
-    return { 0.23f, 0.49f, 0.82f, 1.0f };
-}
 
 const char* ToToolLabel(const Editor::Core::EGizmoOperation p_operation)
 {
@@ -58,33 +52,11 @@ const char* ToSpaceLabel(const Editor::Core::SceneViewGizmoSpace p_space)
     return p_space == Editor::Core::SceneViewGizmoSpace::Local ? "Local" : "Global";
 }
 
-const char* ToSpaceIconId(const Editor::Core::SceneViewGizmoSpace p_space)
+Icons::IconId ToSpaceIconId(const Editor::Core::SceneViewGizmoSpace p_space)
 {
     return p_space == Editor::Core::SceneViewGizmoSpace::Local
-        ? "editor.icon.toolbar.local"
-        : "editor.icon.toolbar.global";
-}
-
-std::shared_ptr<NLS::Render::RHI::RHITextureView> GetToolbarIconView(const char* p_iconId)
-{
-    auto* texture = EDITOR_CONTEXT(editorResources)->GetTexture(p_iconId);
-    return texture != nullptr
-        ? texture->GetOrCreateExplicitTextureView(std::string("EditorTopBar.") + p_iconId)
-        : nullptr;
-}
-
-void* ResolveTextureId(const std::shared_ptr<NLS::Render::RHI::RHITextureView>& p_textureView)
-{
-    if (!NLS::Core::ServiceLocator::Contains<NLS::UI::UIManager>())
-        return nullptr;
-
-    return NLS_SERVICE(NLS::UI::UIManager).ResolveTextureId(p_textureView);
-}
-
-void DrawToolbarTooltip(const char* p_text)
-{
-    if (p_text != nullptr && ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort))
-        ImGui::SetTooltip("%s", p_text);
+        ? Icons::EditorIcons::ToolbarLocal
+        : Icons::EditorIcons::ToolbarGlobal;
 }
 
 float UiScale()
@@ -146,6 +118,32 @@ void EditorTopBar::DrawBarContent()
 
 void EditorTopBar::DrawToolbarRow()
 {
+    if (!m_iconsPreloaded)
+    {
+        // First-screen set only; everything else loads lazily on first use.
+        EDITOR_CONTEXT(editorResources)->GetIconService().Preload(
+            {
+                Icons::IconId{ Icons::EditorIcons::ToolbarMove },
+                Icons::IconId{ Icons::EditorIcons::ToolbarRotate },
+                Icons::IconId{ Icons::EditorIcons::ToolbarScale },
+                Icons::IconId{ Icons::EditorIcons::ToolbarPivot },
+                Icons::IconId{ Icons::EditorIcons::ToolbarCenter },
+                Icons::IconId{ Icons::EditorIcons::ToolbarGlobal },
+                Icons::IconId{ Icons::EditorIcons::ToolbarLocal },
+                Icons::IconId{ Icons::EditorIcons::AssetDefault },
+            },
+            16);
+        m_iconsPreloaded = true;
+    }
+
+    if (!m_idlePreloadComplete)
+    {
+        // Spread the remaining first-use decode/upload over a few frames
+        // instead of hitching the first time a panel opens.
+        m_idlePreloadComplete = !EDITOR_CONTEXT(editorResources)->GetIconService()
+            .PreloadIdleStep(2, 32);
+    }
+
     const float availableWidth = GetContentWidth();
     const float rowY = Scaled(kToolbarRowOffsetY);
     DrawSceneToolRow(rowY, availableWidth);
@@ -205,19 +203,22 @@ void EditorTopBar::DrawSceneToolRow(const float p_rowY, const float p_availableW
     }
 
     DrawSceneToolButton(
-        "editor.icon.toolbar.move",
+        "##SceneToolMove",
+        Icons::EditorIcons::ToolbarMove,
         "Move",
         Editor::Core::EGizmoOperation::TRANSLATE,
         currentOperation == Editor::Core::EGizmoOperation::TRANSLATE);
     ImGui::SameLine(0.0f, Scaled(4.0f));
     DrawSceneToolButton(
-        "editor.icon.toolbar.rotate",
+        "##SceneToolRotate",
+        Icons::EditorIcons::ToolbarRotate,
         "Rotate",
         Editor::Core::EGizmoOperation::ROTATE,
         currentOperation == Editor::Core::EGizmoOperation::ROTATE);
     ImGui::SameLine(0.0f, Scaled(4.0f));
     DrawSceneToolButton(
-        "editor.icon.toolbar.scale",
+        "##SceneToolScale",
+        Icons::EditorIcons::ToolbarScale,
         "Scale",
         Editor::Core::EGizmoOperation::SCALE,
         currentOperation == Editor::Core::EGizmoOperation::SCALE);
@@ -226,83 +227,60 @@ void EditorTopBar::DrawSceneToolRow(const float p_rowY, const float p_availableW
         return;
 
     ImGui::SameLine(0.0f, Scaled(10.0f));
-    if (DrawIconTextButton(GetToolbarPivotIconId(currentPivot), ToPivotLabel(currentPivot), "Toggle Pivot Position"))
+    if (DrawIconTextButton(
+            "##SceneToolPivot",
+            GetToolbarPivotIconId(currentPivot),
+            ToPivotLabel(currentPivot),
+            "Toggle Pivot Position"))
+    {
         sceneView.ToggleCurrentGizmoPivot();
+    }
     ImGui::SameLine(0.0f, Scaled(4.0f));
-    if (DrawIconTextButton(ToSpaceIconId(currentSpace), ToSpaceLabel(currentSpace), "Toggle Pivot Orientation"))
+    if (DrawIconTextButton(
+            "##SceneToolSpace",
+            ToSpaceIconId(currentSpace),
+            ToSpaceLabel(currentSpace),
+            "Toggle Pivot Orientation"))
+    {
         sceneView.ToggleCurrentGizmoSpace();
+    }
 }
 
 void EditorTopBar::DrawSceneToolButton(
-    const char* p_iconId,
+    const char* p_widgetId,
+    Icons::IconId p_icon,
     const char* p_tooltip,
     const Editor::Core::EGizmoOperation p_operation,
     const bool p_active)
 {
-    const ImVec4 previousButton = ImGui::GetStyle().Colors[ImGuiCol_Button];
-    const ImVec4 previousHovered = ImGui::GetStyle().Colors[ImGuiCol_ButtonHovered];
-    const ImVec4 previousActive = ImGui::GetStyle().Colors[ImGuiCol_ButtonActive];
+    Icons::IconButtonOptions options;
+    options.tooltip = p_tooltip;
+    options.selected = p_active;
 
-    if (p_active)
-    {
-        const ImVec4 highlight = UI::Internal::Converter::ToImVec4(MakeToolbarHighlight());
-        ImGui::GetStyle().Colors[ImGuiCol_Button] = highlight;
-        ImGui::GetStyle().Colors[ImGuiCol_ButtonHovered] = highlight;
-        ImGui::GetStyle().Colors[ImGuiCol_ButtonActive] = highlight;
-    }
+    const bool clicked = EDITOR_CONTEXT(editorResources)->GetIconPainter().Button(
+        p_widgetId,
+        p_icon,
+        Icons::IconToken::Small,
+        options);
 
-    const auto textureView = GetToolbarIconView(p_iconId);
-    ImGui::PushID(p_iconId);
-    const bool clicked = ImGui::ImageButton(
-        ResolveTextureId(textureView),
-        Scaled(kSceneToolIconSize, kSceneToolIconSize),
-        ImVec2(0.0f, 1.0f),
-        ImVec2(1.0f, 0.0f),
-        -1,
-        ImVec4(0.0f, 0.0f, 0.0f, 0.0f),
-        ImVec4(1.0f, 1.0f, 1.0f, 1.0f));
-    ImGui::PopID();
-    DrawToolbarTooltip(p_tooltip);
     if (clicked)
         EDITOR_PANEL(Panels::SceneView, "Scene View").SetCurrentGizmoOperation(p_operation);
-
-    ImGui::GetStyle().Colors[ImGuiCol_Button] = previousButton;
-    ImGui::GetStyle().Colors[ImGuiCol_ButtonHovered] = previousHovered;
-    ImGui::GetStyle().Colors[ImGuiCol_ButtonActive] = previousActive;
 }
 
-bool EditorTopBar::DrawIconTextButton(const char* p_iconId, const char* p_label, const char* p_tooltip)
+bool EditorTopBar::DrawIconTextButton(
+    const char* p_widgetId,
+    Icons::IconId p_icon,
+    const char* p_label,
+    const char* p_tooltip)
 {
-    const ImVec2 labelSize = ImGui::CalcTextSize(p_label);
-    const ImVec2 framePadding = ImGui::GetStyle().FramePadding;
-    const ImVec2 buttonSize(
-        Scaled(kSceneToolIconSize) + labelSize.x + framePadding.x * 3.0f,
-        Scaled(kSceneToolButtonSize));
+    Icons::IconButtonOptions options;
+    options.tooltip = p_tooltip;
 
-    const bool clicked = ImGui::Button(("##" + std::string(p_label)).c_str(), buttonSize);
-    const ImVec2 buttonMin = ImGui::GetItemRectMin();
-    const ImVec2 buttonMax = ImGui::GetItemRectMax();
-    DrawToolbarTooltip(p_tooltip);
-
-    const auto textureView = GetToolbarIconView(p_iconId);
-    const ImVec2 iconPos(
-        buttonMin.x + framePadding.x,
-        buttonMin.y + (buttonMax.y - buttonMin.y - Scaled(kSceneToolIconSize)) * 0.5f);
-    if (void* textureId = ResolveTextureId(textureView))
-    {
-        ImGui::GetWindowDrawList()->AddImage(
-            textureId,
-            iconPos,
-            ImVec2(iconPos.x + Scaled(kSceneToolIconSize), iconPos.y + Scaled(kSceneToolIconSize)),
-            ImVec2(0.0f, 1.0f),
-            ImVec2(1.0f, 0.0f));
-    }
-
-    const ImVec2 textPos(
-        iconPos.x + Scaled(kSceneToolIconSize) + framePadding.x,
-        buttonMin.y + (buttonMax.y - buttonMin.y - labelSize.y) * 0.5f);
-    ImGui::GetWindowDrawList()->AddText(textPos, ImGui::GetColorU32(ImGuiCol_Text), p_label);
-
-    return clicked;
+    return EDITOR_CONTEXT(editorResources)->GetIconPainter().TextButton(
+        p_widgetId,
+        p_icon,
+        p_label,
+        Icons::IconToken::Small,
+        options);
 }
 }

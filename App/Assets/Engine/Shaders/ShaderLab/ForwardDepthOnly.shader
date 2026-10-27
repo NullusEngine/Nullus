@@ -26,17 +26,20 @@ Shader "Nullus/ShaderLab/ForwardDepthOnly"
             Blend Off
 
             HLSLPROGRAM
-            #pragma vertex VSMain
+            #pragma multi_compile _ NLS_SKINNED
+#pragma vertex VSMain
             #pragma fragment PSMain
             #pragma shader_feature _ALPHATEST_ON
             #pragma multi_compile _ MAIN_LIGHT_SHADOWS
             #include "NullusShaderLibrary/Core.hlsl"
+#include "NullusShaderLibrary/Skinning.hlsl"
 
             struct Attributes
             {
                 float3 positionOS : POSITION;
                 float2 uv : TEXCOORD0;
-            };
+    NLS_SKIN_ATTRIBUTES
+};
 
             struct Varyings
             {
@@ -56,7 +59,7 @@ Shader "Nullus/ShaderLab/ForwardDepthOnly"
             Varyings VSMain(Attributes input)
             {
                 Varyings output;
-                output.positionCS = TransformObjectToHClip(input.positionOS);
+                output.positionCS = TransformObjectToHClip(NLS_SKIN_POSITION(input));
                 output.uv = input.uv;
                 return output;
             }
@@ -82,16 +85,19 @@ Shader "Nullus/ShaderLab/ForwardDepthOnly"
             Blend Off
 
             HLSLPROGRAM
-            #pragma vertex VSDepth
+            #pragma multi_compile _ NLS_SKINNED
+#pragma vertex VSDepth
             #pragma fragment PSDepth
             #pragma shader_feature _ALPHATEST_ON
             #include "NullusShaderLibrary/Core.hlsl"
+#include "NullusShaderLibrary/Skinning.hlsl"
 
             struct Attributes
             {
                 float3 positionOS : POSITION;
                 float2 uv : TEXCOORD0;
-            };
+    NLS_SKIN_ATTRIBUTES
+};
 
             struct Varyings
             {
@@ -111,7 +117,7 @@ Shader "Nullus/ShaderLab/ForwardDepthOnly"
             Varyings VSDepth(Attributes input)
             {
                 Varyings output;
-                output.positionCS = TransformObjectToHClip(input.positionOS);
+                output.positionCS = TransformObjectToHClip(NLS_SKIN_POSITION(input));
                 output.uv = input.uv;
                 return output;
             }

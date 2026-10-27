@@ -9,6 +9,8 @@
 #include "Rendering/Resources/Texture.h"
 #include "Rendering/Resources/Texture2D.h"
 #include "Rendering/Resources/TextureCube.h"
+#include "Assets/ParticleSystemAsset.h"
+#include "Assets/AnimationAsset.h"
 
 #define NLS_ENGINE_SERIALIZE_PPTR_RESOURCE_TARGETS(APPLY) \
     APPLY(NLS::Render::Resources::Texture, "Texture", NLS::Core::Assets::ArtifactType::Texture, "texture")     \
@@ -16,7 +18,9 @@
     APPLY(NLS::Render::Resources::TextureCube, "TextureCube", NLS::Core::Assets::ArtifactType::Texture, "texture") \
     APPLY(NLS::Render::Resources::Mesh, "Mesh", NLS::Core::Assets::ArtifactType::Mesh, "mesh")           \
     APPLY(NLS::Render::Resources::Shader, "Shader", NLS::Core::Assets::ArtifactType::Shader, "shader")       \
-    APPLY(NLS::Render::Resources::Material, "Material", NLS::Core::Assets::ArtifactType::Material, "material")
+    APPLY(NLS::Render::Resources::Material, "Material", NLS::Core::Assets::ArtifactType::Material, "material") \
+    APPLY(NLS::Engine::Assets::ParticleSystemAsset, "ParticleSystem", NLS::Core::Assets::ArtifactType::VfxSystem, "vfx-system") \
+    APPLY(NLS::Engine::Assets::AnimationAsset, "Animation", NLS::Core::Assets::ArtifactType::AnimationClip, "animation")
 
 namespace NLS::Engine::Serialize
 {

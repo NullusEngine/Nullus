@@ -1,0 +1,168 @@
+{
+  "version": 2,
+  "kind": "Module",
+  "id": "852188b8-ae3f-48e6-9bc8-d6fd04c69641",
+  "name": "Dynamic Stage Offset",
+  "category": "Simulation Stages",
+  "description": "",
+  "visible": true,
+  "suggested": false,
+  "deprecated": false,
+  "exposedVersion": "4dc06489-ef21-479c-a62e-471a4f1f06f6",
+  "versions": [
+    {
+      "id": "4dc06489-ef21-479c-a62e-471a4f1f06f6",
+      "major": 1,
+      "minor": 0,
+      "description": "",
+      "stages": [
+        7
+      ],
+      "inputs": [
+        {
+          "id": "bfb34914-3a36-48d6-886b-d2bd2e4374b4",
+          "name": "Value",
+          "type": 2,
+          "default": [
+            0.0015,
+            0,
+            0,
+            0
+          ],
+          "static": false
+        }
+      ],
+      "graph": {
+        "id": "4e24a67d-18bc-484e-aeb1-91cb16dfd69f",
+        "stage": 2,
+        "nextNodeId": 7,
+        "nodes": [
+          {
+            "id": 1,
+            "operation": 2,
+            "type": 2,
+            "inputs": [],
+            "name": "Module.Value",
+            "value": [
+              0,
+              0,
+              0,
+              0
+            ],
+            "position": [
+              0,
+              0
+            ]
+          },
+          {
+            "id": 2,
+            "operation": 2,
+            "type": 0,
+            "inputs": [],
+            "name": "Dynamic Iteration Weight",
+            "value": [
+              0,
+              0,
+              0,
+              0
+            ],
+            "position": [
+              0,
+              170
+            ]
+          },
+          {
+            "id": 3,
+            "operation": 8,
+            "type": 2,
+            "inputs": [
+              1,
+              2
+            ],
+            "name": "",
+            "value": [
+              0,
+              0,
+              0,
+              0
+            ],
+            "position": [
+              230,
+              0
+            ]
+          },
+          {
+            "id": 4,
+            "operation": 1,
+            "type": 2,
+            "inputs": [],
+            "name": "Particles.Position",
+            "value": [
+              0,
+              0,
+              0,
+              0
+            ],
+            "position": [
+              230,
+              200
+            ]
+          },
+          {
+            "id": 5,
+            "operation": 6,
+            "type": 2,
+            "inputs": [
+              4,
+              3
+            ],
+            "name": "",
+            "value": [
+              0,
+              0,
+              0,
+              0
+            ],
+            "position": [
+              470,
+              0
+            ]
+          },
+          {
+            "id": 6,
+            "operation": 22,
+            "type": 2,
+            "inputs": [
+              5
+            ],
+            "name": "Particles.Position",
+            "value": [
+              0,
+              0,
+              0,
+              0
+            ],
+            "position": [
+              710,
+              0
+            ]
+          }
+        ]
+      },
+      "calls": [
+        {
+          "node": 2,
+          "script": {
+            "asset": "24a99397-2c47-4295-b30f-39fee821dd86",
+            "version": "68e86e7b-b425-4c0f-afa5-6737574aa486"
+          },
+          "output": "Output",
+          "arguments": {}
+        }
+      ],
+      "switches": [],
+      "provides": [],
+      "requiresBefore": []
+    }
+  ]
+}

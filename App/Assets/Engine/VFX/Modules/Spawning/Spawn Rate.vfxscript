@@ -1,0 +1,133 @@
+{
+  "category": "Spawning",
+  "deprecated": false,
+  "description": "Spawns particles continuously.",
+  "exposedVersion": "412db1c0-6c57-f4a8-53a1-5fb92f1b321f",
+  "id": "956612b6-c543-4ab4-09c6-421c2df64c57",
+  "kind": "Module",
+  "name": "Spawn Rate",
+  "suggested": false,
+  "version": 2,
+  "versions": [
+    {
+      "attributes": [],
+      "calls": [],
+      "capabilities": 0,
+      "description": "Spawns particles continuously.",
+      "graph": {
+        "id": "14031bf2-7144-4335-a345-4f0c26841c86",
+        "nextNodeId": 5,
+        "nodes": [
+          {
+            "id": 1,
+            "inputs": [],
+            "name": "Module.Rate",
+            "operation": 2,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 0,
+            "value": [
+              100.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 2,
+            "inputs": [],
+            "name": "Emitter.SpawnRate",
+            "operation": 1,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 0,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 3,
+            "inputs": [
+              2,
+              1
+            ],
+            "name": "",
+            "operation": 6,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 0,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 4,
+            "inputs": [
+              3
+            ],
+            "name": "Emitter.SpawnRate",
+            "operation": 22,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 0,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          }
+        ],
+        "stage": 4
+      },
+      "id": "412db1c0-6c57-f4a8-53a1-5fb92f1b321f",
+      "inputs": [
+        {
+          "default": [
+            100.0,
+            0.0,
+            0.0,
+            0.0
+          ],
+          "id": "f1336543-abe4-cf75-0982-0bca3e84a3b8",
+          "metadata": {
+            "displayName": "",
+            "hasRange": true,
+            "maximum": 100000.0,
+            "minimum": 0.0,
+            "step": 1.0,
+            "tooltip": "Particles spawned per second.",
+            "unit": "1/s",
+            "visibleIf": ""
+          },
+          "name": "Rate",
+          "static": false,
+          "type": 0
+        }
+      ],
+      "major": 1,
+      "minor": 0,
+      "provides": [],
+      "requiresBefore": [],
+      "stages": [
+        3
+      ],
+      "switches": []
+    }
+  ],
+  "visible": true
+}

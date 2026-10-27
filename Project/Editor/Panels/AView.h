@@ -133,6 +133,11 @@ namespace NLS::Editor::Panels
 		*/
 		bool IsMouseWithinView(const Maths::Vector2& mousePosition) const;
 
+        /**
+         * Returns true when this viewport owns mouse input at the given screen position.
+         */
+        bool IsMouseHoveringView(const Maths::Vector2& mousePosition) const;
+
 		/**
 		* Returns true when the previous UI frame drew viewport image bounds that can be used for input.
 		*/

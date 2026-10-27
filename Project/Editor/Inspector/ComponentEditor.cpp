@@ -43,17 +43,25 @@ bool ComponentEditorContext::DrawDefaultInspector()
 {
     bool drawn = false;
     auto iterator = m_serializedObject.GetIterator();
-    const auto rootDepth = iterator ? iterator.GetDepth() : 0u;
-    while (iterator && iterator.NextVisible(true))
+    const auto* stream = m_serializedObject.GetPrimaryByteStream();
+    const auto schema = stream ? stream->GetSchema() : nullptr;
+    const auto rootPath = schema ? schema->GetPath(schema->GetRoot()) : std::string{};
+    const auto fieldDepth = (iterator ? iterator.GetDepth() : 0u) + (rootPath.empty() ? 0u : 1u);
+    bool enterChildren = true;
+    while (iterator && iterator.NextVisible(enterChildren))
     {
-        // The native cursor is rooted at an empty TypeTree node. Its direct
-        // children therefore have the same textual depth as the iterator root
-        // (for example "localPosition"), not rootDepth + 1. Rendering only
-        // those direct children mirrors the external editor's DrawDefaultInspector and lets
-        // a PropertyField own its nested children.
-        if (iterator.GetDepth() == rootDepth)
+        // Named roots (native components) and unnamed roots (accessor/script
+        // backends) are serialization containers. Draw their direct fields;
+        // each PropertyField owns any nested structures and array elements.
+        if (!rootPath.empty() && iterator.GetPropertyPath() == rootPath)
         {
-            drawn = PropertyField(iterator, ComponentEditorPropertyOptions {.forceVisible = false}) || drawn;
+            enterChildren = true;
+            continue;
+        }
+        enterChildren = false;
+        if (iterator.GetDepth() == fieldDepth)
+        {
+            drawn = PropertyField(iterator, ComponentEditorPropertyOptions{.forceVisible = false}) || drawn;
         }
     }
     return drawn;
@@ -165,14 +173,13 @@ void ComponentEditor::UpdateSerializedObject(const PropertyNode& componentNode)
         ? BoundBackendKind::Accessor
         : (nativeReflectionTargets ? BoundBackendKind::NativeReflection : BoundBackendKind::None);
 
-    // The Inspector rebinds every component editor before drawing it. Rebuilding
-    // the stream here would throw away an in-flight preview: ImGui stages a drag
-    // on the frames that report a change and only commits on release, so the
-    // staged value has to survive until that same edit applies or is discarded.
-    if (m_serializedObject.HasModifiedProperties() &&
-        m_boundBackend == backendKind &&
-        m_boundTargets == targets)
+    // Refresh values for a stable binding. Reset also clears expansion state
+    // and local structure revisions, so it belongs to a target/backend change.
+    // Keep staged previews until the control commits or cancels its gesture.
+    if (m_boundBackend == backendKind && m_boundTargets == targets && m_serializedObject.IsValid())
     {
+        if (!m_serializedObject.HasModifiedProperties())
+            m_serializedObject.Update();
         return;
     }
 

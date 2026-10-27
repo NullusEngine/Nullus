@@ -67,6 +67,7 @@ namespace NLS::Engine::Rendering
         using MaterialHandle = NLS::Core::ResourceManagement::ResourceHandle<NLS::Render::Resources::Material>;
 
         std::shared_ptr<MeshHandle> meshHandle;
+        std::shared_ptr<NLS::Render::Resources::Mesh> transientMeshOwner;
         std::shared_ptr<MaterialHandle> materialHandle;
         NLS::Render::Resources::Mesh* mesh = nullptr;
         NLS::Render::Resources::Material* material = nullptr;
@@ -117,6 +118,8 @@ namespace NLS::Engine::Rendering
         NLS::Render::Geometry::BoundingSphere customBoundingSphere;
         NLS::Render::Geometry::Bounds modelBounds;
         Maths::Matrix4 userMatrix = Maths::Matrix4::Identity;
+        bool affectDistanceField = true;
+        bool distanceFieldMostlyStatic = true;
         uint32_t layer = 0u;
         uint64_t ownerRenderRevision = 0u;
         uint64_t meshRendererRenderRevision = 0u;

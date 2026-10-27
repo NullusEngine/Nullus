@@ -1,0 +1,123 @@
+{
+  "category": "Velocity",
+  "deprecated": false,
+  "description": "Scales the current velocity.",
+  "exposedVersion": "0ddd6a06-903a-5e7c-fd73-db48e13a272b",
+  "id": "1b17b31d-c7e4-333c-8185-3a506ef4e3af",
+  "kind": "Module",
+  "name": "Scale Velocity",
+  "suggested": false,
+  "version": 2,
+  "versions": [
+    {
+      "attributes": [],
+      "calls": [],
+      "capabilities": 0,
+      "description": "Scales the current velocity.",
+      "graph": {
+        "id": "c6a2d6bf-2fd1-4813-a3a5-899413c6ce62",
+        "nextNodeId": 5,
+        "nodes": [
+          {
+            "id": 1,
+            "inputs": [],
+            "name": "Particles.Velocity",
+            "operation": 1,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 2,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 2,
+            "inputs": [],
+            "name": "Module.Scale",
+            "operation": 2,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 0,
+            "value": [
+              1.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 3,
+            "inputs": [
+              1,
+              2
+            ],
+            "name": "",
+            "operation": 8,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 2,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 4,
+            "inputs": [
+              3
+            ],
+            "name": "Particles.Velocity",
+            "operation": 22,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 2,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          }
+        ],
+        "stage": 1
+      },
+      "id": "0ddd6a06-903a-5e7c-fd73-db48e13a272b",
+      "inputs": [
+        {
+          "default": [
+            1.0,
+            0.0,
+            0.0,
+            0.0
+          ],
+          "id": "32d60076-cb46-c643-562b-e14c3ba0c884",
+          "name": "Scale",
+          "static": false,
+          "type": 0
+        }
+      ],
+      "major": 1,
+      "minor": 0,
+      "provides": [],
+      "requiresBefore": [],
+      "stages": [
+        5
+      ],
+      "switches": []
+    }
+  ],
+  "visible": true
+}

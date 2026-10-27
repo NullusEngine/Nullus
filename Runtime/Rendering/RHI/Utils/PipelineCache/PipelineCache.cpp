@@ -288,6 +288,7 @@ namespace NLS::Render::RHI
             HashCombine(hash, vertexAttribute.binding);
             HashCombine(hash, vertexAttribute.offset);
             HashCombine(hash, vertexAttribute.elementSize);
+            HashCombine(hash, static_cast<uint32_t>(vertexAttribute.format));
             HashCombine(hash, static_cast<uint32_t>(vertexAttribute.semantic));
             HashCombine(hash, vertexAttribute.semanticIndex);
         }

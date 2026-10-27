@@ -118,6 +118,14 @@ namespace NLS::Engine::Components
 
         const MaterialList& GetMaterials() const;
         uint64_t GetRenderRevision() const;
+        FUNCTION()
+        bool GetAffectDistanceField() const { return m_affectDistanceField; }
+        FUNCTION()
+        void SetAffectDistanceField(bool value) { if (m_affectDistanceField != value) { m_affectDistanceField = value; MarkRenderStateChanged(); } }
+        FUNCTION()
+        bool GetDistanceFieldMostlyStatic() const { return m_distanceFieldMostlyStatic; }
+        FUNCTION()
+        void SetDistanceFieldMostlyStatic(bool value) { if (m_distanceFieldMostlyStatic != value) { m_distanceFieldMostlyStatic = value; MarkRenderStateChanged(); } }
         Material* ResolveMaterialAtIndex(uint32_t p_index);
         const MaterialList& ResolveMaterials();
 
@@ -156,5 +164,9 @@ namespace NLS::Engine::Components
 				EFrustumBehaviour frustumBehaviour = EFrustumBehaviour::CULL_MODEL;
         bool m_transientRenderingSuppressed = false;
         uint64_t m_renderRevision = 1u;
+        PROPERTY(DisplayName("Affect Distance Field"), Getter(GetAffectDistanceField), Setter(SetAffectDistanceField))
+        bool m_affectDistanceField = true;
+        PROPERTY(DisplayName("Mostly Static Distance Field"), Getter(GetDistanceFieldMostlyStatic), Setter(SetDistanceFieldMostlyStatic))
+        bool m_distanceFieldMostlyStatic = true;
 	};
 }

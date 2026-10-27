@@ -45,6 +45,7 @@
 #include "ResourceManagement/TextureManager.h"
 #include "SceneSystem/Scene.h"
 #include "Serialize/ObjectGraphSerializer.h"
+#include "Profiling/PerformanceStageStats.h"
 
 #ifndef NLS_HAS_ASSIMP_FBX_IMPORTER
 #define NLS_HAS_ASSIMP_FBX_IMPORTER 0
@@ -2463,6 +2464,32 @@ NLS_LONG_RUNNING_TEST(EditorAssetDragDropIntegrationPerformanceTests, RepeatedGe
     EXPECT_EQ(CountArtifactTelemetryStage(repeatedRecords, ArtifactLoadTelemetryStage::CacheMiss), 0u);
     EXPECT_EQ(CountArtifactTelemetryStage(repeatedRecords, ArtifactLoadTelemetryStage::PrefabGraphLoad), 0u);
     EXPECT_EQ(scene.GetGameObjects().size(), 2u);
+
+    // Asset Browser payloads can outlive the import that made the asset ready.
+    // An existing scene instance must not turn a stale UI flag into a reimport.
+    auto stalePayload = payload;
+    stalePayload.imported = 0u;
+    const auto metaPath = root / "Assets/Models/RepeatedDropHero.gltf.meta";
+    const auto metaWriteTime = std::filesystem::last_write_time(metaPath);
+    NLS::Base::Profiling::PerformanceStageStats loadStats;
+    NLS::Editor::Assets::EditorAssetDragDropBridgeResult blocking;
+    {
+        NLS::Base::Profiling::PerformanceStageStatsCapture capture(loadStats);
+        blocking = bridge.DropImportedAssetHandleIntoHierarchyBlocking(stalePayload, scene);
+    }
+    ASSERT_EQ(blocking.dragDrop.status, DragDropOperationStatus::Committed)
+        << JoinDiagnosticCodes(blocking.dragDrop);
+    EXPECT_EQ(std::filesystem::last_write_time(metaPath), metaWriteTime)
+        << "Reusing a committed prefab must not save importer settings or reimport the model.";
+    const auto stats = loadStats.Snapshot();
+    const auto snapshotLoad = std::find_if(stats.stages.begin(), stats.stages.end(), [](const auto& stage)
+    {
+        return stage.stageName == "LoadPrefabArtifactDatabaseSnapshot";
+    });
+    ASSERT_NE(snapshotLoad, stats.stages.end());
+    EXPECT_EQ(snapshotLoad->callCount, 1u)
+        << "All renderer dependencies of one drop must share one ArtifactDB snapshot.";
+    EXPECT_EQ(scene.GetGameObjects().size(), 3u);
 
     std::filesystem::remove_all(root);
 }

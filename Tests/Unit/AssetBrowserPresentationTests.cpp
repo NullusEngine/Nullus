@@ -786,7 +786,8 @@ TEST(AssetBrowserPresentationTests, AssetTypeIconOverridesUseCatalogedNullusReso
     bool foundLuaIcon = false;
     for (const auto& record : records)
     {
-        if (record.type != NLS::Editor::Core::EditorResourceType::Icon ||
+        if ((record.type != NLS::Editor::Core::EditorResourceType::Icon &&
+                record.type != NLS::Editor::Core::EditorResourceType::SceneTexture) ||
             record.developmentPath.empty())
         {
             continue;
@@ -804,12 +805,12 @@ TEST(AssetBrowserPresentationTests, AssetTypeIconOverridesUseCatalogedNullusReso
         if (record.id == "editor.icon.asset.scene")
         {
             foundSceneIcon = true;
-            EXPECT_EQ(record.developmentPath.generic_string(), "Editor/Brand/NullusLogoMark.png");
+            EXPECT_EQ(record.developmentPath.generic_string(), "Editor/Icons/asset-scene@128.png");
         }
         if (record.id == "editor.icon.asset.shader")
         {
             foundShaderIcon = true;
-            EXPECT_EQ(record.developmentPath.generic_string(), "Editor/Icons/asset-shader.png");
+            EXPECT_EQ(record.developmentPath.generic_string(), "Editor/Icons/asset-shader@128.png");
         }
         if (record.id == "editor.icon.asset.prefab")
             foundPrefabIcon = true;
@@ -5765,6 +5766,24 @@ TEST(AssetBrowserPresentationTests, WorkflowCapabilitiesExposePhysicalFolderAndS
     EXPECT_FALSE(generatedMaterialCapabilities.canEdit);
     EXPECT_FALSE(generatedMaterialCapabilities.canRename);
     EXPECT_FALSE(generatedMaterialCapabilities.canDelete);
+
+    AssetBrowserItem particleSystem;
+    particleSystem.kind = AssetBrowserItemKind::SourceAsset;
+    particleSystem.type = AssetBrowserItemType::Other;
+    particleSystem.absolutePath = "C:/Project/Assets/Effects/Fire.vfx";
+    particleSystem.projectRelativePath = "Assets/Effects/Fire.vfx";
+    particleSystem.dragResourcePath = "Assets/Effects/Fire.vfx";
+    particleSystem.selectionResourcePath = "Assets/Effects/Fire.vfx";
+    const auto particleSystemCapabilities = BuildAssetBrowserWorkflowCapabilities(particleSystem);
+    EXPECT_TRUE(particleSystemCapabilities.canOpenExternal);
+    EXPECT_TRUE(particleSystemCapabilities.canEdit);
+    EXPECT_TRUE(particleSystemCapabilities.canRename);
+    EXPECT_TRUE(particleSystemCapabilities.canDelete);
+    EXPECT_TRUE(particleSystemCapabilities.canDuplicate);
+    EXPECT_TRUE(particleSystemCapabilities.canOpenProperties);
+    EXPECT_FALSE(particleSystemCapabilities.canReimport);
+    EXPECT_FALSE(particleSystemCapabilities.canReload);
+    EXPECT_FALSE(particleSystemCapabilities.canCompile);
 }
 
 TEST(AssetBrowserPresentationTests, RefreshPlanKeepsFilterAndFolderSelectionLocal)

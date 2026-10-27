@@ -1,0 +1,1001 @@
+{
+  "category": "Location",
+  "deprecated": false,
+  "description": "Samples a torus surface around the specified axis.",
+  "exposedVersion": "10d99fdd-a0e9-16db-6485-9cd2ae312bdc",
+  "id": "f06c3db7-5c46-6e77-bf20-d2fde7950e5c",
+  "kind": "Module",
+  "name": "Torus Location",
+  "suggested": false,
+  "version": 4,
+  "versions": [
+    {
+      "attributes": [],
+      "calls": [],
+      "capabilities": 0,
+      "description": "Samples a torus surface around the specified axis.",
+      "graph": {
+        "id": "6385c2e0-a972-4372-a9fc-baae34de7249",
+        "nextNodeId": 50,
+        "nodes": [
+          {
+            "id": 1,
+            "inputs": [],
+            "name": "Module.Axis",
+            "operation": 2,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 2,
+            "value": [
+              0.0,
+              1.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 2,
+            "inputs": [
+              1
+            ],
+            "name": "",
+            "operation": 18,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 2,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 3,
+            "inputs": [],
+            "name": "",
+            "operation": 0,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 2,
+            "value": [
+              0.0,
+              0.0,
+              1.0,
+              0.0
+            ]
+          },
+          {
+            "id": 4,
+            "inputs": [
+              2,
+              3
+            ],
+            "name": "",
+            "operation": 20,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 0,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 5,
+            "inputs": [
+              4
+            ],
+            "name": "",
+            "operation": 16,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 0,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 6,
+            "inputs": [],
+            "name": "",
+            "operation": 0,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 0,
+            "value": [
+              0.8999999761581421,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 7,
+            "inputs": [
+              5,
+              6
+            ],
+            "name": "",
+            "operation": 29,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 5,
+            "value": false
+          },
+          {
+            "id": 8,
+            "inputs": [],
+            "name": "",
+            "operation": 0,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 2,
+            "value": [
+              1.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 9,
+            "inputs": [],
+            "name": "",
+            "operation": 0,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 2,
+            "value": [
+              0.0,
+              0.0,
+              1.0,
+              0.0
+            ]
+          },
+          {
+            "id": 10,
+            "inputs": [
+              7,
+              8,
+              9
+            ],
+            "name": "",
+            "operation": 34,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 2,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 11,
+            "inputs": [
+              2,
+              10
+            ],
+            "name": "",
+            "operation": 21,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 2,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 12,
+            "inputs": [
+              11
+            ],
+            "name": "",
+            "operation": 18,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 2,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 13,
+            "inputs": [
+              2,
+              12
+            ],
+            "name": "",
+            "operation": 21,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 2,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 14,
+            "inputs": [],
+            "name": "",
+            "operation": 5,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 0,
+            "value": [
+              0.5,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 15,
+            "inputs": [],
+            "name": "",
+            "operation": 0,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 0,
+            "value": [
+              0.5,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 16,
+            "inputs": [
+              14,
+              15
+            ],
+            "name": "",
+            "operation": 8,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 0,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 17,
+            "inputs": [],
+            "name": "",
+            "operation": 0,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 0,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 18,
+            "inputs": [],
+            "name": "",
+            "operation": 0,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 0,
+            "value": [
+              1.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 19,
+            "inputs": [
+              16,
+              17,
+              18
+            ],
+            "name": "",
+            "operation": 12,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 0,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 20,
+            "inputs": [],
+            "name": "",
+            "operation": 0,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 0,
+            "value": [
+              6.2831854820251465,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 21,
+            "inputs": [
+              19,
+              20
+            ],
+            "name": "",
+            "operation": 8,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 0,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 22,
+            "inputs": [
+              21
+            ],
+            "name": "",
+            "operation": 15,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 0,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 23,
+            "inputs": [
+              12,
+              22
+            ],
+            "name": "",
+            "operation": 8,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 2,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 24,
+            "inputs": [
+              21
+            ],
+            "name": "",
+            "operation": 14,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 0,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 25,
+            "inputs": [
+              13,
+              24
+            ],
+            "name": "",
+            "operation": 8,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 2,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 26,
+            "inputs": [
+              23,
+              25
+            ],
+            "name": "",
+            "operation": 6,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 2,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 27,
+            "inputs": [],
+            "name": "",
+            "operation": 5,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 0,
+            "value": [
+              0.5,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 28,
+            "inputs": [],
+            "name": "",
+            "operation": 0,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 0,
+            "value": [
+              0.5,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 29,
+            "inputs": [
+              27,
+              28
+            ],
+            "name": "",
+            "operation": 8,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 0,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 30,
+            "inputs": [],
+            "name": "",
+            "operation": 0,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 0,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 31,
+            "inputs": [],
+            "name": "",
+            "operation": 0,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 0,
+            "value": [
+              1.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 32,
+            "inputs": [
+              29,
+              30,
+              31
+            ],
+            "name": "",
+            "operation": 12,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 0,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 33,
+            "inputs": [],
+            "name": "",
+            "operation": 0,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 0,
+            "value": [
+              6.2831854820251465,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 34,
+            "inputs": [
+              32,
+              33
+            ],
+            "name": "",
+            "operation": 8,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 0,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 35,
+            "inputs": [
+              34
+            ],
+            "name": "",
+            "operation": 15,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 0,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 36,
+            "inputs": [],
+            "name": "Module.Minor Radius",
+            "operation": 2,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 0,
+            "value": [
+              0.10000000149011612,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 37,
+            "inputs": [
+              35,
+              36
+            ],
+            "name": "",
+            "operation": 8,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 0,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 38,
+            "inputs": [
+              34
+            ],
+            "name": "",
+            "operation": 14,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 0,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 39,
+            "inputs": [],
+            "name": "Module.Minor Radius",
+            "operation": 2,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 0,
+            "value": [
+              0.10000000149011612,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 40,
+            "inputs": [
+              38,
+              39
+            ],
+            "name": "",
+            "operation": 8,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 0,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 41,
+            "inputs": [],
+            "name": "Module.Major Radius",
+            "operation": 2,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 0,
+            "value": [
+              0.5,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 42,
+            "inputs": [
+              26,
+              41
+            ],
+            "name": "",
+            "operation": 8,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 2,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 43,
+            "inputs": [
+              26,
+              37
+            ],
+            "name": "",
+            "operation": 8,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 2,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 44,
+            "inputs": [
+              2,
+              40
+            ],
+            "name": "",
+            "operation": 8,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 2,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 45,
+            "inputs": [
+              43,
+              44
+            ],
+            "name": "",
+            "operation": 6,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 2,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 46,
+            "inputs": [],
+            "name": "Module.Center",
+            "operation": 2,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 2,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 47,
+            "inputs": [
+              42,
+              45
+            ],
+            "name": "",
+            "operation": 6,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 2,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 48,
+            "inputs": [
+              46,
+              47
+            ],
+            "name": "",
+            "operation": 6,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 2,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 49,
+            "inputs": [
+              48
+            ],
+            "name": "Particles.Position",
+            "operation": 22,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 2,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          }
+        ],
+        "stage": 0
+      },
+      "id": "10d99fdd-a0e9-16db-6485-9cd2ae312bdc",
+      "inputs": [
+        {
+          "default": [
+            0.0,
+            0.0,
+            0.0,
+            0.0
+          ],
+          "id": "9546f24a-7143-078f-8849-f024b25375c2",
+          "name": "Center",
+          "static": false,
+          "type": 2
+        },
+        {
+          "default": [
+            0.5,
+            0.0,
+            0.0,
+            0.0
+          ],
+          "id": "9f57e70d-5488-074b-7bc2-4d2698b9b9da",
+          "name": "Major Radius",
+          "static": false,
+          "type": 0
+        },
+        {
+          "default": [
+            0.10000000149011612,
+            0.0,
+            0.0,
+            0.0
+          ],
+          "id": "d2af4da2-8457-b5f7-0f42-70272d825dc6",
+          "name": "Minor Radius",
+          "static": false,
+          "type": 0
+        },
+        {
+          "default": [
+            0.0,
+            1.0,
+            0.0,
+            0.0
+          ],
+          "id": "b6079ca2-5b7a-32ff-87ae-df55d0372b1a",
+          "name": "Axis",
+          "static": false,
+          "type": 2
+        }
+      ],
+      "major": 1,
+      "minor": 0,
+      "provides": [],
+      "requiresBefore": [
+        "Initialize Particle"
+      ],
+      "stages": [
+        4
+      ],
+      "switches": []
+    }
+  ],
+  "visible": true
+}

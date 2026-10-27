@@ -106,6 +106,7 @@ struct ResolvedModelTextureReference
 };
 
 void ApplyModelTextureFallback(ResolvedModelTextureReference& result);
+std::string ResolveModelTextureBuildTargetPlatform(const std::string& artifactTargetPlatform);
 std::string MakeModelTextureStableKey(const ModelTextureSourceReference& source);
 std::vector<ModelTextureSourceReference> AssignModelTextureStableKeys(
     std::vector<ModelTextureSourceReference> sources);

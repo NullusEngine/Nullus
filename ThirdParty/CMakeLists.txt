@@ -47,6 +47,13 @@ if(NLS_ENABLE_LUA_SCRIPTING AND TARGET NLS_Lua AND EXISTS "${CMAKE_CURRENT_SOURC
     set_target_properties(NLS_LuaSocket PROPERTIES FOLDER ${third_party_folder}/LuaSocket)
 endif()
 
+# Zstandard backs the .npak content container. It is vendored at a pinned
+# version so the editor, the player runtime, and NullusBuild always agree on
+# compressed bytes for the same input.
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/zstd/CMakeLists.txt" AND NOT TARGET zstd)
+    add_subdirectory(zstd)
+endif()
+
 option(NLS_ASSIMP_BUILD_ALL_FORMATS "Build Assimp with all upstream default importers/exporters" OFF)
 option(NLS_ENABLE_ASSIMP_FBX_IMPORTER "Enable Assimp FBX importer without enabling every Assimp format" ON)
 option(NLS_ENABLE_AUTODESK_FBX_SDK "Enable Autodesk FBX SDK integration when the bundled SDK is available" OFF)
@@ -363,6 +370,8 @@ if(NOT TARGET ImGui)
     # 指定FOLDER
     set_target_properties(ImGui PROPERTIES FOLDER ${third_party_folder}/ImGui)
 endif()
+
+include("${CMAKE_CURRENT_LIST_DIR}/physx.cmake")
 
 if(NOT TARGET FrameGraph)
     set(FG_BUILD_TEST OFF CACHE BOOL "" FORCE)

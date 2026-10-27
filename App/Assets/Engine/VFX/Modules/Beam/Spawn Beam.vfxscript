@@ -1,0 +1,296 @@
+{
+  "category": "Beam",
+  "deprecated": false,
+  "description": "Places particles along the line between two endpoints and writes their link order.",
+  "exposedVersion": "7216dc54-aa8b-d5f1-deda-74a7096fa266",
+  "id": "484c6b3a-db35-c5d9-65c1-baa52b90f5aa",
+  "kind": "Module",
+  "name": "Spawn Beam",
+  "suggested": false,
+  "version": 2,
+  "versions": [
+    {
+      "attributes": [
+        {
+          "default": [
+            0.0,
+            0.0,
+            0.0,
+            0.0
+          ],
+          "name": "Particles.RibbonLinkOrder",
+          "type": 0
+        },
+        {
+          "default": [
+            0.0,
+            0.0,
+            0.0,
+            0.0
+          ],
+          "name": "Particles.RibbonWidth",
+          "type": 0
+        }
+      ],
+      "calls": [],
+      "capabilities": 0,
+      "description": "Places particles along the line between two endpoints and writes their link order.",
+      "graph": {
+        "id": "41e60237-3e5b-4c8b-9649-5ece5ff2be4e",
+        "nextNodeId": 12,
+        "nodes": [
+          {
+            "id": 1,
+            "inputs": [],
+            "name": "Module.Start",
+            "operation": 2,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 2,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 2,
+            "inputs": [],
+            "name": "Module.End",
+            "operation": 2,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 2,
+            "value": [
+              0.0,
+              0.0,
+              100.0,
+              0.0
+            ]
+          },
+          {
+            "id": 3,
+            "inputs": [],
+            "name": "Particles.RibbonLinkOrder",
+            "operation": 1,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 0,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 4,
+            "inputs": [],
+            "name": "Module.Particles Per Unit",
+            "operation": 2,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 0,
+            "value": [
+              1.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 5,
+            "inputs": [],
+            "name": "",
+            "operation": 0,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 0,
+            "value": [
+              9.999999974752427e-07,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 6,
+            "inputs": [
+              4,
+              5
+            ],
+            "name": "",
+            "operation": 11,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 0,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 7,
+            "inputs": [
+              3,
+              6
+            ],
+            "name": "",
+            "operation": 9,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 0,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 8,
+            "inputs": [],
+            "name": "",
+            "operation": 0,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 0,
+            "value": [
+              0.10000000149011612,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 9,
+            "inputs": [
+              1
+            ],
+            "name": "Particles.Position",
+            "operation": 22,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 2,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 10,
+            "inputs": [
+              7
+            ],
+            "name": "Particles.RibbonLinkOrder",
+            "operation": 22,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 0,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 11,
+            "inputs": [
+              8
+            ],
+            "name": "Particles.RibbonWidth",
+            "operation": 22,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 0,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          }
+        ],
+        "stage": 0
+      },
+      "id": "7216dc54-aa8b-d5f1-deda-74a7096fa266",
+      "inputs": [
+        {
+          "default": [
+            0.0,
+            0.0,
+            0.0,
+            0.0
+          ],
+          "id": "ee040830-937a-6e84-8a98-7d48c03f5ec3",
+          "name": "Start",
+          "static": false,
+          "type": 2
+        },
+        {
+          "default": [
+            0.0,
+            0.0,
+            100.0,
+            0.0
+          ],
+          "id": "909207ea-20b2-9e7d-94fa-7f7aa16643d6",
+          "name": "End",
+          "static": false,
+          "type": 2
+        },
+        {
+          "default": [
+            1.0,
+            0.0,
+            0.0,
+            0.0
+          ],
+          "id": "e0ca8b21-ef07-fa16-9097-e5f28cab69b7",
+          "name": "Particles Per Unit",
+          "static": false,
+          "type": 0
+        }
+      ],
+      "major": 1,
+      "minor": 0,
+      "provides": [],
+      "requiresBefore": [
+        "Initialize Particle"
+      ],
+      "stages": [
+        4
+      ],
+      "switches": []
+    }
+  ],
+  "visible": true
+}

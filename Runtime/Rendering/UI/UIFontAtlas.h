@@ -6,11 +6,13 @@
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
+#include <functional>
 #include <memory>
 #include <mutex>
 #include <optional>
 #include <string_view>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 namespace NLS::Render::UI
@@ -63,6 +65,9 @@ namespace NLS::Render::UI
         uint64_t evictedGlyphs = 0u;
         uint64_t pageAllocations = 0u;
         uint64_t missingFontRequests = 0u;
+        // Glyphs whose requested face was unavailable and were rasterized with
+        // the default face instead. Distinct from tofu fallbackGlyphs.
+        uint64_t fallbackFaceGlyphs = 0u;
     };
 
     // Font backend contract. A production build can install a FreeType/
@@ -80,6 +85,19 @@ namespace NLS::Render::UI
         bool SetFontData(const uint8_t* data, size_t byteCount);
         bool LoadFontFromFile(const std::filesystem::path& path);
         [[nodiscard]] bool HasFontData() const;
+
+        // Per-font-asset faces. Face id 1 is the process default used when a
+        // text run does not request a project font. SetFaceData overrides a
+        // face immediately; EnsureFace asks the installed provider for bytes
+        // on demand. A failed provider request is cached until InvalidateFont,
+        // Clear or ClearFaceFailures so a missing font does not hit the disk
+        // for every glyph.
+        bool SetFaceData(uint64_t fontAssetId, const uint8_t* data, size_t byteCount);
+        bool EnsureFace(uint64_t fontAssetId);
+        [[nodiscard]] bool HasFace(uint64_t fontAssetId) const;
+        [[nodiscard]] uint32_t GetFaceCount() const;
+        void SetMaxFaces(uint32_t maxFaces);
+        void ClearFaceFailures();
 
         void Configure(uint32_t pageWidth, uint32_t pageHeight, uint32_t maxPages);
         void SetCompletedFrame(uint64_t completedFrame) { m_completedFrame = completedFrame; }
@@ -109,15 +127,23 @@ namespace NLS::Render::UI
 
     private:
         struct FontRasterizerState;
+        struct FontFace;
 
         struct GlyphKeyHash
         {
             size_t operator()(UIFontGlyphKey key) const noexcept;
         };
 
+        static constexpr uint64_t DefaultFaceId = 1u;
+
         static bool DecodeUtf8(std::string_view text, size_t& offset, uint32_t& codepoint);
         bool AllocateGlyphPage(uint32_t cellWidth, uint32_t cellHeight, uint64_t frameId, UIFontGlyph& output);
         bool EvictOldestPage(uint64_t frameId);
+        [[nodiscard]] FontFace* FindFaceLocked(uint64_t fontAssetId);
+        [[nodiscard]] const FontFace* FindFaceLocked(uint64_t fontAssetId) const;
+        [[nodiscard]] bool FindFaceReadyLocked(uint64_t fontAssetId) const;
+        void RemoveFaceGlyphsLocked(uint64_t fontAssetId);
+        void EvictFacesLocked(uint64_t keepFaceId);
 
         mutable std::mutex m_mutex;
         uint32_t m_pageWidth = 1024u;
@@ -127,10 +153,19 @@ namespace NLS::Render::UI
         std::vector<UIFontAtlasPage> m_pages;
         std::unordered_map<UIFontGlyphKey, UIFontGlyph, GlyphKeyHash> m_glyphs;
         UIFontAtlasDiagnostics m_diagnostics;
-        std::vector<uint8_t> m_fontData;
-        std::unique_ptr<FontRasterizerState> m_fontState;
+        std::unordered_map<uint64_t, std::unique_ptr<FontFace>> m_faces;
+        std::unordered_set<uint64_t> m_failedFaces;
+        uint32_t m_maxFontFaces = 16u;
         uint64_t m_generation = 1u;
     };
+
+    // Host-installed face source. The provider receives a stable font asset id
+    // (allocated by IUIDocumentResourceResolver) and fills bytes with the TTF
+    // payload. Returning false keeps the face unavailable and the atlas uses
+    // the default face (or tofu) until the face is invalidated.
+    using UIFontFaceProvider = std::function<bool(uint64_t fontAssetId, std::vector<uint8_t>& bytes)>;
+    NLS_RENDER_API void SetUIFontFaceProvider(UIFontFaceProvider provider);
+    NLS_RENDER_API void ClearUIFontFaceProvider();
 
     // Process-wide atlas for producers that do not own one (the document paint
     // path, for example). The font is loaded lazily from the engine font asset.

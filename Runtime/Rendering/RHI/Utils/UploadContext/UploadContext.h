@@ -72,6 +72,8 @@ namespace NLS::Render::RHI
     {
     public:
         virtual ~UploadBackend() = default;
+        virtual uint32_t TextureRowAlignment() const { return 1; }
+        virtual uint32_t TextureSliceAlignment() const { return 1; }
         virtual std::shared_ptr<RHIBuffer> CreateStagingBuffer(
             const void* data,
             size_t size,

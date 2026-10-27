@@ -13,6 +13,7 @@
 #include <Core/ResourceManagement/TextureManager.h>
 #include <Core/ServiceLocator.h>
 #include <Engine/Assets/RuntimeAssetDatabase.h>
+#include <Engine/UI/UIResourceReference.h>
 #include <Engine/UI/UIDocumentReference.h>
 #include <Object/Object.h>
 
@@ -89,6 +90,55 @@ bool IsResourcePointerType(const meta::Type& type)
 bool IsUIDocumentReferenceType(const meta::Type& type)
 {
     return type == NLS_TYPEOF(Engine::UI::UIDocumentReference);
+}
+
+bool IsUITextureReferenceType(const meta::Type& type)
+{
+    return type == NLS_TYPEOF(Engine::UI::UITextureReference);
+}
+
+bool IsUIFontReferenceType(const meta::Type& type)
+{
+    return type == NLS_TYPEOF(Engine::UI::UIFontReference);
+}
+
+bool IsUIResourceReferenceType(const meta::Type& type)
+{
+    return IsUITextureReferenceType(type) || IsUIFontReferenceType(type);
+}
+
+template <typename Reference>
+std::string DescribeUIResourceReference(
+    const meta::Variant& value,
+    const char* label)
+{
+    const auto& reference = value.GetValue<Reference>();
+    if (reference.IsNull())
+        return std::string("None (") + label + ")";
+
+    const auto& path = reference.GetResourcePath();
+    const auto fileName = std::filesystem::path(path).filename().generic_string();
+    const auto source = fileName.empty()
+        ? (path.empty() ? reference.GetAssetIdString() : path)
+        : fileName;
+    return (source.empty() ? std::string("Assigned") : source) +
+        " (" + label + ")";
+}
+
+template <typename Reference>
+bool AssignUIResourceReference(
+    meta::Variant& value,
+    const Assets::EditorAssetDragPayload& payload)
+{
+    const auto assetId = Assets::GetEditorAssetDragPayloadAssetId(payload);
+    const auto path = Assets::GetEditorAssetDragPayloadPath(payload);
+    if (!assetId.IsValid() && path.empty())
+        return false;
+    value = Reference(
+        assetId,
+        Assets::GetEditorAssetDragPayloadSubAssetKey(payload),
+        path);
+    return true;
 }
 
 std::string ShortTypeName(const meta::Type& type)
@@ -204,6 +254,9 @@ bool IsNullPPtr(const meta::Variant& value, const meta::Type& type)
 
 bool IsCompatiblePPtrArtifact(const meta::Type& type, const NLS::Core::Assets::ArtifactType artifactType)
 {
+    if(type==NLS_TYPEOF(Engine::Serialize::PPtr<Engine::Assets::AnimationAsset>))
+        return artifactType==NLS::Core::Assets::ArtifactType::Skeleton||artifactType==NLS::Core::Assets::ArtifactType::Skin||
+            artifactType==NLS::Core::Assets::ArtifactType::AnimationClip||artifactType==NLS::Core::Assets::ArtifactType::AnimationGraph||artifactType==NLS::Core::Assets::ArtifactType::SkeletalMesh;
 #define NLS_INSPECTOR_MATCH_PPTR_ARTIFACT(targetType, label, expectedArtifactType, subAssetPrefix) \
     if (type == NLS_TYPEOF(Engine::Serialize::PPtr<targetType>)) return artifactType == expectedArtifactType;
     NLS_ENGINE_SERIALIZE_PPTR_RESOURCE_TARGETS(NLS_INSPECTOR_MATCH_PPTR_ARTIFACT)
@@ -313,7 +366,8 @@ bool IsInspectorSceneObjectReferenceType(const meta::Type& type)
 
 bool IsInspectorAssetObjectReferenceType(const meta::Type& type)
 {
-    return IsSupportedPPtrType(type) || IsResourcePointerType(type) || IsUIDocumentReferenceType(type);
+    return IsSupportedPPtrType(type) || IsResourcePointerType(type) ||
+        IsUIDocumentReferenceType(type) || IsUIResourceReferenceType(type);
 }
 
 bool IsSupportedInspectorObjectReferenceType(const meta::Type& type)
@@ -335,6 +389,10 @@ bool IsCompatibleInspectorReferenceArtifact(const meta::Type& type, const NLS::C
         return artifactType == NLS::Core::Assets::ArtifactType::Material;
     if (IsUIDocumentReferenceType(type))
         return artifactType == NLS::Core::Assets::ArtifactType::UIDocument;
+    if (IsUITextureReferenceType(type))
+        return artifactType == NLS::Core::Assets::ArtifactType::Texture;
+    if (IsUIFontReferenceType(type))
+        return artifactType == NLS::Core::Assets::ArtifactType::Font;
     return false;
 }
 
@@ -370,6 +428,11 @@ std::string GetInspectorObjectReferenceDisplay(const meta::Variant& value, const
         return (source.empty() ? std::string("Assigned") : source) + " (UI Document)";
     }
 
+    if (IsUITextureReferenceType(type))
+        return DescribeUIResourceReference<Engine::UI::UITextureReference>(value, "Texture");
+    if (IsUIFontReferenceType(type))
+        return DescribeUIResourceReference<Engine::UI::UIFontReference>(value, "Font");
+
     if (IsInspectorSceneObjectReferenceType(type))
         return DescribeObjectPointer(GetSceneObjectPointer(value), type);
     if (type == NLS_TYPEOF(Render::Resources::Texture2D*))
@@ -400,6 +463,25 @@ bool ClearInspectorObjectReference(meta::Variant& value, const meta::Type& type)
     if (IsUIDocumentReferenceType(type))
     {
         auto reference = value.GetValue<Engine::UI::UIDocumentReference>();
+        if (reference.IsNull())
+            return false;
+        reference.Reset();
+        value = std::move(reference);
+        return true;
+    }
+
+    if (IsUITextureReferenceType(type))
+    {
+        auto reference = value.GetValue<Engine::UI::UITextureReference>();
+        if (reference.IsNull())
+            return false;
+        reference.Reset();
+        value = std::move(reference);
+        return true;
+    }
+    if (IsUIFontReferenceType(type))
+    {
+        auto reference = value.GetValue<Engine::UI::UIFontReference>();
         if (reference.IsNull())
             return false;
         reference.Reset();
@@ -475,6 +557,11 @@ bool AssignInspectorAssetReference(
         value = Engine::UI::UIDocumentReference(assetId, path);
         return true;
     }
+
+    if (IsUITextureReferenceType(type))
+        return AssignUIResourceReference<Engine::UI::UITextureReference>(value, payload);
+    if (IsUIFontReferenceType(type))
+        return AssignUIResourceReference<Engine::UI::UIFontReference>(value, payload);
 
     const auto path = ResolveAssetLoadPath(payload);
     if (path.empty())
@@ -648,6 +735,30 @@ std::optional<InspectorTargetHandle> GetInspectorObjectReferencePingTarget(
                 reference.GetResourcePath(),
                 reference.GetAssetIdString(),
                 "UI Document");
+        }
+    }
+    if (IsUITextureReferenceType(type))
+    {
+        const auto& reference = value.GetValue<Engine::UI::UITextureReference>();
+        if (!reference.IsNull())
+        {
+            return InspectorTargetHandle::FromAsset(
+                InspectorTargetKind::AssetImporter,
+                reference.GetResourcePath(),
+                reference.GetAssetIdString(),
+                "Texture");
+        }
+    }
+    if (IsUIFontReferenceType(type))
+    {
+        const auto& reference = value.GetValue<Engine::UI::UIFontReference>();
+        if (!reference.IsNull())
+        {
+            return InspectorTargetHandle::FromAsset(
+                InspectorTargetKind::AssetImporter,
+                reference.GetResourcePath(),
+                reference.GetAssetIdString(),
+                "Font");
         }
     }
     if (type == NLS_TYPEOF(Render::Resources::Material*))

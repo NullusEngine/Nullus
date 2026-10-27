@@ -1200,6 +1200,7 @@ void MeshManager::IndexMeshPath(const std::string& path, Mesh* resource)
         return;
 
     m_meshPathIndex[normalizedPath] = { path, resource };
+    resource->SetSourceArtifactPath(normalizedPath);
 }
 
 void MeshManager::RemoveMeshPathIndexEntry(const std::string& path, Mesh* resource)

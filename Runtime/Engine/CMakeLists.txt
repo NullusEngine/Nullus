@@ -5,6 +5,8 @@ nls_add_runtime_target(
   LIBS
     NLS_Core
     NLS_UI
+    NLS_VFX
+    NLS_Physics
   )
 
 target_compile_definitions(NLS_Engine PUBLIC

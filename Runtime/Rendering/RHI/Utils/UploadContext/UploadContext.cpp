@@ -6,6 +6,7 @@
 #include <vector>
 
 #include "Rendering/RHI/Core/RHIResource.h"
+#include "Rendering/RHI/Utils/UploadContext/TextureUploadRegion.h"
 
 namespace NLS::Render::RHI
 {
@@ -85,6 +86,8 @@ namespace NLS::Render::RHI
         {
             const UploadTextureRequest* request = nullptr;
             std::shared_ptr<RHIBuffer> staging;
+            uint32_t rowPitch = 0;
+            uint32_t slicePitch = 0;
         };
 
         std::string MemoryUsageName(const MemoryUsage memoryUsage)
@@ -361,6 +364,12 @@ namespace NLS::Render::RHI
                     return "UploadTexture destination uses " +
                         MemoryUsageName(request.destination->GetDesc().memoryUsage) +
                         " memory; texture upload destinations must be GPUOnly";
+                TextureUploadRegionLayout layout;
+                std::string error;
+                if (!ValidateTextureUploadRegion(request.destination->GetDesc(), request.mipLevel,
+                    request.arrayLayer, request.textureOffset, request.extent, request.rowPitch,
+                    request.slicePitch, request.dataSize, layout, error))
+                    return error;
                 return {};
             }
 
@@ -569,9 +578,28 @@ namespace NLS::Render::RHI
                 UploadBatchSubmission& submission,
                 std::vector<PreparedTextureUpload>& preparedUploads)
             {
+                TextureUploadRegionLayout layout;
+                std::string error;
+                if (!ValidateTextureUploadRegion(request.destination->GetDesc(), request.mipLevel,
+                    request.arrayLayer, request.textureOffset, request.extent, request.rowPitch,
+                    request.slicePitch, request.dataSize, layout, error))
+                    return FailSubmission(submission, std::move(error));
+                const uint64_t rowAlignment = (std::max)(m_backend->TextureRowAlignment(), 1u);
+                const uint64_t sliceAlignment = (std::max)(m_backend->TextureSliceAlignment(), 1u);
+                const uint64_t nativeRow = (uint64_t(layout.rowBytes) + rowAlignment - 1) / rowAlignment * rowAlignment;
+                const uint64_t nativeSlice = (nativeRow * layout.rows + sliceAlignment - 1) / sliceAlignment * sliceAlignment;
+                if (nativeSlice > UINT32_MAX || nativeSlice * request.extent.depth > SIZE_MAX)
+                    return FailSubmission(submission, "Texture upload staging size overflow");
+                std::vector<uint8_t> packed(static_cast<size_t>(nativeSlice * request.extent.depth));
+                const auto* source = static_cast<const uint8_t*>(request.data);
+                for (uint32_t z = 0; z < request.extent.depth; ++z)
+                    for (uint32_t y = 0; y < layout.rows; ++y)
+                        std::memcpy(packed.data() + z * nativeSlice + y * nativeRow,
+                            source + uint64_t(z) * layout.slicePitch + uint64_t(y) * layout.rowPitch,
+                            layout.rowBytes);
                 auto staging = m_backend->CreateStagingBuffer(
-                    request.data,
-                    request.dataSize,
+                    packed.data(),
+                    packed.size(),
                     request.debugName.empty() ? batchName + "TextureUpload" + std::to_string(index) : request.debugName);
                 if (staging == nullptr)
                 {
@@ -581,7 +609,8 @@ namespace NLS::Render::RHI
                         "]: backend failed to create staging buffer");
                 }
 
-                preparedUploads.push_back({ &request, std::move(staging) });
+                preparedUploads.push_back({ &request, std::move(staging),
+                    static_cast<uint32_t>(nativeRow), static_cast<uint32_t>(nativeSlice) });
                 return true;
             }
 
@@ -617,8 +646,8 @@ namespace NLS::Render::RHI
                 copyDesc.arrayLayer = request.arrayLayer;
                 copyDesc.textureOffset = request.textureOffset;
                 copyDesc.extent = request.extent;
-                copyDesc.rowPitch = request.rowPitch;
-                copyDesc.slicePitch = request.slicePitch;
+                copyDesc.rowPitch = preparedUpload.rowPitch;
+                copyDesc.slicePitch = preparedUpload.slicePitch;
                 commandBuffer.CopyBufferToTexture(copyDesc);
 
                 commandBuffer.Barrier(BuildTextureBarrier(request.destination, ResourceState::CopyDst, afterState));

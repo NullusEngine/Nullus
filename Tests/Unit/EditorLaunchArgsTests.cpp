@@ -734,22 +734,32 @@ TEST(EditorLaunchArgsTests, JobSystemReportsEffectiveBackgroundWorkerCount)
 #endif
 }
 
-TEST(EditorLaunchArgsTests, JobSystemResolvesAutomaticBackgroundWorkerCountFromHardware)
+TEST(EditorLaunchArgsTests, JobSystemResolvesAutomaticWorkerCountsFromTheSharedBudget)
 {
 #if !defined(NLS_ENABLE_TEST_HOOKS)
     GTEST_SKIP() << "NLS_ENABLE_TEST_HOOKS is required to isolate the global JobSystem.";
 #else
     NLS::Base::Jobs::ResetJobSystemForTesting();
     NLS::Base::Jobs::JobSystemConfig config;
-    config.workerCount = 1u;
+    // Both fields stay automatic so the test covers the shared-budget path that
+    // also guards the rendering TaskGraph against oversubscription.
+    config.workerCount = NLS::Base::Jobs::kAutoJobWorkerCount;
     config.backgroundWorkerCount = NLS::Base::Jobs::kAutoJobWorkerCount;
     ASSERT_TRUE(NLS::Base::Jobs::TryInitializeJobSystem(config));
 
-    const uint32_t hardwareWorkers = std::thread::hardware_concurrency();
-    const uint32_t expectedWorkers = hardwareWorkers <= 1u
-        ? 1u
-        : std::min(64u, hardwareWorkers - 1u);
-    EXPECT_EQ(NLS::Base::Jobs::GetBackgroundJobWorkerCount(), expectedWorkers);
+    const uint32_t reportedHardware = std::thread::hardware_concurrency();
+    const uint32_t hardwareWorkers = reportedHardware == 0u
+        ? NLS::Base::Threading::kFallbackHardwareConcurrency
+        : reportedHardware;
+    const auto budget = NLS::Base::Threading::ResolveExecutionPoolBudget(hardwareWorkers);
+
+    EXPECT_EQ(NLS::Base::Jobs::GetJobWorkerCount(), budget.jobsForegroundWorkerCount);
+    EXPECT_EQ(NLS::Base::Jobs::GetBackgroundJobWorkerCount(), budget.jobsBackgroundWorkerCount);
+    // The automatic JobSystem pool and the rendering TaskGraph must fit in the
+    // one hardware budget instead of each resolving hardware - 1.
+    EXPECT_LE(
+        NLS::Base::Jobs::GetJobWorkerCount() + NLS::Base::Jobs::GetBackgroundJobWorkerCount(),
+        budget.totalPoolWorkerCount);
     NLS::Base::Jobs::ResetJobSystemForTesting();
 #endif
 }

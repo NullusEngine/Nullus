@@ -1,0 +1,356 @@
+{
+  "category": "Debug",
+  "deprecated": false,
+  "description": "Turns two positions into the center, size and velocity used by a stretched sprite.",
+  "exposedVersion": "0278241f-04b1-5897-424f-10e8b3336c80",
+  "id": "2fd52e4e-7732-6043-8ae8-ce9871bffa68",
+  "kind": "Module",
+  "name": "Sprite Based Line",
+  "suggested": false,
+  "version": 2,
+  "versions": [
+    {
+      "attributes": [
+        {
+          "default": [
+            0.10000000149011612,
+            0.0,
+            0.0,
+            0.0
+          ],
+          "name": "Particles.Size",
+          "type": 0
+        },
+        {
+          "default": [
+            0.0,
+            1.0,
+            0.0,
+            0.0
+          ],
+          "name": "Particles.Velocity",
+          "type": 2
+        }
+      ],
+      "calls": [],
+      "capabilities": 0,
+      "description": "Turns two positions into the center, size and velocity used by a stretched sprite.",
+      "graph": {
+        "id": "5d098e89-7a0a-4bc4-b63e-ff7fd2815cb8",
+        "nextNodeId": 15,
+        "nodes": [
+          {
+            "id": 1,
+            "inputs": [],
+            "name": "Particles.Position",
+            "operation": 1,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 2,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 2,
+            "inputs": [],
+            "name": "Module.Point B",
+            "operation": 2,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 2,
+            "value": [
+              0.0,
+              1.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 3,
+            "inputs": [
+              2,
+              1
+            ],
+            "name": "",
+            "operation": 7,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 2,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 4,
+            "inputs": [
+              3
+            ],
+            "name": "",
+            "operation": 19,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 0,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 5,
+            "inputs": [],
+            "name": "",
+            "operation": 0,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 0,
+            "value": [
+              9.999999974752427e-07,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 6,
+            "inputs": [
+              4,
+              5
+            ],
+            "name": "",
+            "operation": 11,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 0,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 7,
+            "inputs": [],
+            "name": "",
+            "operation": 0,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 0,
+            "value": [
+              0.5,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 8,
+            "inputs": [
+              1,
+              2
+            ],
+            "name": "",
+            "operation": 6,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 2,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 9,
+            "inputs": [
+              8,
+              7
+            ],
+            "name": "",
+            "operation": 8,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 2,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 10,
+            "inputs": [
+              6,
+              7
+            ],
+            "name": "",
+            "operation": 11,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 0,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 11,
+            "inputs": [],
+            "name": "Module.Sprite Width",
+            "operation": 2,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 0,
+            "value": [
+              0.10000000149011612,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 12,
+            "inputs": [
+              9
+            ],
+            "name": "Particles.Position",
+            "operation": 22,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 2,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 13,
+            "inputs": [
+              10
+            ],
+            "name": "Particles.Size",
+            "operation": 22,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 0,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 14,
+            "inputs": [
+              3
+            ],
+            "name": "Particles.Velocity",
+            "operation": 22,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 2,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          }
+        ],
+        "stage": 1
+      },
+      "id": "0278241f-04b1-5897-424f-10e8b3336c80",
+      "inputs": [
+        {
+          "default": [
+            0.0,
+            0.0,
+            0.0,
+            0.0
+          ],
+          "id": "1c70a10e-6434-9923-f983-c6866564c7d0",
+          "name": "Point A",
+          "static": false,
+          "type": 2
+        },
+        {
+          "default": [
+            0.0,
+            1.0,
+            0.0,
+            0.0
+          ],
+          "id": "1c70a20e-6434-9ad6-f983-c9866564cce9",
+          "name": "Point B",
+          "static": false,
+          "type": 2
+        },
+        {
+          "default": [
+            0.10000000149011612,
+            0.0,
+            0.0,
+            0.0
+          ],
+          "id": "7744868f-85f1-10f7-6582-0b7d3c5242ea",
+          "name": "Sprite Width",
+          "static": false,
+          "type": 0
+        }
+      ],
+      "major": 1,
+      "minor": 0,
+      "provides": [],
+      "requiresBefore": [],
+      "stages": [
+        5
+      ],
+      "switches": []
+    }
+  ],
+  "visible": true
+}

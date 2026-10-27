@@ -25,8 +25,10 @@
 #include "Rendering/LargeSceneSettings.h"
 #include "Rendering/LightGridPrepass.h"
 #include "Rendering/RenderScene.h"
+#include "Rendering/ParticleSceneRenderer.h"
 #include "Rendering/SceneOcclusion.h"
 #include "Rendering/SceneStreamingResidency.h"
+#include "Rendering/DistanceField/DistanceFieldSystem.h"
 
 #include "EngineDef.h"
 
@@ -81,6 +83,7 @@ namespace NLS::Engine::Rendering
 			DecalDrawables decals;
 			TransparentDrawables transparents;
 			SkyboxDrawables skyboxes;
+                std::vector<ParticleViewInput> particles;
 		};
 
 		struct SceneDescriptor
@@ -135,6 +138,12 @@ namespace NLS::Engine::Rendering
 		void SetLargeSceneSettings(const LargeSceneSettings& settings);
 		[[nodiscard]] const LargeSceneSettings& GetLargeSceneSettings() const;
 			const std::shared_ptr<NLS::Render::RHI::RHIBindingSet>& GetLightGridGraphicsPassBindingSet() const;
+        void SetDistanceFieldDebugSettings(Render::DistanceField::DistanceFieldDebugSettings settings)
+        { m_distanceFieldDebug.store(std::make_shared<const Render::DistanceField::DistanceFieldDebugSettings>(settings)); }
+        Render::DistanceField::DistanceFieldDebugSettings GetDistanceFieldDebugSettings() const
+        { return *m_distanceFieldDebug.load(); }
+        Render::DistanceField::DistanceFieldStats GetDistanceFieldStats() const
+        { auto system = m_distanceFieldSystem.load(); return system ? system->GetStats() : Render::DistanceField::DistanceFieldStats{}; }
 			NLS::Render::FrameGraph::LightGridCompileContext BuildLightGridCompileContext(
 				bool hasSkyboxTexture = false) const;
 			NLS::Render::FrameGraph::LightGridCompileContext BuildLightGridCompileContext(
@@ -260,6 +269,7 @@ namespace NLS::Engine::Rendering
 		struct SceneParseInput
 		{
 			std::vector<SceneSynchronizeCapture> scenes;
+                std::vector<ParticleViewInput> particles;
 			// The additive scenes still referenced by the descriptor this frame.
 			std::vector<SceneSystem::Scene*> activeAdditiveSceneIdentities;
 			// Owned so the resolve half can point RenderSceneSyncOptions at stable
@@ -300,6 +310,11 @@ namespace NLS::Engine::Rendering
 		AllDrawables ResolveSceneParse(
 			SceneParseInput& input,
 			const NLS::Render::FrameGraph::FrozenFrameDescriptor& frame);
+            void AppendParticleScenePass(Render::Context::RenderScenePackage& package,
+                const Render::FrameGraph::FrozenFrameDescriptor& frame, const std::vector<ParticleViewInput>& particles);
+        void AppendDistanceFieldScenePass(Render::Context::RenderScenePackage& package,
+            const Render::FrameGraph::FrozenFrameDescriptor& frame,
+            const Render::DistanceField::DistanceFieldDebugSettings& settings, uint64_t frameId);
 		/**
 		 * Releases every capture in `input` that is still claimed.
 		 *
@@ -504,6 +519,12 @@ namespace NLS::Engine::Rendering
 		uint64_t m_sceneFallbackShaderGeneration = 0u;
 		std::string m_sceneFallbackShaderResourcePath;
 		RenderScene m_renderScene;
+            ParticleSceneRenderer m_particleRenderer;
+        std::atomic<std::shared_ptr<Render::DistanceField::DistanceFieldSystem>> m_distanceFieldSystem;
+        std::atomic<std::shared_ptr<const Render::DistanceField::DistanceFieldDebugSettings>> m_distanceFieldDebug{
+            std::make_shared<const Render::DistanceField::DistanceFieldDebugSettings>()};
+        std::shared_ptr<const uint64_t> m_distanceFieldViewLifetime =
+            Render::DistanceField::DistanceFieldSystem::CreateViewLifetime();
 		std::mutex m_additiveRenderScenesMutex;
 		std::unordered_map<SceneSystem::Scene*, std::shared_ptr<RenderScene>> m_additiveRenderScenes;
 		std::vector<ScenePickablePrimitiveDrawSource> m_lastVisiblePickablePrimitiveDrawSources;

@@ -17,8 +17,33 @@ namespace NLS::Render::UI
         bool ready = false;
     };
 
+    struct UIFontAtlas::FontFace
+    {
+        // stbtt_fontinfo keeps pointers into bytes, so the buffer must never be
+        // copied or reallocated after initialization.
+        std::vector<uint8_t> bytes;
+        std::unique_ptr<FontRasterizerState> rasterizer;
+        uint64_t lastUsedFrame = 0u;
+    };
+
     namespace
     {
+        bool LooksLikeTrueType(const uint8_t* data, const size_t byteCount)
+        {
+            if (data == nullptr || byteCount < 12u)
+                return false;
+            const uint32_t tag =
+                (static_cast<uint32_t>(data[0]) << 24u) |
+                (static_cast<uint32_t>(data[1]) << 16u) |
+                (static_cast<uint32_t>(data[2]) << 8u) |
+                static_cast<uint32_t>(data[3]);
+            // TrueType, OpenType/CFF, 'true' and 'typ1'. stb_truetype can read
+            // the first four formats; collections ('ttcf') need an explicit
+            // face offset and are rejected rather than parsed as face zero.
+            return tag == 0x00010000u || tag == 0x4f54544fu ||
+                tag == 0x74727565u || tag == 0x74797031u;
+        }
+
         // Writes a white RGBA glyph cell. Coverage arrives in `alpha`; `tofu`
         // paints the whole cell so an unbacked font is unmistakably visible.
         void BlitGlyphCell(
@@ -74,29 +99,187 @@ namespace NLS::Render::UI
     UIFontAtlas::UIFontAtlas() = default;
     UIFontAtlas::~UIFontAtlas() = default;
 
-    bool UIFontAtlas::SetFontData(const uint8_t* data, const size_t byteCount)
+    namespace
     {
-        std::lock_guard lock(m_mutex);
-        m_fontState.reset();
-        m_fontData.clear();
-        if (data == nullptr || byteCount == 0u)
-            return false;
-
-        auto state = std::make_unique<FontRasterizerState>();
-        m_fontData.assign(data, data + byteCount);
-        if (stbtt_InitFont(&state->info, m_fontData.data(), 0) == 0)
+        std::mutex& FaceProviderMutex()
         {
-            m_fontData.clear();
-            return false;
+            static std::mutex mutex;
+            return mutex;
         }
 
-        state->ready = true;
-        m_fontState = std::move(state);
-        // Glyph cells are rasterized from the new font, so drop cached pages.
-        m_pages.clear();
-        m_glyphs.clear();
+        UIFontFaceProvider& FaceProviderStorage()
+        {
+            static UIFontFaceProvider provider;
+            return provider;
+        }
+
+        UIFontFaceProvider CopyFaceProvider()
+        {
+            std::lock_guard lock(FaceProviderMutex());
+            return FaceProviderStorage();
+        }
+    }
+
+    void SetUIFontFaceProvider(UIFontFaceProvider provider)
+    {
+        std::lock_guard lock(FaceProviderMutex());
+        FaceProviderStorage() = std::move(provider);
+    }
+
+    void ClearUIFontFaceProvider()
+    {
+        std::lock_guard lock(FaceProviderMutex());
+        FaceProviderStorage() = nullptr;
+    }
+
+    bool UIFontAtlas::SetFontData(const uint8_t* data, const size_t byteCount)
+    {
+        return SetFaceData(DefaultFaceId, data, byteCount);
+    }
+
+    bool UIFontAtlas::SetFaceData(
+        uint64_t fontAssetId,
+        const uint8_t* data,
+        const size_t byteCount)
+    {
+        if (fontAssetId == 0u)
+            fontAssetId = DefaultFaceId;
+        if (!LooksLikeTrueType(data, byteCount))
+            return false;
+
+        auto face = std::make_unique<FontFace>();
+        face->bytes.assign(data, data + byteCount);
+
+        auto rasterizer = std::make_unique<FontRasterizerState>();
+        if (stbtt_InitFont(&rasterizer->info, face->bytes.data(), 0) == 0)
+            return false;
+        rasterizer->ready = true;
+        face->rasterizer = std::move(rasterizer);
+
+        std::lock_guard lock(m_mutex);
+        m_faces[fontAssetId] = std::move(face);
+        m_failedFaces.erase(fontAssetId);
+        if (fontAssetId == DefaultFaceId)
+        {
+            // The default face backs text runs that did not request a project
+            // font; replacing it invalidates every cached page (all pages were
+            // rasterized against the previous default). Project faces stay
+            // loaded and are re-rasterized on demand.
+            m_pages.clear();
+            m_glyphs.clear();
+        }
+        else
+        {
+            RemoveFaceGlyphsLocked(fontAssetId);
+        }
+        EvictFacesLocked(fontAssetId);
         ++m_generation;
         return true;
+    }
+
+    bool UIFontAtlas::EnsureFace(const uint64_t fontAssetId)
+    {
+        const auto faceId = fontAssetId == 0u ? DefaultFaceId : fontAssetId;
+        {
+            std::lock_guard lock(m_mutex);
+            if (FindFaceReadyLocked(faceId))
+                return true;
+            if (m_failedFaces.find(faceId) != m_failedFaces.end())
+                return false;
+        }
+
+        const auto provider = CopyFaceProvider();
+        if (!provider)
+            return false;
+
+        std::vector<uint8_t> bytes;
+        if (!provider(faceId, bytes) || bytes.empty())
+        {
+            std::lock_guard lock(m_mutex);
+            m_failedFaces.insert(faceId);
+            return false;
+        }
+        return SetFaceData(faceId, bytes.data(), bytes.size());
+    }
+
+    bool UIFontAtlas::HasFace(const uint64_t fontAssetId) const
+    {
+        const auto faceId = fontAssetId == 0u ? DefaultFaceId : fontAssetId;
+        std::lock_guard lock(m_mutex);
+        return FindFaceReadyLocked(faceId);
+    }
+
+    uint32_t UIFontAtlas::GetFaceCount() const
+    {
+        std::lock_guard lock(m_mutex);
+        return static_cast<uint32_t>(m_faces.size());
+    }
+
+    void UIFontAtlas::SetMaxFaces(const uint32_t maxFaces)
+    {
+        std::lock_guard lock(m_mutex);
+        // The default face is always resident, so a useful cap is at least two.
+        m_maxFontFaces = std::max(2u, maxFaces);
+        EvictFacesLocked(DefaultFaceId);
+    }
+
+    void UIFontAtlas::ClearFaceFailures()
+    {
+        std::lock_guard lock(m_mutex);
+        m_failedFaces.clear();
+    }
+
+    UIFontAtlas::FontFace* UIFontAtlas::FindFaceLocked(const uint64_t fontAssetId)
+    {
+        const auto iterator = m_faces.find(fontAssetId);
+        return iterator == m_faces.end() ? nullptr : iterator->second.get();
+    }
+
+    const UIFontAtlas::FontFace* UIFontAtlas::FindFaceLocked(const uint64_t fontAssetId) const
+    {
+        const auto iterator = m_faces.find(fontAssetId);
+        return iterator == m_faces.end() ? nullptr : iterator->second.get();
+    }
+
+    bool UIFontAtlas::FindFaceReadyLocked(const uint64_t fontAssetId) const
+    {
+        const auto* face = FindFaceLocked(fontAssetId);
+        return face != nullptr && face->rasterizer != nullptr && face->rasterizer->ready;
+    }
+
+    void UIFontAtlas::RemoveFaceGlyphsLocked(const uint64_t fontAssetId)
+    {
+        for (auto iterator = m_glyphs.begin(); iterator != m_glyphs.end();)
+        {
+            if (iterator->first.fontAssetId == fontAssetId)
+                iterator = m_glyphs.erase(iterator);
+            else
+                ++iterator;
+        }
+    }
+
+    void UIFontAtlas::EvictFacesLocked(const uint64_t keepFaceId)
+    {
+        while (m_faces.size() > m_maxFontFaces)
+        {
+            auto victim = m_faces.end();
+            for (auto iterator = m_faces.begin(); iterator != m_faces.end(); ++iterator)
+            {
+                if (iterator->first == DefaultFaceId || iterator->first == keepFaceId)
+                    continue;
+                if (victim == m_faces.end() ||
+                    iterator->second->lastUsedFrame < victim->second->lastUsedFrame)
+                {
+                    victim = iterator;
+                }
+            }
+            if (victim == m_faces.end())
+                break;
+            const auto faceId = victim->first;
+            RemoveFaceGlyphsLocked(faceId);
+            m_faces.erase(victim);
+            ++m_generation;
+        }
     }
 
     bool UIFontAtlas::LoadFontFromFile(const std::filesystem::path& path)
@@ -112,8 +295,7 @@ namespace NLS::Render::UI
 
     bool UIFontAtlas::HasFontData() const
     {
-        std::lock_guard lock(m_mutex);
-        return m_fontState != nullptr && m_fontState->ready;
+        return HasFace(DefaultFaceId);
     }
 
     namespace
@@ -209,13 +391,64 @@ namespace NLS::Render::UI
         if (key.fontAssetId == 0u || key.codepoint == 0u || key.pixelSize == 0u)
             return false;
 
-        std::lock_guard lock(m_mutex);
+        std::unique_lock lock(m_mutex);
         if (const auto existing = m_glyphs.find(key); existing != m_glyphs.end())
         {
             existing->second.lastUsedFrame = frameId;
             output = existing->second;
             return true;
         }
+
+        auto findFace = [&](const uint64_t fontAssetId) -> FontFace*
+        {
+            return FindFaceLocked(fontAssetId == 0u ? DefaultFaceId : fontAssetId);
+        };
+
+        FontFace* requestedFace = fontAvailable ? findFace(key.fontAssetId) : nullptr;
+        if (requestedFace == nullptr && fontAvailable && key.fontAssetId != DefaultFaceId)
+        {
+            // Provider I/O may touch the file system/asset database, so it must
+            // not run while holding the atlas lock.
+            lock.unlock();
+            EnsureFace(key.fontAssetId);
+            lock.lock();
+
+            // Another thread may have generated the same glyph while the lock
+            // was released; honor its work instead of rasterizing twice.
+            if (const auto existing = m_glyphs.find(key); existing != m_glyphs.end())
+            {
+                existing->second.lastUsedFrame = frameId;
+                output = existing->second;
+                return true;
+            }
+            requestedFace = findFace(key.fontAssetId);
+        }
+
+        FontFace* face = nullptr;
+        bool usingFallbackFace = false;
+        if (fontAvailable)
+        {
+            if (requestedFace != nullptr && requestedFace->rasterizer != nullptr &&
+                requestedFace->rasterizer->ready)
+            {
+                face = requestedFace;
+            }
+            else if (key.fontAssetId != DefaultFaceId)
+            {
+                // A missing project face keeps text legible with the default
+                // face and reports the fallback instead of painting tofu for an
+                // otherwise supported codepoint.
+                auto* defaultFace = findFace(DefaultFaceId);
+                if (defaultFace != nullptr && defaultFace->rasterizer != nullptr &&
+                    defaultFace->rasterizer->ready)
+                {
+                    face = defaultFace;
+                    usingFallbackFace = true;
+                }
+            }
+        }
+        if (face != nullptr)
+            face->lastUsedFrame = frameId;
 
         const uint32_t cell = std::clamp<uint32_t>(
             static_cast<uint32_t>(std::ceil(static_cast<float>(key.pixelSize) * 1.5f)),
@@ -237,29 +470,30 @@ namespace NLS::Render::UI
             }
         }
 
-        const int glyphIndex = fontAvailable && m_fontState != nullptr && m_fontState->ready
-            ? stbtt_FindGlyphIndex(&m_fontState->info, static_cast<int>(key.codepoint))
+        const int glyphIndex = face != nullptr
+            ? stbtt_FindGlyphIndex(&face->rasterizer->info, static_cast<int>(key.codepoint))
             : 0;
         if (glyphIndex != 0 && page != nullptr)
         {
+            stbtt_fontinfo& info = face->rasterizer->info;
             const float scale = stbtt_ScaleForPixelHeight(
-                &m_fontState->info,
+                &info,
                 static_cast<float>(key.pixelSize));
             int advance = 0;
             int leftSideBearing = 0;
-            stbtt_GetGlyphHMetrics(&m_fontState->info, glyphIndex, &advance, &leftSideBearing);
+            stbtt_GetGlyphHMetrics(&info, glyphIndex, &advance, &leftSideBearing);
             int x0 = 0;
             int y0 = 0;
             int x1 = 0;
             int y1 = 0;
-            stbtt_GetGlyphBitmapBox(&m_fontState->info, glyphIndex, scale, scale, &x0, &y0, &x1, &y1);
+            stbtt_GetGlyphBitmapBox(&info, glyphIndex, scale, scale, &x0, &y0, &x1, &y1);
             const auto bitmapWidth = static_cast<uint32_t>((std::max)(0, x1 - x0));
             const auto bitmapHeight = static_cast<uint32_t>((std::max)(0, y1 - y0));
             std::vector<uint8_t> bitmap(static_cast<size_t>(bitmapWidth) * bitmapHeight, 0u);
             if (bitmapWidth != 0u && bitmapHeight != 0u)
             {
                 stbtt_MakeGlyphBitmap(
-                    &m_fontState->info,
+                    &info,
                     bitmap.data(),
                     static_cast<int>(bitmapWidth),
                     static_cast<int>(bitmapHeight),
@@ -287,6 +521,8 @@ namespace NLS::Render::UI
             output.height = static_cast<float>(bitmapHeight);
             output.fallback = false;
             ++m_diagnostics.generatedGlyphs;
+            if (usingFallbackFace)
+                ++m_diagnostics.fallbackFaceGlyphs;
         }
         else
         {
@@ -344,15 +580,13 @@ namespace NLS::Render::UI
     void UIFontAtlas::InvalidateFont(const uint64_t fontAssetId, const uint64_t retireFrame)
     {
         std::lock_guard lock(m_mutex);
-        for (auto iterator = m_glyphs.begin(); iterator != m_glyphs.end();)
-        {
-            if (iterator->first.fontAssetId == fontAssetId)
-                iterator = m_glyphs.erase(iterator);
-            else
-                ++iterator;
-        }
+        RemoveFaceGlyphsLocked(fontAssetId);
+        m_failedFaces.erase(fontAssetId);
+        if (fontAssetId != DefaultFaceId)
+            m_faces.erase(fontAssetId);
         for (auto& page : m_pages)
             page.retireFrame = std::max(page.retireFrame, retireFrame);
+        ++m_generation;
     }
 
     void UIFontAtlas::CollectRetiredPages(const uint64_t completedFrame)
@@ -373,6 +607,7 @@ namespace NLS::Render::UI
     {
         m_pages.clear();
         m_glyphs.clear();
+        m_failedFaces.clear();
         m_diagnostics = {};
         ++m_generation;
     }

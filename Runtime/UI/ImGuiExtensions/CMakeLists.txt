@@ -4,6 +4,12 @@ nls_register_imgui_extension(
   NAME ImGuizmo
 )
 
+nls_register_imgui_extension(
+  NAME ImGuiNodeEditor
+  COMPILE_DEFINITIONS
+    IMGUI_DEFINE_MATH_OPERATORS
+)
+
 set(_timeline_profiler_libs)
 set(_timeline_profiler_with_profiling 0)
 if(WIN32 AND NLS_ENABLE_TIMELINE_PROFILER)

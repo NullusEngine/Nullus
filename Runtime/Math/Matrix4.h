@@ -17,6 +17,14 @@ class NLS_MATH_API Matrix4
 {
 public:
 	float data[16];
+    Vector4 GetRow0() const;
+    Vector4 GetRow1() const;
+    Vector4 GetRow2() const;
+    Vector4 GetRow3() const;
+    void SetRow0(const Vector4& value);
+    void SetRow1(const Vector4& value);
+    void SetRow2(const Vector4& value);
+    void SetRow3(const Vector4& value);
 	static const Matrix4 Identity;
 
 	/**

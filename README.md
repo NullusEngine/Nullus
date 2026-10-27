@@ -50,7 +50,7 @@ Nullus 是一个持续演进的 C++ 3D 引擎。它将原生运行时、项目�
 
 - **内置 StandardPBR 基线**：引擎自带 `StandardPBR` ShaderLab 资源；模型导入会将材质、纹理和子资源接入这一套 PBR 内容链路。
 - **由着色器定义材质参数**：ShaderLab 属性支持 Float、Int、Range、Vector、Color 与 Texture2D / TextureCube。材质还可管理关键词集合和渲染队列覆盖，使参数、变体与渲染状态保持在同一资源对象中。
-- **Editor 内直接编辑和预览**：在 Inspector 中选中材质资源即可编辑渲染状态、着色器与 uniform 参数，参数项由材质当前的 uniform 数据生成；改动即时生效并进入撤销栈，保存与重载是显式的资源动作。Asset Browser 为材质提供 GPU 缩略图，并可通过 Preview 在 Asset View 面板中打开材质预览。
+- **独立材质工作台**：Material Editor 编辑 `.mat`、ShaderLab 与 ShaderGraph，提供反射参数、节点图、球体预览和撤销。Working、Saved 与 Applied 分开管理；Save 写源文件，Apply to Scene 发布编译成功的结果，失败时保留场景中的有效材质。
 - **资源化与安全重载**：材质作为可异步加载和预热的资源工件管理。ShaderLab 重载先校验请求的变体，成功后更新关联材质并使受影响的管线代次失效。
 
 ### 从源文件到可用资产
@@ -75,12 +75,18 @@ Nullus 是一个持续演进的 C++ 3D 引擎。它将原生运行时、项目�
 - **材质调试在场景旁完成**：从资源选择、属性编辑到球体预览均在 Editor 内完成，不需要离开当前项目上下文。
 - **性能可观察**：共享 Profiling facade 可接入 Tracy 或 Editor Timeline Profiler，渲染线程与 RHI 线程具备统一的 CPU/GPU 标记入口。
 
+### 动画、粒子与成品构建
+
+- **动画工作流**：Animation Workbench、Animator、GPU 蒙皮、状态机、BlendSpace 与 Notify 已接入制作和播放；Root Motion、IK、重定向和多角色性能预算仍需建设。
+- **粒子工作流**：Particle Editor 通过模块栈制作 CPU/GPU 发射器，提供整系统预览、参数和曲线；场景支持 Sprite/Mesh 绘制与静态碰撞查询，完整功能覆盖和设备验收仍有边界。
+- **Player 打包**：`NullusBuild` 按 Build Profile 收集依赖、Cook 内容、生成 `.npak` 并组装桌面 Player；安装器、自动更新和移动端交付尚未提供。
+
 ### 原生引擎基础设施
 
 - `Scene / SceneManager / GameObject / Component` 组件化场景系统。
 - MetaParser 代码生成反射，驱动类型注册、Inspector、对象序列化和脚本 API 清单。
 - 原生 JobSystem 提供依赖、批处理、并行 for 和后台任务调度；渲染调度由带优先级、命名通道与 work stealing 的 TaskGraph 承担。
-- Runtime 分为 `Base`、`Core`、`Engine`、`Math`、`Platform`、`Rendering`、`Scripting` 与 `UI`，Editor 与 Game 共享运行时主链路。
+- Runtime 包含基础、场景、渲染、脚本与 UI 模块，并扩展了 `Animation`、`Physics`、`VFX`、`Cook`、`Build` 及配套编译器；Editor 与 Game 共享运行时主链路。
 
 ## 项目启动器
 
@@ -159,6 +165,9 @@ cmake --build build --config Debug --target Editor
 - [大场景与资源管理](Docs/zh-CN/large-scenes/visibility-occlusion.md)
 - [游戏逻辑与脚本](Docs/zh-CN/scripting/overview.md)
 - [用户界面](Docs/zh-CN/ui/overview.md)
+- [动画制作与验证](Docs/zh-CN/animation/workflow.md)
+- [粒子制作工作流](Docs/zh-CN/audio-vfx/particles.md)
+- [Player 打包与分发](Docs/zh-CN/platform-build/packaging.md)
 - [平台、构建与发布](Docs/zh-CN/platform-build/platforms.md)
 - [扩展与引擎架构](Docs/zh-CN/architecture/modules.md)
 - [调试、性能与质量](Docs/zh-CN/quality/debugging.md)

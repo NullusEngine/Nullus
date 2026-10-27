@@ -5,6 +5,7 @@
 #include <unordered_set>
 
 #include <Debug/Logger.h>
+#include <Physics/PhysicsWorld.h>
 #include "SceneSystem/Scene.h"
 #include "Rendering/SceneRenderStoreRegistry.h"
 #include "GameObject.h"
@@ -112,12 +113,28 @@ bool Scene::IsPlaying() const
 
 void Scene::Update(float p_deltaTime)
 {
+    UpdateGameplay(p_deltaTime);
+    UpdateAnimations(p_deltaTime);
+}
+
+void Scene::UpdateGameplay(float p_deltaTime)
+{
+	SynchronizePhysics();
 	auto actors = m_gameobject;
 	std::for_each(actors.begin(), actors.end(), std::bind(std::mem_fn(&GameObject::OnUpdate), std::placeholders::_1, p_deltaTime));
 }
 
+void Scene::UpdateAnimations(float p_deltaTime)
+{
+    const auto& animation=GetFastAccessComponents();
+    for(auto* animator:animation.animators)if(animator&&animator->IsSelfEnabled()&&animator->gameobject()->IsActive())animator->Evaluate(p_deltaTime);
+    for(auto* mesh:animation.skinnedMeshes)if(mesh&&mesh->IsSelfEnabled()&&mesh->gameobject()->IsActive())mesh->PublishPose();
+    for(auto* animator:animation.animators)if(animator&&animator->IsSelfEnabled()&&animator->gameobject()->IsActive())animator->Finalize();
+}
+
 void Scene::FixedUpdate(float p_deltaTime)
 {
+	SynchronizePhysics();
 	auto actors = m_gameobject;
 	std::for_each(actors.begin(), actors.end(), std::bind(std::mem_fn(&GameObject::OnFixedUpdate), std::placeholders::_1, p_deltaTime));
 }
@@ -428,6 +445,36 @@ void Scene::MarkRenderContentChanged()
 	++m_renderContentRevision;
 }
 
+const std::shared_ptr<NLS::Physics::PhysicsWorld>& Scene::GetPhysicsWorld()
+{
+	if (m_physicsWorld == nullptr && !m_physicsWorldUnavailable)
+	{
+		std::string error;
+		m_physicsWorld = NLS::Physics::PhysicsWorld::Create(error);
+		if (m_physicsWorld == nullptr)
+		{
+			m_physicsWorldUnavailable = true;
+			NLS_LOG_ERROR("Scene physics query world creation failed: " + error);
+		}
+	}
+	return m_physicsWorld;
+}
+
+void Scene::NotifyPhysicsChanged()
+{
+	++m_physicsRevision;
+}
+
+// Runs before component updates so particle collision queries observe the
+// current frame's collider poses. Only dirty or moved colliders touch PhysX.
+void Scene::SynchronizePhysics()
+{
+	const auto& colliders = GetFastAccessComponents().physicsColliders;
+	for (auto* collider : colliders)
+		if (collider != nullptr)
+			collider->Synchronize();
+}
+
 void Scene::NotifyGameObjectDestroyed(GameObject& p_actor)
 {
     std::unordered_set<GameObject*> notifiedActors;
@@ -532,6 +579,10 @@ void Scene::RebuildFastAccessComponents()
 	m_fastAccessComponents.lights.clear();
 	m_fastAccessComponents.skyboxs.clear();
 	m_fastAccessComponents.uiCanvases.clear();
+        m_fastAccessComponents.particleSystems.clear();
+        m_fastAccessComponents.animators.clear();
+        m_fastAccessComponents.skinnedMeshes.clear();
+		m_fastAccessComponents.physicsColliders.clear();
 
 	std::unordered_set<GameObject*> visited;
 	std::function<void(GameObject*)> collectComponents = [this, &visited, &collectComponents](GameObject* go)
@@ -546,6 +597,10 @@ void Scene::RebuildFastAccessComponents()
 		CollectExactComponents(*go, m_fastAccessComponents.lights);
 		CollectExactComponents(*go, m_fastAccessComponents.skyboxs);
 		CollectExactComponents(*go, m_fastAccessComponents.uiCanvases);
+            CollectExactComponents(*go, m_fastAccessComponents.particleSystems);
+            CollectExactComponents(*go, m_fastAccessComponents.animators);
+            CollectExactComponents(*go, m_fastAccessComponents.skinnedMeshes);
+			CollectExactComponents(*go, m_fastAccessComponents.physicsColliders);
 
 		for (auto* child : go->GetChildren())
 			collectComponents(child);

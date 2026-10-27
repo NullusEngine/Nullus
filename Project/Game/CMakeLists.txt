@@ -65,4 +65,25 @@ target_link_libraries(
 )
 nls_copy_shared_runtime_to_target(Game)
 
+# The player template carries the managed assemblies produced by the shared
+# scripting build. Shipping validation rejects C# projects when this payload
+# is absent, so keep it next to Game.exe instead of relying on an editor cache.
+if(NLS_ENABLE_CSHARP_SCRIPTING)
+  set(_nls_managed_player_dir "${CMAKE_BINARY_DIR}/Managed/$<CONFIG>")
+  add_custom_command(TARGET Game POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E make_directory
+      "$<TARGET_FILE_DIR:Game>/Scripts"
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+      "${_nls_managed_player_dir}/GameScripts.dll"
+      "${_nls_managed_player_dir}/GameScripts.deps.json"
+      "${_nls_managed_player_dir}/GameScripts.runtimeconfig.json"
+      "${_nls_managed_player_dir}/EngineScripts.dll"
+      "${_nls_managed_player_dir}/EngineScripts.deps.json"
+      "${_nls_managed_player_dir}/EngineScripts.runtimeconfig.json"
+      "${_nls_managed_player_dir}/Nullus.Managed.dll"
+      "$<TARGET_FILE_DIR:Game>/Scripts"
+    VERBATIM
+    COMMENT "Copying managed player payload for Game")
+endif()
+
 nls_target_precompile_headers(Game "${NLS_ROOT_DIR}/Project/NullusProjectPch.h")

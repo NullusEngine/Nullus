@@ -13,6 +13,7 @@
 #include "Inspector/ComponentEditor.h"
 #include "Inspector/InspectorUndo.h"
 #include "Inspector/InspectorTypes.h"
+#include "Properties/PropertyPanel.h"
 #include "Inspector/ObjectReferencePicker.h"
 #include "Inspector/PrefabInspectorSupport.h"
 #include "Panels/ComponentSearchPanel.h"
@@ -24,7 +25,7 @@ namespace NLS::Editor::Inspector
 class InspectorView final : public UI::Widgets::AWidget
 {
 public:
-    InspectorView();
+    explicit InspectorView(bool followSelection = true);
     ~InspectorView() override;
 
     void SetTargets(InspectorTargetSet targets);
@@ -32,6 +33,11 @@ public:
     void Refresh();
     void SetSearchText(std::string searchText);
     void SetToolbarVisible(bool visible);
+
+    using PropertyDrawResult = NLS::Editor::Inspector::PropertyDrawResult;
+    PropertyDrawResult DrawSerializedProperties(
+        Serialization::SerializedObject& object,
+        std::vector<PropertyNode> properties);
 
     void SetLocked(bool locked);
     [[nodiscard]] bool IsLocked() const;
@@ -52,14 +58,9 @@ private:
     void DrawProperties(const std::vector<PropertyNode>& properties);
     void DrawPropertyCompact(const PropertyNode& property);
     void DrawPropertyRow(const PropertyNode& property);
-    void DrawPropertyDecorators(const PropertyNode& property);
-    void DrawPropertyLabel(const PropertyNode& property, float availableWidth);
     void DrawPrefabOverrideMenu(const PropertyNode& property, const char* popupId);
-    bool DrawPropertyValue(const PropertyNode& property);
-    bool DrawObjectReferenceValue(const PropertyNode& property, meta::Variant& value, const std::string& id);
-    bool DrawLooseValue(meta::Variant& value, const meta::Type& type, const std::string& id, int depth = 0);
-    bool DrawArrayValue(meta::Variant& value, const meta::Type& arrayType, const std::string& id, int depth);
-    bool DrawStructValue(meta::Variant& value, const meta::Type& type, const std::string& id, int depth);
+    void DrawPrefabOverrideMenuItems(const PropertyNode& property);
+    PropertyEditorContext MakePropertyEditorContext(Serialization::SerializedObject* object = nullptr);
     void DrawAddComponent();
     void DrawComponentMenu(const PropertyNode& componentNode, size_t componentIndex);
     void DrawTargetActions();
@@ -79,9 +80,6 @@ private:
     void ClearComponentEditors();
     void PruneComponentEditors();
 
-    template <typename TValue>
-    bool PreviewValue(const PropertyNode& property, const TValue& value, std::string actionLabel);
-
 private:
     InspectorTargetSet m_targets;
     InspectorPresentation m_tree;
@@ -98,10 +96,8 @@ private:
     ListenerID m_selectionListener = InvalidListenerID;
     ListenerID m_componentAddedListener = InvalidListenerID;
     Panels::ComponentSearchPanel m_componentPicker;
-    std::optional<meta::Variant> m_arrayClipboard;
-    std::string m_arrayClipboardType;
     std::optional<ComponentSnapshot> m_componentClipboard;
-    InspectorObjectReferencePickerState m_objectReferencePickerState;
+    Properties::PropertyPanel m_propertyEditor;
     std::unique_ptr<PrefabOverrideQuery> m_prefabOverrideQuery;
     std::string m_targetActionError;
     std::string m_prefabActionError;
@@ -125,7 +121,10 @@ private:
     {
         Serialization::SerializedProperty property;
         Serialization::SerializedObject* owner = nullptr;
+        PropertyPath projectionPath;
     };
     std::optional<SerializedDrawOverride> m_serializedDrawOverride;
+    bool m_drawingProperties=false;
+    std::optional<InspectorTargetSet> m_pendingTargets;
 };
 } // namespace NLS::Editor::Inspector

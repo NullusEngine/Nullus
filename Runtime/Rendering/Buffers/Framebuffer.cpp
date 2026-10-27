@@ -47,7 +47,7 @@ namespace
 		desc.extent.depth = 1;
 		desc.dimension = NLS::Render::RHI::TextureDimension::Texture2D;
 		desc.format = NLS::Render::RHI::TextureFormat::Depth24Stencil8;
-		desc.usage = NLS::Render::RHI::TextureUsageFlags::DepthStencilAttachment;
+		desc.usage = NLS::Render::RHI::TextureUsageFlags::DepthStencilAttachment | NLS::Render::RHI::TextureUsageFlags::Sampled;
 		desc.optimizedClearValue = NLS::Render::RHI::RHITextureDesc::OptimizedClearValue::DepthStencil();
 		desc.debugName = "FramebufferDepthTexture";
 		return desc;

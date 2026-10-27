@@ -1,0 +1,134 @@
+{
+  "category": "Size",
+  "deprecated": false,
+  "description": "Multiplies the current mesh scale.",
+  "exposedVersion": "dfceb5bf-a363-8cab-bed1-ebcf741c3170",
+  "id": "64a8dcdc-4e97-618f-59bb-62245ddad108",
+  "kind": "Module",
+  "name": "Scale Mesh Size",
+  "suggested": false,
+  "version": 2,
+  "versions": [
+    {
+      "attributes": [
+        {
+          "default": [
+            1.0,
+            1.0,
+            1.0,
+            0.0
+          ],
+          "name": "Particles.Scale",
+          "type": 2
+        }
+      ],
+      "calls": [],
+      "capabilities": 0,
+      "description": "Multiplies the current mesh scale.",
+      "graph": {
+        "id": "215adb58-c63e-4eef-913b-2f74a968dcf6",
+        "nextNodeId": 5,
+        "nodes": [
+          {
+            "id": 1,
+            "inputs": [],
+            "name": "Particles.Scale",
+            "operation": 1,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 2,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 2,
+            "inputs": [],
+            "name": "Module.Scale",
+            "operation": 2,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 0,
+            "value": [
+              1.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 3,
+            "inputs": [
+              1,
+              2
+            ],
+            "name": "",
+            "operation": 8,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 2,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 4,
+            "inputs": [
+              3
+            ],
+            "name": "Particles.Scale",
+            "operation": 22,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 2,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          }
+        ],
+        "stage": 1
+      },
+      "id": "dfceb5bf-a363-8cab-bed1-ebcf741c3170",
+      "inputs": [
+        {
+          "default": [
+            1.0,
+            0.0,
+            0.0,
+            0.0
+          ],
+          "id": "7118d5b0-5677-e998-b819-69cbe255bedb",
+          "name": "Scale",
+          "static": false,
+          "type": 0
+        }
+      ],
+      "major": 1,
+      "minor": 0,
+      "provides": [],
+      "requiresBefore": [],
+      "stages": [
+        5
+      ],
+      "switches": []
+    }
+  ],
+  "visible": true
+}

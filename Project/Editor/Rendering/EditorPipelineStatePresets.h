@@ -30,6 +30,7 @@ namespace NLS::Editor::Rendering
     inline NLS::Render::Data::PipelineState CreateEditorOverlayPipelineState(
         NLS::Render::Data::PipelineState baseState)
     {
+        baseState.rasterizationMode = NLS::Render::Settings::ERasterizationMode::FILL;
         baseState.depthWriting = false;
         baseState.depthTest = false;
         baseState.culling = false;
@@ -108,6 +109,7 @@ namespace NLS::Editor::Rendering
         uint32_t stencilMask,
         int32_t stencilReference)
     {
+        baseState.rasterizationMode = NLS::Render::Settings::ERasterizationMode::FILL;
         baseState.stencilTest = true;
         baseState.stencilWriteMask = stencilMask;
         baseState.stencilFuncRef = stencilReference;

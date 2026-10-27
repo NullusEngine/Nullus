@@ -1,0 +1,125 @@
+{
+  "category": "Location",
+  "deprecated": false,
+  "description": "Offsets the current position.",
+  "exposedVersion": "758d80f1-e2d7-b15f-9961-870c2d6d952e",
+  "id": "d878b488-144c-d8a3-3060-accac94afd16",
+  "kind": "Module",
+  "name": "Offset Position",
+  "suggested": false,
+  "version": 2,
+  "versions": [
+    {
+      "attributes": [],
+      "calls": [],
+      "capabilities": 0,
+      "description": "Offsets the current position.",
+      "graph": {
+        "id": "43f0cc47-7ccb-458f-af1c-d92b53b077a0",
+        "nextNodeId": 5,
+        "nodes": [
+          {
+            "id": 1,
+            "inputs": [],
+            "name": "Particles.Position",
+            "operation": 1,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 2,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 2,
+            "inputs": [],
+            "name": "Module.Offset",
+            "operation": 2,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 2,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 3,
+            "inputs": [
+              1,
+              2
+            ],
+            "name": "",
+            "operation": 6,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 2,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 4,
+            "inputs": [
+              3
+            ],
+            "name": "Particles.Position",
+            "operation": 22,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 2,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          }
+        ],
+        "stage": 0
+      },
+      "id": "758d80f1-e2d7-b15f-9961-870c2d6d952e",
+      "inputs": [
+        {
+          "default": [
+            0.0,
+            0.0,
+            0.0,
+            0.0
+          ],
+          "id": "f31c8638-37f6-f419-2eda-d0f700b06416",
+          "name": "Offset",
+          "static": false,
+          "type": 2
+        }
+      ],
+      "major": 1,
+      "minor": 0,
+      "provides": [],
+      "requiresBefore": [
+        "Initialize Particle"
+      ],
+      "stages": [
+        4
+      ],
+      "switches": []
+    }
+  ],
+  "visible": true
+}

@@ -18,6 +18,22 @@ namespace
 	using ShaderResourceKind = NLS::Render::Resources::ShaderResourceKind;
 	using UniformType = NLS::Render::Resources::UniformType;
 
+    void NormalizeObjectDrawReflection(NLS::Render::Resources::ShaderReflection& reflection)
+    {
+        constexpr const char* sourceName="g_NLSObjectDrawConstants";
+        auto memberName=[](std::string& name)
+        {
+            if(name=="objectIndex")name="u_ObjectIndex";
+            else if(name=="objectFlags")name="u_ObjectFlags";
+            else if(name=="objectPadding0")name="u_ObjectPadding0";
+            else if(name=="objectPadding1")name="u_ObjectPadding1";
+        };
+        for(auto& buffer:reflection.constantBuffers)if(buffer.name==sourceName)
+        {buffer.name="ObjectIndexConstants";for(auto& member:buffer.members)memberName(member.name);}
+        for(auto& property:reflection.properties)if(property.parentConstantBuffer==sourceName)
+        {property.parentConstantBuffer="ObjectIndexConstants";memberName(property.name);}
+    }
+
 	NLS::Render::ShaderCompiler::ShaderTargetPlatform ToTargetPlatform(const NLS::Render::RHI::NativeBackendType backend)
 	{
 		switch (backend)
@@ -183,6 +199,34 @@ namespace NLS::Render::Resources
 			return GetRuntimeData()->shaderLabLightMode;
 		}
 
+        std::shared_ptr<const ShaderReflection> Shader::GetReflectionSnapshot(
+            ShaderCompiler::ShaderTargetPlatform target, uint64_t keywordHash) const
+        {
+            const auto data = GetRuntimeData();
+            if (data->variantReflections.empty())
+                return std::shared_ptr<const ShaderReflection>(data, &data->reflection);
+            const auto found = std::find_if(data->variantReflections.begin(), data->variantReflections.end(),
+                [target, keywordHash](const ShaderVariantReflection& variant)
+                { return variant.targetPlatform == target && variant.keywordHash == keywordHash; });
+            return found != data->variantReflections.end()
+                ? std::shared_ptr<const ShaderReflection>(data, &found->reflection) : nullptr;
+        }
+
+        bool Shader::HasVariantReflections() const
+        {
+            return !GetRuntimeData()->variantReflections.empty();
+        }
+
+        std::shared_ptr<const MaterialParameterSchema> Shader::GetMaterialParameterSchema() const
+        {
+            const auto data = GetRuntimeData();
+            return std::shared_ptr<const MaterialParameterSchema>(data, &data->parameterSchema);
+        }
+
+        std::shared_ptr<const MaterialShaderInterface> Shader::GetMaterialInterface() const
+        {const auto data=GetRuntimeData();return std::shared_ptr<const MaterialShaderInterface>(data,&data->materialInterface);}
+        std::string Shader::GetDependencySnapshotId() const {return GetRuntimeData()->dependencySnapshotId;}
+
 	std::string Shader::GetImportedArtifactSourcePath() const
 	{
 		return GetRuntimeData()->importedArtifactSourcePath;
@@ -311,7 +355,10 @@ namespace NLS::Render::Resources
 			data->importedArtifactSourcePath,
 			data->importedArtifactSubAssetKey,
 			data->shaderLabLightMode,
-			data->shaderLabPassState
+			data->shaderLabPassState,
+            data->variantReflections,
+            data->parameterSchema,
+            data->materialInterface,data->dependencySnapshotId
 		};
 	}
 
@@ -324,7 +371,9 @@ namespace NLS::Render::Resources
 			std::move(snapshot.importedArtifactSourcePath),
 			std::move(snapshot.importedArtifactSubAssetKey),
 			std::move(snapshot.shaderLabLightMode),
-			std::move(snapshot.shaderLabPassState));
+			std::move(snapshot.shaderLabPassState),
+            std::move(snapshot.variantReflections),
+            std::move(snapshot.parameterSchema),std::move(snapshot.materialInterface),std::move(snapshot.dependencySnapshotId));
 	}
 
 	void Shader::SetRuntimeData(
@@ -334,7 +383,9 @@ namespace NLS::Render::Resources
 		std::string importedArtifactSourcePath,
 		std::string importedArtifactSubAssetKey,
 		std::string shaderLabLightMode,
-		std::optional<ShaderLab::ShaderLabPassState> shaderLabPassState)
+			std::optional<ShaderLab::ShaderLabPassState> shaderLabPassState,
+            std::vector<ShaderVariantReflection> variantReflections,
+            MaterialParameterSchema parameterSchema,MaterialShaderInterface materialInterface,std::string dependencySnapshotId)
 	{
 		auto next = std::make_shared<RuntimeData>();
 		next->reflection = std::move(reflection);
@@ -344,9 +395,40 @@ namespace NLS::Render::Resources
 		next->importedArtifactSubAssetKey = std::move(importedArtifactSubAssetKey);
 		next->shaderLabLightMode = std::move(shaderLabLightMode);
 		next->shaderLabPassState = std::move(shaderLabPassState);
+            next->variantReflections = std::move(variantReflections);
+            next->parameterSchema = std::move(parameterSchema);
+            next->dependencySnapshotId=std::move(dependencySnapshotId);
+            next->materialInterface = std::move(materialInterface);
 		next->uniforms = BuildUniformInfosFromReflection(next->reflection);
+            for (const auto& parameter : next->parameterSchema.parameters)
+            {
+                if(parameter.isStatic)continue;
+                auto value = CreateDefaultValue(parameter.type);
+                if (const auto* scalar = std::get_if<float>(&parameter.defaultValue)) value = *scalar;
+                else if (const auto* integer = std::get_if<int32_t>(&parameter.defaultValue)) value = static_cast<int>(*integer);
+                else if (const auto* boolean = std::get_if<bool>(&parameter.defaultValue)) value = *boolean;
+                else if (const auto* components = std::get_if<std::array<float,16>>(&parameter.defaultValue))
+                { NLS::Maths::Matrix4 matrix; for(size_t index=0;index<components->size();++index) matrix.data[index]=(*components)[index];value=matrix; }
+                else if (const auto* vector = std::get_if<std::array<float, 4>>(&parameter.defaultValue))
+                {
+                    if (parameter.type == UniformType::UNIFORM_FLOAT_VEC2) value = NLS::Maths::Vector2((*vector)[0], (*vector)[1]);
+                    else if (parameter.type == UniformType::UNIFORM_FLOAT_VEC3) value = NLS::Maths::Vector3((*vector)[0], (*vector)[1], (*vector)[2]);
+                    else value = NLS::Maths::Vector4((*vector)[0], (*vector)[1], (*vector)[2], (*vector)[3]);
+                }
+                if (!value.has_value()) continue;
+                const auto existing = std::find_if(next->uniforms.begin(), next->uniforms.end(),
+                    [&parameter](const auto& uniform) { return uniform.name == parameter.name; });
+                UniformInfo info{parameter.type, parameter.name, -1, value};
+                if (existing == next->uniforms.end()) next->uniforms.push_back(std::move(info));
+                else *existing = std::move(info);
+            }
 
-		std::lock_guard lock(m_runtimeMutex);
+			std::lock_guard lock(m_runtimeMutex);
+            // Older cached built-in SPIR-V reflection retained the HLSL
+            // variable/member aliases. Normalize those snapshots on publication
+            // as well as newly reflected native artifacts.
+            NormalizeObjectDrawReflection(next->reflection);
+            for(auto& variant:next->variantReflections)NormalizeObjectDrawReflection(variant.reflection);
 		next->generation = m_runtimeData ? m_runtimeData->generation + 1u : 1u;
 		m_runtimeData = std::move(next);
 		m_explicitShaderModules.clear();

@@ -351,6 +351,11 @@ namespace NLS::Render::Context
         std::shared_ptr<RenderCommandFlushLifetime> renderCommandFlushLifetime =
             std::make_shared<RenderCommandFlushLifetime>();
         NLS::Base::TaskGraph::TaskGraph* taskGraph = nullptr;
+        // Job pool sizes that belong to the same hardware budget the TaskGraph
+        // was derived from. Exposed so the host can start a Jobs pool from the
+        // same split instead of resolving hardware concurrency a second time.
+        uint32_t jobsForegroundWorkerCount = 0u;
+        uint32_t jobsBackgroundWorkerCount = 0u;
         std::chrono::milliseconds renderDrainTimeout{ std::chrono::seconds(5) };
         bool threadedWorkersRunning = false;
         std::atomic_bool threadedStopRequested{ false };

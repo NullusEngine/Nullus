@@ -124,6 +124,16 @@ namespace NLS::Editor::Panels
         PrefabDragProxySceneViewLoopValidation ValidatePrefabDragProxySceneViewLoopForTesting(
             const NLS::Editor::Assets::EditorAssetDragPayload& payload,
             const std::vector<Maths::Vector3>& placements);
+
+        struct PrefabDragDeliveryValidation
+        {
+            bool previewRetainedAfterDelivery = false;
+            bool previewRetainedOutsideTarget = false;
+            bool committed = false;
+        };
+        PrefabDragDeliveryValidation ValidatePrefabDragDeliveryForTesting(
+            const NLS::Editor::Assets::EditorAssetDragPayload& payload,
+            const Maths::Vector3& placement);
 #endif
 
 		protected:
@@ -208,8 +218,12 @@ namespace NLS::Editor::Panels
 #if defined(NLS_ENABLE_TEST_HOOKS)
         std::optional<Maths::Vector3> m_activePrefabDragPlacementOverrideForTesting;
         bool m_disableActivePrefabDragPreloadForTesting = false;
+        bool m_forceGraphOnlyPrefabDragForTesting = false;
 #endif
         bool m_cameraMovedForPresentation = true;
+        Render::DistanceField::DistanceFieldDebugSettings m_distanceFieldDebug;
+        uint64_t m_distanceFieldDebugRevision = 0;
+        void DrawDistanceFieldControls();
         bool m_validationReadbackWritten = false;
         uint32_t m_validationReadbackWarmupFrames = 0u;
         uint32_t m_validationReadbackReadyFrames = 0u;

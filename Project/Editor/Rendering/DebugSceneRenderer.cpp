@@ -33,6 +33,7 @@
 #include "Rendering/PickingRenderPass.h"
 #include "Rendering/SelectionOutlineMaskRenderer.h"
 #include "Core/EditorResources.h"
+#include "Icons/Generated/IconIds.generated.h"
 //#include "Panels/AView.h"
 //#include "Panels/GameView.h"
 #include "Settings/EditorSettings.h"
@@ -319,14 +320,15 @@ Maths::Matrix4 CalculateCameraModelMatrix(Engine::GameObject& p_actor)
 std::optional<std::string> GetLightTypeTextureName(Render::Settings::ELightType type)
 {
 	using namespace Render::Settings;
+	using namespace Editor::Icons::EditorIcons;
 
 	switch (type)
 	{
-	case ELightType::POINT: return "Bill_Point_Light";
-	case ELightType::SPOT: return "Bill_Spot_Light";
-	case ELightType::DIRECTIONAL: return "Bill_Directional_Light";
-	case ELightType::AMBIENT_BOX: return "Bill_Ambient_Box_Light";
-	case ELightType::AMBIENT_SPHERE: return "Bill_Ambient_Sphere_Light";
+	case ELightType::POINT: return std::string(SceneLightPoint.value);
+	case ELightType::SPOT: return std::string(SceneLightSpot.value);
+	case ELightType::DIRECTIONAL: return std::string(SceneLightDirectional.value);
+	case ELightType::AMBIENT_BOX: return std::string(SceneLightAmbientBox.value);
+	case ELightType::AMBIENT_SPHERE: return std::string(SceneLightAmbientSphere.value);
 	}
 
 	return std::nullopt;

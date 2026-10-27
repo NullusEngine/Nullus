@@ -1,0 +1,590 @@
+{
+  "category": "Spawning",
+  "deprecated": false,
+  "description": "Spawns a burst at the specified emitter time.",
+  "exposedVersion": "bbd4c04d-49ef-ebb4-ed5a-78ec0823defd",
+  "id": "bb4d267e-9bca-6264-36bb-9f25310c0a11",
+  "kind": "Module",
+  "name": "Spawn Burst Instantaneous",
+  "suggested": false,
+  "version": 4,
+  "versions": [
+    {
+      "attributes": [],
+      "calls": [],
+      "capabilities": 16,
+      "description": "Spawns a burst at the specified emitter time.",
+      "graph": {
+        "id": "4b027608-c765-4c7e-a430-a9f487dac900",
+        "nextNodeId": 31,
+        "nodes": [
+          {
+            "id": 1,
+            "inputs": [],
+            "name": "Emitter.Age",
+            "operation": 2,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 0,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 2,
+            "inputs": [],
+            "name": "Module.Time",
+            "operation": 2,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 0,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 3,
+            "inputs": [],
+            "name": "Emitter.Duration",
+            "operation": 1,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 0,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 4,
+            "inputs": [],
+            "name": "",
+            "operation": 0,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 0,
+            "value": [
+              9.999999974752427e-07,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 5,
+            "inputs": [
+              3,
+              4
+            ],
+            "name": "",
+            "operation": 11,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 0,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 6,
+            "inputs": [],
+            "name": "Emitter.Loop",
+            "operation": 1,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 0,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 7,
+            "inputs": [],
+            "name": "",
+            "operation": 0,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 0,
+            "value": [
+              0.5,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 8,
+            "inputs": [
+              6,
+              7
+            ],
+            "name": "",
+            "operation": 29,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 5,
+            "value": false
+          },
+          {
+            "id": 9,
+            "inputs": [
+              1,
+              2
+            ],
+            "name": "",
+            "operation": 30,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 5,
+            "value": false
+          },
+          {
+            "id": 10,
+            "inputs": [
+              1,
+              2
+            ],
+            "name": "",
+            "operation": 7,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 0,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 11,
+            "inputs": [
+              10,
+              5
+            ],
+            "name": "",
+            "operation": 9,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 0,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 12,
+            "inputs": [
+              11
+            ],
+            "name": "",
+            "operation": 35,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 4,
+            "value": 0
+          },
+          {
+            "id": 13,
+            "inputs": [],
+            "name": "",
+            "operation": 0,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 4,
+            "value": 0
+          },
+          {
+            "id": 14,
+            "inputs": [
+              12,
+              13
+            ],
+            "name": "",
+            "operation": 11,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 4,
+            "value": 0
+          },
+          {
+            "id": 15,
+            "inputs": [
+              14
+            ],
+            "name": "",
+            "operation": 35,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 0,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 16,
+            "inputs": [],
+            "name": "",
+            "operation": 0,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 0,
+            "value": [
+              1.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 17,
+            "inputs": [],
+            "name": "",
+            "operation": 0,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 0,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 18,
+            "inputs": [
+              9,
+              16,
+              17
+            ],
+            "name": "",
+            "operation": 34,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 0,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 19,
+            "inputs": [],
+            "name": "",
+            "operation": 0,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 0,
+            "value": [
+              1.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 20,
+            "inputs": [
+              15,
+              19
+            ],
+            "name": "",
+            "operation": 6,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 0,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 21,
+            "inputs": [],
+            "name": "",
+            "operation": 0,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 0,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 22,
+            "inputs": [
+              9,
+              20,
+              21
+            ],
+            "name": "",
+            "operation": 34,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 0,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 23,
+            "inputs": [
+              8,
+              22,
+              18
+            ],
+            "name": "",
+            "operation": 34,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 0,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 24,
+            "inputs": [],
+            "name": "Emitter.BurstPhase",
+            "operation": 1,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 0,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 25,
+            "inputs": [
+              23,
+              24
+            ],
+            "name": "",
+            "operation": 29,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 5,
+            "value": false
+          },
+          {
+            "id": 26,
+            "inputs": [],
+            "name": "Module.Count",
+            "operation": 2,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 0,
+            "value": [
+              20.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 27,
+            "inputs": [],
+            "name": "",
+            "operation": 0,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 0,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 28,
+            "inputs": [
+              25,
+              26,
+              27
+            ],
+            "name": "",
+            "operation": 34,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 0,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 29,
+            "inputs": [
+              23
+            ],
+            "name": "Emitter.BurstPhase",
+            "operation": 22,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 0,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 30,
+            "inputs": [
+              28
+            ],
+            "name": "Emitter.SpawnCount",
+            "operation": 22,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 0,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          }
+        ],
+        "stage": 4
+      },
+      "id": "bbd4c04d-49ef-ebb4-ed5a-78ec0823defd",
+      "inputs": [
+        {
+          "default": [
+            0.0,
+            0.0,
+            0.0,
+            0.0
+          ],
+          "id": "b50117ad-69f5-bdca-2d89-9474c34c0019",
+          "name": "Time",
+          "static": false,
+          "type": 0
+        },
+        {
+          "default": [
+            20.0,
+            0.0,
+            0.0,
+            0.0
+          ],
+          "id": "2f265641-288d-81f2-a769-53a3342ee0af",
+          "name": "Count",
+          "static": false,
+          "type": 0
+        }
+      ],
+      "major": 1,
+      "minor": 0,
+      "provides": [],
+      "requiresBefore": [],
+      "stages": [
+        3
+      ],
+      "switches": []
+    }
+  ],
+  "visible": true
+}

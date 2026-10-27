@@ -1,0 +1,10 @@
+{
+  "version": 1,
+  "id": "71880211-33e3-5431-a27f-754ea9ebf444",
+  "name": "Upper Body",
+  "skeleton": "70078927-e8d3-58ce-be94-00e6a5171559#skeleton:node/0",
+  "defaultWeight": 0,
+  "weights": {
+    "root/upper": 1
+  }
+}

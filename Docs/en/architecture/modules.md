@@ -27,6 +27,12 @@ Nullus is organized in three layers: runtime libraries, project programs, and to
 | `Rendering` | RHI, FrameGraph, shader compilation and ShaderLab, render resources, and the editor UI bridge |
 | `Scripting` | Language-independent script runtime plus the C# and Lua backends |
 | `UI` | Editor interface framework and Dear ImGui extensions |
+| `Animation` / `AnimationCompiler` | Poses, clips, graph evaluation, animation source import, and compilation |
+| `Physics` | PhysX CPU scene query worlds and static collision geometry |
+| `VFX` / `VFXCompiler` | CPU/GPU particle runtime, module-stack compilation, and backend programs |
+| `MaterialCompiler` | Material/ShaderGraph compilation, dependency snapshots, and cooking |
+| `Cook` | Target asset building shared by the Editor and command line |
+| `Build` | Build Profiles, dependencies, packaging, platform adapters, and output validation |
 
 Dependencies point one way: `Base` does not depend on `Engine`, and `Engine` does not depend on `Editor`. `Project/*` may depend on `Runtime/*`, never the reverse.
 
@@ -66,6 +72,9 @@ The Editor and Game share engine code, which is why the editor viewport and the 
 | `Tools/StackDump` | Crash stack dump tool |
 | `Tools/BuildCleanEnvironment` | Cleans duplicated `Path`/`PATH` in build subprocesses |
 | `Tools/Docs` | Handbook validation and wiki sync tooling |
+| `Tools/NullusBuild` | Headless Player packaging, inspection, and validation |
+| `Tools/Material` / `Tools/VFX` | Material/particle compilation and helper tools |
+| `Tools/Icons` | Icon manifest, SVG sources, deterministic generation, and validation |
 
 ## Generated code
 

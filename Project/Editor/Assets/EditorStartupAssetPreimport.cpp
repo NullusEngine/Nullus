@@ -45,7 +45,7 @@ namespace NLS::Editor::Assets
 namespace
 {
 constexpr const char* kProjectStandardPbrShaderPath = "Assets/Engine/Shaders/ShaderLab/StandardPBR.shader";
-constexpr const char* kStartupAssetPreimportStampVersion = "8";
+constexpr const char* kStartupAssetPreimportStampVersion = "9";
 constexpr const char* kStartupAssetPreimportStampPath = "Library/Editor/StartupAssetPreimport.stamp";
 constexpr std::array<uint8_t, 8u> kStartupAssetPreimportBinaryMagic {
     'N', 'L', 'S', 'S', 'P', 'I', 'D', 'X'};
@@ -648,13 +648,13 @@ std::filesystem::path GetStartupAssetPreimportStampPath(const std::filesystem::p
     return NLS::Core::Assets::NormalizeAssetPath(projectRoot) / kStartupAssetPreimportStampPath;
 }
 
-const std::array<NLS::Core::Assets::AssetType, 8u>& StartupPreimportAssetTypes()
+const std::array<NLS::Core::Assets::AssetType, 12u>& StartupPreimportAssetTypes()
 {
     // UI documents, styles and localization tables are ordinary project assets
     // with importers of their own. Leaving them out of this list meant a .ui file
     // received its .meta but never an artifact manifest, so the Inspector object
     // picker had no candidates and the runtime had nothing to load.
-    static constexpr std::array<NLS::Core::Assets::AssetType, 8u> kStartupPreimportAssetTypes = {
+    static constexpr std::array<NLS::Core::Assets::AssetType, 12u> kStartupPreimportAssetTypes = {
         NLS::Core::Assets::AssetType::ModelScene,
         NLS::Core::Assets::AssetType::Prefab,
         NLS::Core::Assets::AssetType::Material,
@@ -662,7 +662,11 @@ const std::array<NLS::Core::Assets::AssetType, 8u>& StartupPreimportAssetTypes()
         NLS::Core::Assets::AssetType::Shader,
         NLS::Core::Assets::AssetType::UIDocument,
         NLS::Core::Assets::AssetType::UIStyleSheet,
-        NLS::Core::Assets::AssetType::LocalizationTable
+        NLS::Core::Assets::AssetType::LocalizationTable,
+        NLS::Core::Assets::AssetType::AnimationClip,
+        NLS::Core::Assets::AssetType::BlendSpace,
+        NLS::Core::Assets::AssetType::BoneMask,
+        NLS::Core::Assets::AssetType::AnimationGraph
     };
     return kStartupPreimportAssetTypes;
 }

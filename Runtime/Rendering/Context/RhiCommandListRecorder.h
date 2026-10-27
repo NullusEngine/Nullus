@@ -43,6 +43,10 @@ namespace NLS::Render::Context
         void DrawIndexed(uint32_t indices, uint32_t instances, uint32_t firstIndex,
             int32_t vertexOffset, uint32_t firstInstance) override;
         void Dispatch(uint32_t x, uint32_t y, uint32_t z) override;
+        RHI::RHICommandRecordingResult DrawIndirect(const std::shared_ptr<RHI::RHIBuffer>& arguments, uint64_t offset = 0) override;
+        RHI::RHICommandRecordingResult DrawIndexedIndirect(const std::shared_ptr<RHI::RHIBuffer>& arguments, uint64_t offset = 0) override;
+        RHI::RHICommandRecordingResult DispatchIndirect(const std::shared_ptr<RHI::RHIBuffer>& arguments, uint64_t offset = 0) override;
+        RHI::RHICommandRecordingResult WriteTimestamp(const std::shared_ptr<RHI::RHITimestampQuery>& query, uint32_t index) override;
         void CopyBuffer(const std::shared_ptr<RHI::RHIBuffer>& source,
             const std::shared_ptr<RHI::RHIBuffer>& destination, const RHI::RHIBufferCopyRegion& region) override;
         void CopyBufferToTexture(const RHI::RHIBufferToTextureCopyDesc& desc) override;

@@ -1,4 +1,5 @@
 #pragma once
+#include <UI/Controls/ResourcePreviewControl.h>
 
 #include <array>
 #include <chrono>
@@ -138,8 +139,17 @@ struct AssetBrowserWatcherSuppressionRecord
     bool directory = false;
     std::uintmax_t size = 0u;
     std::filesystem::file_time_type lastWriteTime {};
+    std::string metadataHash;
     std::chrono::steady_clock::time_point expiresAt {};
 };
+#if defined(NLS_ENABLE_TEST_HOOKS)
+namespace TestHooks
+{
+AssetBrowserWatcherSuppressionRecord CaptureAssetBrowserWatcherStateForTesting(const std::filesystem::path& path);
+bool MatchesAssetBrowserWatcherStateForTesting(const AssetBrowserWatcherSuppressionRecord& expected,
+    const std::filesystem::path& path);
+}
+#endif
 
 /**
  * A panel that handle asset management
@@ -192,6 +202,14 @@ public:
 	        const NLS::Editor::Assets::StartupAssetPreimportProgressSink& progressSink = {});
 	    void SelectProjectFolderForValidation(const std::string& projectRelativePath);
     [[nodiscard]] bool IsThumbnailPreviewRenderWarmupComplete() const;
+    // Already published on the UI thread; consumers must not rescan source roots
+    // just to resolve an imported asset while opening another editor.
+    [[nodiscard]] std::shared_ptr<const NLS::Editor::Assets::AssetDatabaseFacade> GetAssetDatabaseSnapshot() const
+    { return m_projectAssetDatabaseSnapshot; }
+    // Reuses the browser's bounded async thumbnail queue and GPU pool.
+    NLS::UI::Controls::PreviewImage RequestPropertyPreview(
+        const std::string& assetId,const std::string& resourcePath,
+        const NLS::UI::Controls::PreviewRequest& request);
 
 	private:
     enum class ProjectBrowserTextDialogKind
@@ -204,10 +222,13 @@ public:
         CreateCSharpScript,
         CreateLuaScript,
         CreateUIDocument,
+        CreateParticleSystem,
         CreateStandardShader,
         CreateStandardPBRShader,
         CreateUnlitShader,
         CreateUnlitTextureShader,
+        CreateMaterialGraph,
+        CreateMaterialFunction,
         CreateEmptyMaterial,
         CreateStandardMaterial,
         CreateStandardPBRMaterial,
@@ -222,6 +243,7 @@ public:
         std::filesystem::path targetAbsoluteFolder;
         std::string targetProjectRelativeFolder;
         std::filesystem::path sourceAbsolutePath;
+        std::string sourceSubAssetKey;
         std::array<char, 256u> buffer{};
         bool requestOpen = false;
     };
@@ -329,7 +351,8 @@ public:
     void DrawProjectFolderDropTarget(
         const std::string& projectRelativeFolder,
         const std::filesystem::path& absoluteFolder);
-    void SelectProjectGridItem(const NLS::Editor::Assets::AssetBrowserItem& item);
+    void SelectProjectGridItem(const NLS::Editor::Assets::AssetBrowserItem& item, bool useModifiers = false);
+    bool IsProjectGridItemSelected(const NLS::Editor::Assets::AssetBrowserItem& item) const;
     void PrepareCSharpScriptDebugProject(const NLS::Editor::Assets::AssetBrowserItem& item);
     void PrepareLuaScriptDebugWorkspace(const NLS::Editor::Assets::AssetBrowserItem& item);
     void OpenProjectGridItem(const NLS::Editor::Assets::AssetBrowserItem& item);
@@ -369,9 +392,6 @@ public:
         const std::filesystem::path& imagePath,
         bool queueIfMissing,
         NLS::Render::RHI::TextureColorSpace colorSpace);
-    void* ResolveAssetBrowserTextureHandle(
-        NLS::Render::Resources::Texture2D* texture,
-        const std::string& debugName);
     bool LoadCachedThumbnailTexture(const std::string& normalizedPath);
     bool LoadDecodedCachedThumbnailTexture(ThumbnailTextureDecodeResult result);
     void MarkCachedThumbnailTextureUploadRetryableFailure(const std::string& normalizedPath);
@@ -421,7 +441,6 @@ public:
     void RequestObjectReferencePickerEntriesRefresh();
     void StartNextObjectReferencePickerEntriesRefresh();
     void InvalidateObjectReferencePickerEntriesRefresh();
-    void ReleaseAssetBrowserTextureHandleCache(bool force);
     void EnsureThumbnailTextureDeviceIdentity();
     void DestroyCachedThumbnailTextures(bool force);
     void ReleaseCachedThumbnailTexture(const std::string& normalizedPath);
@@ -532,11 +551,6 @@ private:
         void* textureId = nullptr;
         uint32_t pageSize = 0u;
         uint32_t pageGeneration = 0u;
-    };
-    struct AssetBrowserTextureHandleCacheEntry
-    {
-        std::shared_ptr<NLS::Render::RHI::RHITextureView> textureView;
-        void* textureId = nullptr;
     };
     struct InFlightThumbnailTextureDecode
     {
@@ -672,9 +686,6 @@ private:
     std::vector<InFlightThumbnailTextureDecode> m_thumbnailTextureDecodes;
     std::unordered_set<std::string> m_thumbnailTexturesDecoding;
     std::unordered_set<std::string> m_thumbnailTexturesRetryAfterDecode;
-    std::unordered_map<
-        NLS::Render::Resources::Texture2D*,
-        AssetBrowserTextureHandleCacheEntry> m_assetBrowserTextureHandleCache;
     std::future<size_t> m_standardPbrShaderPassPrewarm;
     bool m_standardPbrShaderPassPrewarmQueued = false;
     bool m_standardPbrShaderPassPrewarmCompleted = false;

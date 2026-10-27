@@ -1,5 +1,6 @@
 #include "Assets/AssetBrowserPresentation.h"
 
+#include "Assets/AssetIconResolver.h"
 #include "Assets/AssetMeta.h"
 #include "Assets/EditorAssetPath.h"
 #include "Assets/NativeArtifactContainer.h"
@@ -87,6 +88,7 @@ bool IsInspectorReferenceableSubAsset(const NLS::Core::Assets::ArtifactType p_ty
     return p_type == ArtifactType::Mesh ||
            p_type == ArtifactType::Material ||
            p_type == ArtifactType::Texture ||
+           p_type == ArtifactType::Font ||
            p_type == ArtifactType::Shader ||
            p_type == ArtifactType::UIDocument;
 }
@@ -1190,46 +1192,14 @@ AssetBrowserItemTypeColor AssetBrowserItemTypeDisplayColor(const AssetBrowserIte
 
 const char* AssetBrowserFallbackIconId(const AssetBrowserItemType type)
 {
-    switch (type)
-    {
-    case AssetBrowserItemType::Folder:
-        return "editor.icon.asset.folder";
-    case AssetBrowserItemType::Model:
-    case AssetBrowserItemType::Mesh:
-        return "editor.icon.asset.mesh";
-    case AssetBrowserItemType::Prefab:
-        return "editor.icon.asset.prefab";
-    case AssetBrowserItemType::Material:
-        return "editor.icon.asset.material";
-    case AssetBrowserItemType::Texture:
-        return "editor.icon.asset.texture";
-    case AssetBrowserItemType::Shader:
-        return "editor.icon.asset.shader";
-    case AssetBrowserItemType::Scene:
-        return "editor.icon.asset.scene";
-    case AssetBrowserItemType::Script:
-        return "editor.icon.asset.script";
-    case AssetBrowserItemType::All:
-    case AssetBrowserItemType::Other:
-    case AssetBrowserItemType::Count:
-        break;
-    }
-    return "editor.icon.asset.default";
+    return AssetIconResolver::IconIdCString(
+        AssetIconResolver::Default().ResolveBrowserType(type));
 }
 
 const char* AssetBrowserScriptIconId(const std::string_view sourceAssetPath)
 {
-    auto extension = std::filesystem::path(std::string(sourceAssetPath)).extension().string();
-    std::transform(
-        extension.begin(),
-        extension.end(),
-        extension.begin(),
-        [](const unsigned char character) { return static_cast<char>(std::tolower(character)); });
-    if (extension == ".lua")
-        return "editor.icon.asset.script.lua";
-    if (extension == ".cs")
-        return "editor.icon.asset.script.csharp";
-    return AssetBrowserFallbackIconId(AssetBrowserItemType::Script);
+    return AssetIconResolver::IconIdCString(
+        AssetIconResolver::Default().ResolvePath(sourceAssetPath));
 }
 
 std::string_view ResolveAssetBrowserDisplayFallbackIconId(
@@ -1245,6 +1215,16 @@ std::string_view ResolveAssetBrowserDisplayFallbackIconId(
     {
         if (type == AssetBrowserItemType::Script && !sourceAssetPath.empty())
             return AssetBrowserScriptIconId(sourceAssetPath);
+
+        // "Other" covers UI documents, styles, localization and VFX assets.
+        // Use the path-specific mapping when one exists instead of default.
+        if (type == AssetBrowserItemType::Other && !sourceAssetPath.empty())
+        {
+            const auto byPath = AssetIconResolver::Default().ResolvePath(sourceAssetPath);
+            if (byPath.value != defaultAssetIcon)
+                return byPath.value;
+        }
+
         return AssetBrowserFallbackIconId(type);
     }
     return thumbnailFallbackIcon;
@@ -1798,7 +1778,11 @@ AssetBrowserWorkflowCapabilities BuildAssetBrowserWorkflowCapabilities(
     capabilities.canEdit =
         item.type == AssetBrowserItemType::Prefab ||
         item.type == AssetBrowserItemType::Scene ||
-        item.type == AssetBrowserItemType::Material;
+        item.type == AssetBrowserItemType::Material ||
+        NLS::Core::Assets::InferAssetType(item.dragResourcePath) ==
+            NLS::Core::Assets::AssetType::VfxSystem ||
+        NLS::Core::Assets::InferAssetType(item.dragResourcePath) == NLS::Core::Assets::AssetType::VfxScript ||
+        NLS::Core::Assets::InferAssetType(item.dragResourcePath) == NLS::Core::Assets::AssetType::VfxEmitter;
     return capabilities;
 }
 
@@ -1826,6 +1810,7 @@ AssetBrowserItemType AssetBrowserItemTypeFromPathParserFileType(
     case NLS::Utils::PathParser::EFileType::UI_DOCUMENT:
     case NLS::Utils::PathParser::EFileType::UI_STYLE:
     case NLS::Utils::PathParser::EFileType::LOCALIZATION:
+    case NLS::Utils::PathParser::EFileType::VFX:
     case NLS::Utils::PathParser::EFileType::UNKNOWN:
     case NLS::Utils::PathParser::EFileType::COUNT:
         return AssetBrowserItemType::Other;
@@ -2752,18 +2737,26 @@ std::optional<EditorAssetDragPayload> MakeAssetBrowserItemDragPayload(
         const bool isUiDocument =
             NLS::Core::Assets::InferAssetType(item.dragResourcePath) ==
             NLS::Core::Assets::AssetType::UIDocument;
+        const bool isFont =
+            NLS::Core::Assets::InferAssetType(item.dragResourcePath) ==
+            NLS::Core::Assets::AssetType::Font;
         if (subAssetKey.empty())
         {
             const auto stem = std::filesystem::path(item.dragResourcePath).stem().generic_string();
-            subAssetKey = isUiDocument && !stem.empty()
-                ? "ui-document:" + stem
-                : DefaultDragSubAssetKeyForSourceAsset(item.type, item.dragResourcePath);
+            if (isUiDocument && !stem.empty())
+                subAssetKey = "ui-document:" + stem;
+            else if (isFont && !stem.empty())
+                subAssetKey = "font:" + stem;
+            else
+                subAssetKey = DefaultDragSubAssetKeyForSourceAsset(item.type, item.dragResourcePath);
         }
         if (artifactType == NLS::Core::Assets::ArtifactType::Unknown)
         {
             artifactType = isUiDocument
                 ? NLS::Core::Assets::ArtifactType::UIDocument
-                : DefaultDragArtifactTypeForSourceAssetType(item.type);
+                : (isFont
+                    ? NLS::Core::Assets::ArtifactType::Font
+                    : DefaultDragArtifactTypeForSourceAssetType(item.type));
         }
     }
     const bool scriptAsset = IsScriptAssetPath(item.dragResourcePath);

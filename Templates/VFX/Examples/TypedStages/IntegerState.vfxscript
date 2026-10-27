@@ -1,0 +1,278 @@
+{
+  "version": 4,
+  "kind": "Module",
+  "id": "55134ad4-660c-41ec-bb93-f98318948c08",
+  "name": "Integer State",
+  "category": "Typed Values",
+  "description": "",
+  "visible": true,
+  "suggested": false,
+  "deprecated": false,
+  "exposedVersion": "683f8bb4-600e-4659-a445-743c7896f7e4",
+  "versions": [
+    {
+      "id": "683f8bb4-600e-4659-a445-743c7896f7e4",
+      "major": 1,
+      "minor": 0,
+      "description": "",
+      "stages": [
+        4,
+        5,
+        7
+      ],
+      "inputs": [
+        {
+          "id": "de8bcfa9-0d77-4b8c-ae78-3ad8076fbbbc",
+          "name": "Value",
+          "type": 4,
+          "default": 16777217,
+          "static": false
+        },
+        {
+          "id": "a388fdce-d139-4c62-b1cc-499e963f2587",
+          "name": "Step",
+          "type": 4,
+          "default": 1,
+          "static": false
+        },
+        {
+          "id": "6f07fa4f-7fec-434f-9386-9277b5b2f863",
+          "name": "Enabled",
+          "type": 5,
+          "default": true,
+          "static": false
+        },
+        {
+          "id": "d8dda50b-e8a1-4dcb-ab42-622d8a305629",
+          "name": "Initialize",
+          "type": 5,
+          "default": false,
+          "static": true
+        }
+      ],
+      "graph": {
+        "id": "dc14c56c-4bab-42bf-a011-353e9aa06381",
+        "stage": 1,
+        "nextNodeId": 15,
+        "nodes": [
+          {
+            "id": 1,
+            "operation": 2,
+            "type": 4,
+            "inputs": [],
+            "name": "Module.Value",
+            "value": 0,
+            "position": [
+              0,
+              0
+            ]
+          },
+          {
+            "id": 2,
+            "operation": 2,
+            "type": 4,
+            "inputs": [],
+            "name": "Module.Step",
+            "value": 0,
+            "position": [
+              0,
+              140
+            ]
+          },
+          {
+            "id": 3,
+            "operation": 2,
+            "type": 5,
+            "inputs": [],
+            "name": "Module.Enabled",
+            "value": false,
+            "position": [
+              0,
+              280
+            ]
+          },
+          {
+            "id": 4,
+            "operation": 1,
+            "type": 4,
+            "inputs": [],
+            "name": "Particles.Counter",
+            "value": 0,
+            "position": [
+              230,
+              0
+            ]
+          },
+          {
+            "id": 5,
+            "operation": 6,
+            "type": 4,
+            "inputs": [
+              4,
+              2
+            ],
+            "name": "",
+            "value": 0,
+            "position": [
+              440,
+              0
+            ]
+          },
+          {
+            "id": 6,
+            "operation": 2,
+            "type": 4,
+            "inputs": [],
+            "name": "Initialize Switch",
+            "value": 0,
+            "position": [
+              650,
+              0
+            ]
+          },
+          {
+            "id": 7,
+            "operation": 0,
+            "type": 4,
+            "inputs": [],
+            "name": "",
+            "value": -1,
+            "position": [
+              0,
+              420
+            ]
+          },
+          {
+            "id": 8,
+            "operation": 34,
+            "type": 4,
+            "inputs": [
+              3,
+              6,
+              7
+            ],
+            "name": "",
+            "value": 0,
+            "position": [
+              850,
+              0
+            ]
+          },
+          {
+            "id": 9,
+            "operation": 22,
+            "type": 4,
+            "inputs": [
+              8
+            ],
+            "name": "Particles.Counter",
+            "value": 0,
+            "position": [
+              1060,
+              0
+            ]
+          },
+          {
+            "id": 10,
+            "operation": 22,
+            "type": 5,
+            "inputs": [
+              3
+            ],
+            "name": "Particles.Flag",
+            "value": false,
+            "position": [
+              1060,
+              220
+            ]
+          },
+          {
+            "id": 11,
+            "operation": 0,
+            "type": 3,
+            "inputs": [],
+            "name": "",
+            "value": [
+              0.1,
+              1,
+              0.2,
+              1
+            ],
+            "position": [
+              440,
+              400
+            ]
+          },
+          {
+            "id": 12,
+            "operation": 0,
+            "type": 3,
+            "inputs": [],
+            "name": "",
+            "value": [
+              1,
+              0.1,
+              0.1,
+              1
+            ],
+            "position": [
+              440,
+              600
+            ]
+          },
+          {
+            "id": 13,
+            "operation": 34,
+            "type": 3,
+            "inputs": [
+              3,
+              11,
+              12
+            ],
+            "name": "",
+            "value": [
+              0,
+              0,
+              0,
+              0
+            ],
+            "position": [
+              850,
+              400
+            ]
+          },
+          {
+            "id": 14,
+            "operation": 22,
+            "type": 3,
+            "inputs": [
+              13
+            ],
+            "name": "Particles.Color",
+            "value": [
+              0,
+              0,
+              0,
+              0
+            ],
+            "position": [
+              1060,
+              400
+            ]
+          }
+        ]
+      },
+      "calls": [],
+      "switches": [
+        {
+          "node": 6,
+          "input": "Initialize",
+          "true": 1,
+          "false": 5
+        }
+      ],
+      "provides": [],
+      "requiresBefore": []
+    }
+  ]
+}

@@ -1,0 +1,814 @@
+{
+  "category": "Beam",
+  "deprecated": false,
+  "description": "Stores beam endpoints and tangents, then maps particles along the beam.",
+  "exposedVersion": "b0c7a80c-fe3d-1677-76e0-4add54eac426",
+  "id": "0a3d5647-ea98-3377-b0b8-f2931fd61152",
+  "kind": "Module",
+  "name": "Beam Emitter Setup",
+  "suggested": false,
+  "version": 4,
+  "versions": [
+    {
+      "attributes": [
+        {
+          "default": [
+            0.0,
+            0.0,
+            0.0,
+            0.0
+          ],
+          "name": "Particles.RibbonLinkOrder",
+          "type": 0
+        },
+        {
+          "default": [
+            0.10000000149011612,
+            0.0,
+            0.0,
+            0.0
+          ],
+          "name": "Particles.RibbonWidth",
+          "type": 0
+        },
+        {
+          "default": [
+            0.0,
+            0.0,
+            0.0,
+            0.0
+          ],
+          "name": "Particles.BeamStart",
+          "type": 2
+        },
+        {
+          "default": [
+            0.0,
+            0.0,
+            100.0,
+            0.0
+          ],
+          "name": "Particles.BeamEnd",
+          "type": 2
+        },
+        {
+          "default": [
+            0.0,
+            0.0,
+            1.0,
+            0.0
+          ],
+          "name": "Particles.BeamStartTangent",
+          "type": 2
+        },
+        {
+          "default": [
+            0.0,
+            0.0,
+            -1.0,
+            0.0
+          ],
+          "name": "Particles.BeamEndTangent",
+          "type": 2
+        },
+        {
+          "default": [
+            1.0,
+            0.0,
+            0.0,
+            0.0
+          ],
+          "name": "Particles.BeamTangentWeight",
+          "type": 0
+        }
+      ],
+      "calls": [],
+      "capabilities": 0,
+      "description": "Stores beam endpoints and tangents, then maps particles along the beam.",
+      "graph": {
+        "id": "e7148e30-e427-4ce4-b0c0-bf56620201bd",
+        "nextNodeId": 35,
+        "nodes": [
+          {
+            "id": 1,
+            "inputs": [],
+            "name": "Module.Beam Start",
+            "operation": 2,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 2,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 2,
+            "inputs": [],
+            "name": "Module.Beam End",
+            "operation": 2,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 2,
+            "value": [
+              0.0,
+              0.0,
+              100.0,
+              0.0
+            ]
+          },
+          {
+            "id": 3,
+            "inputs": [],
+            "name": "Module.Beam Start Tangent",
+            "operation": 2,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 2,
+            "value": [
+              0.0,
+              0.0,
+              1.0,
+              0.0
+            ]
+          },
+          {
+            "id": 4,
+            "inputs": [
+              3
+            ],
+            "name": "",
+            "operation": 18,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 2,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 5,
+            "inputs": [],
+            "name": "Module.Beam End Tangent",
+            "operation": 2,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 2,
+            "value": [
+              0.0,
+              0.0,
+              -1.0,
+              0.0
+            ]
+          },
+          {
+            "id": 6,
+            "inputs": [
+              5
+            ],
+            "name": "",
+            "operation": 18,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 2,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 7,
+            "inputs": [],
+            "name": "Particles.RibbonLinkOrder",
+            "operation": 1,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 0,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 8,
+            "inputs": [],
+            "name": "",
+            "operation": 0,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 0,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 9,
+            "inputs": [],
+            "name": "",
+            "operation": 0,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 0,
+            "value": [
+              1.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 10,
+            "inputs": [
+              7,
+              8,
+              9
+            ],
+            "name": "",
+            "operation": 12,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 0,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 11,
+            "inputs": [],
+            "name": "Module.Use Beam Tangents",
+            "operation": 2,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 0,
+            "value": [
+              1.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 12,
+            "inputs": [],
+            "name": "",
+            "operation": 0,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 0,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 13,
+            "inputs": [
+              11,
+              12
+            ],
+            "name": "",
+            "operation": 29,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 5,
+            "value": false
+          },
+          {
+            "id": 14,
+            "inputs": [],
+            "name": "",
+            "operation": 0,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 0,
+            "value": [
+              1.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 15,
+            "inputs": [
+              14,
+              10
+            ],
+            "name": "",
+            "operation": 7,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 0,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 16,
+            "inputs": [],
+            "name": "",
+            "operation": 0,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 0,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 17,
+            "inputs": [
+              13,
+              15,
+              16
+            ],
+            "name": "",
+            "operation": 34,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 0,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 18,
+            "inputs": [],
+            "name": "",
+            "operation": 0,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 0,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 19,
+            "inputs": [
+              13,
+              10,
+              18
+            ],
+            "name": "",
+            "operation": 34,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 0,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 20,
+            "inputs": [
+              1,
+              2,
+              10
+            ],
+            "name": "",
+            "operation": 13,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 2,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 21,
+            "inputs": [
+              4,
+              17
+            ],
+            "name": "",
+            "operation": 8,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 2,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 22,
+            "inputs": [
+              6,
+              19
+            ],
+            "name": "",
+            "operation": 8,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 2,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 23,
+            "inputs": [
+              21,
+              22
+            ],
+            "name": "",
+            "operation": 6,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 2,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 24,
+            "inputs": [
+              20,
+              23
+            ],
+            "name": "",
+            "operation": 6,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 2,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 25,
+            "inputs": [
+              13,
+              24,
+              20
+            ],
+            "name": "",
+            "operation": 34,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 2,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 26,
+            "inputs": [],
+            "name": "Module.Width",
+            "operation": 2,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 0,
+            "value": [
+              0.10000000149011612,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 27,
+            "inputs": [
+              2
+            ],
+            "name": "Particles.BeamEnd",
+            "operation": 22,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 2,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 28,
+            "inputs": [
+              6
+            ],
+            "name": "Particles.BeamEndTangent",
+            "operation": 22,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 2,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 29,
+            "inputs": [
+              1
+            ],
+            "name": "Particles.BeamStart",
+            "operation": 22,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 2,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 30,
+            "inputs": [
+              4
+            ],
+            "name": "Particles.BeamStartTangent",
+            "operation": 22,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 2,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 31,
+            "inputs": [
+              17
+            ],
+            "name": "Particles.BeamTangentWeight",
+            "operation": 22,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 0,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 32,
+            "inputs": [
+              25
+            ],
+            "name": "Particles.Position",
+            "operation": 22,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 2,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 33,
+            "inputs": [
+              10
+            ],
+            "name": "Particles.RibbonLinkOrder",
+            "operation": 22,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 0,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 34,
+            "inputs": [
+              26
+            ],
+            "name": "Particles.RibbonWidth",
+            "operation": 22,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 0,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          }
+        ],
+        "stage": 0
+      },
+      "id": "b0c7a80c-fe3d-1677-76e0-4add54eac426",
+      "inputs": [
+        {
+          "default": [
+            0.0,
+            0.0,
+            0.0,
+            0.0
+          ],
+          "id": "b54b1f09-1e0a-2cb1-ad13-ae7d13e6061a",
+          "name": "Beam Start",
+          "static": false,
+          "type": 2
+        },
+        {
+          "default": [
+            0.0,
+            0.0,
+            100.0,
+            0.0
+          ],
+          "id": "f91199e9-a62b-1650-24e9-f078e07ac38f",
+          "name": "Beam End",
+          "static": false,
+          "type": 2
+        },
+        {
+          "default": [
+            0.0,
+            0.0,
+            1.0,
+            0.0
+          ],
+          "id": "5cb89980-843b-7b80-05b4-cc99dbfec467",
+          "name": "Beam Start Tangent",
+          "static": false,
+          "type": 2
+        },
+        {
+          "default": [
+            0.0,
+            0.0,
+            -1.0,
+            0.0
+          ],
+          "id": "38c0f345-dfd0-47d9-5961-0ba61bfd344a",
+          "name": "Beam End Tangent",
+          "static": false,
+          "type": 2
+        },
+        {
+          "default": [
+            1.0,
+            0.0,
+            0.0,
+            0.0
+          ],
+          "id": "89d0b39f-1019-f08a-6aa7-e3e39b1fae13",
+          "name": "Use Beam Tangents",
+          "static": false,
+          "type": 0
+        },
+        {
+          "default": [
+            0.10000000149011612,
+            0.0,
+            0.0,
+            0.0
+          ],
+          "id": "8eaf3b53-9bd2-5ffa-dd86-7d3cdcb3f27b",
+          "name": "Width",
+          "static": false,
+          "type": 0
+        }
+      ],
+      "major": 1,
+      "minor": 0,
+      "provides": [],
+      "requiresBefore": [
+        "Initialize Particle"
+      ],
+      "stages": [
+        4
+      ],
+      "switches": []
+    }
+  ],
+  "visible": true
+}

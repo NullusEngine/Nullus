@@ -1,5 +1,6 @@
 #include "UI/Widgets/Selection/CheckBox.h"
 #include "ImGui/imgui.h"
+#include "UI/Controls/TextControl.h"
 
 namespace NLS::UI::Widgets
 {
@@ -12,7 +13,7 @@ void CheckBox::_Draw_Impl()
 {
     bool previousValue = value;
 
-    ImGui::Checkbox((label + m_widgetID).c_str(), &value);
+    Controls::Toggle((label+m_widgetID).c_str(),value);
 
     if (value != previousValue)
     {

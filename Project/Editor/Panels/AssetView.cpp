@@ -15,6 +15,11 @@
 #include "Rendering/GridRenderPass.h"
 using namespace NLS;
 
+Editor::Panels::AssetView::~AssetView()
+{
+    if (m_renderer) m_renderer->DrainPublishedFramesBeforeTeardown();
+}
+
 void Editor::Panels::AssetView::ApplyViewSettings()
 {
 	const auto& viewSettings = Settings::EditorSettings::GetViewSettingsObject();
@@ -172,6 +177,13 @@ void Editor::Panels::AssetView::SetMaterial(Render::Resources::Material& p_mater
 	m_modelRenderer->FillWithMaterial(p_material);
 
 	m_cameraController.MoveToTarget(*m_assetActor);
+}
+
+void Editor::Panels::AssetView::SetOwnedMaterial(std::shared_ptr<Render::Resources::Material> material)
+{
+    if (!material) {ClearResource();return;}
+    SetMaterial(*material);
+    m_ownedMaterial=std::move(material);
 }
 
 const Editor::Panels::AssetView::ViewableResource& Editor::Panels::AssetView::GetResource() const

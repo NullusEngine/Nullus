@@ -3,8 +3,10 @@
 #include "Assets/AssetId.h"
 #include "CoreDef.h"
 
+#include <array>
 #include <cstddef>
 #include <filesystem>
+#include <memory>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -30,6 +32,14 @@ enum class ArtifactType
     UIStyleSheet,
     Font,
     LocalizationTable,
+    VfxSystem,
+    VfxScript,
+    VfxEmitter,
+    MeshDistanceField,
+    SkeletalMesh,
+    AnimationGraph,
+    BlendSpace,
+    BoneMask,
     Count
 };
 
@@ -82,6 +92,30 @@ struct NLS_CORE_API ArtifactManifest
     const ImportedArtifact* FindPrimaryArtifact() const;
     const ImportedArtifact* FindSubAsset(const std::string& subAssetKey) const;
 };
+
+// Streaming SHA-256 used by artifact storage names and the .npak container.
+// The implementation prefers the platform crypto provider and falls back to
+// the portable rounds, so digests are identical on every host.
+class NLS_CORE_API Sha256Hasher
+{
+public:
+    Sha256Hasher();
+    ~Sha256Hasher();
+    Sha256Hasher(const Sha256Hasher&) = delete;
+    Sha256Hasher& operator=(const Sha256Hasher&) = delete;
+    Sha256Hasher(Sha256Hasher&&) noexcept;
+    Sha256Hasher& operator=(Sha256Hasher&&) noexcept;
+
+    bool Update(const uint8_t* bytes, size_t byteCount);
+    std::array<uint8_t, 32u> Finalize();
+
+private:
+    struct Impl;
+    std::unique_ptr<Impl> m_impl;
+};
+
+NLS_CORE_API std::array<uint8_t, 32u> ComputeSha256(const uint8_t* bytes, size_t byteCount);
+NLS_CORE_API std::string ToHexString(const std::array<uint8_t, 32u>& bytes);
 
 NLS_CORE_API bool IsContentStorageArtifactPath(const std::string& artifactPath);
 NLS_CORE_API std::string TryMakePortableContentArtifactPath(const std::string& artifactPath);

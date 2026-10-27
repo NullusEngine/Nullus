@@ -38,6 +38,9 @@ namespace NLS::Render::RHI
         uint32_t elementStride = 0;
         std::shared_ptr<class RHITextureView> textureView;
         std::shared_ptr<class RHISampler> sampler;
+        // State used while sampling. DepthRead|ShaderRead permits an image to
+        // remain bound as a read-only depth attachment (Vulkan descriptor layout).
+        ResourceState textureState = ResourceState::ShaderRead;
     };
 
     struct NLS_RENDER_API RHIBindingSetDesc

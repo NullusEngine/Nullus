@@ -80,6 +80,7 @@ namespace NLS::Engine::Rendering
 				DeferredThreadedDrawCounts drawCounts;
 				uint64_t unresolvedDecalDrawCount = 0u;
 				bool lightingCaptureSucceeded = true;
+                    std::vector<NLS::Render::Context::RecordedDrawCommandInput> forwardOpaqueDepth,forwardOpaqueColor;
 			};
 
 			DeferredThreadedDrawCounts EstimateThreadedDeferredDrawCounts(const AllDrawables& drawables);

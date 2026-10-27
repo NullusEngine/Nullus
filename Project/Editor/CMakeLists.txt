@@ -43,6 +43,9 @@ target_link_libraries(
   PUBLIC
     NLS_Engine
     NLS_Scripting
+    NLS_VFXCompiler
+    NLS_MaterialCompiler
+    NLS_Build
   PRIVATE
     DirectXTex::DirectXTex
     NLS_StaticMeshBuild

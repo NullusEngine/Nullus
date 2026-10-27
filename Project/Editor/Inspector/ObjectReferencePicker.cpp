@@ -88,13 +88,14 @@ bool DrawInspectorObjectReferencePicker(
     const float controlWidth = 22.0f * scale;
     const float spacing = ImGui::GetStyle().ItemSpacing.x;
     const float availableWidth = ImGui::GetContentRegionAvail().x;
-    const float minimumInlineWidth = 48.0f * scale + controlWidth * 3.0f + spacing * 3.0f;
+    const float actions = config.open ? 4.0f : 3.0f;
+    const float minimumInlineWidth = 48.0f * scale + controlWidth * actions + spacing * actions;
     const bool stackActions = availableWidth < minimumInlineWidth;
     const float displayWidth = (std::max)(
         stackActions ? 0.0f : 48.0f * scale,
-        stackActions ? availableWidth : availableWidth - controlWidth * 3.0f - spacing * 3.0f);
+        stackActions ? availableWidth : availableWidth - controlWidth * actions - spacing * actions);
     const float actionWidth = stackActions
-        ? (std::max)(0.0f, (availableWidth - spacing * 2.0f) / 3.0f)
+        ? (std::max)(0.0f, (availableWidth - spacing * (actions-1)) / actions)
         : controlWidth;
     const std::string visibleDisplay = TruncateUtf8ForWidth(config.displayName, displayWidth - 8.0f * scale);
     const char* popupId = "##ObjectReferencePicker";
@@ -114,6 +115,14 @@ bool DrawInspectorObjectReferencePicker(
             const auto assetPayload = *static_cast<const Assets::EditorAssetDragPayload*>(payload->Data);
             if ((!config.acceptsAsset || config.acceptsAsset(assetPayload)) && config.assignAsset(assetPayload))
                 changed = true;
+        }
+        if(const auto* batch=ImGui::AcceptDragDropPayload(Assets::kEditorAssetsDragPayloadType);
+           batch && batch->Data && batch->DataSize>=sizeof(Assets::EditorAssetDragPayload) && batch->DataSize%sizeof(Assets::EditorAssetDragPayload)==0)
+        {
+            const auto* assets=static_cast<const Assets::EditorAssetDragPayload*>(batch->Data);
+            for(size_t i=0;i<static_cast<size_t>(batch->DataSize)/sizeof(*assets);++i)
+                if(!config.acceptsAsset || config.acceptsAsset(assets[i]))
+                {changed|=config.assignAsset(assets[i]);break;}
         }
         if (config.acceptsFile && config.assignFile)
         {
@@ -152,6 +161,12 @@ bool DrawInspectorObjectReferencePicker(
         changed = true;
     ImGui::EndDisabled();
     DrawTooltipIfHovered(config.clear ? "Clear reference" : "Reference cannot be cleared");
+    if (config.open)
+    {
+        ImGui::SameLine(0.0f,spacing);
+        if (ImGui::Button("E",ImVec2(actionWidth,0.0f))) config.open();
+        DrawTooltipIfHovered("Open particle editor");
+    }
 
     if (ImGui::BeginPopup(popupId))
     {

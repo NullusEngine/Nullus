@@ -47,6 +47,22 @@ namespace NLS::Engine::UI
         }
     };
 
+    // Nine-slice borders in document pixels. Zero means a plain stretched quad.
+    struct UIInsets
+    {
+        float left = 0.0f;
+        float top = 0.0f;
+        float right = 0.0f;
+        float bottom = 0.0f;
+
+        [[nodiscard]] constexpr bool IsZero() const
+        {
+            return left <= 0.0f && top <= 0.0f && right <= 0.0f && bottom <= 0.0f;
+        }
+
+        friend constexpr bool operator==(const UIInsets&, const UIInsets&) = default;
+    };
+
     struct UIColor
     {
         float r = 1.0f;

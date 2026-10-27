@@ -306,6 +306,7 @@ namespace NLS::Engine::Rendering
                 stamp.material,
                 meshFilter != nullptr ? meshFilter->GetModelPath() : std::string {});
             payload.resources.hasExplicitMaterialPath = stamp.hasExplicitMaterialPath;
+            if(meshFilter)payload.resources.transientMeshOwner=meshFilter->GetResolvedTransientMesh();
             payload.resources.materialResolved = stamp.materialResolved;
             payload.resources.requestedMaterialPath = stamp.requestedMaterialPath;
             payload.resources.requestedMaterialInstanceId = stamp.requestedMaterialInstanceId;
@@ -317,6 +318,8 @@ namespace NLS::Engine::Rendering
                 ? stamp.mesh->GetBounds()
                 : NLS::Render::Geometry::Bounds {};
             payload.userMatrix = meshRenderer.GetUserMatrix();
+            payload.affectDistanceField = meshRenderer.GetAffectDistanceField();
+            payload.distanceFieldMostlyStatic = meshRenderer.GetDistanceFieldMostlyStatic();
             payload.layer = stamp.layer;
             payload.ownerRenderRevision = stamp.ownerRenderRevision;
             payload.meshRendererRenderRevision = stamp.meshRendererRevision;

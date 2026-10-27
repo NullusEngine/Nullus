@@ -142,7 +142,7 @@ namespace NLS::Render::Context
             pass.targetsSwapchain = false;
             if (pass.usesColorAttachment)
                 pass.colorAttachmentViews = { frame.sceneColorView };
-            if (pass.usesDepthStencilAttachment)
+            if (pass.usesDepthStencilAttachment && pass.depthStencilAttachmentView == nullptr)
                 pass.depthStencilAttachmentView = frame.sceneDepthStencilView;
         };
         for (auto& pass : package.passCommandInputs)

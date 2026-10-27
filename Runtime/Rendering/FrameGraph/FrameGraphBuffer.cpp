@@ -35,7 +35,7 @@ namespace NLS::Render::FrameGraph
 				flags = flags | NLS::Render::RHI::BufferUsageFlags::CopyDst;
 			}
 
-			return flags;
+				return flags | desc.additionalUsage;
 		}
 
 		NLS::Render::RHI::MemoryUsage ToExplicitMemoryUsage(const FrameGraphBuffer::Desc& desc)
@@ -148,12 +148,13 @@ namespace NLS::Render::FrameGraph
 	{
 		auto* executionContext = static_cast<FrameGraphExecutionContext*>(context);
 		NLS_ASSERT(executionContext != nullptr, "FrameGraphBuffer requires a valid frame graph execution context");
-		(void)flags;
 
 		if (explicitBuffer == nullptr || !executionContext->CanTrackExplicitResourceState())
 			return;
 
-		const auto targetState = GetExplicitBufferReadState(desc);
+			const auto targetState = flags == kIndirectRead ? ExplicitBufferState{
+				NLS::Render::RHI::ResourceState::IndirectArgument,NLS::Render::RHI::PipelineStageMask::DrawIndirect,
+				NLS::Render::RHI::AccessMask::IndirectRead} : GetExplicitBufferReadState(desc);
 		NLS::Render::RHI::RHIBarrierDesc barrierDesc;
 		barrierDesc.bufferBarriers.push_back({
 			explicitBuffer,

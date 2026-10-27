@@ -1,0 +1,124 @@
+{
+  "category": "Color",
+  "deprecated": false,
+  "description": "Multiplies particle color by an input.",
+  "exposedVersion": "71f8f288-7007-6262-73ae-c6252d6e36ff",
+  "id": "fa67d4eb-3edf-69aa-3102-66e9d66696fb",
+  "kind": "Module",
+  "name": "Scale Color",
+  "suggested": false,
+  "version": 2,
+  "versions": [
+    {
+      "attributes": [],
+      "calls": [],
+      "capabilities": 0,
+      "description": "Multiplies particle color by an input.",
+      "graph": {
+        "id": "a5c708a1-5d67-4df7-9d08-82ceafc125c8",
+        "nextNodeId": 5,
+        "nodes": [
+          {
+            "id": 1,
+            "inputs": [],
+            "name": "Particles.Color",
+            "operation": 1,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 3,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 2,
+            "inputs": [],
+            "name": "Module.Scale",
+            "operation": 2,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 3,
+            "value": [
+              1.0,
+              1.0,
+              1.0,
+              1.0
+            ]
+          },
+          {
+            "id": 3,
+            "inputs": [
+              1,
+              2
+            ],
+            "name": "",
+            "operation": 8,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 3,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 4,
+            "inputs": [
+              3
+            ],
+            "name": "Particles.Color",
+            "operation": 22,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 3,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          }
+        ],
+        "stage": 1
+      },
+      "id": "71f8f288-7007-6262-73ae-c6252d6e36ff",
+      "inputs": [
+        {
+          "default": [
+            1.0,
+            1.0,
+            1.0,
+            1.0
+          ],
+          "id": "1202a63b-bd60-fe75-1bde-47bd60a0e320",
+          "name": "Scale",
+          "static": false,
+          "type": 3
+        }
+      ],
+      "major": 1,
+      "minor": 0,
+      "provides": [],
+      "requiresBefore": [],
+      "stages": [
+        5,
+        7
+      ],
+      "switches": []
+    }
+  ],
+  "visible": true
+}

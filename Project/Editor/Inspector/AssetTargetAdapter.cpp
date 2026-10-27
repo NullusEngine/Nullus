@@ -35,6 +35,7 @@
 #include <Rendering/Resources/Shader.h>
 #include <Rendering/Resources/Texture2D.h>
 #include <ServiceLocator.h>
+#include "Debug/Logger.h"
 
 #include "Core/Context.h"
 #include "Core/EditorActions.h"
@@ -46,6 +47,7 @@
 #include "Panels/AssetView.h"
 #include "Undo/EditorUndoMutationContext.h"
 #include "Undo/EditorUndoService.h"
+#include "Materials/MaterialEditingService.h"
 
 namespace NLS::Editor::Inspector
 {
@@ -183,7 +185,10 @@ void EnsureModelImporterDraftDefaults(
         {"EMBED_TEXTURES", "false"},
         {"FORCE_GEN_NORMALS", "false"},
         {"DROP_NORMALS", "false"},
-        {"GEN_BOUNDING_BOXES", "false"}
+        {"GEN_BOUNDING_BOXES", "false"},
+        {"DISTANCE_FIELD_GENERATION", "inherit"},
+        {"DISTANCE_FIELD_RESOLUTION_SCALE", "1.0"},
+        {"DISTANCE_FIELD_TWO_SIDED", "false"}
     };
     for (const auto& [key, value] : modelDefaults)
         draft.settings.try_emplace(key, value);
@@ -347,7 +352,7 @@ bool QueueReimportAsset(
         if (!NLS::Core::ServiceLocator::Contains<Core::Context>())
             return false;
         const auto projectRoot = std::filesystem::path(
-            NLS::Core::ServiceLocator::Get<Core::Context>().projectAssetsPath).parent_path();
+            NLS::Core::ServiceLocator::Get<Core::Context>().projectPath);
         NLS::Editor::Assets::AssetImporterFacade importer(
             NLS::Editor::Assets::MakeProjectEditorAssetRoots(projectRoot));
         return importer.SaveAndReimport(editorAssetPath);
@@ -380,7 +385,9 @@ bool QueueReimportAsset(
         return true;
     }
 
-    const auto projectRoot = std::filesystem::path(EDITOR_EXEC(GetContext()).projectAssetsPath).parent_path();
+    // Context already owns the project root. projectAssetsPath ends in a
+    // separator, so parent_path() on it still names Assets rather than its parent.
+    const auto projectRoot = std::filesystem::path(EDITOR_EXEC(GetContext()).projectPath);
     if (projectRoot.empty())
     {
         error = "The project root is no longer available.";
@@ -406,6 +413,10 @@ bool QueueReimportAsset(
             // exposes the pending operation; the durable command completion
             // is the authoritative progress boundary.
             imported = importer.SaveAndReimport(editorAssetPath);
+            if (!imported)
+                for (const auto& diagnostic : importer.GetDiagnostics())
+                    if (diagnostic.severity == NLS::Core::Assets::AssetDiagnosticSeverity::Error)
+                        completionError += diagnostic.code + ": " + diagnostic.message + "\n";
         }
         catch (const std::exception& exception)
         {
@@ -696,6 +707,7 @@ void CompleteImporterApplyUndo(
     auto mutationLease = context.TryAcquireOperationMutation();
     if (!mutationLease)
     {
+        NLS_LOG_ERROR("Importer Apply completion invalidated: " + metaPath.generic_string());
         AbandonInvalidatedImporterApplyOperation(state, operationGeneration, pendingToken, draftRevision);
         if (completion)
         {
@@ -706,6 +718,7 @@ void CompleteImporterApplyUndo(
     }
     if (!IsImporterApplyOperationCurrent(state, operationGeneration, pendingToken, draftRevision))
     {
+        NLS_LOG_ERROR("Importer Apply completion stale: " + metaPath.generic_string());
         ClearImporterApplyOperation(state, operationGeneration, pendingToken, draftRevision);
         mutationLease.Release();
         if (completion)
@@ -748,6 +761,7 @@ void CompleteImporterApplyUndo(
         rollbackSucceeded = restored.Save(metaPath);
         if (error.empty())
             error = "Reimport failed. The importer settings draft is still available.";
+        NLS_LOG_ERROR("Importer Apply failed: " + metaPath.generic_string() + ": " + error);
         if (!rollbackSucceeded)
             error += " The previous importer metadata could not be restored.";
 
@@ -906,6 +920,14 @@ public:
         const auto restored = m_state->expectedCurrent;
         const auto sourcePath = ResolveAssetSourcePath(m_state->handle);
         const auto metaPath = NLS::Core::Assets::GetAssetMetaPath(sourcePath);
+        const auto editorAssetPath = ToEditorAssetPath(m_state->handle);
+        const auto distanceFieldResolution = attempted.settings.find("DISTANCE_FIELD_RESOLUTION_SCALE");
+        NLS_LOG_INFO("Importer Apply: " + editorAssetPath + " distanceFieldResolution=" +
+            (distanceFieldResolution == attempted.settings.end() ? std::string("inherit") : distanceFieldResolution->second));
+        // Saving the draft wakes the file watcher before the background task
+        // starts. Reserve the import through its completion so that watcher
+        // work cannot import the intermediate metadata or invalidate this Undo.
+        auto reimportGuard = std::make_shared<NLS::Editor::Assets::AssetImporterFacade::ScopedReimportInProgress>(editorAssetPath);
         if (sourcePath.empty() || !attempted.Save(metaPath))
         {
             constexpr std::string_view message = "The importer metadata could not be saved for reimport.";
@@ -921,9 +943,7 @@ public:
         {
             std::lock_guard lock(g_importerDraftMutex);
             auto& draft = EnsureImporterDraftLocked(m_state->handle);
-            const auto editorAssetPath = ToEditorAssetPath(m_state->handle);
-            if (draft.reimportQueued ||
-                (!editorAssetPath.empty() && NLS::Editor::Assets::AssetImporterFacade::IsReimportInProgress(editorAssetPath)))
+            if (draft.reimportQueued)
             {
                 const bool rollbackSucceeded = restored.Save(metaPath);
                 return NLS::Editor::Undo::UndoStartResult::Failed(
@@ -954,6 +974,7 @@ public:
                 attempted,
                 restored,
                 metaPath,
+                reimportGuard,
                 completion = std::move(completion)
             ](const bool imported, std::string completionError) mutable
             {
@@ -1188,6 +1209,7 @@ std::vector<InspectorTargetAction> AssetTargetAdapter::GetActions(const Inspecto
         const bool alive = IsMaterialTargetAlive(*target);
         return {
             {InspectorTargetActionKind::Save, "Save", "Write the current material parameters to disk.", alive, true},
+            {InspectorTargetActionKind::Apply, "Apply to Scene", "Publish the compiled material version to the scene.", alive, false},
             {InspectorTargetActionKind::Reload, "Reload", "Discard unsaved material changes and reload the file.", alive, false},
             {InspectorTargetActionKind::Preview, "Preview", "Open the live material preview.", alive, false}
         };
@@ -1228,6 +1250,28 @@ bool AssetTargetAdapter::ExecuteAction(
 
     if (target->kind == InspectorTargetKind::Material)
     {
+        if (NLS::Core::ServiceLocator::Contains<Materials::MaterialEditingService>())
+        {
+            auto& service=NLS::Core::ServiceLocator::Get<Materials::MaterialEditingService>();
+            if (const auto session=service.OpenTarget(target->assetId,target->resourcePath,error))
+            {
+                switch(action)
+                {
+                case InspectorTargetActionKind::Save:
+                    return service.Save(*session);
+                case InspectorTargetActionKind::Apply:
+                    return service.ApplyToScene(*session);
+                case InspectorTargetActionKind::Reload:
+                    if (!session->document.DiscardWorking()) {error=session->document.Error();return false;}
+                    session->failedSource.clear();service.RequestPreview(*session);return true;
+                case InspectorTargetActionKind::Preview:
+                    if (session->preview)
+                    {auto& view=EDITOR_PANEL(NLS::Editor::Panels::AssetView,"Asset View");view.SetOwnedMaterial(session->preview);view.Open();return true;}
+                    error="The material preview is still compiling";return false;
+                default: break;
+                }
+            }
+        }
         auto* material = ResolveMaterial(*target);
         const auto filePath = ResolveMaterialFilePath(*target);
         if (material == nullptr || filePath.empty())
@@ -1358,6 +1402,7 @@ bool AssetTargetAdapter::ExecuteAction(
 
     const auto handle = MakeDurableAssetUndoTarget(*target);
     NLS::Core::Assets::AssetMeta original;
+    NLS_LOG_INFO("Importer Apply requested: " + handle.resourcePath);
     std::map<std::string, std::string> draftSettings;
     {
         std::lock_guard lock(g_importerDraftMutex);
@@ -1367,12 +1412,14 @@ bool AssetTargetAdapter::ExecuteAction(
         if (!draft.available || !draft.dirty || !meta.has_value())
         {
             error = "There are no importer changes to apply.";
+            NLS_LOG_ERROR("Importer Apply rejected: " + handle.resourcePath + ": " + error);
             return false;
         }
         if (draft.reimportQueued ||
             (!editorAssetPath.empty() && NLS::Editor::Assets::AssetImporterFacade::IsReimportInProgress(editorAssetPath)))
         {
             error = "Importer settings cannot be applied while reimport is in progress.";
+            NLS_LOG_ERROR("Importer Apply rejected: " + handle.resourcePath + ": " + error);
             return false;
         }
         original = *meta;
@@ -1391,6 +1438,7 @@ bool AssetTargetAdapter::ExecuteAction(
         "Apply Importer Settings",
         {handle},
         PropertyPath("Importer.Settings"));
+    info.affected.push_back(NLS::Core::Assets::GetAssetMetaPath(ResolveAssetSourcePath(handle)).generic_string());
     const auto scope = MakeInspectorUndoScope(handle);
     if (scope.IsValid())
         info.writeThroughScopes.push_back(scope);
@@ -1410,6 +1458,7 @@ bool AssetTargetAdapter::ExecuteAction(
         error = result.message.empty()
             ? "The importer settings could not be applied. The draft was kept."
             : result.message;
+        NLS_LOG_ERROR("Importer Apply rejected: " + handle.resourcePath + ": " + error);
         return false;
     }
     return true;

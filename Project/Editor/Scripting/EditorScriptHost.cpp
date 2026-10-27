@@ -1,3 +1,5 @@
+#include <UI/Controls/ScalarControl.h>
+#include <UI/Controls/TextControl.h>
 #include "Scripting/EditorScriptHost.h"
 
 #include <algorithm>
@@ -198,7 +200,7 @@ uint8_t HostToggle(EditorScriptHandle handle, const char* label, uint8_t value, 
     if (TargetFor(handle) == nullptr)
         return 0u;
     bool current = value != 0u;
-    const bool changed = ImGui::Checkbox(label != nullptr ? label : "", &current);
+    const bool changed = NLS::UI::Controls::Toggle(label != nullptr ? label : "",current).changed;
     if (changed && output != nullptr)
         *output = current ? 1u : 0u;
     return changed ? 1u : 0u;
@@ -209,7 +211,8 @@ uint8_t HostIntField(EditorScriptHandle handle, const char* label, int32_t value
     if (TargetFor(handle) == nullptr)
         return 0u;
     int current = value;
-    const bool changed = ImGui::DragInt(label != nullptr ? label : "", &current);
+    NLS::UI::Controls::ScalarOptions options;options.drag=true;options.speed=1;
+    const bool changed=NLS::UI::Controls::Numeric(label!=nullptr?label:"",current,options).changed;
     if (changed && output != nullptr)
         *output = current;
     return changed ? 1u : 0u;
@@ -220,7 +223,8 @@ uint8_t HostFloatField(EditorScriptHandle handle, const char* label, float value
     if (TargetFor(handle) == nullptr)
         return 0u;
     float current = value;
-    const bool changed = ImGui::DragFloat(label != nullptr ? label : "", &current);
+    NLS::UI::Controls::ScalarOptions options;options.drag=true;options.speed=1;
+    const bool changed=NLS::UI::Controls::Numeric(label!=nullptr?label:"",current,options).changed;
     if (changed && output != nullptr)
         *output = current;
     return changed ? 1u : 0u;
@@ -237,7 +241,8 @@ uint8_t HostSlider(
     if (TargetFor(handle) == nullptr)
         return 0u;
     float current = value;
-    const bool changed = ImGui::SliderFloat(label != nullptr ? label : "", &current, minimum, maximum);
+    NLS::UI::Controls::ScalarOptions options;options.slider=true;options.minimum=&minimum;options.maximum=&maximum;
+    const bool changed=NLS::UI::Controls::Numeric(label!=nullptr?label:"",current,options).changed;
     if (changed && output != nullptr)
         *output = current;
     return changed ? 1u : 0u;
@@ -254,11 +259,12 @@ uint8_t HostTextField(
         return 0u;
     if (output == nullptr || capacity == 0u)
         return 0u;
-    const auto current = std::string(SafeString(value));
-    const auto copy = std::min(current.size(), static_cast<size_t>(capacity) - 1u);
-    std::memcpy(output, current.data(), copy);
-    output[copy] = '\0';
-    const bool changed = ImGui::InputText(label != nullptr ? label : "", output, capacity);
+    auto current=std::string(SafeString(value));
+    size_t count=(std::min)(current.size(),static_cast<size_t>(capacity)-1);
+    while(count>0 && count<current.size() && (static_cast<unsigned char>(current[count])&0xc0)==0x80) --count;
+    current.resize(count);
+    const bool changed=NLS::UI::Controls::Text(label!=nullptr?label:"",current,false,{}, {},0,capacity-1).changed;
+    std::memcpy(output,current.data(),current.size());output[current.size()]='\0';
     return changed ? 1u : 0u;
 }
 

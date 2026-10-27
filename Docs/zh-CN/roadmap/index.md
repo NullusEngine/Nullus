@@ -27,6 +27,8 @@
 | HZB 遮挡剔除 | 部分实现 | DX12 按能力保守启用，其它后端未验证 | 同上 |
 | 资源驻留 | 部分实现 | 预算与去重机制存在，流式世界加载未实现 | [资源驻留与预算](../large-scenes/streaming.md) |
 | 渲染路径 | 已实现 | 前向与延迟，FrameGraph 驱动 | [渲染概览](../rendering/overview.md) |
+| 材质创作 | 部分实现 | Material Editor、ShaderGraph、Working/Saved/Applied 与编译快照；设备和交互验收独立 | [材质与 ShaderLab](../rendering/materials.md) |
+| 距离场 | 部分实现 | 静态 Mesh/Global Distance Field、分页与调试；当前仅 DX12 | [距离场](../rendering/distance-fields.md) |
 | 着色器工作流 | 已实现 | HLSL 单一源，ShaderLab 属性与变体 | [材质与 ShaderLab](../rendering/materials.md) |
 | 图形后端 | 部分实现 | DX12 与 Vulkan 主线；Metal 原生实现；DX11 与 OpenGL 受限 | [图形后端与大场景特性](../rendering/backends.md) |
 | 线程化渲染 | 已实现 | Game / Render / RHI 三通道，三种 RHI 线程模式 | [任务系统与线程模型](../architecture/jobs-threading.md) |
@@ -35,7 +37,7 @@
 | 对象图序列化 | 已实现 | 场景与 Prefab 共用格式 | 同上 |
 | C# 脚本 | 已实现 | CoreCLR、热重载、调试附加 | [脚本系统概览](../scripting/overview.md) |
 | Lua 脚本 | 已实现 | Lua 5.4、可选 LuaPanda 调试 | 同上 |
-| 脚本 API 覆盖面 | 部分实现 | 覆盖对象、组件、相机、光源、UI、时间、输入；不含物理/音频/资源加载 | [脚本 API 参考](../scripting/api.md) |
+| 脚本 API 覆盖面 | 部分实现 | 对象、组件、相机、光源、UI、动画/粒子控制与碰撞体配置；通用物理查询、音频和资源加载仍有缺口 | [脚本 API 参考](../scripting/api.md) |
 | UI 运行时 | 已实现 | UIDocument、布局、输入路由、数据绑定、信号、本地化 | [UI 系统概览](../ui/overview.md) |
 | UI 动画 | 部分实现 | 仅不透明度轨道 | 同上 |
 | UI Designer | 已实现 | 编辑器内打开与编辑 UI 文档 | [UI Designer 与编辑器扩展](../ui/designer.md) |
@@ -43,18 +45,19 @@
 | 性能分析 | 已实现 | 共享标记、Tracy、Timeline Profiler | [性能分析与图形调试](../quality/profiling.md) |
 | RenderDoc 集成 | 已实现 | 应用内抓取、运行器、抓取分析 | 同上 |
 | 测试体系 | 已实现 | 行为测试、性能测试、反射冒烟 | [调试与测试](../quality/debugging.md) |
-| 骨骼动画 | 部分实现 | 骨骼/蒙皮/片段作为工件保留，无运行时蒙皮组件 | [动画现状与规划](../animation/roadmap.md) |
-| 物理 | 规划中 | 无刚体、碰撞、查询与角色控制器 | [物理现状与规划](../physics/roadmap.md) |
+| 骨骼动画 | 部分实现 | Animator、GPU 蒙皮、状态机、BlendSpace、Workbench 与 Cook；高阶角色能力和完整验收未完成 | [动画制作工作流](../animation/workflow.md) |
+| 物理 | 部分实现 | PhysX 静态碰撞体和原生场景查询；无动力学刚体或角色控制器 | [物理现状与规划](../physics/roadmap.md) |
 | 音频 | 规划中 | 有 `Audio` 工件类型，无播放实现 | [音频与特效现状及规划](../audio-vfx/roadmap.md) |
-| 粒子与后处理 | 规划中 | 无粒子系统与后处理栈 | 同上 |
+| 粒子 | 部分实现 | CPU/GPU 发射器、模块栈、整系统预览、Sprite/Mesh 与 Cook；完整功能和平台验收未完成 | [粒子制作工作流](../audio-vfx/particles.md) |
+| 后处理 | 规划中 | 无通用后处理栈 | [音频与特效现状及规划](../audio-vfx/roadmap.md) |
 | 视频与时间线 | 规划中 | 无实现 | 同上 |
 | 游戏 AI 基础 | 部分实现 | 原生状态机与下推自动机，未暴露给脚本 | [AI 与联网现状及规划](../ai-networking/roadmap.md) |
 | 导航与行为树 | 规划中 | 无实现 | 同上 |
 | 联网 | 规划中 | 无传输、会话、复制 | 同上 |
-| 打包与分发 | 规划中 | 有构建动作与工件，无最终容器与安装包 | [Game 运行时与资产清单](../platform-build/runtime.md) |
+| 打包与分发 | 部分实现 | Build Profile、依赖收集、Cook、`.npak` 与桌面 Player；安装器和自动更新未完成 | [Player 打包与分发](../platform-build/packaging.md) |
 | 地形与世界分区 | 长期愿景 | 依赖资源驻留与几何查询基础设施 | [资源驻留与预算](../large-scenes/streaming.md) |
 | 2D 工具链 | 长期愿景 | 无精灵、2D 物理与 2D 动画 | 本页 |
-| 可视化脚本 | 长期愿景 | 无节点图系统 | 本页 |
+| 可视化脚本 | 长期愿景 | 材质、动画和粒子有专用图；无游戏逻辑可视化脚本 | 本页 |
 | 插件体系 | 长期愿景 | 有编辑器脚本扩展，无第三方插件分发模型 | [编辑器脚本扩展](../architecture/editor-extensions.md) |
 | 移动端与 XR | 长期愿景 | 不在当前构建与后端目标内 | [平台支持矩阵](../platform-build/platforms.md) |
 
@@ -63,7 +66,7 @@
 多数规划项收敛到少数基础设施：
 
 1. **几何查询**同时服务物理、AI 导航与编辑器选取；
-2. **运行时蒙皮组件**是动画、角色控制与部分粒子的前置；
+2. **可扩展姿态求值与角色预算**决定动画系统扩展到多角色场景的成本；
 3. **平台后端抽象**决定音频、视频与移动端能否以一致方式接入；
 4. **资源驻留与预算**决定地形、世界分区与流式加载是否可行；
 5. **资产类型与序列化**是所有编辑器侧新功能的共同入口。

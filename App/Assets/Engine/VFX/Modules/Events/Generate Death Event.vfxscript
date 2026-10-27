@@ -1,0 +1,86 @@
+{
+  "category": "Events",
+  "deprecated": false,
+  "description": "Emits a death event when a particle dies.",
+  "exposedVersion": "5d2af1db-f710-74de-76a0-e4acc1d46843",
+  "id": "6f133e10-61ce-4c8a-fa55-7b3c7d20dcdb",
+  "kind": "Module",
+  "name": "Generate Death Event",
+  "suggested": false,
+  "version": 2,
+  "versions": [
+    {
+      "attributes": [],
+      "calls": [],
+      "capabilities": 0,
+      "description": "Emits a death event when a particle dies.",
+      "graph": {
+        "id": "ee604b0b-3233-4efc-b6d0-f8b103051f02",
+        "nextNodeId": 3,
+        "nodes": [
+          {
+            "id": 1,
+            "inputs": [],
+            "name": "Module.Event Generation Enabled",
+            "operation": 2,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 0,
+            "value": [
+              1.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 2,
+            "inputs": [
+              1
+            ],
+            "name": "Emitter.GenerateDeath",
+            "operation": 22,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 0,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          }
+        ],
+        "stage": 5
+      },
+      "id": "5d2af1db-f710-74de-76a0-e4acc1d46843",
+      "inputs": [
+        {
+          "default": [
+            1.0,
+            0.0,
+            0.0,
+            0.0
+          ],
+          "id": "cde0a9e2-e261-6ff6-0922-4ccbc4587311",
+          "name": "Event Generation Enabled",
+          "static": false,
+          "type": 0
+        }
+      ],
+      "major": 1,
+      "minor": 0,
+      "provides": [],
+      "requiresBefore": [],
+      "stages": [
+        6
+      ],
+      "switches": []
+    }
+  ],
+  "visible": true
+}

@@ -179,6 +179,7 @@ namespace NLS::Render::Resources
             AppendOptionalBool(key, "overrideDepthTest", overrides.depthTest);
             AppendOptionalBool(key, "overrideHasDepth", overrides.hasDepthAttachment);
             AppendOptionalBool(key, "overrideCulling", overrides.culling);
+            AppendOptionalBool(key, "overrideWireframe", overrides.wireframe);
             AppendOptionalBool(key, "overrideStencilTest", overrides.stencilTest);
             AppendOptionalUInt(key, "overrideStencilWrite", overrides.stencilWriteMask);
             AppendOptionalUInt(key, "overrideSampleCount", overrides.sampleCount);

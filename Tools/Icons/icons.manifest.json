@@ -1,0 +1,1002 @@
+{
+  "schemaVersion": 2,
+  "generator": "iconbaker/1",
+  "toolchain": {
+    "rasterizer": "iconbaker-builtin/1",
+    "deterministic": true
+  },
+  "atlas": {
+    "enabled": true,
+    "pageSize": 512,
+    "padding": 1
+  },
+  "icons": [
+    {
+      "id": "editor.icon.asset.folder",
+      "module": "editor",
+      "kind": "color",
+      "source": "editor/asset-folder.svg",
+      "sizes": [
+        32,
+        64,
+        128
+      ],
+      "defaultToken": "Large",
+      "themeable": false,
+      "tags": [
+        "asset",
+        "file"
+      ],
+      "license": {
+        "name": "CC0-1.0",
+        "author": "Nullus",
+        "source": "original"
+      }
+    },
+    {
+      "id": "editor.icon.asset.texture",
+      "module": "editor",
+      "kind": "color",
+      "source": "editor/asset-texture.svg",
+      "sizes": [
+        32,
+        64,
+        128
+      ],
+      "defaultToken": "Large",
+      "themeable": false,
+      "tags": [
+        "asset",
+        "file"
+      ],
+      "license": {
+        "name": "CC0-1.0",
+        "author": "Nullus",
+        "source": "original"
+      }
+    },
+    {
+      "id": "editor.icon.asset.material",
+      "module": "editor",
+      "kind": "color",
+      "source": "editor/asset-material.svg",
+      "sizes": [
+        32,
+        64,
+        128
+      ],
+      "defaultToken": "Large",
+      "themeable": false,
+      "tags": [
+        "asset",
+        "file"
+      ],
+      "license": {
+        "name": "CC0-1.0",
+        "author": "Nullus",
+        "source": "original"
+      }
+    },
+    {
+      "id": "editor.icon.asset.mesh",
+      "module": "editor",
+      "kind": "color",
+      "source": "editor/asset-mesh.svg",
+      "sizes": [
+        32,
+        64,
+        128
+      ],
+      "defaultToken": "Large",
+      "themeable": false,
+      "tags": [
+        "asset",
+        "file",
+        "model"
+      ],
+      "license": {
+        "name": "CC0-1.0",
+        "author": "Nullus",
+        "source": "original"
+      }
+    },
+    {
+      "id": "editor.icon.asset.prefab",
+      "module": "editor",
+      "kind": "color",
+      "source": "editor/asset-prefab.svg",
+      "sizes": [
+        32,
+        64,
+        128
+      ],
+      "defaultToken": "Large",
+      "themeable": false,
+      "tags": [
+        "asset",
+        "file"
+      ],
+      "license": {
+        "name": "CC0-1.0",
+        "author": "Nullus",
+        "source": "original"
+      }
+    },
+    {
+      "id": "editor.icon.asset.scene",
+      "module": "editor",
+      "kind": "color",
+      "source": "editor/asset-scene.svg",
+      "sizes": [
+        32,
+        64,
+        128
+      ],
+      "defaultToken": "Large",
+      "themeable": false,
+      "tags": [
+        "asset",
+        "file"
+      ],
+      "license": {
+        "name": "CC0-1.0",
+        "author": "Nullus",
+        "source": "original"
+      }
+    },
+    {
+      "id": "editor.icon.asset.shader",
+      "module": "editor",
+      "kind": "color",
+      "source": "editor/asset-shader.svg",
+      "sizes": [
+        32,
+        64,
+        128
+      ],
+      "defaultToken": "Large",
+      "themeable": false,
+      "tags": [
+        "asset",
+        "file"
+      ],
+      "license": {
+        "name": "CC0-1.0",
+        "author": "Nullus",
+        "source": "original"
+      }
+    },
+    {
+      "id": "editor.icon.asset.script",
+      "module": "editor",
+      "kind": "color",
+      "source": "editor/asset-script.svg",
+      "sizes": [
+        32,
+        64,
+        128
+      ],
+      "defaultToken": "Large",
+      "themeable": false,
+      "tags": [
+        "asset",
+        "file"
+      ],
+      "license": {
+        "name": "CC0-1.0",
+        "author": "Nullus",
+        "source": "original"
+      }
+    },
+    {
+      "id": "editor.icon.asset.script.csharp",
+      "module": "editor",
+      "kind": "color",
+      "source": "editor/asset-script-csharp.svg",
+      "sizes": [
+        32,
+        64,
+        128
+      ],
+      "defaultToken": "Large",
+      "themeable": false,
+      "tags": [
+        "asset",
+        "file",
+        "script"
+      ],
+      "license": {
+        "name": "CC0-1.0",
+        "author": "Nullus",
+        "source": "original"
+      }
+    },
+    {
+      "id": "editor.icon.asset.script.lua",
+      "module": "editor",
+      "kind": "color",
+      "source": "editor/asset-script-lua.svg",
+      "sizes": [
+        32,
+        64,
+        128
+      ],
+      "defaultToken": "Large",
+      "themeable": false,
+      "tags": [
+        "asset",
+        "file",
+        "script"
+      ],
+      "license": {
+        "name": "CC0-1.0",
+        "author": "Nullus",
+        "source": "original"
+      }
+    },
+    {
+      "id": "editor.icon.asset.font",
+      "module": "editor",
+      "kind": "color",
+      "source": "editor/asset-font.svg",
+      "sizes": [
+        32,
+        64,
+        128
+      ],
+      "defaultToken": "Large",
+      "themeable": false,
+      "tags": [
+        "asset",
+        "file"
+      ],
+      "license": {
+        "name": "CC0-1.0",
+        "author": "Nullus",
+        "source": "original"
+      }
+    },
+    {
+      "id": "editor.icon.asset.audio",
+      "module": "editor",
+      "kind": "color",
+      "source": "editor/asset-audio.svg",
+      "sizes": [
+        32,
+        64,
+        128
+      ],
+      "defaultToken": "Large",
+      "themeable": false,
+      "tags": [
+        "asset",
+        "file",
+        "sound"
+      ],
+      "license": {
+        "name": "CC0-1.0",
+        "author": "Nullus",
+        "source": "original"
+      }
+    },
+    {
+      "id": "editor.icon.asset.default",
+      "module": "editor",
+      "kind": "color",
+      "source": "editor/asset-default.svg",
+      "sizes": [
+        32,
+        64,
+        128
+      ],
+      "defaultToken": "Large",
+      "themeable": false,
+      "tags": [
+        "asset",
+        "file",
+        "fallback"
+      ],
+      "license": {
+        "name": "CC0-1.0",
+        "author": "Nullus",
+        "source": "original"
+      }
+    },
+    {
+      "id": "editor.icon.asset.ui-document",
+      "module": "editor",
+      "kind": "color",
+      "source": "editor/asset-ui-document.svg",
+      "sizes": [
+        32,
+        64,
+        128
+      ],
+      "defaultToken": "Large",
+      "themeable": false,
+      "tags": [
+        "asset",
+        "file",
+        "ui"
+      ],
+      "license": {
+        "name": "CC0-1.0",
+        "author": "Nullus",
+        "source": "original"
+      }
+    },
+    {
+      "id": "editor.icon.asset.ui-style",
+      "module": "editor",
+      "kind": "color",
+      "source": "editor/asset-ui-style.svg",
+      "sizes": [
+        32,
+        64,
+        128
+      ],
+      "defaultToken": "Large",
+      "themeable": false,
+      "tags": [
+        "asset",
+        "file",
+        "ui"
+      ],
+      "license": {
+        "name": "CC0-1.0",
+        "author": "Nullus",
+        "source": "original"
+      }
+    },
+    {
+      "id": "editor.icon.asset.localization",
+      "module": "editor",
+      "kind": "color",
+      "source": "editor/asset-localization.svg",
+      "sizes": [
+        32,
+        64,
+        128
+      ],
+      "defaultToken": "Large",
+      "themeable": false,
+      "tags": [
+        "asset",
+        "file",
+        "localization"
+      ],
+      "license": {
+        "name": "CC0-1.0",
+        "author": "Nullus",
+        "source": "original"
+      }
+    },
+    {
+      "id": "editor.icon.asset.vfx-system",
+      "module": "editor",
+      "kind": "color",
+      "source": "editor/asset-vfx-system.svg",
+      "sizes": [
+        32,
+        64,
+        128
+      ],
+      "defaultToken": "Large",
+      "themeable": false,
+      "tags": [
+        "asset",
+        "file",
+        "vfx"
+      ],
+      "license": {
+        "name": "CC0-1.0",
+        "author": "Nullus",
+        "source": "original"
+      }
+    },
+    {
+      "id": "editor.icon.asset.vfx-script",
+      "module": "editor",
+      "kind": "color",
+      "source": "editor/asset-vfx-script.svg",
+      "sizes": [
+        32,
+        64,
+        128
+      ],
+      "defaultToken": "Large",
+      "themeable": false,
+      "tags": [
+        "asset",
+        "file",
+        "vfx",
+        "script"
+      ],
+      "license": {
+        "name": "CC0-1.0",
+        "author": "Nullus",
+        "source": "original"
+      }
+    },
+    {
+      "id": "editor.icon.asset.vfx-emitter",
+      "module": "editor",
+      "kind": "color",
+      "source": "editor/asset-vfx-emitter.svg",
+      "sizes": [
+        32,
+        64,
+        128
+      ],
+      "defaultToken": "Large",
+      "themeable": false,
+      "tags": [
+        "asset",
+        "file",
+        "vfx"
+      ],
+      "license": {
+        "name": "CC0-1.0",
+        "author": "Nullus",
+        "source": "original"
+      }
+    },
+    {
+      "id": "editor.icon.asset.shader-graph",
+      "module": "editor",
+      "kind": "color",
+      "source": "editor/asset-shader-graph.svg",
+      "sizes": [
+        32,
+        64,
+        128
+      ],
+      "defaultToken": "Large",
+      "themeable": false,
+      "tags": [
+        "asset",
+        "file",
+        "shader"
+      ],
+      "license": {
+        "name": "CC0-1.0",
+        "author": "Nullus",
+        "source": "original"
+      }
+    },
+    {
+      "id": "editor.icon.asset.shader-function",
+      "module": "editor",
+      "kind": "color",
+      "source": "editor/asset-shader-function.svg",
+      "sizes": [
+        32,
+        64,
+        128
+      ],
+      "defaultToken": "Large",
+      "themeable": false,
+      "tags": [
+        "asset",
+        "file",
+        "shader"
+      ],
+      "license": {
+        "name": "CC0-1.0",
+        "author": "Nullus",
+        "source": "original"
+      }
+    },
+    {
+      "id": "editor.icon.tool.play",
+      "module": "editor",
+      "kind": "monochrome",
+      "source": "editor/tool-play.svg",
+      "sizes": [
+        16,
+        32,
+        48
+      ],
+      "defaultToken": "Small",
+      "themeable": true,
+      "tags": [
+        "tool",
+        "playback"
+      ],
+      "license": {
+        "name": "CC0-1.0",
+        "author": "Nullus",
+        "source": "original"
+      }
+    },
+    {
+      "id": "editor.icon.tool.pause",
+      "module": "editor",
+      "kind": "monochrome",
+      "source": "editor/tool-pause.svg",
+      "sizes": [
+        16,
+        32,
+        48
+      ],
+      "defaultToken": "Small",
+      "themeable": true,
+      "tags": [
+        "tool",
+        "playback"
+      ],
+      "license": {
+        "name": "CC0-1.0",
+        "author": "Nullus",
+        "source": "original"
+      }
+    },
+    {
+      "id": "editor.icon.tool.stop",
+      "module": "editor",
+      "kind": "monochrome",
+      "source": "editor/tool-stop.svg",
+      "sizes": [
+        16,
+        32,
+        48
+      ],
+      "defaultToken": "Small",
+      "themeable": true,
+      "tags": [
+        "tool",
+        "playback"
+      ],
+      "license": {
+        "name": "CC0-1.0",
+        "author": "Nullus",
+        "source": "original"
+      }
+    },
+    {
+      "id": "editor.icon.tool.step.forward",
+      "module": "editor",
+      "kind": "monochrome",
+      "source": "editor/tool-step-forward.svg",
+      "sizes": [
+        16,
+        32,
+        48
+      ],
+      "defaultToken": "Small",
+      "themeable": true,
+      "tags": [
+        "tool",
+        "playback"
+      ],
+      "license": {
+        "name": "CC0-1.0",
+        "author": "Nullus",
+        "source": "original"
+      }
+    },
+    {
+      "id": "editor.icon.tool.refresh",
+      "module": "editor",
+      "kind": "monochrome",
+      "source": "editor/tool-refresh.svg",
+      "sizes": [
+        16,
+        32,
+        48
+      ],
+      "defaultToken": "Small",
+      "themeable": true,
+      "tags": [
+        "tool",
+        "playback"
+      ],
+      "license": {
+        "name": "CC0-1.0",
+        "author": "Nullus",
+        "source": "original"
+      }
+    },
+    {
+      "id": "editor.icon.scene.light.point",
+      "module": "editor",
+      "kind": "color",
+      "source": "editor/scene-light-point.svg",
+      "targets": [
+        "ui",
+        "scene"
+      ],
+      "sizes": [
+        128
+      ],
+      "defaultToken": "Large",
+      "themeable": false,
+      "tags": [
+        "scene",
+        "light"
+      ],
+      "license": {
+        "name": "CC0-1.0",
+        "author": "Nullus",
+        "source": "original"
+      }
+    },
+    {
+      "id": "editor.icon.scene.light.spot",
+      "module": "editor",
+      "kind": "color",
+      "source": "editor/scene-light-spot.svg",
+      "targets": [
+        "ui",
+        "scene"
+      ],
+      "sizes": [
+        128
+      ],
+      "defaultToken": "Large",
+      "themeable": false,
+      "tags": [
+        "scene",
+        "light"
+      ],
+      "license": {
+        "name": "CC0-1.0",
+        "author": "Nullus",
+        "source": "original"
+      }
+    },
+    {
+      "id": "editor.icon.scene.light.directional",
+      "module": "editor",
+      "kind": "color",
+      "source": "editor/scene-light-directional.svg",
+      "targets": [
+        "ui",
+        "scene"
+      ],
+      "sizes": [
+        128
+      ],
+      "defaultToken": "Large",
+      "themeable": false,
+      "tags": [
+        "scene",
+        "light"
+      ],
+      "license": {
+        "name": "CC0-1.0",
+        "author": "Nullus",
+        "source": "original"
+      }
+    },
+    {
+      "id": "editor.icon.scene.light.ambient.box",
+      "module": "editor",
+      "kind": "color",
+      "source": "editor/scene-light-ambient-box.svg",
+      "targets": [
+        "ui",
+        "scene"
+      ],
+      "sizes": [
+        128
+      ],
+      "defaultToken": "Large",
+      "themeable": false,
+      "tags": [
+        "scene",
+        "light"
+      ],
+      "license": {
+        "name": "CC0-1.0",
+        "author": "Nullus",
+        "source": "original"
+      }
+    },
+    {
+      "id": "editor.icon.scene.light.ambient.sphere",
+      "module": "editor",
+      "kind": "color",
+      "source": "editor/scene-light-ambient-sphere.svg",
+      "targets": [
+        "ui",
+        "scene"
+      ],
+      "sizes": [
+        128
+      ],
+      "defaultToken": "Large",
+      "themeable": false,
+      "tags": [
+        "scene",
+        "light"
+      ],
+      "license": {
+        "name": "CC0-1.0",
+        "author": "Nullus",
+        "source": "original"
+      }
+    },
+    {
+      "id": "editor.icon.toolbar.move",
+      "module": "editor",
+      "kind": "monochrome",
+      "source": "editor/toolbar-move.svg",
+      "sizes": [
+        16,
+        32,
+        48
+      ],
+      "defaultToken": "Small",
+      "themeable": true,
+      "tags": [
+        "tool",
+        "transform"
+      ],
+      "license": {
+        "name": "CC0-1.0",
+        "author": "Nullus",
+        "source": "original"
+      }
+    },
+    {
+      "id": "editor.icon.toolbar.rotate",
+      "module": "editor",
+      "kind": "monochrome",
+      "source": "editor/toolbar-rotate.svg",
+      "sizes": [
+        16,
+        32,
+        48
+      ],
+      "defaultToken": "Small",
+      "themeable": true,
+      "tags": [
+        "tool",
+        "transform"
+      ],
+      "license": {
+        "name": "CC0-1.0",
+        "author": "Nullus",
+        "source": "original"
+      }
+    },
+    {
+      "id": "editor.icon.toolbar.scale",
+      "module": "editor",
+      "kind": "monochrome",
+      "source": "editor/toolbar-scale.svg",
+      "sizes": [
+        16,
+        32,
+        48
+      ],
+      "defaultToken": "Small",
+      "themeable": true,
+      "tags": [
+        "tool",
+        "transform"
+      ],
+      "license": {
+        "name": "CC0-1.0",
+        "author": "Nullus",
+        "source": "original"
+      }
+    },
+    {
+      "id": "editor.icon.toolbar.pivot",
+      "module": "editor",
+      "kind": "monochrome",
+      "source": "editor/toolbar-pivot.svg",
+      "sizes": [
+        16,
+        32,
+        48
+      ],
+      "defaultToken": "Small",
+      "themeable": true,
+      "tags": [
+        "tool",
+        "transform"
+      ],
+      "license": {
+        "name": "CC0-1.0",
+        "author": "Nullus",
+        "source": "original"
+      }
+    },
+    {
+      "id": "editor.icon.toolbar.center",
+      "module": "editor",
+      "kind": "monochrome",
+      "source": "editor/toolbar-center.svg",
+      "sizes": [
+        16,
+        32,
+        48
+      ],
+      "defaultToken": "Small",
+      "themeable": true,
+      "tags": [
+        "tool",
+        "transform"
+      ],
+      "license": {
+        "name": "CC0-1.0",
+        "author": "Nullus",
+        "source": "original"
+      }
+    },
+    {
+      "id": "editor.icon.toolbar.global",
+      "module": "editor",
+      "kind": "monochrome",
+      "source": "editor/toolbar-global.svg",
+      "sizes": [
+        16,
+        32,
+        48
+      ],
+      "defaultToken": "Small",
+      "themeable": true,
+      "tags": [
+        "tool",
+        "transform"
+      ],
+      "license": {
+        "name": "CC0-1.0",
+        "author": "Nullus",
+        "source": "original"
+      }
+    },
+    {
+      "id": "editor.icon.toolbar.local",
+      "module": "editor",
+      "kind": "monochrome",
+      "source": "editor/toolbar-local.svg",
+      "sizes": [
+        16,
+        32,
+        48
+      ],
+      "defaultToken": "Small",
+      "themeable": true,
+      "tags": [
+        "tool",
+        "transform"
+      ],
+      "license": {
+        "name": "CC0-1.0",
+        "author": "Nullus",
+        "source": "original"
+      }
+    },
+    {
+      "id": "editor.icon.glyph.caret-down",
+      "module": "editor",
+      "kind": "monochrome",
+      "source": "editor/glyph-caret-down.svg",
+      "sizes": [
+        16,
+        32,
+        48
+      ],
+      "defaultToken": "Small",
+      "themeable": true,
+      "tags": [
+        "glyph"
+      ],
+      "license": {
+        "name": "CC0-1.0",
+        "author": "Nullus",
+        "source": "original"
+      }
+    },
+    {
+      "id": "editor.icon.glyph.caret-right",
+      "module": "editor",
+      "kind": "monochrome",
+      "source": "editor/glyph-caret-right.svg",
+      "sizes": [
+        16,
+        32,
+        48
+      ],
+      "defaultToken": "Small",
+      "themeable": true,
+      "tags": [
+        "glyph"
+      ],
+      "license": {
+        "name": "CC0-1.0",
+        "author": "Nullus",
+        "source": "original"
+      }
+    },
+    {
+      "id": "editor.icon.glyph.close",
+      "module": "editor",
+      "kind": "monochrome",
+      "source": "editor/glyph-close.svg",
+      "sizes": [
+        16,
+        32,
+        48
+      ],
+      "defaultToken": "Small",
+      "themeable": true,
+      "tags": [
+        "glyph"
+      ],
+      "license": {
+        "name": "CC0-1.0",
+        "author": "Nullus",
+        "source": "original"
+      }
+    },
+    {
+      "id": "editor.icon.glyph.search",
+      "module": "editor",
+      "kind": "monochrome",
+      "source": "editor/glyph-search.svg",
+      "sizes": [
+        16,
+        32,
+        48
+      ],
+      "defaultToken": "Small",
+      "themeable": true,
+      "tags": [
+        "glyph"
+      ],
+      "license": {
+        "name": "CC0-1.0",
+        "author": "Nullus",
+        "source": "original"
+      }
+    },
+    {
+      "id": "editor.icon.glyph.more",
+      "module": "editor",
+      "kind": "monochrome",
+      "source": "editor/glyph-more.svg",
+      "sizes": [
+        16,
+        32,
+        48
+      ],
+      "defaultToken": "Small",
+      "themeable": true,
+      "tags": [
+        "glyph"
+      ],
+      "license": {
+        "name": "CC0-1.0",
+        "author": "Nullus",
+        "source": "original"
+      }
+    },
+    {
+      "id": "editor.icon.generated.missing",
+      "module": "editor",
+      "kind": "color",
+      "source": "editor/generated-missing.svg",
+      "sizes": [
+        16,
+        32,
+        48
+      ],
+      "defaultToken": "Small",
+      "themeable": false,
+      "tags": [
+        "generated",
+        "diagnostic"
+      ],
+      "license": {
+        "name": "CC0-1.0",
+        "author": "Nullus",
+        "source": "original"
+      }
+    }
+  ]
+}

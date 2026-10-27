@@ -25,6 +25,15 @@ enum class AssetType
     UIStyleSheet,
     Font,
     LocalizationTable,
+    VfxSystem,
+    ShaderGraph,
+    ShaderFunction,
+    VfxScript,
+    VfxEmitter,
+    AnimationClip,
+    AnimationGraph,
+    BlendSpace,
+    BoneMask,
     Count
 };
 

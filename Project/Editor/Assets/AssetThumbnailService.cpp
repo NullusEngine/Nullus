@@ -1,6 +1,7 @@
 #include "Assets/AssetThumbnailService.h"
 
 #include "Assets/AssetBrowserPresentation.h"
+#include "Assets/AssetIconResolver.h"
 #include "Assets/AssetThumbnailPreviewCamera.h"
 #include "Assets/AssetMeta.h"
 #include "Assets/ArtifactDatabaseManifestUtils.h"
@@ -468,18 +469,17 @@ bool ShouldRetryLegacyImportedPrefabBudgetFailure(const AssetThumbnailRequest& r
 struct AssetThumbnailKindPolicy
 {
     AssetThumbnailKind kind = AssetThumbnailKind::GenericPreview;
-    const char* fallbackIcon = "editor.icon.asset.default";
     AssetThumbnailGenerator generator = nullptr;
     const char* unsupportedDiagnostic = "thumbnail-generation-unsupported";
 };
 
 constexpr std::array<AssetThumbnailKindPolicy, kAssetThumbnailKindCount> kAssetThumbnailKindPolicies {{
-    { AssetThumbnailKind::Icon, "editor.icon.asset.default", nullptr, "thumbnail-generation-unsupported" },
-    { AssetThumbnailKind::Texture, "editor.icon.asset.texture", GenerateTextureThumbnail, "thumbnail-generation-unsupported" },
-    { AssetThumbnailKind::MaterialSphere, "editor.icon.asset.material", GenerateMaterialThumbnail, "thumbnail-material-preview-generation-failed" },
-    { AssetThumbnailKind::ModelPreview, "editor.icon.asset.mesh", GenerateModelThumbnail, "thumbnail-model-preview-generation-failed" },
-    { AssetThumbnailKind::PrefabPreview, "editor.icon.asset.prefab", GeneratePrefabThumbnail, "thumbnail-prefab-preview-generation-failed" },
-    { AssetThumbnailKind::GenericPreview, "editor.icon.asset.default", nullptr, "thumbnail-generation-unsupported" }
+    { AssetThumbnailKind::Icon, nullptr, "thumbnail-generation-unsupported" },
+    { AssetThumbnailKind::Texture, GenerateTextureThumbnail, "thumbnail-generation-unsupported" },
+    { AssetThumbnailKind::MaterialSphere, GenerateMaterialThumbnail, "thumbnail-material-preview-generation-failed" },
+    { AssetThumbnailKind::ModelPreview, GenerateModelThumbnail, "thumbnail-model-preview-generation-failed" },
+    { AssetThumbnailKind::PrefabPreview, GeneratePrefabThumbnail, "thumbnail-prefab-preview-generation-failed" },
+    { AssetThumbnailKind::GenericPreview, nullptr, "thumbnail-generation-unsupported" }
 }};
 
 constexpr size_t kMaxMeshPreviewLoadedVertices = 240000u;
@@ -622,8 +622,8 @@ constexpr const char* kPbrMaterialThumbnailRendererVersion = "asset-browser-thum
 
 std::string FallbackIconForKind(const AssetThumbnailKind kind)
 {
-    const auto* policy = PolicyForKind(kind);
-    return policy != nullptr ? policy->fallbackIcon : "editor.icon.asset.default";
+    return std::string(
+        AssetIconResolver::Default().ResolveThumbnailFallback(kind).value);
 }
 
 bool CanGenerateThumbnail(const AssetThumbnailKind kind)

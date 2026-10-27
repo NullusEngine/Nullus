@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <vector>
 #include <memory>
+#include <atomic>
 
 #include "Object/Object.h"
 #include "Reflection/Macros.h"
@@ -15,6 +16,7 @@
 #include "Rendering/Geometry/BoundingSphere.h"
 #include "Resources/Mesh.generated.h"
 #include "RenderDef.h"
+namespace NLS::Render::AnimationRendering {struct SkinningFrame;}
 namespace NLS::Render::Resources
 {
 	struct NLS_RENDER_API MeshVertexUploadView
@@ -71,6 +73,10 @@ namespace NLS::Render::Resources
 		Mesh(Mesh&&) = delete;
 		Mesh& operator=(Mesh&&) = delete;
 		~Mesh() override;
+        Mesh(std::shared_ptr<RHI::RHIMesh> geometry,uint32_t materialIndex,
+            const Geometry::Bounds& bounds,const Geometry::BoundingSphere& sphere,
+            std::shared_ptr<const AnimationRendering::SkinningFrame> skinning);
+        const std::shared_ptr<const AnimationRendering::SkinningFrame>& GetSkinningFrame()const{return m_skinning;}
 
 		/**
 		* Returns the number of vertices
@@ -106,6 +112,8 @@ namespace NLS::Render::Resources
 		uint64_t GetInstanceId() const;
 		uint64_t GetContentRevision() const;
 		static uint64_t GetGlobalMutationEpoch() noexcept;
+            void SetSourceArtifactPath(std::string path) { m_sourceArtifactPath.store(std::make_shared<const std::string>(std::move(path))); }
+            std::string GetSourceArtifactPath() const { auto path = m_sourceArtifactPath.load(); return path ? *path : std::string{}; }
 		uint32_t GetLODCount() const;
 		Mesh* GetLODMesh(uint32_t lodIndex);
 		const Mesh* GetLODMesh(uint32_t lodIndex) const;
@@ -148,6 +156,7 @@ namespace NLS::Render::Resources
 		uint32_t m_materialIndex;
 		const size_t m_vertexStride = sizeof(Geometry::Vertex);
 		std::shared_ptr<NLS::Render::RHI::RHIMesh> m_rhiMesh;
+        std::shared_ptr<const AnimationRendering::SkinningFrame> m_skinning;
 
 		Buffers::VertexArray							m_vertexArray;
 		std::unique_ptr<Buffers::VertexBuffer<Geometry::Vertex>>	m_vertexBuffer;
@@ -157,6 +166,7 @@ namespace NLS::Render::Resources
 		Geometry::Bounds m_bounds;
 		uint64_t m_instanceId = 0u;
 		uint64_t m_contentRevision = 1u;
+        std::atomic<std::shared_ptr<const std::string>> m_sourceArtifactPath;
 		std::vector<std::unique_ptr<Mesh>> m_lodResources;
 		std::vector<float> m_lodScreenSizes {1.0f};
 		uint32_t m_minLOD = 0u;

@@ -1,0 +1,327 @@
+{
+  "category": "Forces",
+  "deprecated": false,
+  "description": "Pulls particles towards a rest position with spring damping.",
+  "exposedVersion": "97e8def7-7f5d-9f41-056c-1abe94dea292",
+  "id": "1bcaf72c-0925-65b1-2bd2-8e53fc0e732e",
+  "kind": "Module",
+  "name": "Spring Force",
+  "suggested": false,
+  "version": 2,
+  "versions": [
+    {
+      "attributes": [
+        {
+          "default": [
+            0.0,
+            0.0,
+            0.0,
+            0.0
+          ],
+          "name": "Particles.PhysicsForce",
+          "type": 2
+        }
+      ],
+      "calls": [],
+      "capabilities": 0,
+      "description": "Pulls particles towards a rest position with spring damping.",
+      "graph": {
+        "id": "a3076827-f178-481b-976e-3884d6e8b3d2",
+        "nextNodeId": 13,
+        "nodes": [
+          {
+            "id": 1,
+            "inputs": [],
+            "name": "Module.Rest Position",
+            "operation": 2,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 2,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 2,
+            "inputs": [],
+            "name": "Particles.Position",
+            "operation": 1,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 2,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 3,
+            "inputs": [
+              1,
+              2
+            ],
+            "name": "",
+            "operation": 7,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 2,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 4,
+            "inputs": [],
+            "name": "Module.Spring",
+            "operation": 2,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 0,
+            "value": [
+              10.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 5,
+            "inputs": [
+              3,
+              4
+            ],
+            "name": "",
+            "operation": 8,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 2,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 6,
+            "inputs": [],
+            "name": "Particles.Velocity",
+            "operation": 1,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 2,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 7,
+            "inputs": [],
+            "name": "Module.Damping",
+            "operation": 2,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 0,
+            "value": [
+              1.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 8,
+            "inputs": [
+              6,
+              7
+            ],
+            "name": "",
+            "operation": 8,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 2,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 9,
+            "inputs": [
+              5,
+              8
+            ],
+            "name": "",
+            "operation": 7,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 2,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 10,
+            "inputs": [],
+            "name": "Particles.PhysicsForce",
+            "operation": 1,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 2,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 11,
+            "inputs": [
+              10,
+              9
+            ],
+            "name": "",
+            "operation": 6,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 2,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 12,
+            "inputs": [
+              11
+            ],
+            "name": "Particles.PhysicsForce",
+            "operation": 22,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 2,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          }
+        ],
+        "stage": 1
+      },
+      "id": "97e8def7-7f5d-9f41-056c-1abe94dea292",
+      "inputs": [
+        {
+          "default": [
+            0.0,
+            0.0,
+            0.0,
+            0.0
+          ],
+          "id": "cd98ddd3-781f-6565-09a8-bf91bd646712",
+          "name": "Rest Position",
+          "static": false,
+          "type": 2
+        },
+        {
+          "default": [
+            10.0,
+            0.0,
+            0.0,
+            0.0
+          ],
+          "id": "6cfbaff6-6be1-aa1d-c908-d478d5b845a4",
+          "metadata": {
+            "displayName": "",
+            "hasRange": false,
+            "maximum": 0.0,
+            "minimum": 0.0,
+            "step": 0.0,
+            "tooltip": "Spring stiffness towards the rest position.",
+            "unit": "1/s2",
+            "visibleIf": ""
+          },
+          "name": "Spring",
+          "static": false,
+          "type": 0
+        },
+        {
+          "default": [
+            1.0,
+            0.0,
+            0.0,
+            0.0
+          ],
+          "id": "11dd5bd8-3eda-7ab6-699f-4bd09dc514cd",
+          "metadata": {
+            "displayName": "",
+            "hasRange": false,
+            "maximum": 0.0,
+            "minimum": 0.0,
+            "step": 0.0,
+            "tooltip": "Velocity damping applied by the spring.",
+            "unit": "1/s",
+            "visibleIf": ""
+          },
+          "name": "Damping",
+          "static": false,
+          "type": 0
+        }
+      ],
+      "major": 1,
+      "minor": 0,
+      "provides": [],
+      "requiresBefore": [],
+      "stages": [
+        5,
+        7
+      ],
+      "switches": []
+    }
+  ],
+  "visible": true
+}

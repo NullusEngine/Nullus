@@ -109,6 +109,10 @@ public:
         NLS::Core::Assets::AssetId assetId,
         const std::string& subAssetKey) const;
     const RuntimeAssetManifestEntry* Resolve(const RuntimeAssetRef& reference) const;
+    // Fallback for authoring references that did not record a sub-asset key.
+    // Prefers an empty key, then the first entry for the asset.
+    const RuntimeAssetManifestEntry* ResolvePrimary(
+        NLS::Core::Assets::AssetId assetId) const;
     const RuntimeAssetManifestEntry* ResolveByLocalIdentifierInFile(
         NLS::Core::Assets::AssetId assetId,
         int64_t localIdentifierInFile) const;
@@ -150,6 +154,9 @@ private:
 };
 
 NLS_ENGINE_API bool IsRuntimePackagedAssetPath(const std::string& path);
+// Editor manifests may include native texture artifacts for their host. Packaged
+// platform targets and other artifact types require an exact platform match.
+NLS_ENGINE_API bool IsRuntimeAssetPlatformCompatible(Core::Assets::ArtifactType type, const std::string& platform, const std::string& target);
 NLS_ENGINE_API bool IsRuntimeAssetApiAvailable(const std::string& apiName);
 }
 

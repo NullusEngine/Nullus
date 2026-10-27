@@ -31,6 +31,8 @@ namespace
         case RHIVertexSemantic::TexCoord: return "TEXCOORD";
         case RHIVertexSemantic::Normal: return "NORMAL";
         case RHIVertexSemantic::Color: return "COLOR";
+        case RHIVertexSemantic::BlendIndices: return "BLENDINDICES";
+        case RHIVertexSemantic::BlendWeights: return "BLENDWEIGHT";
         case RHIVertexSemantic::Automatic:
         default: break;
         }
@@ -160,7 +162,16 @@ namespace NLS::Render::RHI::DX12
             D3D12_INPUT_ELEMENT_DESC element = {};
             element.SemanticName = semanticName;
             element.SemanticIndex = ToSemanticIndex(attribute);
-            element.Format = ToDXGIFormat(attribute.elementSize);
+            switch (attribute.format)
+            {
+            case RHIVertexFormat::Float: element.Format = DXGI_FORMAT_R32_FLOAT; break;
+            case RHIVertexFormat::Float2: element.Format = DXGI_FORMAT_R32G32_FLOAT; break;
+            case RHIVertexFormat::Float3: element.Format = DXGI_FORMAT_R32G32B32_FLOAT; break;
+            case RHIVertexFormat::Float4: element.Format = DXGI_FORMAT_R32G32B32A32_FLOAT; break;
+            case RHIVertexFormat::UInt16x4: element.Format = DXGI_FORMAT_R16G16B16A16_UINT; break;
+            case RHIVertexFormat::UNorm16x4: element.Format = DXGI_FORMAT_R16G16B16A16_UNORM; break;
+            default: element.Format = ToDXGIFormat(attribute.elementSize); break;
+            }
             element.InputSlot = attribute.binding;
             element.AlignedByteOffset = attribute.offset;
             element.InputSlotClass = perInstance

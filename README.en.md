@@ -50,7 +50,7 @@ Rendering follows a command-based thread model: the Game Thread only produces co
 
 - **Built-in StandardPBR baseline**: The engine ships a `StandardPBR` ShaderLab asset. Model import connects materials, textures, and sub-assets to the same PBR content path.
 - **Shader-defined material parameters**: ShaderLab properties support Float, Int, Range, Vector, Color, and Texture2D / TextureCube values. Materials also manage keyword sets and render-queue overrides, keeping parameters, variants, and render state on one resource object.
-- **Edit and preview in the Editor**: Selecting a material asset in the Inspector exposes its render state, shader, and uniform parameters, with the parameter list generated from the material's current uniform data. Edits apply immediately and join the undo stack, while save and reload stay explicit asset actions. The Asset Browser supplies GPU thumbnails and a Preview action that opens the material in the Asset View panel.
+- **Dedicated material workbench**: Material Editor edits `.mat`, ShaderLab, and ShaderGraph sources with reflected parameters, node graphs, sphere previews, and undo. Working, Saved, and Applied states are separate: Save writes source, Apply to Scene publishes a successfully compiled result, and failure retains the scene's valid material.
 - **Asset-managed, validated reloads**: Materials are managed as asynchronously loadable and prewarmable resource artifacts. ShaderLab reloads validate requested variants first, then update dependent materials and invalidate affected pipeline generations on success.
 
 ### From Source Files To Usable Assets
@@ -75,12 +75,18 @@ Rendering follows a command-based thread model: the Game Thread only produces co
 - **Material debugging stays beside the scene**: Resource selection, property editing, and sphere preview happen in the Editor without leaving the active project context.
 - **Performance is observable**: A shared profiling facade can feed Tracy or the Editor Timeline Profiler, with common CPU/GPU marker entry points for Render and RHI threads.
 
+### Animation, Particles, And Player Builds
+
+- **Animation workflow**: Animation Workbench, Animator, GPU skinning, state machines, BlendSpace, and Notify events support authoring and playback. Root Motion, IK, retargeting, and character budgets remain incomplete.
+- **Particle workflow**: Particle Editor uses module stacks for CPU/GPU emitters, whole-system preview, parameters, and curves. Scenes support Sprite/Mesh rendering and static collision queries; full feature and device coverage still have limits.
+- **Player packaging**: `NullusBuild` collects dependencies, cooks content, writes `.npak`, and assembles desktop Players from Build Profiles. Installers, automatic updates, and mobile delivery remain unavailable.
+
 ### Native Engine Foundations
 
 - A component-based `Scene / SceneManager / GameObject / Component` system.
 - MetaParser code-generated reflection for type registration, the Inspector, object serialization, and the scripting API manifest.
 - A native JobSystem with dependencies, batching, parallel-for scheduling, and background work; rendering scheduling is handled by the priority-aware, named-lane TaskGraph with work stealing.
-- Runtime modules for `Base`, `Core`, `Engine`, `Math`, `Platform`, `Rendering`, `Scripting`, and `UI`; Editor and Game share the same runtime mainline.
+- Runtime modules cover foundations, scenes, rendering, scripting, and UI, with `Animation`, `Physics`, `VFX`, `Cook`, `Build`, and their compilers; Editor and Game share the same runtime mainline.
 
 ## Project Launcher
 
@@ -159,6 +165,9 @@ The full handbook lives in `Docs/` and is published bilingually to the [Wiki](ht
 - [Large Scenes and Resource Management](Docs/en/large-scenes/visibility-occlusion.md)
 - [Gameplay and Scripting](Docs/en/scripting/overview.md)
 - [User Interface](Docs/en/ui/overview.md)
+- [Animation Authoring and Validation](Docs/en/animation/workflow.md)
+- [Particle Authoring Workflow](Docs/en/audio-vfx/particles.md)
+- [Player Packaging and Distribution](Docs/en/platform-build/packaging.md)
 - [Platforms, Builds, and Releases](Docs/en/platform-build/platforms.md)
 - [Extending the Engine](Docs/en/architecture/modules.md)
 - [Debugging, Performance, and Quality](Docs/en/quality/debugging.md)

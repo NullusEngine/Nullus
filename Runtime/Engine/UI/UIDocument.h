@@ -5,6 +5,7 @@
 #include "Rendering/UI/UIDrawSnapshot.h"
 #include "UIElement.h"
 #include "UISignal.h"
+#include "UIResourceReference.h"
 
 #include <filesystem>
 #include <memory>
@@ -68,6 +69,12 @@ namespace NLS::Engine::UI
             bool requiresRenderTarget = false;
             uint64_t textureId = 0u;
             uint32_t textureGeneration = 0u;
+            // Authoring references. Runtime textureId/fontAssetId are resolved
+            // by the host through IUIDocumentResourceResolver; legacy documents
+            // may still carry raw ids without references.
+            std::optional<UITextureReference> texture;
+            std::optional<UIFontReference> font;
+            UIInsets nineSlice;
             uint64_t fontAssetId = 0u;
             uint16_t fontPixelSize = 16u;
             std::vector<NodeDefinition> children;
@@ -80,6 +87,13 @@ namespace NLS::Engine::UI
         std::vector<std::string> m_dependencies;
         NodeDefinition m_root;
     };
+
+    // Recursively collects authoring texture/font references for the importer's
+    // dependency scan. References are returned in document order.
+    NLS_ENGINE_API void CollectUIResourceReferences(
+        const UIDocument& document,
+        std::vector<UITextureReference>& textures,
+        std::vector<UIFontReference>& fonts);
 
     class NLS_ENGINE_API UIDocumentInstance final : public NLS::Object
     {
@@ -103,6 +117,11 @@ namespace NLS::Engine::UI
             uint32_t viewportHeight,
             float dpiScale = 1.0f) const;
         void Tick(float deltaSeconds);
+        // Resolves authoring texture/font references against the installed
+        // IUIDocumentResourceResolver and updates elements when async loads
+        // complete. Safe to call every frame; no-op for documents without
+        // resource references.
+        void RefreshResources();
         [[nodiscard]] UISignalBus& Signals() { return m_signals; }
         [[nodiscard]] const UISignalBus& Signals() const { return m_signals; }
         [[nodiscard]] bool RequiresRenderTarget() const { return m_requiresRenderTarget; }
@@ -114,13 +133,29 @@ namespace NLS::Engine::UI
 
     private:
         friend class UIDocument;
-        static std::unique_ptr<UIElement> BuildElementTree(const UIDocument::NodeDefinition& definition);
+
+        struct ResourceSlot
+        {
+            UINodeGuid nodeGuid;
+            UITextureReference texture;
+            UIFontReference font;
+            bool hasTexture = false;
+            bool hasFont = false;
+            uint64_t textureId = 0u;
+            uint32_t textureGeneration = 0u;
+            uint64_t fontId = 0u;
+        };
+
+        static std::unique_ptr<UIElement> BuildElementTree(
+            const UIDocument::NodeDefinition& definition,
+            std::vector<ResourceSlot>* resourceSlots);
         static void CopyCompatibleState(const UIElement& oldElement, UIElement& newElement);
         static bool ContainsRenderTargetRequirement(const UIDocument::NodeDefinition& definition);
 
         UINodeGuid m_documentId = UINodeGuid::Empty();
         uint32_t m_generation = 1u;
         std::unique_ptr<UIElement> m_root;
+        std::vector<ResourceSlot> m_resourceSlots;
         UIVector2 m_lastViewport;
         float m_lastDpiScale = 1.0f;
         // The render thread receives a value snapshot. Keeping the last

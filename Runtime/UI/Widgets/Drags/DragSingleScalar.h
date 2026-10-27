@@ -7,6 +7,7 @@
 #include "UI/Widgets/DataWidget.h"
 #include "UI/Widgets/Drags/DragScalarInteraction.h"
 #include "ImGui/imgui.h"
+#include "UI/Controls/ScalarControl.h"
 
 namespace NLS::UI::Widgets
 {
@@ -59,7 +60,8 @@ namespace NLS::UI::Widgets
 			ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(8.0f * uiScale, 4.0f * uiScale));
 			ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 3.0f * uiScale);
 
-			if (ImGui::DragScalar((label + this->m_widgetID).c_str(), m_dataType, &value, speed, &min, &max, format.c_str(), dragFlags))
+			Controls::ScalarOptions options;options.drag=true;options.minimum=&min;options.maximum=&max;options.speed=speed;options.format=format.c_str();options.flags=dragFlags;
+            if (Controls::Scalar((label+this->m_widgetID).c_str(),m_dataType,&value,options).changed)
 			{
 				ValueChangedEvent.Invoke(value);
 				this->NotifyChange();

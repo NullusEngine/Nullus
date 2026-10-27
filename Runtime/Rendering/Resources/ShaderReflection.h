@@ -18,7 +18,8 @@ namespace NLS::Render::Resources
 		Sampler,
 		UniformBuffer,
 		StructuredBuffer,
-		StorageBuffer
+        StorageBuffer,
+        StorageTexture
 	};
 
 	struct NLS_RENDER_API ShaderCBufferMemberDesc
@@ -55,6 +56,7 @@ namespace NLS::Render::Resources
 		uint32_t byteSize = 0;
 		std::string parentConstantBuffer;
 		RHI::ShaderStageMask stageMask = RHI::ShaderStageMask::Vertex;
+        RHI::TextureDimension textureDimension = RHI::TextureDimension::Texture2D;
 	};
 
 	struct NLS_RENDER_API ShaderReflection
@@ -62,4 +64,13 @@ namespace NLS::Render::Resources
 		std::vector<ShaderPropertyDesc> properties;
 		std::vector<ShaderConstantBufferDesc> constantBuffers;
 	};
+
+        // A physical layout belongs to one target and keyword combination.
+        // Stages within that combination are merged, never different variants.
+        struct NLS_RENDER_API ShaderVariantReflection
+        {
+            ShaderCompiler::ShaderTargetPlatform targetPlatform = ShaderCompiler::ShaderTargetPlatform::Unknown;
+            uint64_t keywordHash = 0u;
+            ShaderReflection reflection;
+        };
 }

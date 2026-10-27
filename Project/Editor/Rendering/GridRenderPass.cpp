@@ -19,11 +19,6 @@ namespace
 {
     constexpr uint64_t kEditorGridAxesPersistentGroupId = 0x4E4C534752494441ull;
 
-    bool ShouldLogGridPassDiagnostics(const NLS::Render::Context::Driver& driver)
-    {
-        return NLS::Render::Context::DriverRendererAccess::GetDiagnosticsSettings(driver).logRenderDrawPath;
-    }
-
 	bool ShouldSkipEditorGridPlane()
 	{
 		return NLS::Render::Settings::GetThreadDiagnosticsSettings().editorGridSkipPlane;
@@ -48,7 +43,7 @@ void Editor::Rendering::GridRenderPass::UpdateGridAxes(
     const GridDescriptor& gridDescriptor,
     const float gridSize)
 {
-    if (ShouldSkipEditorGridAxes())
+    if (ShouldSkipEditorGridAxes() || NLS::Render::Context::DriverRendererAccess::IsThreadedRenderingEnabled(m_renderer.GetDriver()))
     {
         if (m_hasCachedGridAxes)
             debugDrawService.RemovePersistentPrimitiveGroup(kEditorGridAxesPersistentGroupId);
@@ -59,42 +54,10 @@ void Editor::Rendering::GridRenderPass::UpdateGridAxes(
     if (m_hasCachedGridAxes && m_cachedGridAxesPosition == gridDescriptor.viewPosition)
         return;
 
-    NLS::Render::Debug::DebugDrawSubmitOptions gridOptions;
-    gridOptions.category = NLS::Render::Debug::DebugDrawCategory::Grid;
-    gridOptions.lifetime = NLS::Render::Debug::DebugDrawLifetime::Persistent();
+    const auto axes = BuildEditorOriginAxes(gridDescriptor.viewPosition,gridSize);
+    std::vector<NLS::Render::Debug::DebugDrawPrimitive> primitives(axes.begin(),axes.end());
 
-    const auto makeLine = [&gridOptions](
-        const Maths::Vector3& start,
-        const Maths::Vector3& end,
-        const Maths::Vector3& color)
-    {
-        auto options = gridOptions;
-        options.style.color = color;
-        options.style.lineWidth = 1.0f;
-        NLS::Render::Debug::DebugDrawPrimitive primitive;
-        primitive.type = NLS::Render::Debug::DebugDrawPrimitiveType::Line;
-        primitive.points[0] = start;
-        primitive.points[1] = end;
-        primitive.options = options;
-        return primitive;
-    };
-
-    std::vector<NLS::Render::Debug::DebugDrawPrimitive> axes;
-    axes.reserve(3u);
-    axes.push_back(makeLine(
-        { -gridSize + gridDescriptor.viewPosition.x, 0.0f, 0.0f },
-        { gridSize + gridDescriptor.viewPosition.x, 0.0f, 0.0f },
-        { 1.0f, 0.0f, 0.0f }));
-    axes.push_back(makeLine(
-        { 0.0f, -gridSize + gridDescriptor.viewPosition.y, 0.0f },
-        { 0.0f, gridSize + gridDescriptor.viewPosition.y, 0.0f },
-        { 0.0f, 1.0f, 0.0f }));
-    axes.push_back(makeLine(
-        { 0.0f, 0.0f, -gridSize + gridDescriptor.viewPosition.z },
-        { 0.0f, 0.0f, gridSize + gridDescriptor.viewPosition.z },
-        { 0.0f, 0.0f, 1.0f }));
-
-    if (debugDrawService.SetPersistentPrimitiveGroup(kEditorGridAxesPersistentGroupId, std::move(axes)))
+    if (debugDrawService.SetPersistentPrimitiveGroup(kEditorGridAxesPersistentGroupId, std::move(primitives)))
     {
         m_cachedGridAxesPosition = gridDescriptor.viewPosition;
         m_hasCachedGridAxes = true;
@@ -186,116 +149,51 @@ void Editor::Rendering::GridRenderPass::Draw(NLS::Render::Data::PipelineState p_
 }
 
 std::optional<NLS::Render::Context::RenderPassCommandInput> Editor::Rendering::GridRenderPass::BuildThreadedPassInput(
-    NLS::Render::Data::PipelineState p_pso)
+    NLS::Render::Data::PipelineState)
 {
-    if (ShouldSkipEditorGridPlane())
+    if (ShouldSkipEditorGridPlane() && ShouldSkipEditorGridAxes()) return std::nullopt;
+    const auto& frame = m_renderer.GetFrameDescriptor();
+    const auto device = NLS::Render::Context::DriverRendererAccess::GetExplicitDevice(m_renderer.GetDriver());
+    const auto* shader = m_gridMaterial.GetShader();
+    if (!device || !frame.camera || !shader) return std::nullopt;
+    const auto backend = device->GetAdapter()->GetBackendType();
+    if (!m_gridShaders || m_gridShaders->generation != shader->GetGeneration() || m_gridShaders->vertex.targetBackend != backend)
+        m_gridShaders = CaptureEditorGridShaders(*shader,backend);
+    const auto snapshot = NLS::Render::FrameGraph::CaptureExternalSceneOutputSnapshot(frame);
+    NLS::Render::RHI::RHIRenderTargetLayoutDesc targets;
+    targets.colorFormats = {snapshot.outputColorView ? snapshot.outputColorView->GetDesc().format : NLS::Render::RHI::TextureFormat::RGBA8};
+    targets.colorSpaces = {snapshot.outputColorView ? snapshot.outputColorView->GetDesc().colorSpace : NLS::Render::RHI::TextureColorSpace::Linear};
+    targets.hasDepth = true;
+    targets.depthFormat = snapshot.outputDepthStencilView ? snapshot.outputDepthStencilView->GetDesc().format : NLS::Render::RHI::TextureFormat::Depth24Stencil8;
+    if (snapshot.outputColorTexture) targets.sampleCount = snapshot.outputColorTexture->GetDesc().sampleCount;
+    const auto& grid = m_renderer.GetDescriptor<GridDescriptor>();
+    std::string error;
+    std::vector<NLS::Render::Context::RecordedDrawCommandInput> draws;
+    const auto viewProjection = frame.camera->GetProjectionMatrix()*frame.camera->GetViewMatrix();
+    if (!ShouldSkipEditorGridPlane())
     {
-        if (ShouldLogGridPassDiagnostics(m_renderer.GetDriver()))
-            NLS_LOG_INFO("[EditorGridPass] threaded input skipped: plane disabled");
-        return std::nullopt;
+        auto draw = m_gridRenderer.Prepare(device,m_gridShaders,targets,viewProjection,grid.viewPosition,grid.gridColor,error);
+        if (!draw) { NLS_LOG_WARNING("Editor grid: "+error); return std::nullopt; }
+        draws.push_back(std::move(*draw));
     }
-
-    auto* planeMesh = EDITOR_CONTEXT(editorResources)->GetMesh("Plane");
-    if (planeMesh == nullptr)
+    if (!ShouldSkipEditorGridAxes())
     {
-        if (ShouldLogGridPassDiagnostics(m_renderer.GetDriver()))
-            NLS_LOG_INFO("[EditorGridPass] threaded input skipped: Plane mesh unavailable");
-        return std::nullopt;
+        const auto* axesShader = EDITOR_CONTEXT(shaderManager)[":Shaders/DebugPrimitive.hlsl"];
+        if (!axesShader) return std::nullopt;
+        if (!m_axesShaders || m_axesShaders->generation != axesShader->GetGeneration() || m_axesShaders->vertex.targetBackend != backend)
+            m_axesShaders = CaptureEditorGridShaders(*axesShader,backend);
+        auto axes = m_gridRenderer.PrepareAxes(device,m_axesShaders,targets,viewProjection,grid.viewPosition,error);
+        if (!axes) { NLS_LOG_WARNING("Editor axes: "+error); return std::nullopt; }
+        for (auto& draw : *axes) draws.push_back(std::move(draw));
     }
-
-    NLS_ASSERT(m_renderer.HasDescriptor<GridDescriptor>(), "Cannot find GridDescriptor attached to this renderer");
-    auto& gridDescriptor = m_renderer.GetDescriptor<GridDescriptor>();
-    const auto& frameDescriptor = m_renderer.GetFrameDescriptor();
-
-    constexpr float gridSize = 5000.0f;
-    Maths::Matrix4 model = BuildGridPlaneModelMatrix(gridDescriptor, gridSize);
-
-    ApplyGridColor(gridDescriptor.gridColor);
-
-    NLS::Render::Context::RenderPassCommandInput passInput;
-    passInput.kind = NLS::Render::Context::RenderPassCommandKind::Helper;
-    passInput.debugName = "EditorGridPass";
-    passInput.queueType = NLS::Render::RHI::QueueType::Graphics;
-    passInput.queueDependencyPolicy = NLS::Render::Context::QueueDependencyPolicy::Previous;
-    passInput.requiresFrameData = true;
-    passInput.requiresObjectData = true;
-    passInput.targetsSwapchain = NLS::Render::FrameGraph::FrameTargetsSwapchain(frameDescriptor);
-    passInput.renderWidth = frameDescriptor.renderWidth;
-    passInput.renderHeight = frameDescriptor.renderHeight;
-    passInput.usesColorAttachment = true;
-    passInput.usesDepthStencilAttachment = true;
-
-    const auto explicitDevice =
-        NLS::Render::Context::DriverRendererAccess::GetExplicitDevice(m_renderer.GetDriver());
-    const ThreadedCommandCacheKey cacheKey {
-        planeMesh,
-        m_gridMaterial.GetShader(),
-        explicitDevice != nullptr ? explicitDevice->GetCacheIdentity() : 0u,
-        p_pso.bits.to_ullong(),
-        gridDescriptor.gridColor,
-        gridDescriptor.viewPosition
-    };
-    bool canReuseCachedCommands =
-        m_threadedCommandCacheKey.has_value() &&
-        *m_threadedCommandCacheKey == cacheKey &&
-        CanCacheEditorDrawCommands(m_cachedThreadedDrawCommands);
-    if (canReuseCachedCommands)
-    {
-        std::shared_ptr<NLS::Render::RHI::RHIBindingSet> currentFrameBindingSet;
-        auto* bindingProvider = m_renderer.GetFrameObjectBindingProvider();
-        canReuseCachedCommands =
-            bindingProvider != nullptr &&
-            bindingProvider->CaptureFrameBindingSet(currentFrameBindingSet);
-        if (canReuseCachedCommands)
-        {
-            passInput.recordedDrawCommands = m_cachedThreadedDrawCommands;
-            for (auto& drawCommand : passInput.recordedDrawCommands)
-                drawCommand.frameBindingSet = currentFrameBindingSet;
-        }
-        else
-        {
-            m_threadedCommandCacheKey.reset();
-            m_cachedThreadedDrawCommands.clear();
-        }
-    }
-
-    if (!canReuseCachedCommands)
-    {
-        m_debugModelRenderer.CaptureMeshDrawCommandsWithSingleMaterial(
-            p_pso,
-            *planeMesh,
-            m_gridMaterial,
-            model,
-            passInput.recordedDrawCommands);
-
-        if (CanCacheEditorDrawCommands(passInput.recordedDrawCommands))
-        {
-            m_cachedThreadedDrawCommands = passInput.recordedDrawCommands;
-            for (auto& drawCommand : m_cachedThreadedDrawCommands)
-                drawCommand.frameBindingSet.reset();
-            m_threadedCommandCacheKey = cacheKey;
-        }
-        else
-        {
-            m_threadedCommandCacheKey.reset();
-            m_cachedThreadedDrawCommands.clear();
-        }
-    }
-
-    passInput.drawCount = static_cast<uint64_t>(passInput.recordedDrawCommands.size());
-    if (passInput.drawCount == 0u)
-    {
-        if (ShouldLogGridPassDiagnostics(m_renderer.GetDriver()))
-            NLS_LOG_INFO("[EditorGridPass] threaded input skipped: captured draw count is zero");
-        return std::nullopt;
-    }
-
-    if (ShouldLogGridPassDiagnostics(m_renderer.GetDriver()))
-    {
-        NLS_LOG_INFO(
-            "[EditorGridPass] threaded input captured drawCount=" +
-            std::to_string(passInput.drawCount));
-    }
-
-    return passInput;
+    NLS::Render::Context::RenderPassCommandInput input;
+    input.kind = NLS::Render::Context::RenderPassCommandKind::Helper;
+    input.debugName = "EditorGridPass";
+    input.queueType = NLS::Render::RHI::QueueType::Graphics;
+    input.queueDependencyPolicy = NLS::Render::Context::QueueDependencyPolicy::Previous;
+    input.targetsSwapchain = NLS::Render::FrameGraph::FrameTargetsSwapchain(frame);
+    input.renderWidth = frame.renderWidth; input.renderHeight = frame.renderHeight;
+    input.usesColorAttachment = true; input.usesDepthStencilAttachment = true;
+    input.recordedDrawCommands = std::move(draws); input.drawCount = input.recordedDrawCommands.size();
+    return input;
 }

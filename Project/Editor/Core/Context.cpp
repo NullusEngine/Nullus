@@ -17,6 +17,7 @@
 #include <thread>
 
 #include <Core/ServiceLocator.h>
+#include <Engine/UI/UIDocumentResourceResolver.h>
 #include <Engine/UI/UIDocumentSourceResolver.h>
 #include "Assets/ArtifactDatabase.h"
 #include "Assets/AssetBrowserPresentation.h"
@@ -29,6 +30,7 @@
 #include "Core/EditorFrameLatency.h"
 #include "Core/EditorProgressTargets.h"
 #include "Debug/FileHandler.h"
+#include "Icons/EditorIconCatalog.h"
 #include "Platform/Process/Process.h"
 #include "Profiling/Profiler.h"
 #include "Rendering/BaseSceneRenderer.h"
@@ -288,7 +290,7 @@ namespace
         artifactDatabase.VisitRecords([&](const NLS::Core::Assets::ArtifactDatabaseRecord& record)
         {
             if (record.status != NLS::Core::Assets::ArtifactRecordStatus::UpToDate ||
-                record.targetPlatform != kEditorRuntimeAssetTargetPlatform ||
+                !NLS::Engine::Assets::IsRuntimeAssetPlatformCompatible(record.artifactType,record.targetPlatform,kEditorRuntimeAssetTargetPlatform) ||
                 record.artifactPath.empty())
             {
                 return;
@@ -1227,6 +1229,16 @@ Editor::Core::Context::Context(const std::string& p_projectPath, const std::stri
         window->GetGlfwWindow(),
         driverSettings.graphicsBackend,
         UI::EStyle::ALTERNATIVE_DARK);
+
+    // Register the icon-font subset before the first font atlas build. Runtime/UI
+    // consumes the codepoints; it does not include editor headers.
+    {
+        std::vector<ImWchar> iconCodepoints;
+        for (const char32_t codepoint : NLS::Editor::Icons::DefaultGlyphCodepoints())
+            iconCodepoints.push_back(static_cast<ImWchar>(codepoint));
+        uiManager->SetFontIconCodepoints(std::move(iconCodepoints));
+    }
+
     uiManager->LoadFont("Ruda_Big", editorAssetsPath + "/Fonts/Ruda-Bold.ttf", 16);
     uiManager->LoadFont("Ruda_Small", editorAssetsPath + "/Fonts/Ruda-Bold.ttf", 12);
     uiManager->LoadFont("Ruda_Medium", editorAssetsPath + "/Fonts/Ruda-Bold.ttf", 14);
@@ -1730,6 +1742,10 @@ Editor::Core::Context::~Context()
         residentPrefabPreviewRegistry->SetInactiveBudgetBytes(0u);
         residentPrefabPreviewRegistry.reset();
     }
+
+    // Drop UI texture registrations while the driver and texture manager are
+    // still alive; the resolver caches RHI texture views.
+    NLS::Engine::UI::ClearUIDocumentResourceResolver();
 
     meshManager.UnloadResources();
     textureManager.UnloadResources();

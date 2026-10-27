@@ -67,6 +67,8 @@ MeshRenderer::MeshRenderer(const MeshRenderer& other)
     , userMatrixValues(other.userMatrixValues)
     , customBoundingSphere(other.customBoundingSphere)
     , frustumBehaviour(other.frustumBehaviour)
+    , m_affectDistanceField(other.m_affectDistanceField)
+    , m_distanceFieldMostlyStatic(other.m_distanceFieldMostlyStatic)
     , m_transientRenderingSuppressed(false)
 {
     m_materials.resize((std::max)(other.m_materials.size(), other.m_materialPaths.size()), nullptr);
@@ -92,6 +94,8 @@ MeshRenderer& MeshRenderer::operator=(const MeshRenderer& other)
     userMatrixValues = other.userMatrixValues;
     customBoundingSphere = other.customBoundingSphere;
     frustumBehaviour = other.frustumBehaviour;
+    m_affectDistanceField = other.m_affectDistanceField;
+    m_distanceFieldMostlyStatic = other.m_distanceFieldMostlyStatic;
     m_transientRenderingSuppressed = false;
     MarkRenderStateChanged();
     return *this;

@@ -37,6 +37,8 @@ namespace NLS::meta
 
             std::string GetKey(const Argument &value) const override;
             Variant GetValue(const std::string &key) const override;
+            Variant FromBits(uint64_t bits) const override;
+            uint64_t GetBits(const Argument& value) const override;
 
         private:
             Table m_keyToValue;

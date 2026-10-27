@@ -16,6 +16,7 @@
 #include <vector>
 
 #include <Assets/AssetMeta.h>
+#include <Assets/NativeArtifactContainer.h>
 
 namespace NLS::Editor::Undo::AssetFile
 {
@@ -1013,6 +1014,52 @@ private:
     uint64_t m_removalGeneration = 0u;
 };
 
+class NativeMaterialCreateCommand final : public IEditorUndoCommand
+{
+public:
+    NativeMaterialCreateCommand(UndoCommandPtr command,std::filesystem::path project,
+        std::filesystem::path source,NLS::Core::Assets::AssetId id)
+        : m_command(std::move(command)),m_project(std::move(project)),m_source(std::move(source)),m_id(id) {}
+    UndoCommandInfo GetInfo() const override {return m_command->GetInfo();}
+    UndoValidationResult Validate(UndoDirection direction,const UndoExecutionContext& context) const override
+    {
+        const auto result=m_command->Validate(direction,context);
+        if (direction!=UndoDirection::Undo || result.state!=UndoValidationState::Ready) return result;
+        return HasInboundReferences()?UndoValidationResult::Conflict("Material gained durable references; undo those assignments first"):
+            UndoValidationResult::Ready();
+    }
+    UndoStartResult Apply(UndoDirection direction,const UndoExecutionContext& context,UndoCompletion completion) override
+    {
+        if (direction==UndoDirection::Undo && HasInboundReferences())
+            return UndoStartResult::Failed("Material has durable references outside its creation snapshot");
+        return m_command->Apply(direction,context,std::move(completion));
+    }
+    bool TryMergeFrom(const IEditorUndoCommand&) override {return false;}
+private:
+    bool HasInboundReferences() const
+    {
+        const auto guid=m_id.ToString();
+        const auto& bytes=m_id.GetGuid().GetBytes();
+        const std::string binary(reinterpret_cast<const char*>(bytes.data()),bytes.size());
+        const auto aliases=ReferenceAliases(m_project,m_source);
+        std::error_code error;
+        for (std::filesystem::recursive_directory_iterator it(m_project/"Assets",error),end;it!=end && !error;it.increment(error))
+        {
+            if (!it->is_regular_file(error)) continue;
+            const auto path=Normalize(it->path());
+            if (path==Normalize(m_source) || path.extension()==".meta") continue;
+            const auto contents=ReadContents(path);
+            if (!contents) return true;
+            if (contents->find(guid)!=std::string::npos || contents->find(binary)!=std::string::npos) return true;
+            for (const auto& alias : aliases) if (contents->find(alias)!=std::string::npos) return true;
+        }
+        return static_cast<bool>(error);
+    }
+    UndoCommandPtr m_command;
+    std::filesystem::path m_project,m_source;
+    NLS::Core::Assets::AssetId m_id;
+};
+
 class CreateAssetDirectoryCommand final : public IEditorUndoCommand
 {
 public:
@@ -1809,6 +1856,26 @@ UndoCommandPtr MakeCreateFileCommand(
         destination,
         std::move(contents),
         metadata);
+}
+
+UndoCommandPtr MakeCreateMaterialCommand(const std::filesystem::path& projectRoot,
+    const std::filesystem::path& destinationPath,NLS::Render::Assets::MaterialAsset asset,std::string label)
+{
+    const auto project=Normalize(projectRoot),destination=Normalize(destinationPath);
+    if (!IsDescendantPath(project/"Assets",destination) || destination.extension()!=".mat") return {};
+    auto id=NLS::Core::Assets::AssetId::New();
+    asset.identity={id.ToString(),"material:main",destination.lexically_relative(project).generic_string()};
+    std::string error;
+    if (!asset.Validate(error)) return {};
+    const auto source=NLS::Render::Assets::SerializeMaterialAsset(asset);
+    NLS::Core::Assets::NativeArtifactMetadata metadata;
+    metadata.artifactType=NLS::Core::Assets::ArtifactType::Material;metadata.schemaName="material";
+    metadata.sourceAssetId=id;metadata.subAssetKey="material:main";
+    const auto bytes=NLS::Core::Assets::WriteNativeArtifactContainer(metadata,
+        std::span<const uint8_t>(reinterpret_cast<const uint8_t*>(source.data()),source.size()));
+    auto command=MakeCreateFileCommand(project,destination,std::string(reinterpret_cast<const char*>(bytes.data()),bytes.size()),
+        asset.identity.path,std::move(label),id);
+    return command?std::make_unique<NativeMaterialCreateCommand>(std::move(command),project,destination,id):nullptr;
 }
 
 UndoCommandPtr MakeCreateDirectoryCommand(

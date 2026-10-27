@@ -14,6 +14,8 @@
 #include <Math/Vector3.h>
 #include <Rendering/Data/Frustum.h>
 #include <Rendering/Resources/Mesh.h>
+#include <Rendering/Resources/Shader.h>
+#include <Rendering/Geometry/BoundingSphereUtils.h>
 
 namespace NLS::Editor::Rendering
 {
@@ -86,7 +88,13 @@ namespace NLS::Editor::Rendering
         if (item.meshRenderer->GetFrustumBehaviour() == Engine::Components::MeshRenderer::EFrustumBehaviour::DISABLED)
             return true;
 
-        return filter.frustum->BoundsInFrustum(item.mesh->GetBounds(), item.worldMatrix);
+        const auto* shader=item.sourceMaterial?item.sourceMaterial->GetShader():nullptr;
+        const auto contract=shader?shader->GetMaterialInterface():nullptr;
+        if(contract && contract->usesWorldPositionOffset)
+        {auto bounds=NLS::Render::Geometry::TransformBounds(item.mesh->GetBounds(),item.worldMatrix);
+            const auto padding=contract->maximumWorldDisplacement*2.f;bounds.size+=Maths::Vector3(padding,padding,padding);
+            return filter.frustum->BoundsInFrustum(bounds,Maths::Matrix4::Identity);}
+        return filter.frustum->BoundsInFrustum(item.mesh->GetBounds(),item.worldMatrix);
     }
 
     inline void CollectSelectedDebugGameObjectDebugDrawItems(

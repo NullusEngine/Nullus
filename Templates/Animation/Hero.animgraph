@@ -1,0 +1,175 @@
+{
+  "version": 1,
+  "id": "2b13f982-bb9c-5dac-a57f-fdbaaede65bb",
+  "name": "Hero",
+  "skeleton": "70078927-e8d3-58ce-be94-00e6a5171559#skeleton:node/0",
+  "output": 8,
+  "parameters": [
+    {
+      "id": 1,
+      "name": "Speed",
+      "type": 0,
+      "initial": [
+        1,
+        0,
+        0,
+        0
+      ]
+    },
+    {
+      "id": 2,
+      "name": "IsGrounded",
+      "type": 1,
+      "initial": [
+        1,
+        0,
+        0,
+        0
+      ]
+    },
+    {
+      "id": 3,
+      "name": "UpperBodyWeight",
+      "type": 0,
+      "initial": [
+        0,
+        0,
+        0,
+        0
+      ]
+    },
+    {
+      "id": 4,
+      "name": "Jump",
+      "type": 3,
+      "initial": [
+        0,
+        0,
+        0,
+        0
+      ]
+    }
+  ],
+  "nodes": [
+    {
+      "id": 1,
+      "kind": 3,
+      "name": "Locomotion",
+      "blendSpace": "c124ff53-5145-5aae-8760-d7a2a46e89e8#blend-space:Locomotion",
+      "xParameter": "Speed",
+      "position": [
+        0,
+        0
+      ]
+    },
+    {
+      "id": 2,
+      "kind": 1,
+      "name": "Jump",
+      "clip": "70078927-e8d3-58ce-be94-00e6a5171559#animation:animation/3",
+      "loop": false,
+      "position": [
+        0,
+        170
+      ]
+    },
+    {
+      "id": 3,
+      "kind": 8,
+      "name": "Movement State",
+      "machine": 1,
+      "position": [
+        250,
+        0
+      ]
+    },
+    {
+      "id": 4,
+      "kind": 1,
+      "name": "Upper Body",
+      "clip": "70078927-e8d3-58ce-be94-00e6a5171559#animation:animation/4",
+      "position": [
+        250,
+        200
+      ]
+    },
+    {
+      "id": 7,
+      "kind": 6,
+      "name": "Upper Body Layer",
+      "inputs": [
+        3,
+        4
+      ],
+      "mask": "71880211-33e3-5431-a27f-754ea9ebf444#bone-mask:UpperBody",
+      "parameter": "UpperBodyWeight",
+      "position": [
+        500,
+        0
+      ]
+    },
+    {
+      "id": 8,
+      "kind": 11,
+      "name": "Output",
+      "inputs": [
+        7
+      ],
+      "position": [
+        750,
+        0
+      ]
+    }
+  ],
+  "machines": [
+    {
+      "id": 1,
+      "initial": 1,
+      "name": "Movement",
+      "states": [
+        {
+          "id": 1,
+          "name": "Grounded",
+          "pose": 1
+        },
+        {
+          "id": 2,
+          "name": "Jump",
+          "pose": 2
+        }
+      ],
+      "transitions": [
+        {
+          "id": 1,
+          "from": 1,
+          "to": 2,
+          "condition": {
+            "operation": 9,
+            "children": [
+              {
+                "parameter": "Jump",
+                "operation": 0
+              },
+              {
+                "parameter": "IsGrounded",
+                "operation": 1
+              }
+            ]
+          },
+          "duration": 0.15
+        },
+        {
+          "id": 2,
+          "from": 2,
+          "to": 1,
+          "condition": {
+            "parameter": "IsGrounded",
+            "operation": 0
+          },
+          "duration": 0.15,
+          "exitTime": 0.9
+        }
+      ]
+    }
+  ]
+}

@@ -50,6 +50,8 @@ const char* ToString(const AssetType type)
     case AssetType::ModelScene: return "model-scene";
     case AssetType::Texture: return "texture";
     case AssetType::Shader: return "shader";
+    case AssetType::ShaderGraph: return "shader-graph";
+    case AssetType::ShaderFunction: return "shader-function";
     case AssetType::Material: return "material";
     case AssetType::Audio: return "audio";
     case AssetType::Scene: return "scene";
@@ -59,6 +61,13 @@ const char* ToString(const AssetType type)
     case AssetType::UIStyleSheet: return "ui-style-sheet";
     case AssetType::Font: return "font";
     case AssetType::LocalizationTable: return "localization";
+    case AssetType::VfxSystem: return "vfx-system";
+    case AssetType::VfxScript: return "vfx-script";
+    case AssetType::VfxEmitter: return "vfx-emitter";
+    case AssetType::AnimationClip: return "animation-clip";
+    case AssetType::AnimationGraph: return "animation-graph";
+    case AssetType::BlendSpace: return "blend-space";
+    case AssetType::BoneMask: return "bone-mask";
     case AssetType::Unknown:
     case AssetType::Count:
         break;
@@ -75,6 +84,8 @@ AssetType AssetTypeFromString(const std::string& text)
         return AssetType::Texture;
     if (lowered == "shader")
         return AssetType::Shader;
+    if(lowered=="shader-graph")return AssetType::ShaderGraph;
+    if(lowered=="shader-function")return AssetType::ShaderFunction;
     if (lowered == "material")
         return AssetType::Material;
     if (lowered == "audio")
@@ -93,6 +104,13 @@ AssetType AssetTypeFromString(const std::string& text)
         return AssetType::Font;
     if (lowered == "localization")
         return AssetType::LocalizationTable;
+    if (lowered == "vfx-system") return AssetType::VfxSystem;
+    if (lowered == "vfx-script") return AssetType::VfxScript;
+    if (lowered == "vfx-emitter") return AssetType::VfxEmitter;
+    if (lowered == "animation-clip") return AssetType::AnimationClip;
+    if (lowered == "animation-graph") return AssetType::AnimationGraph;
+    if (lowered == "blend-space") return AssetType::BlendSpace;
+    if (lowered == "bone-mask") return AssetType::BoneMask;
     return AssetType::Unknown;
 }
 
@@ -105,6 +123,15 @@ std::filesystem::path GetAssetMetaPath(const std::filesystem::path& assetPath)
 
 AssetType InferAssetType(const std::filesystem::path& assetPath)
 {
+    const auto extension=ToLower(assetPath.extension().generic_string());
+    if(extension==".vfxscript")return AssetType::VfxScript;
+    if(extension==".vfxemitter")return AssetType::VfxEmitter;
+    if(extension==".shadergraph")return AssetType::ShaderGraph;
+    if(extension==".shaderfunc")return AssetType::ShaderFunction;
+    if(extension==".animclip")return AssetType::AnimationClip;
+    if(extension==".animgraph")return AssetType::AnimationGraph;
+    if(extension==".blendspace")return AssetType::BlendSpace;
+    if(extension==".bonemask")return AssetType::BoneMask;
     switch (NLS::Utils::PathParser::GetFileType(assetPath.generic_string()))
     {
     case NLS::Utils::PathParser::EFileType::MODEL:
@@ -131,6 +158,8 @@ AssetType InferAssetType(const std::filesystem::path& assetPath)
         return AssetType::UIStyleSheet;
     case NLS::Utils::PathParser::EFileType::LOCALIZATION:
         return AssetType::LocalizationTable;
+    case NLS::Utils::PathParser::EFileType::VFX:
+        return AssetType::VfxSystem;
     case NLS::Utils::PathParser::EFileType::UNKNOWN:
     case NLS::Utils::PathParser::EFileType::COUNT:
         break;
@@ -140,11 +169,14 @@ AssetType InferAssetType(const std::filesystem::path& assetPath)
 
 std::string InferImporterId(const AssetType type)
 {
+    if(type==AssetType::AnimationClip||type==AssetType::AnimationGraph||type==AssetType::BlendSpace||type==AssetType::BoneMask)return ToString(type);
     switch (type)
     {
     case AssetType::ModelScene: return "scene-model";
     case AssetType::Texture: return "texture";
     case AssetType::Shader: return "shader";
+    case AssetType::ShaderGraph:return "material-graph";
+    case AssetType::ShaderFunction:return "material-function";
     case AssetType::Material: return "material";
     case AssetType::Audio: return "audio";
     case AssetType::Scene: return "scene";
@@ -154,6 +186,9 @@ std::string InferImporterId(const AssetType type)
     case AssetType::UIStyleSheet: return "ui-style-sheet";
     case AssetType::Font: return "font";
     case AssetType::LocalizationTable: return "localization";
+    case AssetType::VfxSystem: return "vfx-system";
+    case AssetType::VfxScript: return "vfx-script";
+    case AssetType::VfxEmitter: return "vfx-emitter";
     case AssetType::Unknown:
     case AssetType::Count:
         break;
@@ -166,11 +201,20 @@ uint32_t GetCurrentImporterVersion(const AssetType type)
     switch (type)
     {
     case AssetType::ModelScene:
-        return 20u;
+        return 22u;
     case AssetType::Shader:
-        return 2u;
-    case AssetType::Texture:
+        return 5u;
+    case AssetType::ShaderGraph:
+    case AssetType::ShaderFunction:
+        return 1u;
+    case AssetType::VfxSystem:
+        return 17u;
+    case AssetType::VfxScript:
+    case AssetType::VfxEmitter:
+        return 1u;
     case AssetType::Material:
+        return 3u;
+    case AssetType::Texture:
     case AssetType::Audio:
     case AssetType::Scene:
     case AssetType::Script:

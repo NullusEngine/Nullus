@@ -95,6 +95,8 @@ DX12 and Vulkan default to `tasks`, while Metal stays on `dedicated_thread` unti
 
 ## Next steps
 
+- [Distance Fields](distance-fields.md) covers DX12 mesh/global fields, import settings, and diagnostics.
+
 - [Cameras, Lights, and Output](cameras-lights.md) renders the scene.
 - [Materials and ShaderLab](materials.md) authors shaders and materials.
 - [Graphics Backends and Large-Scene Features](backends.md) covers the backend matrix and large-scene details.

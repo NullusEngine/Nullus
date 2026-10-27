@@ -9,6 +9,8 @@
 #include "Components/MeshFilter.h"
 #include "Components/MeshRenderer.h"
 #include "Components/TransformComponent.h"
+#include "Components/AnimatorComponent.h"
+#include "Components/SkinnedMeshRenderer.h"
 #include "GameObject.h"
 #include "Profiling/PerformanceStageStats.h"
 #include "Rendering/Assets/SceneImportPipeline.h"
@@ -681,7 +683,7 @@ PrefabImportResult BuildGeneratedModelPrefab(
     result.artifact.graph.version = 2;
     result.artifact.graph.documentId = NLS::Guid::NewDeterministic(MakeLabel(scene, "document"));
 
-    if (!scene.skins.empty() || !scene.animations.empty())
+    if ((!scene.skins.empty() || !scene.animations.empty()) && !scene.animationData)
     {
         AddDiagnostic(
             result.diagnostics,
@@ -806,6 +808,39 @@ PrefabImportResult BuildGeneratedModelPrefab(
         }
     }
 
+    if(scene.animationData)
+    {
+        auto& graph=result.artifact.graph;const auto animatorId=MakeObjectId(scene,"component:animation-controller");
+        auto attach=[&](const ObjectId& owner,const ObjectId& component)
+        {for(auto& record:graph.objects)if(record.id==owner)for(auto& property:record.properties)if(property.name=="components")property.value.GetMutableArray().push_back(PropertyValue::OwnedReference(component));};
+        ObjectRecord animator;animator.id=animatorId;animator.localIdentifierInFile=Serialize::MakeLocalIdentifierInFile(animatorId);
+        animator.typeName=NLS_TYPEOF(Components::AnimatorComponent).GetName();animator.debugName="Animator";
+        const auto animationKey=!scene.animationData->clips.empty()?"animation:"+scene.animationData->clips.front().id:
+            !scene.skeletons.empty()?"skeleton:"+scene.skeletons.front().sourceKey:std::string{};
+        if(!animationKey.empty())
+        {
+            animator.properties.push_back({"animation",MakeAssetReference(scene.sourceAssetId,animationKey)});
+            AddResolvedAsset(result.artifact,scene.sourceAssetId,"Animation",animationKey,ResolveArtifactPath(manifest,animationKey));
+        }
+        attach(graph.root,animatorId);graph.objects.push_back(std::move(animator));AddRecordMapping(result.artifact,animatorId);
+        for(const auto& mesh:scene.animationData->meshes)
+        {
+            const auto binding=std::find_if(scene.animationData->skins.begin(),scene.animationData->skins.end(),[&](const auto& skin){return skin.id==mesh.skin;});
+            if(binding==scene.animationData->skins.end())continue;
+            std::string ownerKey=binding->meshNode;const auto node=std::find_if(scene.nodes.begin(),scene.nodes.end(),[&](const auto& n){return n.sourceKey==ownerKey;});
+            if(node==scene.nodes.end())continue;
+            const auto record=std::find_if(scene.meshes.begin(),scene.meshes.end(),[&](const auto& m){return m.sourceKey==node->meshKey;});
+            if(record!=scene.meshes.end()&&record->primitives.size()>1)
+            {const auto end=mesh.id.rfind("/node/");const auto primitive=NLS::Render::Assets::ParsePrimitiveMeshSourceKey(mesh.id.substr(0,end));if(primitive)ownerKey+=":primitive:"+std::to_string(primitive->second);}
+            const auto ownerId=MakeObjectId(scene,"node:"+ownerKey);const auto id=MakeObjectId(scene,"component:"+mesh.id+":skinned-renderer");
+            const auto key="skinned-mesh:"+mesh.id;ObjectRecord renderer;renderer.id=id;renderer.localIdentifierInFile=Serialize::MakeLocalIdentifierInFile(id);
+            renderer.typeName=NLS_TYPEOF(Components::SkinnedMeshRenderer).GetName();renderer.debugName=mesh.name+" Skinned Mesh";
+            renderer.properties.push_back({"mesh",MakeAssetReference(scene.sourceAssetId,key)});
+            renderer.properties.push_back({"animator",PropertyValue::ObjectReference(ObjectIdentifier::LocalObject(Serialize::MakeLocalIdentifierInFile(animatorId)))});
+            attach(ownerId,id);graph.objects.push_back(std::move(renderer));AddRecordMapping(result.artifact,id);
+            AddResolvedAsset(result.artifact,scene.sourceAssetId,"Animation",key,ResolveArtifactPath(manifest,key));
+        }
+    }
     const auto graphDiagnostics = result.artifact.Validate();
     buildStage.AddCounter("objectCount", static_cast<uint64_t>(result.artifact.graph.objects.size()));
     for (const auto& diagnostic : graphDiagnostics.GetItems())

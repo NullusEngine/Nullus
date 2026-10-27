@@ -134,6 +134,7 @@ namespace
     NLS::Render::Data::PipelineState CreateSelectionMaskVisiblePipelineState(
         NLS::Render::Data::PipelineState pso)
     {
+        pso.rasterizationMode = NLS::Render::Settings::ERasterizationMode::FILL;
         pso.blending = false;
         pso.depthTest = true;
         pso.depthFunc = NLS::Render::Settings::EComparaisonAlgorithm::LESS_EQUAL;
@@ -148,6 +149,7 @@ namespace
     NLS::Render::Data::PipelineState CreateSelectionMaskOccludedPipelineState(
         NLS::Render::Data::PipelineState pso)
     {
+        pso.rasterizationMode = NLS::Render::Settings::ERasterizationMode::FILL;
         pso.blending = false;
         pso.depthTest = true;
         pso.depthFunc = NLS::Render::Settings::EComparaisonAlgorithm::ALWAYS;
@@ -162,6 +164,7 @@ namespace
     NLS::Render::Data::PipelineState CreateSelectionFullscreenPipelineState(
         NLS::Render::Data::PipelineState pso)
     {
+        pso.rasterizationMode = NLS::Render::Settings::ERasterizationMode::FILL;
         pso.blending = false;
         pso.depthTest = false;
         pso.depthWriting = false;
@@ -177,10 +180,11 @@ namespace
         NLS::Render::Resources::Mesh* mesh = nullptr;
         float selectionGroupId = 1.0f;
         float selectionClassification = NLS::Editor::Rendering::kSelectionOutlineParentClassification;
+        NLS::Render::Resources::Material* sourceMaterial=nullptr;
 
         bool operator==(const SelectionMaskCaptureGroupKey& other) const
         {
-            return mesh == other.mesh &&
+            return mesh == other.mesh && sourceMaterial==other.sourceMaterial &&
                 selectionGroupId == other.selectionGroupId &&
                 selectionClassification == other.selectionClassification;
         }
@@ -197,6 +201,7 @@ namespace
             };
             combine(std::hash<float>{}(key.selectionGroupId));
             combine(std::hash<float>{}(key.selectionClassification));
+            combine(std::hash<NLS::Render::Resources::Material*>{}(key.sourceMaterial));
             return seed;
         }
     };
@@ -210,12 +215,12 @@ namespace
         NLS::Render::Resources::Mesh* mesh,
         const NLS::Maths::Matrix4& modelMatrix,
         const float selectionGroupId,
-        const float selectionClassification)
+        const float selectionClassification,NLS::Render::Resources::Material* sourceMaterial=nullptr)
     {
         if (mesh == nullptr)
             return;
 
-        const SelectionMaskCaptureGroupKey key{ mesh, selectionGroupId, selectionClassification };
+        const SelectionMaskCaptureGroupKey key{ mesh, selectionGroupId, selectionClassification,sourceMaterial };
         const auto groupIt = groupLookup.find(key);
         if (groupIt == groupLookup.end())
         {
@@ -223,6 +228,7 @@ namespace
             newGroup.mesh = mesh;
             newGroup.selectionGroupId = selectionGroupId;
             newGroup.selectionClassification = selectionClassification;
+            newGroup.sourceMaterial=sourceMaterial;
             groups.push_back(std::move(newGroup));
             const auto groupIndex = groups.size() - 1u;
             groupLookup.emplace(key, groupIndex);
@@ -250,7 +256,7 @@ namespace
                 selectionItem.mesh,
                 selectionItem.worldMatrix,
                 selectionItem.selectionGroupId,
-                selectionItem.selectionClassification);
+                selectionItem.selectionClassification,selectionItem.sourceMaterial);
         }
 
         if (cameraMesh == nullptr)
@@ -351,7 +357,8 @@ namespace
             debugDrawItems.selectionMeshItems.end(),
             [](const NLS::Editor::Rendering::DebugGameObjectDebugDrawItems::SelectionMeshItem& item)
             {
-                return item.sourceMaterial != nullptr && MaterialRequestsAlphaMask(*item.sourceMaterial);
+                return item.sourceMaterial != nullptr && !item.sourceMaterial->ResolveShaderForLightMode("SelectionMask") &&
+                    MaterialRequestsAlphaMask(*item.sourceMaterial);
             });
     }
 
@@ -859,7 +866,11 @@ namespace NLS::Editor::Rendering
 
             NLS::Render::Entities::Drawable drawable;
             drawable.mesh = group.mesh;
-            drawable.material = &material;
+            auto* shader=group.sourceMaterial?group.sourceMaterial->ResolveShaderForLightMode("SelectionMask"):nullptr;
+            auto custom=shader?group.sourceMaterial->CreateDynamicCopy():nullptr;
+            if(custom)custom->SetShader(shader);
+            auto& effective=custom?*custom:material;
+            drawable.material = &effective;
             drawable.instanceCount = static_cast<uint32_t>(group.instanceModelMatrices.size());
             NLS::Engine::Rendering::EngineDrawableDescriptor descriptor{
                 group.instanceModelMatrices.front(),
@@ -870,11 +881,11 @@ namespace NLS::Editor::Rendering
             drawable.AddDescriptor(NLS::Engine::Rendering::EngineDrawableDescriptor{
                 descriptor
             });
-            ApplySelectionMaskGroupParameters(material, group, passMode);
-            drawable.stateMask = material.GenerateStateMask();
+            ApplySelectionMaskGroupParameters(effective, group, passMode);
+            drawable.stateMask = effective.GenerateStateMask();
 
             NLS::Render::Context::RecordedDrawCommandInput drawCommand;
-            if (m_renderer.CaptureRecordedDrawCommand(pso, drawable, drawCommand))
+            if (m_renderer.CaptureRecordedDrawCommand(pso, drawable, drawCommand,custom?"SelectionMask":"Forward"))
                 outDrawCommands.push_back(std::move(drawCommand));
         }
     }
@@ -905,6 +916,7 @@ namespace NLS::Editor::Rendering
         });
 
         NLS::Render::Resources::MaterialPipelineStateOverrides compositeOverrides;
+        compositeOverrides.wireframe = false;
         compositeOverrides.blending = true;
         compositeOverrides.depthTest = false;
         compositeOverrides.depthWrite = false;
@@ -1127,6 +1139,12 @@ namespace NLS::Editor::Rendering
         for (const auto& group : groups)
         {
             HashCombinePointer(selectedTreeHash, group.mesh);
+            HashCombinePointer(selectedTreeHash,group.sourceMaterial);
+            if(group.sourceMaterial)
+            {HashCombine(selectedTreeHash,group.sourceMaterial->GetParameterBlock().GetRevision());
+                HashCombine(selectedTreeHash,group.sourceMaterial->GetRenderStateRevision());
+                const auto* shader=group.sourceMaterial->GetShader();
+                if(shader && shader->GetMaterialInterface()->usesWorldPositionOffset)return std::nullopt;}
             HashCombine(selectedTreeHash, group.mesh->GetContentRevision());
             HashCombine(meshContentRevisionHash, group.mesh->GetContentRevision());
             HashCombineFloat(selectedTreeHash, group.selectionGroupId);

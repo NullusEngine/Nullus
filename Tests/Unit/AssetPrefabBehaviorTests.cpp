@@ -17,6 +17,7 @@
 #include "Profiling/PerformanceStageStats.h"
 #include "Serialize/ObjectGraphSerializer.h"
 #include "Serialize/ObjectGraphWriter.h"
+#include <Json/json.hpp>
 
 #include <algorithm>
 #include <chrono>
@@ -764,6 +765,86 @@ TEST(AssetPrefabBehaviorTests, ModelTextureMappingDependencyBatchUsesArtifactDat
     }
     EXPECT_EQ(GetModelTextureMappingDependencyArtifactDatabaseLoadCountForTesting(), 1u)
         << "Warm batches should reuse the cached immutable ArtifactDB lookup index.";
+}
+
+TEST(AssetPrefabBehaviorTests, ModelTextureMappingDependencyBatchPrefersEditorHostArtifacts)
+{
+#if !defined(_WIN32)
+    GTEST_SKIP() << "The Windows editor builds model textures for win64-dx12.";
+#else
+    using namespace NLS::Core::Assets;
+    using namespace NLS::Editor::Assets;
+
+    ScopedTempDirectory temp("NullusTextureMappingEditorHost");
+    const auto projectRoot = temp.Path();
+    const auto textureId = AssetId(NLS::Guid::Parse(MakeIndexedTextureGuid(0u)));
+    const std::string texturePath = "Assets/Textures/HostTexture.png";
+    ArtifactDatabase database;
+    for (const auto* platform : {"editor", "linux", "win64-dx12"})
+    {
+        ArtifactManifest manifest;
+        manifest.sourceAssetId = textureId;
+        manifest.importerId = "texture";
+        manifest.importerVersion = GetCurrentImporterVersion(AssetType::Texture);
+        manifest.targetPlatform = platform;
+        manifest.primarySubAssetKey = "texture:main";
+        manifest.subAssets.push_back({
+            textureId, "texture:main", ArtifactType::Texture, "texture", platform,
+            MakeIndexedTextureArtifactPath(0u), std::string("hash-") + platform, "HostTexture"
+        });
+        database.UpsertManifest(manifest, texturePath, ArtifactRecordStatus::UpToDate);
+    }
+    ASSERT_TRUE(database.Save(projectRoot / "Library" / "ArtifactDB"));
+
+    const std::vector<std::string> dependencyValues = {
+        MakeModelTextureMappingDependencyValue(texturePath, "source-path"),
+        MakeModelTextureMappingDependencyValue("HostTexture", "name-search")
+    };
+    ModelTextureAssetCandidate expected;
+    expected.assetId = textureId;
+    expected.editorPath = texturePath;
+    expected.subAssetKey = "texture:main";
+    expected.artifactPath = MakeIndexedTextureArtifactPath(0u);
+    expected.displayName = "HostTexture";
+    expected.assetType = AssetType::Texture;
+    expected.artifactHashOrVersion = "hash-win64-dx12";
+    const auto sourcePathFingerprint = BuildModelTextureMappingFingerprint({expected});
+    expected.nameQuery = "HostTexture";
+    const auto nameFingerprint = BuildModelTextureMappingFingerprint({expected});
+    const auto checkFingerprints = [&]
+    {
+        const auto fingerprints = ComputeModelTextureMappingDependencyFingerprintsForTesting(
+            projectRoot, dependencyValues, "editor");
+        ASSERT_EQ(fingerprints.size(), 2u);
+        ASSERT_TRUE(fingerprints[0].has_value());
+        ASSERT_TRUE(fingerprints[1].has_value());
+        EXPECT_EQ(*fingerprints[0], sourcePathFingerprint);
+        EXPECT_EQ(*fingerprints[1], nameFingerprint);
+    };
+
+    ClearModelTextureMappingDependencyFingerprintCacheForTesting();
+    checkFingerprints();
+    ClearModelTextureMappingDependencyFingerprintCacheForTesting();
+    checkFingerprints();
+    EXPECT_EQ(GetModelTextureMappingDependencyArtifactDatabaseLoadCountForTesting(), 0u);
+
+    const auto cachePath = projectRoot / "Library" / "ModelTextureMappingArtifactDatabaseTextureIndex.cache";
+    auto legacyIndex = nlohmann::json::parse(ReadRepositoryTextFile(cachePath));
+    legacyIndex["schemaVersion"] = 1u;
+    for (auto& candidate : legacyIndex["candidates"])
+        candidate["artifactHashOrVersion"] = "hash-editor";
+    WriteTextFileForTest(cachePath, legacyIndex.dump());
+    ClearModelTextureMappingDependencyFingerprintCacheForTesting();
+    checkFingerprints();
+    EXPECT_EQ(GetModelTextureMappingDependencyArtifactDatabaseLoadCountForTesting(), 1u)
+        << "A persisted index using the old platform selection must be rebuilt.";
+
+    const auto explicitPlatform = ComputeModelTextureMappingDependencyFingerprintsForTesting(
+        projectRoot, {dependencyValues.front()}, "linux");
+    ASSERT_EQ(explicitPlatform.size(), 1u);
+    ASSERT_TRUE(explicitPlatform.front().has_value());
+    EXPECT_NE(explicitPlatform.front()->find("hash-linux"), std::string::npos);
+#endif
 }
 
 TEST(AssetPrefabBehaviorTests, ModelTextureMappingDependencyBatchReusesPersistentArtifactDatabaseLookupIndex)

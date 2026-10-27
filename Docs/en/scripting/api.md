@@ -196,7 +196,7 @@ Lua runtime errors enter script diagnostics and the editor Console. Lua scripts 
 - Per-module source manifests live at `*/Gen/ScriptApi.json`.
 - Unsupported portable signatures are rejected at build time rather than silently skipped.
 
-The manifest currently contains engine-side reflected types only. Cross-references between script-defined types, coroutines, asset loading, physics, and audio APIs are not included yet.
+The manifest contains engine-side reflected types, including Animator/Particle System playback and parameter controls plus collider configuration. Cross-references between script-defined types, coroutines, asset loading, general physics queries, and audio APIs are not included yet.
 
 ## Next steps
 

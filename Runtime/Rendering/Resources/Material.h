@@ -32,14 +32,18 @@
 #include "Resources/Material.generated.h"
 #include "RenderDef.h"
 
+namespace NLS::Render::Assets { struct MaterialAsset; }
+
 namespace NLS::Render::Resources
 {
     class MaterialResourceSet;
+    struct MaterialRuntimeResource;
     struct MaterialPipelineStateOverrides;
     enum class MaterialSurfaceMode : uint8_t;
     class Material;
     class Shader;
     struct ShaderPropertyDesc;
+    struct ShaderConstantBufferDesc;
 
     struct MaterialMutationRecord
     {
@@ -76,8 +80,11 @@ struct MaterialPipelineStateOverrides
     static constexpr size_t kInlineColorSpaceCapacity = 4u;
     static constexpr size_t kInlineRenderTargetBlendStateCapacity = 4u;
     std::optional<bool> depthWrite, colorWrite, blending, depthTest, hasDepthAttachment, culling, stencilTest;
-    std::optional<bool> alphaToCoverage, independentBlend;
+    std::optional<bool> alphaToCoverage, independentBlend, wireframe;
     std::optional<uint32_t> stencilWriteMask, sampleCount;
+    std::optional<uint32_t> stencilReadMask,stencilReference;
+    std::optional<Settings::EComparaisonAlgorithm> stencilCompare;
+    std::optional<Settings::EOperation> stencilPassOp;
     std::optional<Settings::EComparaisonAlgorithm> depthCompare;
     std::optional<Settings::ECullFace> cullFace;
     std::optional<RHI::TextureFormat> depthFormat;
@@ -193,7 +200,10 @@ struct MaterialPipelineStateOverrides
             lhs.stencilTest == rhs.stencilTest &&
             lhs.alphaToCoverage == rhs.alphaToCoverage &&
             lhs.independentBlend == rhs.independentBlend &&
+            lhs.wireframe == rhs.wireframe &&
             lhs.stencilWriteMask == rhs.stencilWriteMask &&
+            lhs.stencilReadMask==rhs.stencilReadMask && lhs.stencilReference==rhs.stencilReference &&
+            lhs.stencilCompare==rhs.stencilCompare && lhs.stencilPassOp==rhs.stencilPassOp &&
             lhs.sampleCount == rhs.sampleCount &&
             lhs.depthCompare == rhs.depthCompare &&
             lhs.cullFace == rhs.cullFace &&
@@ -243,6 +253,9 @@ struct MaterialBindingDiagnostic
     std::string message;
 };
 
+NLS_RENDER_API bool CaptureMaterialConstantBuffer(const ShaderConstantBufferDesc& layout, const MaterialParameterBlock& parameters,
+    std::vector<uint8_t>& bytes, std::string& error);
+
 /**
  * A material is a combination of a shader and some settings (Material settings and shader settings)
  */
@@ -260,6 +273,15 @@ public:
      */
     Material(Shader* p_shader = nullptr);
     ~Material();
+    // The public Material identity stays stable when a published base changes.
+    void CopyRuntimeFrom(const Material& source);
+    std::unique_ptr<Material> CreateDynamicCopy() const;
+    void SetExternalBuffer(std::string name,std::shared_ptr<RHI::RHIBuffer> buffer);
+    bool IsDynamicInstance() const { return m_dynamicInstance; }
+    std::shared_ptr<const MaterialRuntimeResource> CaptureRuntimeResource(
+        const std::shared_ptr<RHI::RHIDevice>& device,const Shader* effectiveShader = nullptr) const;
+    void SetAssetData(std::shared_ptr<const NLS::Render::Assets::MaterialAsset> asset) { m_assetData=std::move(asset); }
+    const std::shared_ptr<const NLS::Render::Assets::MaterialAsset>& GetAssetData() const { return m_assetData; }
 
     /**
      * Defines the shader to attach to this material instance
@@ -276,7 +298,7 @@ public:
 
     void RebuildBindingLayout();
     void RebuildBindingSet() const;
-    void RebuildBindingSet(const Shader* effectiveShader) const;
+    void RebuildBindingSet(const Shader* effectiveShader, const std::shared_ptr<RHI::RHIDevice>& device = {}) const;
 
     /**
      * Set a shader uniform value
@@ -478,6 +500,8 @@ public:
         uint64_t shaderGeneration) const;
 #endif
     void SetTextureResourcePath(const std::string& name, std::string path);
+    void SetOwnedCubeTexture(const std::string& name,std::shared_ptr<class TextureCube> texture);
+    void SetOwnedTexture2D(const std::string& name,std::shared_ptr<class Texture2D> texture);
     void ClearTextureResourcePath(const std::string& name);
     std::string GetTextureResourcePath(const std::string& name) const;
     const std::map<std::string, std::string>& GetTextureResourcePaths() const;
@@ -515,6 +539,7 @@ protected:
     MaterialParameterBlock m_parameterBlock;
     std::map<std::string, std::string> m_textureResourcePaths;
     std::map<std::string, RHI::SamplerDesc> m_samplerOverrides;
+    std::map<std::string,std::shared_ptr<RHI::RHIBuffer>> m_externalBuffers;
     NLS::Render::ShaderLab::ShaderLabKeywordSet m_shaderLabKeywords;
     MaterialLayout m_materialLayout;
     ResourceBindingLayout m_bindingLayout;
@@ -530,6 +555,10 @@ protected:
     mutable std::atomic<MaterialRuntimeState*> m_runtimeState { nullptr };
 
     bool m_blendable = false;
+    bool m_dynamicInstance = false;
+    std::shared_ptr<const NLS::Render::Assets::MaterialAsset> m_assetData;
+    std::map<std::string,std::shared_ptr<class TextureCube>> m_ownedCubeTextures;
+    std::map<std::string,std::shared_ptr<class Texture2D>> m_ownedTextures2D;
     MaterialSurfaceMode m_surfaceMode;
     bool m_backfaceCulling = true;
     bool m_frontfaceCulling = false;

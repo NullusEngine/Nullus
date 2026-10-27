@@ -103,6 +103,28 @@ namespace NLS::Editor::Settings
 
 namespace NLS::Editor::Settings
 {
+    STRUCT(EditorUIDesignerSettingsObject)
+    {
+        GENERATED_BODY()
+        PROPERTY(DisplayName("Snap to Grid"))
+        bool snapToGrid = true;
+        PROPERTY(DisplayName("Grid Size"), Range(1.0f, 128.0f))
+        float gridSize = 8.0f;
+        PROPERTY(DisplayName("Snap to Guides"))
+        bool snapToGuides = true;
+        PROPERTY(DisplayName("Show Grid"))
+        bool showGrid = true;
+        PROPERTY(DisplayName("Show Rulers"))
+        bool showRulers = true;
+        PROPERTY(DisplayName("Wireframe"))
+        bool wireframe = false;
+        PROPERTY(DisplayName("Show Hidden Elements"))
+        bool showHiddenElements = false;
+    };
+}
+
+namespace NLS::Editor::Settings
+{
     STRUCT(EditorLargeSceneSettingsObject)
     {
         GENERATED_BODY()
@@ -158,6 +180,7 @@ namespace NLS::Editor::Settings
         static EditorSceneToolSettingsObject& GetSceneToolSettingsObject();
         static EditorRenderingSettingsObject& GetRenderingSettingsObject();
         static EditorViewSettingsObject& GetViewSettingsObject();
+        static EditorUIDesignerSettingsObject& GetUIDesignerSettingsObject();
         static EditorRuntimeSettingsObject& GetRuntimeSettingsObject();
         static EditorLargeSceneSettingsObject& GetLargeSceneSettingsObject();
         static Render::Settings::RenderDocSettings BuildRenderDocSettings();

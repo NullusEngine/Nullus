@@ -1,0 +1,318 @@
+{
+  "category": "Forces",
+  "deprecated": false,
+  "description": "Pushes particles around an axis.",
+  "exposedVersion": "765fcf20-749c-519e-f717-61653d4b6991",
+  "id": "43aadf35-c35a-e02e-57ff-5bc31b51167d",
+  "kind": "Module",
+  "name": "Vortex Force",
+  "suggested": false,
+  "version": 2,
+  "versions": [
+    {
+      "attributes": [
+        {
+          "default": [
+            0.0,
+            0.0,
+            0.0,
+            0.0
+          ],
+          "name": "Particles.PhysicsForce",
+          "type": 2
+        }
+      ],
+      "calls": [],
+      "capabilities": 0,
+      "description": "Pushes particles around an axis.",
+      "graph": {
+        "id": "8f259b16-a07b-475a-a1d7-a3d2c3ebd8ba",
+        "nextNodeId": 13,
+        "nodes": [
+          {
+            "id": 1,
+            "inputs": [],
+            "name": "Module.Vortex Axis",
+            "operation": 2,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 2,
+            "value": [
+              0.0,
+              1.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 2,
+            "inputs": [
+              1
+            ],
+            "name": "",
+            "operation": 18,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 2,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 3,
+            "inputs": [],
+            "name": "Particles.Position",
+            "operation": 1,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 2,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 4,
+            "inputs": [],
+            "name": "Module.Vortex Origin",
+            "operation": 2,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 2,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 5,
+            "inputs": [
+              3,
+              4
+            ],
+            "name": "",
+            "operation": 7,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 2,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 6,
+            "inputs": [
+              2,
+              5
+            ],
+            "name": "",
+            "operation": 21,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 2,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 7,
+            "inputs": [
+              6
+            ],
+            "name": "",
+            "operation": 18,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 2,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 8,
+            "inputs": [],
+            "name": "Module.Vortex Strength",
+            "operation": 2,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 0,
+            "value": [
+              10.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 9,
+            "inputs": [
+              7,
+              8
+            ],
+            "name": "",
+            "operation": 8,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 2,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 10,
+            "inputs": [],
+            "name": "Particles.PhysicsForce",
+            "operation": 1,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 2,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 11,
+            "inputs": [
+              10,
+              9
+            ],
+            "name": "",
+            "operation": 6,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 2,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 12,
+            "inputs": [
+              11
+            ],
+            "name": "Particles.PhysicsForce",
+            "operation": 22,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 2,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          }
+        ],
+        "stage": 1
+      },
+      "id": "765fcf20-749c-519e-f717-61653d4b6991",
+      "inputs": [
+        {
+          "default": [
+            0.0,
+            0.0,
+            0.0,
+            0.0
+          ],
+          "id": "5fee195b-b8ae-61d5-ca6a-131af8d142b2",
+          "name": "Vortex Origin",
+          "static": false,
+          "type": 2
+        },
+        {
+          "default": [
+            0.0,
+            1.0,
+            0.0,
+            0.0
+          ],
+          "id": "5fef08ee-e678-6fd6-93d5-e04701770851",
+          "name": "Vortex Axis",
+          "static": false,
+          "type": 2
+        },
+        {
+          "default": [
+            10.0,
+            0.0,
+            0.0,
+            0.0
+          ],
+          "id": "4f1c22b9-a7c9-f80e-d029-2cadb3ab1351",
+          "metadata": {
+            "displayName": "",
+            "hasRange": false,
+            "maximum": 0.0,
+            "minimum": 0.0,
+            "step": 0.0,
+            "tooltip": "Tangential acceleration around the vortex axis.",
+            "unit": "cm/s2",
+            "visibleIf": ""
+          },
+          "name": "Vortex Strength",
+          "static": false,
+          "type": 0
+        }
+      ],
+      "major": 1,
+      "minor": 0,
+      "provides": [],
+      "requiresBefore": [],
+      "stages": [
+        5,
+        7
+      ],
+      "switches": []
+    }
+  ],
+  "visible": true
+}

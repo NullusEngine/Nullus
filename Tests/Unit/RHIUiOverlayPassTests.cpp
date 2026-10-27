@@ -1,6 +1,7 @@
 #include <gtest/gtest.h>
 
 #include <cstdint>
+#include <array>
 #include <filesystem>
 #include <fstream>
 #include <iterator>
@@ -9,6 +10,7 @@
 #include <memory>
 #include <mutex>
 #include <string>
+#include <stdexcept>
 #include <utility>
 #include <vector>
 
@@ -16,6 +18,7 @@
 #include "Core/ResourceManagement/ShaderManager.h"
 #include "Core/ServiceLocator.h"
 #include "Rendering/Assets/ShaderArtifact.h"
+#include "Rendering/ShaderCompiler/ShaderCompiler.h"
 #include "Rendering/Context/Driver.h"
 #include "Rendering/RHI/Core/RHIDevice.h"
 #include "Rendering/RHI/Core/RHICommand.h"
@@ -34,12 +37,26 @@
 
 #if defined(_WIN32)
 #include "Rendering/RHI/Backends/DX12/DX12Device.h"
+#include <d3d12sdklayers.h>
+#include <wrl/client.h>
 #endif
 
 namespace
 {
     constexpr auto kUiTexturePreviousFrameOrStatic =
         NLS::Render::UI::UiTextureSynchronizationScope::PreviousFrameOrStatic;
+
+    NLS::Render::RHI::RHIRenderTargetLayoutDesc MakeUiRenderTargetLayout(
+        NLS::Render::RHI::TextureFormat format = NLS::Render::RHI::TextureFormat::RGBA8,
+        NLS::Render::RHI::TextureColorSpace colorSpace = NLS::Render::RHI::TextureColorSpace::Linear,
+        uint32_t samples = 1u)
+    {
+        NLS::Render::RHI::RHIRenderTargetLayoutDesc layout;
+        layout.colorFormats = { format };
+        layout.colorSpaces = { colorSpace };
+        layout.sampleCount = samples;
+        return layout;
+    }
 
     class TestUiFrameFence final : public NLS::Render::RHI::RHIFence
     {
@@ -592,7 +609,7 @@ namespace
     class ScopedOverlayShaderManager final
     {
     public:
-        ScopedOverlayShaderManager()
+        explicit ScopedOverlayShaderManager(bool compileNativeShaders = false)
         {
             m_tempRoot = std::filesystem::temp_directory_path() /
                 ("nullus_ui_overlay_shader_" + NLS::Guid::New().ToString());
@@ -629,6 +646,24 @@ namespace
                     (m_tempRoot / "RHIImGuiOverlay.ps.dxil").string()
                 }
             });
+
+            if (compileNativeShaders)
+            {
+                NLS::Render::ShaderCompiler::ShaderCompiler compiler;
+                for (auto& stage : artifact.stages)
+                {
+                    NLS::Render::ShaderCompiler::ShaderCompilationInput input;
+                    input.assetPath = (std::filesystem::path(NLS_ROOT_DIR) / artifact.sourcePath).string();
+                    input.stage = stage.stage;
+                    input.options.targetPlatform = stage.targetPlatform;
+                    input.options.entryPoint = stage.entryPoint;
+                    input.options.targetProfile = stage.targetProfile;
+                    input.options.artifactDirectory = m_tempRoot.string();
+                    stage.output = compiler.Compile(input);
+                    if (stage.output.status != NLS::Render::ShaderCompiler::ShaderCompilationStatus::Succeeded)
+                        throw std::runtime_error(stage.output.diagnostics);
+                }
+            }
 
             const auto shaderArtifactPath = m_tempRoot / "e1ac067b4307ee69c2cae08bf3e7715d98799884c16e12156b66224707eecae9";
             const auto bytes = NLS::Render::Assets::SerializeShaderArtifact(artifact);
@@ -1504,7 +1539,7 @@ TEST(RHIUiOverlayPassTests, OverlayRendererRecordsVisibleDrawCommandsThroughRhiC
     });
     snapshot.drawLists.push_back(std::move(drawList));
 
-    const auto prepareResult = renderer.PrepareFrameResources(device, commandBuffer, snapshot, 0u);
+    const auto prepareResult = renderer.PrepareFrameResources(device, commandBuffer, snapshot, 0u, MakeUiRenderTargetLayout());
     const auto result = renderer.RecordPrepared(commandBuffer, snapshot, 0u);
 
     EXPECT_TRUE(prepareResult.success) << prepareResult.message;
@@ -1531,6 +1566,214 @@ TEST(RHIUiOverlayPassTests, OverlayRendererRecordsVisibleDrawCommandsThroughRhiC
     EXPECT_EQ(commandBuffer.drawIndexedVertexOffsets[0], 0);
 }
 
+TEST(RHIUiOverlayPassTests, OverlayPipelineMatchesColorFormatColorSpaceAndSamples)
+{
+    namespace RHI = NLS::Render::RHI;
+    ScopedOverlayShaderManager shaderManagerScope;
+    ImGuiContextGuard imguiContext;
+    NLS::Render::UI::RHIImGuiOverlayRenderer renderer;
+    TestUiOverlayDevice device;
+    TestUiOverlayCommandBuffer commands;
+    const auto snapshot = MakeTwoDrawListUiSnapshot();
+    const std::array layouts{
+        MakeUiRenderTargetLayout(),
+        MakeUiRenderTargetLayout(RHI::TextureFormat::RGBA16F),
+        MakeUiRenderTargetLayout(RHI::TextureFormat::RGBA8, RHI::TextureColorSpace::SRGB),
+        MakeUiRenderTargetLayout(RHI::TextureFormat::RGBA8, RHI::TextureColorSpace::SRGB, 4u)};
+    for (const auto& layout : layouts)
+    {
+        const auto prepared = renderer.PrepareFrameResources(device, commands, snapshot, 0u, layout);
+        ASSERT_TRUE(prepared.success) << prepared.message;
+        const auto& actual = device.lastGraphicsPipelineDesc.renderTargetLayout;
+        EXPECT_EQ(actual.colorFormats, layout.colorFormats);
+        EXPECT_EQ(actual.GetColorSpace(0u), layout.GetColorSpace(0u));
+        EXPECT_EQ(actual.sampleCount, layout.sampleCount);
+        EXPECT_FALSE(actual.hasDepth);
+    }
+    EXPECT_EQ(device.createGraphicsPipelineCalls, layouts.size());
+    ASSERT_TRUE(renderer.PrepareFrameResources(device, commands, snapshot, 0u, layouts.back()).success);
+    EXPECT_EQ(device.createGraphicsPipelineCalls, layouts.size());
+}
+
+TEST(RHIUiOverlayPassTests, PreparedFrameKeepsItsPipelineWhenAnotherTargetIsPrepared)
+{
+    ScopedOverlayShaderManager shaderManagerScope;
+    ImGuiContextGuard imguiContext;
+    NLS::Render::UI::RHIImGuiOverlayRenderer renderer;
+    TestUiOverlayDevice device;
+    TestUiOverlayCommandBuffer firstCommands, secondCommands;
+    const auto snapshot = MakeTwoDrawListUiSnapshot();
+    ASSERT_TRUE(renderer.PrepareFrameResources(device, firstCommands, snapshot, 0u, MakeUiRenderTargetLayout()).success);
+    const auto firstPipeline = device.createdGraphicsPipeline;
+    ASSERT_TRUE(renderer.PrepareFrameResources(device, secondCommands, snapshot, 1u, MakeUiRenderTargetLayout(NLS::Render::RHI::TextureFormat::RGBA16F)).success);
+    const auto secondPipeline = device.createdGraphicsPipeline;
+    ASSERT_NE(firstPipeline, secondPipeline);
+    ASSERT_TRUE(renderer.RecordPrepared(firstCommands, snapshot, 0u).success);
+    ASSERT_TRUE(renderer.RecordPrepared(secondCommands, snapshot, 1u).success);
+    EXPECT_EQ(firstCommands.lastGraphicsPipeline, firstPipeline);
+    EXPECT_EQ(secondCommands.lastGraphicsPipeline, secondPipeline);
+}
+
+TEST(RHIUiOverlayPassTests, OverlayRejectsMissingColorTargetBeforeCreatingPipeline)
+{
+    ScopedOverlayShaderManager shaderManagerScope;
+    NLS::Render::UI::RHIImGuiOverlayRenderer renderer;
+    TestUiOverlayDevice device;
+    TestUiOverlayCommandBuffer commands;
+    const auto prepared = renderer.PrepareFrameResources(device, commands, MakeTwoDrawListUiSnapshot(), 0u, {});
+    EXPECT_FALSE(prepared.success);
+    EXPECT_NE(prepared.message.find("color render target"), std::string::npos);
+    EXPECT_EQ(device.createGraphicsPipelineCalls, 0u);
+}
+
+#if defined(_WIN32)
+void ValidateDx12OverlayPixelsAcrossFrames(const bool transientPreview)
+{
+    namespace R = NLS::Render;
+    namespace GPU = R::RHI;
+    R::Settings::DriverSettings settings;
+    settings.graphicsBackend = R::Settings::EGraphicsBackend::DX12;
+    settings.debugMode = true;
+    R::Context::Driver driver(settings);
+    R::Context::DriverTestAccess::PauseThreadedRenderingWorkers(driver);
+    const auto device = R::Context::DriverRendererAccess::GetExplicitDevice(driver);
+    if (!device || !device->IsBackendReady())
+        GTEST_SKIP() << "DX12 device unavailable";
+    ScopedOverlayShaderManager shaders(true);
+    ImGuiContextGuard imgui;
+    ImGui::GetIO().DisplaySize = ImVec2(32.0f, 32.0f);
+    unsigned char* fontPixels = nullptr;
+    int fontWidth = 0, fontHeight = 0;
+    ImGui::GetIO().Fonts->GetTexDataAsRGBA32(&fontPixels, &fontWidth, &fontHeight);
+    R::UI::RHIImGuiTextureRegistry registry;
+    R::UI::RHIImGuiOverlayRenderer renderer(&registry);
+    Microsoft::WRL::ComPtr<ID3D12InfoQueue> messages;
+    auto* nativeDevice = static_cast<ID3D12Device*>(device->GetNativeDeviceInfo().device);
+    if (nativeDevice)
+        nativeDevice->QueryInterface(IID_PPV_ARGS(&messages));
+    if (messages)
+        messages->ClearStoredMessages();
+    const auto pool = device->CreateCommandPool(GPU::QueueType::Graphics, "UiPixelRegression");
+    ASSERT_NE(pool, nullptr);
+    uint64_t frameId = 1u;
+    {
+        constexpr auto format = GPU::TextureFormat::RGBA8;
+        SCOPED_TRACE(static_cast<int>(format));
+        GPU::RHITextureDesc desc;
+        desc.extent = {32u, 32u, 1u};
+        desc.format = format;
+        desc.usage = GPU::TextureUsageFlags::ColorAttachment | GPU::TextureUsageFlags::CopySrc;
+        const auto output = device->CreateTexture(desc);
+        ASSERT_NE(output, nullptr);
+        GPU::RHITextureViewDesc viewDesc;
+        viewDesc.format = format;
+        const auto view = device->CreateTextureView(output, viewDesc);
+        ASSERT_NE(view, nullptr);
+        for (size_t frame = 0u; frame < (transientPreview ? 12u : 2u); ++frame)
+        {
+            SCOPED_TRACE(frame);
+            const size_t channel = frame % 2u;
+            std::shared_ptr<GPU::RHITextureView> previewView;
+            R::UI::UiTextureId previewId;
+            if (transientPreview)
+            {
+                std::array<uint8_t, 4u> rgba{0u, 0u, 0u, 255u};
+                rgba[channel] = 255u;
+                GPU::RHITextureDesc sampleDesc;
+                sampleDesc.extent = {1u, 1u, 1u};
+                sampleDesc.format = format;
+                sampleDesc.usage = GPU::TextureUsageFlags::Sampled | GPU::TextureUsageFlags::CopyDst;
+                GPU::RHITextureUploadDesc upload;
+                upload.data = rgba.data(); upload.dataSize = rgba.size();
+                upload.extent = sampleDesc.extent; upload.rowPitch = 4u; upload.slicePitch = 4u;
+                const auto sample = device->CreateTexture(sampleDesc, upload);
+                ASSERT_NE(sample, nullptr);
+                ASSERT_EQ(device->WaitForInitialUploads(), 0u);
+                previewView = device->CreateTextureView(sample, viewDesc);
+                ASSERT_NE(previewView, nullptr);
+                previewId = registry.RegisterTextureView(previewView, kUiTexturePreviousFrameOrStatic);
+                ASSERT_TRUE(previewId.IsValid());
+            }
+            ImGui::NewFrame();
+            if (transientPreview)
+                ImGui::GetBackgroundDrawList()->AddImage(
+                    reinterpret_cast<ImTextureID>(static_cast<uintptr_t>(R::UI::PackUiTextureIdForImGui(previewId))),
+                    ImVec2(0, 0), ImVec2(32, 32));
+            else
+                ImGui::GetBackgroundDrawList()->AddRectFilled(ImVec2(0, 0), ImVec2(32, 32), channel == 0u ? IM_COL32(255, 0, 0, 255) : IM_COL32(0, 255, 0, 255));
+            ImGui::Render();
+            const auto snapshot = R::UI::CaptureUiDrawDataSnapshot(ImGui::GetDrawData(), frameId++);
+            if (transientPreview) registry.ReleaseTextureView(previewView, snapshot->frameId);
+            const auto commands = pool->CreateCommandBuffer("UiPixelRegression");
+            ASSERT_NE(commands, nullptr);
+            commands->Begin();
+            const auto prepared = renderer.PrepareFrameResources(*device, *commands, *snapshot, 0u, MakeUiRenderTargetLayout(format));
+            ASSERT_TRUE(prepared.success) << prepared.message;
+            const auto resources = renderer.GetPreparedResourceSnapshot(*snapshot, 0u);
+            if (resources.fontAtlasUploadTransitionRequired)
+            {
+                GPU::RHIBarrierDesc barrier;
+                const auto fontTexture = resources.fontAtlasTextureView->GetTexture();
+                barrier.textureBarriers.push_back({fontTexture, GPU::ResourceState::CopyDst, GPU::ResourceState::ShaderRead, {}, GPU::PipelineStageMask::Copy, GPU::PipelineStageMask::FragmentShader, GPU::AccessMask::CopyWrite, GPU::AccessMask::ShaderRead});
+                commands->Barrier(barrier);
+            }
+            GPU::RHIRenderPassDesc pass;
+            pass.renderArea = {0u, 0u, 32u, 32u};
+            GPU::RHIRenderPassColorAttachmentDesc color;
+            color.view = view;
+            color.loadOp = GPU::LoadOp::Clear;
+            color.storeOp = GPU::StoreOp::Store;
+            pass.colorAttachments = {color};
+            commands->BeginRenderPass(pass);
+            const auto recorded = renderer.RecordPrepared(*commands, *snapshot, 0u);
+            ASSERT_TRUE(recorded.success) << recorded.message;
+            ASSERT_TRUE(recorded.recordedDraws);
+            commands->EndRenderPass();
+            commands->End();
+            const auto fence = device->CreateFence("UiPixelRegressionComplete");
+            ASSERT_NE(fence, nullptr);
+            GPU::RHISubmitDesc submit;
+            submit.commandBuffers = {commands};
+            submit.signalFence = fence;
+            ASSERT_TRUE(device->GetQueue(GPU::QueueType::Graphics)->SubmitChecked(submit).Succeeded());
+            ASSERT_TRUE(fence->Wait(5'000'000'000ull));
+            std::array<uint8_t, 32u * 32u * 4u> pixels{};
+            const auto read = device->BeginReadPixels(output, 0u, 0u, 32u, 32u, R::Settings::EPixelDataFormat::RGBA, R::Settings::EPixelDataType::UNSIGNED_BYTE, pixels.data());
+            ASSERT_TRUE(read.Succeeded()) << read.message;
+            if (read.completion)
+                ASSERT_TRUE(read.completion->Wait(5'000'000'000ull).Succeeded());
+            constexpr size_t center = (16u * 32u + 16u) * 4u;
+            EXPECT_GT(pixels[center + channel], 240u);
+            EXPECT_LT(pixels[center + 1u - channel], 10u);
+            EXPECT_LT(pixels[center + 2u], 10u);
+            registry.ReleaseRetiredTextureViewsUpTo(snapshot->frameId);
+        }
+    }
+    if (messages)
+        for (UINT64 index = 0u; index < messages->GetNumStoredMessagesAllowedByRetrievalFilter(); ++index)
+        {
+            SIZE_T size = 0u;
+            messages->GetMessage(index, nullptr, &size);
+            std::vector<uint8_t> storage(size);
+            auto* message = reinterpret_cast<D3D12_MESSAGE*>(storage.data());
+            if (SUCCEEDED(messages->GetMessage(index, message, &size)))
+            {
+                EXPECT_NE(message->ID, D3D12_MESSAGE_ID_RENDER_TARGET_FORMAT_MISMATCH_PIPELINE_STATE) << message->pDescription;
+                EXPECT_NE(message->Severity, D3D12_MESSAGE_SEVERITY_ERROR) << message->pDescription;
+                EXPECT_NE(message->Severity, D3D12_MESSAGE_SEVERITY_CORRUPTION) << message->pDescription;
+            }
+        }
+}
+TEST(RHIUiOverlayPassTests, Dx12OverlayUpdatesPixelsAcrossFrames)
+{
+    ValidateDx12OverlayPixelsAcrossFrames(false);
+}
+TEST(RHIUiOverlayPassTests, Dx12OverlaySamplesRetiredPreviewImagesAcrossFrames)
+{
+    ValidateDx12OverlayPixelsAcrossFrames(true);
+}
+#endif
+
 TEST(RHIUiOverlayPassTests, OverlayRendererRejectsPreparedDrawsWithoutGraphicsPipeline)
 {
     ScopedOverlayShaderManager shaderManagerScope;
@@ -1540,7 +1783,7 @@ TEST(RHIUiOverlayPassTests, OverlayRendererRejectsPreparedDrawsWithoutGraphicsPi
     TestUiOverlayCommandBuffer commandBuffer;
     const auto snapshot = MakeTwoDrawListUiSnapshot();
 
-    const auto prepareResult = renderer.PrepareFrameResources(device, commandBuffer, snapshot, 0u);
+    const auto prepareResult = renderer.PrepareFrameResources(device, commandBuffer, snapshot, 0u, MakeUiRenderTargetLayout());
     const auto result = renderer.RecordPrepared(commandBuffer, snapshot, 0u);
 
     EXPECT_FALSE(prepareResult.success);
@@ -1559,7 +1802,7 @@ TEST(RHIUiOverlayPassTests, OverlayRendererRejectsPreparedDrawsWhenPipelineLayou
     TestUiOverlayCommandBuffer commandBuffer;
     const auto snapshot = MakeTwoDrawListUiSnapshot();
 
-    const auto prepareResult = renderer.PrepareFrameResources(device, commandBuffer, snapshot, 0u);
+    const auto prepareResult = renderer.PrepareFrameResources(device, commandBuffer, snapshot, 0u, MakeUiRenderTargetLayout());
 
     EXPECT_FALSE(prepareResult.success);
     EXPECT_NE(prepareResult.message.find("UI overlay pipeline layout"), std::string::npos);
@@ -1578,7 +1821,7 @@ TEST(RHIUiOverlayPassTests, OverlayRendererRejectsPreparedDrawsWhenVertexShaderM
     TestUiOverlayCommandBuffer commandBuffer;
     const auto snapshot = MakeTwoDrawListUiSnapshot();
 
-    const auto prepareResult = renderer.PrepareFrameResources(device, commandBuffer, snapshot, 0u);
+    const auto prepareResult = renderer.PrepareFrameResources(device, commandBuffer, snapshot, 0u, MakeUiRenderTargetLayout());
 
     EXPECT_FALSE(prepareResult.success);
     EXPECT_NE(prepareResult.message.find("UI overlay vertex shader module"), std::string::npos);
@@ -1598,7 +1841,7 @@ TEST(RHIUiOverlayPassTests, OverlayRendererRejectsPreparedDrawsWhenFragmentShade
     TestUiOverlayCommandBuffer commandBuffer;
     const auto snapshot = MakeTwoDrawListUiSnapshot();
 
-    const auto prepareResult = renderer.PrepareFrameResources(device, commandBuffer, snapshot, 0u);
+    const auto prepareResult = renderer.PrepareFrameResources(device, commandBuffer, snapshot, 0u, MakeUiRenderTargetLayout());
 
     EXPECT_FALSE(prepareResult.success);
     EXPECT_NE(prepareResult.message.find("UI overlay fragment shader module"), std::string::npos);
@@ -1619,7 +1862,7 @@ TEST(RHIUiOverlayPassTests, OverlayRendererBindsGraphicsPipelineBeforePreparedDr
     TestUiOverlayCommandBuffer commandBuffer;
     const auto snapshot = MakeTwoDrawListUiSnapshot();
 
-    const auto prepareResult = renderer.PrepareFrameResources(device, commandBuffer, snapshot, 0u);
+    const auto prepareResult = renderer.PrepareFrameResources(device, commandBuffer, snapshot, 0u, MakeUiRenderTargetLayout());
     const auto result = renderer.RecordPrepared(commandBuffer, snapshot, 0u);
 
     EXPECT_TRUE(prepareResult.success) << prepareResult.message;
@@ -1685,7 +1928,7 @@ TEST(RHIUiOverlayPassTests, OverlayRendererUploadsAndBindsFontAtlasOnFirstUse)
     TestUiOverlayCommandBuffer commandBuffer;
     const auto snapshot = MakeTwoDrawListUiSnapshot();
 
-    const auto prepareResult = renderer.PrepareFrameResources(device, commandBuffer, snapshot, 0u);
+    const auto prepareResult = renderer.PrepareFrameResources(device, commandBuffer, snapshot, 0u, MakeUiRenderTargetLayout());
     const auto recordResult = renderer.RecordPrepared(commandBuffer, snapshot, 0u);
 
     EXPECT_TRUE(prepareResult.success) << prepareResult.message;
@@ -1802,7 +2045,7 @@ TEST(RHIUiOverlayPassTests, RecordPreparedKeepsPreparedFontAtlasBindingAfterInva
     TestUiOverlayCommandBuffer commandBuffer;
     const auto snapshot = MakeTwoDrawListUiSnapshot();
 
-    const auto prepareResult = renderer.PrepareFrameResources(device, commandBuffer, snapshot, 0u);
+    const auto prepareResult = renderer.PrepareFrameResources(device, commandBuffer, snapshot, 0u, MakeUiRenderTargetLayout());
     ASSERT_TRUE(prepareResult.success) << prepareResult.message;
     const auto preparedBindingSet = device.createdBindingSet;
     ASSERT_NE(preparedBindingSet, nullptr);
@@ -1836,14 +2079,14 @@ TEST(RHIUiOverlayPassTests, OverlayRendererRebuildsFontAtlasAndRegisteredTexture
     ASSERT_TRUE(registeredId.IsValid());
     snapshot.drawLists[1].commands[0].textureId = registeredId;
 
-    const auto firstPrepareResult = renderer.PrepareFrameResources(firstDevice, firstCommandBuffer, snapshot, 0u);
+    const auto firstPrepareResult = renderer.PrepareFrameResources(firstDevice, firstCommandBuffer, snapshot, 0u, MakeUiRenderTargetLayout());
     ASSERT_TRUE(firstPrepareResult.success) << firstPrepareResult.message;
     ASSERT_GE(firstDevice.createdBindingSets.size(), 2u);
     const auto firstFontBindingSet = firstDevice.createdBindingSets[0];
     const auto firstRegisteredTextureBindingSet = firstDevice.createdBindingSets[1];
     const auto firstFontTextureView = firstDevice.createdTextureView;
 
-    const auto secondPrepareResult = renderer.PrepareFrameResources(secondDevice, secondCommandBuffer, snapshot, 0u);
+    const auto secondPrepareResult = renderer.PrepareFrameResources(secondDevice, secondCommandBuffer, snapshot, 0u, MakeUiRenderTargetLayout());
 
     EXPECT_TRUE(secondPrepareResult.success) << secondPrepareResult.message;
     ASSERT_GE(secondDevice.createdBindingSets.size(), 2u);
@@ -1874,7 +2117,7 @@ TEST(RHIUiOverlayPassTests, OverlayRendererBindsRegisteredTexturePerDrawWithoutN
     ASSERT_TRUE(registeredId.IsValid());
     snapshot.drawLists[1].commands[0].textureId = registeredId;
 
-    const auto prepareResult = renderer.PrepareFrameResources(device, commandBuffer, snapshot, 0u);
+    const auto prepareResult = renderer.PrepareFrameResources(device, commandBuffer, snapshot, 0u, MakeUiRenderTargetLayout());
     const auto recordResult = renderer.RecordPrepared(commandBuffer, snapshot, 0u);
 
     EXPECT_TRUE(prepareResult.success) << prepareResult.message;
@@ -1899,6 +2142,94 @@ TEST(RHIUiOverlayPassTests, OverlayRendererBindsRegisteredTexturePerDrawWithoutN
     EXPECT_EQ(commandBuffer.lastBindingSetIndex, 0u);
 }
 
+TEST(RHIUiOverlayPassTests, OverlayRendererBindsRetiredTextureForItsPendingSnapshot)
+{
+    ImGuiContextGuard imguiContext;
+    ScopedOverlayShaderManager shaderManagerScope;
+    NLS::Render::UI::RHIImGuiTextureRegistry registry;
+    NLS::Render::UI::RHIImGuiOverlayRenderer renderer(&registry);
+    TestUiOverlayDevice device;
+    TestUiOverlayCommandBuffer commands;
+    auto snapshot = MakeTwoDrawListUiSnapshot();
+    auto view = std::make_shared<TestUiTextureView>(std::make_shared<TestUiTexture>());
+    const auto id = registry.RegisterTextureView(view, kUiTexturePreviousFrameOrStatic);
+    ASSERT_TRUE(id.IsValid());
+    snapshot.drawLists[1].commands[0].textureId = id;
+
+    // The preview has already published its next image when the render thread
+    // first prepares this snapshot. The old image still belongs to this frame.
+    registry.ReleaseTextureView(view, snapshot.frameId);
+    ASSERT_FALSE(registry.Resolve(id).has_value());
+    ASSERT_TRUE(registry.ResolveForFrame(id, snapshot.frameId).has_value());
+    const auto prepared = renderer.PrepareFrameResources(device, commands, snapshot, 0u, MakeUiRenderTargetLayout());
+    ASSERT_TRUE(prepared.success) << prepared.message;
+    const auto retained = renderer.GetPreparedResourceSnapshot(snapshot, 0u);
+    ASSERT_EQ(retained.registeredTextureViews.size(), 1u);
+    EXPECT_EQ(retained.registeredTextureViews[0], view);
+    const auto entry = registry.ResolveForFrame(id, snapshot.frameId);
+    ASSERT_TRUE(entry.has_value());
+    ASSERT_NE(entry->bindingSet, nullptr);
+    const auto recorded = renderer.RecordPrepared(commands, snapshot, 0u);
+    ASSERT_TRUE(recorded.success) << recorded.message;
+    EXPECT_EQ(commands.drawIndexedCalls, 2u);
+    ASSERT_EQ(commands.boundBindingSets.size(), 2u);
+    EXPECT_EQ(commands.boundBindingSets[1], entry->bindingSet);
+
+    // Retirement is frame scoped: a later snapshot cannot revive the old id.
+    ++snapshot.frameId;
+    TestUiOverlayCommandBuffer laterCommands;
+    const auto later = renderer.PrepareFrameResources(device, laterCommands, snapshot, 1u, MakeUiRenderTargetLayout());
+    ASSERT_TRUE(later.success) << later.message;
+    EXPECT_TRUE(renderer.GetPreparedResourceSnapshot(snapshot, 1u).registeredTextureViews.empty());
+    ASSERT_TRUE(renderer.RecordPrepared(laterCommands, snapshot, 1u).success);
+    EXPECT_EQ(laterCommands.drawIndexedCalls, 1u);
+    registry.ReleaseRetiredTextureViewsUpTo(snapshot.frameId - 1u);
+    EXPECT_FALSE(registry.ResolveForFrame(id, snapshot.frameId - 1u).has_value());
+    EXPECT_EQ(retained.registeredTextureViews[0], view);
+}
+
+TEST(RHIUiOverlayPassTests, OverlayRendererKeepsTransientPreviewImagesAcrossDelayedFrames)
+{
+    ImGuiContextGuard imguiContext;
+    ScopedOverlayShaderManager shaderManagerScope;
+    NLS::Render::UI::RHIImGuiTextureRegistry registry;
+    NLS::Render::UI::RHIImGuiOverlayRenderer renderer(&registry);
+    TestUiOverlayDevice device;
+    constexpr size_t frameCount = 36u, frameDelay = 3u;
+    std::array<NLS::Render::UI::UiDrawDataSnapshot, frameDelay> pending;
+    std::array<std::shared_ptr<NLS::Render::RHI::RHITextureView>, frameDelay> views;
+    for (size_t tick = 0u; tick < frameCount + frameDelay; ++tick)
+    {
+        if (tick >= frameDelay)
+        {
+            const size_t slot = tick % frameDelay;
+            const auto& snapshot = pending[slot];
+            SCOPED_TRACE(snapshot.frameId);
+            TestUiOverlayCommandBuffer commands;
+            const auto prepared = renderer.PrepareFrameResources(device, commands, snapshot, slot, MakeUiRenderTargetLayout());
+            ASSERT_TRUE(prepared.success) << prepared.message;
+            const auto resources = renderer.GetPreparedResourceSnapshot(snapshot, slot);
+            ASSERT_EQ(resources.registeredTextureViews.size(), 1u);
+            EXPECT_EQ(resources.registeredTextureViews[0], views[slot]);
+            ASSERT_TRUE(renderer.RecordPrepared(commands, snapshot, slot).success);
+            EXPECT_EQ(commands.drawIndexedCalls, 2u) << "The image draw must survive every texture replacement.";
+            registry.ReleaseRetiredTextureViewsUpTo(snapshot.frameId);
+        }
+        if (tick < frameCount)
+        {
+            const size_t slot = tick % frameDelay;
+            views[slot] = std::make_shared<TestUiTextureView>(std::make_shared<TestUiTexture>());
+            auto snapshot = MakeTwoDrawListUiSnapshot();
+            snapshot.frameId += tick;
+            const auto id = registry.RegisterTextureView(views[slot], kUiTexturePreviousFrameOrStatic);
+            ASSERT_TRUE(id.IsValid());
+            snapshot.drawLists[1].commands[0].textureId = id;
+            pending[slot] = std::move(snapshot);
+            registry.ReleaseTextureView(views[slot], pending[slot].frameId);
+        }
+    }
+}
+
 TEST(RHIUiOverlayPassTests, OverlayRendererExposesPreparedResourcesForFrameGraphVisibility)
 {
     ImGuiContextGuard imguiContext;
@@ -1916,7 +2247,7 @@ TEST(RHIUiOverlayPassTests, OverlayRendererExposesPreparedResourcesForFrameGraph
     ASSERT_TRUE(registeredId.IsValid());
     snapshot.drawLists[1].commands[0].textureId = registeredId;
 
-    const auto prepareResult = renderer.PrepareFrameResources(device, commandBuffer, snapshot, 0u);
+    const auto prepareResult = renderer.PrepareFrameResources(device, commandBuffer, snapshot, 0u, MakeUiRenderTargetLayout());
     const auto resources = renderer.GetPreparedResourceSnapshot(snapshot, 0u);
 
     EXPECT_TRUE(prepareResult.success) << prepareResult.message;
@@ -1952,7 +2283,7 @@ TEST(RHIUiOverlayPassTests, OverlayRendererRecordsRegisteredTextureShaderReadVis
     ASSERT_TRUE(registeredId.IsValid());
     snapshot.drawLists[1].commands[0].textureId = registeredId;
 
-    const auto prepareResult = renderer.PrepareFrameResources(device, commandBuffer, snapshot, 0u);
+    const auto prepareResult = renderer.PrepareFrameResources(device, commandBuffer, snapshot, 0u, MakeUiRenderTargetLayout());
     const auto resources = renderer.GetPreparedResourceSnapshot(snapshot, 0u);
 
     EXPECT_TRUE(prepareResult.success) << prepareResult.message;
@@ -1983,9 +2314,9 @@ TEST(RHIUiOverlayPassTests, OverlayRendererRequiresFontAtlasUploadVisibilityOnly
     auto secondSnapshot = MakeTwoDrawListUiSnapshot();
     secondSnapshot.frameId = firstSnapshot.frameId + 1u;
 
-    const auto firstPrepareResult = renderer.PrepareFrameResources(device, firstCommandBuffer, firstSnapshot, 0u);
+    const auto firstPrepareResult = renderer.PrepareFrameResources(device, firstCommandBuffer, firstSnapshot, 0u, MakeUiRenderTargetLayout());
     const auto firstResources = renderer.GetPreparedResourceSnapshot(firstSnapshot, 0u);
-    const auto secondPrepareResult = renderer.PrepareFrameResources(device, secondCommandBuffer, secondSnapshot, 0u);
+    const auto secondPrepareResult = renderer.PrepareFrameResources(device, secondCommandBuffer, secondSnapshot, 0u, MakeUiRenderTargetLayout());
     const auto secondResources = renderer.GetPreparedResourceSnapshot(secondSnapshot, 0u);
 
     EXPECT_TRUE(firstPrepareResult.success) << firstPrepareResult.message;
@@ -2007,8 +2338,8 @@ TEST(RHIUiOverlayPassTests, OverlayRendererRebuildsGraphicsPipelineWhenDeviceCha
     TestUiOverlayCommandBuffer secondCommandBuffer;
     const auto snapshot = MakeTwoDrawListUiSnapshot();
 
-    const auto firstPrepareResult = renderer.PrepareFrameResources(firstDevice, firstCommandBuffer, snapshot, 0u);
-    const auto secondPrepareResult = renderer.PrepareFrameResources(secondDevice, secondCommandBuffer, snapshot, 0u);
+    const auto firstPrepareResult = renderer.PrepareFrameResources(firstDevice, firstCommandBuffer, snapshot, 0u, MakeUiRenderTargetLayout());
+    const auto secondPrepareResult = renderer.PrepareFrameResources(secondDevice, secondCommandBuffer, snapshot, 0u, MakeUiRenderTargetLayout());
     const auto secondRecordResult = renderer.RecordPrepared(secondCommandBuffer, snapshot, 0u);
 
     EXPECT_TRUE(firstPrepareResult.success) << firstPrepareResult.message;
@@ -2051,7 +2382,7 @@ TEST(RHIUiOverlayPassTests, OverlayRendererCreatesBindsAndOffsetsDynamicVertexIn
     TestUiOverlayCommandBuffer commandBuffer;
     const auto snapshot = MakeTwoDrawListUiSnapshot();
 
-    const auto prepareResult = renderer.PrepareFrameResources(device, commandBuffer, snapshot, 0u);
+    const auto prepareResult = renderer.PrepareFrameResources(device, commandBuffer, snapshot, 0u, MakeUiRenderTargetLayout());
     const auto result = renderer.RecordPrepared(commandBuffer, snapshot, 0u);
 
     EXPECT_TRUE(prepareResult.success) << prepareResult.message;
@@ -2138,7 +2469,7 @@ TEST(RHIUiOverlayPassTests, OverlayRendererReportsDynamicBufferAllocationAndReal
     TestUiOverlayCommandBuffer thirdCommandBuffer;
     const auto snapshot = MakeTwoDrawListUiSnapshot();
 
-    const auto firstPrepareResult = renderer.PrepareFrameResources(device, firstCommandBuffer, snapshot, 0u);
+    const auto firstPrepareResult = renderer.PrepareFrameResources(device, firstCommandBuffer, snapshot, 0u, MakeUiRenderTargetLayout());
     ASSERT_TRUE(firstPrepareResult.success) << firstPrepareResult.message;
     EXPECT_GT(firstPrepareResult.dynamicBufferTelemetry.allocationCount, 0u);
     EXPECT_EQ(firstPrepareResult.dynamicBufferTelemetry.reallocationCount, 0u);
@@ -2148,7 +2479,7 @@ TEST(RHIUiOverlayPassTests, OverlayRendererReportsDynamicBufferAllocationAndReal
     EXPECT_GT(firstPrepareResult.dynamicBufferTelemetry.uploadedIndexBytes, 0u);
     EXPECT_GT(firstPrepareResult.dynamicBufferTelemetry.totalCpuCopyTimeNanoseconds, 0u);
 
-    const auto secondPrepareResult = renderer.PrepareFrameResources(device, secondCommandBuffer, snapshot, 0u);
+    const auto secondPrepareResult = renderer.PrepareFrameResources(device, secondCommandBuffer, snapshot, 0u, MakeUiRenderTargetLayout());
     ASSERT_TRUE(secondPrepareResult.success) << secondPrepareResult.message;
     EXPECT_EQ(secondPrepareResult.dynamicBufferTelemetry.allocationCount, 0u);
     EXPECT_EQ(secondPrepareResult.dynamicBufferTelemetry.reallocationCount, 0u);
@@ -2167,7 +2498,7 @@ TEST(RHIUiOverlayPassTests, OverlayRendererReportsDynamicBufferAllocationAndReal
     largerSnapshot.drawLists.back().vertices.resize(6u);
     largerSnapshot.drawLists.back().indices = {0u, 1u, 2u, 3u, 4u, 5u};
 
-    const auto thirdPrepareResult = renderer.PrepareFrameResources(device, thirdCommandBuffer, largerSnapshot, 0u);
+    const auto thirdPrepareResult = renderer.PrepareFrameResources(device, thirdCommandBuffer, largerSnapshot, 0u, MakeUiRenderTargetLayout());
     ASSERT_TRUE(thirdPrepareResult.success) << thirdPrepareResult.message;
     EXPECT_EQ(thirdPrepareResult.dynamicBufferTelemetry.allocationCount, 0u);
     EXPECT_GT(thirdPrepareResult.dynamicBufferTelemetry.reallocationCount, 0u);
@@ -2187,11 +2518,11 @@ TEST(RHIUiOverlayPassTests, OverlayRendererKeepsDynamicBuffersIsolatedPerFrameRe
     TestUiOverlayCommandBuffer slot0ReuseCommandBuffer;
     const auto snapshot = MakeTwoDrawListUiSnapshot();
 
-    const auto slot0PrepareResult = renderer.PrepareFrameResources(device, slot0CommandBuffer, snapshot, 0u);
+    const auto slot0PrepareResult = renderer.PrepareFrameResources(device, slot0CommandBuffer, snapshot, 0u, MakeUiRenderTargetLayout());
     const auto slot0Result = renderer.RecordPrepared(slot0CommandBuffer, snapshot, 0u);
-    const auto slot1PrepareResult = renderer.PrepareFrameResources(device, slot1CommandBuffer, snapshot, 1u);
+    const auto slot1PrepareResult = renderer.PrepareFrameResources(device, slot1CommandBuffer, snapshot, 1u, MakeUiRenderTargetLayout());
     const auto slot1Result = renderer.RecordPrepared(slot1CommandBuffer, snapshot, 1u);
-    const auto slot0ReusePrepareResult = renderer.PrepareFrameResources(device, slot0ReuseCommandBuffer, snapshot, 0u);
+    const auto slot0ReusePrepareResult = renderer.PrepareFrameResources(device, slot0ReuseCommandBuffer, snapshot, 0u, MakeUiRenderTargetLayout());
     const auto slot0ReuseResult = renderer.RecordPrepared(slot0ReuseCommandBuffer, snapshot, 0u);
 
     EXPECT_TRUE(slot0PrepareResult.success) << slot0PrepareResult.message;
@@ -2257,7 +2588,7 @@ TEST(RHIUiOverlayPassTests, OverlayRendererSkipsUnsupportedTextureIdCommands)
     });
     snapshot.drawLists.push_back(std::move(drawList));
 
-    const auto prepareResult = renderer.PrepareFrameResources(device, commandBuffer, snapshot, 0u);
+    const auto prepareResult = renderer.PrepareFrameResources(device, commandBuffer, snapshot, 0u, MakeUiRenderTargetLayout());
     const auto result = renderer.RecordPrepared(commandBuffer, snapshot, 0u);
 
     EXPECT_TRUE(prepareResult.success) << prepareResult.message;
@@ -2278,7 +2609,7 @@ TEST(RHIUiOverlayPassTests, OverlayRendererRejectsMismatchedPreparedSnapshot)
     auto mismatchedSnapshot = MakeTwoDrawListUiSnapshot();
     mismatchedSnapshot.frameId = preparedSnapshot.frameId + 1u;
 
-    const auto prepareResult = renderer.PrepareFrameResources(device, commandBuffer, preparedSnapshot, 0u);
+    const auto prepareResult = renderer.PrepareFrameResources(device, commandBuffer, preparedSnapshot, 0u, MakeUiRenderTargetLayout());
     const auto result = renderer.RecordPrepared(commandBuffer, mismatchedSnapshot, 0u);
 
     EXPECT_TRUE(prepareResult.success) << prepareResult.message;
@@ -2297,7 +2628,7 @@ TEST(RHIUiOverlayPassTests, OverlayRendererRejectsEquivalentButDifferentPrepared
     const auto preparedSnapshot = MakeTwoDrawListUiSnapshot();
     const auto copiedSnapshot = preparedSnapshot;
 
-    const auto prepareResult = renderer.PrepareFrameResources(device, commandBuffer, preparedSnapshot, 0u);
+    const auto prepareResult = renderer.PrepareFrameResources(device, commandBuffer, preparedSnapshot, 0u, MakeUiRenderTargetLayout());
     const auto result = renderer.RecordPrepared(commandBuffer, copiedSnapshot, 0u);
 
     EXPECT_TRUE(prepareResult.success) << prepareResult.message;

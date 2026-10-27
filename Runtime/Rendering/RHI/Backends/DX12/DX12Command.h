@@ -1,6 +1,7 @@
 #pragma once
 
 #include <memory>
+#include <array>
 #include <string>
 #include <string_view>
 #include <unordered_set>
@@ -78,6 +79,10 @@ namespace NLS::Render::Backend
 			int32_t vertexOffset,
 			uint32_t firstInstance) override;
 		void Dispatch(uint32_t groupCountX, uint32_t groupCountY, uint32_t groupCountZ) override;
+        NLS::Render::RHI::RHICommandRecordingResult WriteTimestamp(const std::shared_ptr<NLS::Render::RHI::RHITimestampQuery>& query, uint32_t index) override;
+			NLS::Render::RHI::RHICommandRecordingResult DrawIndirect(const std::shared_ptr<NLS::Render::RHI::RHIBuffer>& arguments, uint64_t offset = 0) override;
+			NLS::Render::RHI::RHICommandRecordingResult DrawIndexedIndirect(const std::shared_ptr<NLS::Render::RHI::RHIBuffer>& arguments, uint64_t offset = 0) override;
+			NLS::Render::RHI::RHICommandRecordingResult DispatchIndirect(const std::shared_ptr<NLS::Render::RHI::RHIBuffer>& arguments, uint64_t offset = 0) override;
 		void CopyBuffer(
 			const std::shared_ptr<NLS::Render::RHI::RHIBuffer>& source,
 			const std::shared_ptr<NLS::Render::RHI::RHIBuffer>& destination,
@@ -105,6 +110,7 @@ namespace NLS::Render::Backend
 	private:
 		void EndPendingGpuProfileScopes();
 		void ClearBoundPipelineState();
+			NLS::Render::RHI::RHICommandRecordingResult RecordIndirect(const std::shared_ptr<NLS::Render::RHI::RHIBuffer>& arguments, uint64_t offset, uint32_t kind);
 #if defined(_WIN32)
 		bool IsBoundGraphicsPipelineNativeValid() const;
 		bool IsBoundComputePipelineNativeValid() const;
@@ -120,6 +126,7 @@ namespace NLS::Render::Backend
 
 		std::string m_debugName;
 		bool m_recording = false;
+			bool m_indexBufferBound = false;
 		bool m_isChildCommandBuffer = false;
 		bool m_hasClosedRecording = false;
 		bool m_childRecordingValid = true;
@@ -129,6 +136,7 @@ namespace NLS::Render::Backend
 		D3D12_COMMAND_LIST_TYPE m_commandListType = D3D12_COMMAND_LIST_TYPE_DIRECT;
 		Microsoft::WRL::ComPtr<ID3D12CommandAllocator> m_allocator;
 		Microsoft::WRL::ComPtr<ID3D12GraphicsCommandList> m_commandList;
+			std::array<Microsoft::WRL::ComPtr<ID3D12CommandSignature>,3> m_indirectSignatures;
 		ID3D12DescriptorHeap* m_currentResourceDescriptorHeap = nullptr;
 		ID3D12DescriptorHeap* m_currentSamplerDescriptorHeap = nullptr;
 		bool m_descriptorHeapsSet = false;
@@ -177,6 +185,8 @@ namespace NLS::Render::Backend
 		std::vector<std::shared_ptr<NLS::Render::RHI::RHIGraphicsPipeline>> m_recordedPipelineKeepAlive;
 		std::vector<std::shared_ptr<NLS::Render::RHI::RHIComputePipeline>> m_recordedComputePipelineKeepAlive;
 		std::vector<std::shared_ptr<NLS::Render::RHI::RHIBuffer>> m_recordedBufferKeepAlive;
+        std::vector<std::shared_ptr<NLS::Render::RHI::RHITexture>> m_recordedTextureKeepAlive;
+        std::vector<std::shared_ptr<NLS::Render::RHI::RHITimestampQuery>> m_recordedQueryKeepAlive;
 		std::vector<NLS::Base::Profiling::ProfilerGpuScopeEvent> m_gpuProfileScopeStack;
 #if defined(_WIN32)
 		bool m_bindingComputePipeline = false;

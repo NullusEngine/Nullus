@@ -4993,3 +4993,67 @@ NLS_LONG_RUNNING_TEST(GameObjectAssetImportIntegrationPerformanceTests, BatchedT
     NLS::Core::ResourceManagement::TextureManager::ProvideAssetPaths({}, {});
     std::filesystem::remove_all(root);
 }
+
+/**
+ * The Game host starts a Jobs pool before scene loading so background artifact
+ * loads overlap asset parsing. Without that pool MeshManager has to fall back to
+ * a serial inline read, so this pins the Job path instead of only asserting
+ * that the artifact eventually appears.
+ */
+TEST(GameObjectAssetImportTests, AsyncMeshArtifactLoadCompletesThroughTheJobPool)
+{
+#if !defined(NLS_ENABLE_TEST_HOOKS)
+    GTEST_SKIP() << "NLS_ENABLE_TEST_HOOKS is required to inspect async mesh request state.";
+#else
+    EnsureGameObjectAssetImportTestDriver();
+    // Background workers must exist: the request is served by the background
+    // queue and the completion is drained on the calling thread.
+    ScopedGameObjectAssetImportJobSystem jobs(2u);
+    ASSERT_TRUE(jobs.IsAvailable());
+    ASSERT_GT(NLS::Base::Jobs::GetBackgroundJobWorkerCount(), 0u);
+
+    const auto root = MakeGameObjectAssetImportRoot();
+    NLS::Core::ResourceManagement::MeshManager::ProvideAssetPaths(
+        (root / "Assets").string() + "/", "App/Assets/Engine/");
+
+    NLS::Render::Assets::MeshArtifactData meshArtifact;
+    meshArtifact.vertices = {
+        ImportTestVertexAt(-1.0f, 0.0f, 0.0f),
+        ImportTestVertexAt(1.0f, 0.0f, 0.0f),
+        ImportTestVertexAt(0.0f, 1.0f, 0.0f)
+    };
+    meshArtifact.indices = { 0u, 1u, 2u };
+    const std::string relativePath =
+        "Library/Artifacts/33/3333333333333333333333333333333333333333333333333333333333333333";
+    WriteBinaryFile(root / relativePath, NLS::Render::Assets::SerializeMeshArtifact(meshArtifact));
+
+    NLS::Core::ResourceManagement::MeshManager::ClearAsyncArtifactRequestStateForTesting();
+    NLS::Core::ResourceManagement::MeshManager meshManager;
+
+    EXPECT_EQ(meshManager.GetResource(relativePath, false), nullptr);
+    EXPECT_EQ(meshManager.RequestAsyncArtifact(relativePath, false), nullptr);
+    EXPECT_TRUE(meshManager.IsAsyncArtifactLoadPending(relativePath))
+        << "A queued Job request must stay pending instead of failing.";
+    EXPECT_FALSE(meshManager.IsAsyncArtifactLoadFailed(relativePath))
+        << "The Job path must not report a failed artifact for a readable mesh.";
+
+    for (size_t attempt = 0u;
+        attempt < 1024u && !meshManager.IsResourceRegistered(relativePath);
+        ++attempt)
+    {
+        meshManager.PumpAsyncLoads(8u);
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+
+    auto* mesh = meshManager.GetResource(relativePath, false);
+    ASSERT_NE(mesh, nullptr)
+        << "MeshManager must complete the artifact through the background Job workers.";
+    EXPECT_FALSE(meshManager.IsAsyncArtifactLoadFailed(relativePath));
+    EXPECT_EQ(meshManager.GetResources().size(), 1u);
+
+    meshManager.UnloadResources();
+    NLS::Core::ResourceManagement::MeshManager::ClearAsyncArtifactRequestStateForTesting();
+    NLS::Core::ResourceManagement::MeshManager::ProvideAssetPaths({}, {});
+    std::filesystem::remove_all(root);
+#endif
+}

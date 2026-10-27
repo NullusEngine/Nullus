@@ -410,6 +410,10 @@ ModelImporterSettings ModelImporterSettingsFromSerialized(
     result.importMaterials = BoolFromImporterSettings(settings, "MODEL_IMPORT_MATERIALS", result.importMaterials);
     result.importSkeleton = BoolFromImporterSettings(settings, "MODEL_IMPORT_SKELETON", result.importSkeleton);
     result.importAnimations = BoolFromImporterSettings(settings, "MODEL_IMPORT_ANIMATIONS", result.importAnimations);
+    result.animationSampleRate = DoubleFromImporterSettings(settings,"MODEL_ANIMATION_SAMPLE_RATE",0);
+    result.animationTargetSkeleton = StringFromImporterSettings(settings,"MODEL_ANIMATION_TARGET_SKELETON",{});
+    if(auto takes=settings.find("MODEL_ANIMATION_TAKES");takes!=settings.end())
+    {std::istringstream stream(takes->second);std::string take;while(std::getline(stream,take,';'))if(!take.empty())result.animationTakes.push_back(take);}
     result.importMorphTargets = BoolFromImporterSettings(settings, "MODEL_IMPORT_MORPH_TARGETS", result.importMorphTargets);
     result.importCameras = BoolFromImporterSettings(settings, "MODEL_IMPORT_CAMERAS", result.importCameras);
     result.importLights = BoolFromImporterSettings(settings, "MODEL_IMPORT_LIGHTS", result.importLights);
@@ -440,6 +444,10 @@ NLS::Render::Assets::SceneImportSettings ToSceneImportSettings(const ModelImport
     result.importMaterials = settings.importMaterials;
     result.importSkeleton = settings.importSkeleton;
     result.importAnimations = settings.importAnimations;
+    result.fbxReaderSelection = settings.fbxReaderSelection;
+    result.animationSampleRate = settings.animationSampleRate;
+    result.animationTakes = settings.animationTakes;
+    result.animationTargetSkeleton = settings.animationTargetSkeleton;
     result.importMorphTargets = settings.importMorphTargets;
     result.importCameras = settings.importCameras;
     result.importLights = settings.importLights;

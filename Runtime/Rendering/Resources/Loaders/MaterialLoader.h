@@ -22,6 +22,9 @@ public:
         bool allowSourceAssetNativeContainer = false;
         std::filesystem::path artifactDatabasePath;
         std::string targetPlatform = "editor";
+        // Stable runtime-manifest resolutions. When present, loading requires no
+        // source ShaderLab file, source .meta or editor ArtifactDB.
+        std::vector<std::string> shaderPassArtifactPaths;
         NLS::Core::Assets::ArtifactLoadTelemetryStage shaderPassLoadTelemetryStage =
             NLS::Core::Assets::ArtifactLoadTelemetryStage::ThumbnailGpuPreviewPumpMaterialShaderPassLoad;
     };

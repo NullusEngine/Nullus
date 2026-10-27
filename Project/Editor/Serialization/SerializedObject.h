@@ -335,8 +335,10 @@ public:
 
 private:
     friend class SerializedProperty;
+    friend class SerializedEditSession;
 
     std::shared_ptr<State> m_state;
+    std::shared_ptr<const void> m_lifetime=std::make_shared<int>();
 };
 
 } // namespace NLS::Editor::Serialization
@@ -353,24 +355,19 @@ class SerializedEditSession final
 {
 public:
     SerializedEditSession() = default;
-    [[nodiscard]] bool IsActive() const noexcept { return m_owner != nullptr && m_active; }
+    [[nodiscard]] bool IsActive() const noexcept;
     [[nodiscard]] const SerializedProperty& GetProperty() const { return m_property; }
     bool Preview(const meta::Variant& value);
     bool Commit();
     bool Cancel();
 
 private:
-    SerializedEditSession(
-        SerializedObject* owner,
-        SerializedProperty property)
-        : m_owner(owner)
-        , m_property(std::move(property))
-        , m_active(static_cast<bool>(m_property))
-    {
-    }
-
+    SerializedEditSession(SerializedObject* owner, SerializedProperty property);
     SerializedObject* m_owner = nullptr;
     SerializedProperty m_property;
+    std::weak_ptr<SerializedObject::State> m_ownerState;
+    std::weak_ptr<const void> m_ownerLifetime;
+    uint64_t m_updateEpoch=0, m_dataRevision=0, m_schemaGeneration=0;
     bool m_active = false;
 
     friend class SerializedObject;

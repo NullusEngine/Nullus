@@ -1,0 +1,171 @@
+{
+  "category": "Lifetime",
+  "deprecated": false,
+  "description": "Writes one on the system's first tick and zero afterwards.",
+  "exposedVersion": "38a08f8c-5b05-b530-f427-c1420758a569",
+  "id": "0cac87c2-a803-700c-0cd5-bfc6bb9f9c51",
+  "kind": "Module",
+  "name": "First Frame",
+  "suggested": false,
+  "version": 4,
+  "versions": [
+    {
+      "attributes": [
+        {
+          "default": [
+            1.0,
+            0.0,
+            0.0,
+            0.0
+          ],
+          "name": "Particles.FirstFrame",
+          "type": 0
+        }
+      ],
+      "calls": [],
+      "capabilities": 128,
+      "description": "Writes one on the system's first tick and zero afterwards.",
+      "graph": {
+        "id": "7dc5423d-1142-460f-b548-c7c6e266efc1",
+        "nextNodeId": 8,
+        "nodes": [
+          {
+            "id": 1,
+            "inputs": [],
+            "name": "Engine.FirstFrame",
+            "operation": 2,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 0,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 2,
+            "inputs": [],
+            "name": "",
+            "operation": 0,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 0,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 3,
+            "inputs": [
+              1,
+              2
+            ],
+            "name": "",
+            "operation": 29,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 5,
+            "value": false
+          },
+          {
+            "id": 4,
+            "inputs": [],
+            "name": "",
+            "operation": 0,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 0,
+            "value": [
+              1.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 5,
+            "inputs": [],
+            "name": "",
+            "operation": 0,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 0,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 6,
+            "inputs": [
+              3,
+              4,
+              5
+            ],
+            "name": "",
+            "operation": 34,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 0,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 7,
+            "inputs": [
+              6
+            ],
+            "name": "Particles.FirstFrame",
+            "operation": 22,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 0,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          }
+        ],
+        "stage": 1
+      },
+      "id": "38a08f8c-5b05-b530-f427-c1420758a569",
+      "inputs": [],
+      "major": 1,
+      "minor": 0,
+      "provides": [],
+      "requiresBefore": [],
+      "stages": [
+        5
+      ],
+      "switches": []
+    }
+  ],
+  "visible": true
+}

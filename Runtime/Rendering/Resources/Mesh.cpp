@@ -93,6 +93,14 @@ Mesh::~Mesh()
 	TouchMeshMutationEpoch();
 }
 
+Mesh::Mesh(std::shared_ptr<RHI::RHIMesh> geometry,uint32_t materialIndex,
+    const Geometry::Bounds& bounds,const Geometry::BoundingSphere& sphere,
+    std::shared_ptr<const AnimationRendering::SkinningFrame> skinning)
+    :m_vertexCount(geometry?geometry->GetVertexCount():0),m_indicesCount(geometry?geometry->GetIndexCount():0),
+    m_materialIndex(materialIndex),m_rhiMesh(std::move(geometry)),m_skinning(std::move(skinning)),
+    m_boundingSphere(sphere),m_bounds(bounds),m_instanceId(NextMeshInstanceId())
+{TouchMeshMutationEpoch();}
+
 uint32_t Mesh::GetVertexCount() const
 {
 	return m_vertexCount;

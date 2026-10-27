@@ -1,0 +1,24 @@
+{
+  "version": 1,
+  "id": "c124ff53-5145-5aae-8760-d7a2a46e89e8",
+  "name": "Locomotion",
+  "skeleton": "70078927-e8d3-58ce-be94-00e6a5171559#skeleton:node/0",
+  "dimensions": 1,
+  "samples": [
+    {
+      "clip": "70078927-e8d3-58ce-be94-00e6a5171559#animation:animation/0",
+      "x": 0,
+      "y": 0
+    },
+    {
+      "clip": "f9a4c8f0-6dd3-5cd0-818d-54d94b60a34e#animation:Walk",
+      "x": 1,
+      "y": 0
+    },
+    {
+      "clip": "70078927-e8d3-58ce-be94-00e6a5171559#animation:animation/2",
+      "x": 3,
+      "y": 0
+    }
+  ]
+}

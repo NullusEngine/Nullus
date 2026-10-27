@@ -171,6 +171,7 @@ namespace NLS::Render::RHI::DX12
             SupportsRuntimeInitialUpload(format);
         capability.colorAttachment = (support1 & D3D12_FORMAT_SUPPORT1_RENDER_TARGET) != 0;
         capability.storage = (support1 & D3D12_FORMAT_SUPPORT1_TYPED_UNORDERED_ACCESS_VIEW) != 0;
+        capability.storageRead = capability.storage && (support2 & D3D12_FORMAT_SUPPORT2_UAV_TYPED_LOAD) != 0;
         capability.supportsSrgbView = supportsSrgbView;
         capability.requiresAlignedTopLevelBlocks = IsTextureFormatCompressed(format);
         capability.supportsUnalignedBlockTextures = false;

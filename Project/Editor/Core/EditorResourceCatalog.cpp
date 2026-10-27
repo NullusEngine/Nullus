@@ -4,6 +4,8 @@
 #include <system_error>
 #include <utility>
 
+#include "Icons/Generated/IconCatalogGenerated.h"
+
 namespace NLS::Editor::Core
 {
 namespace
@@ -50,83 +52,49 @@ EditorResourceCatalog EditorResourceCatalog::CreateDefault(std::filesystem::path
 
 const std::vector<EditorResourceRecord>& EditorResourceCatalog::DefaultRecords()
 {
-    static const std::vector<EditorResourceRecord> records {
-        MakeRecord("editor.brand.logo.mark", EditorResourceType::Brand, EditorResourceScope::Editor,
-            "Editor/Brand/NullusLogoMark.png", "editor/brand/logo-mark.png"),
-        MakeRecord("engine.brand.logo.mark", EditorResourceType::Brand, EditorResourceScope::RuntimeBuiltin,
-            "Engine/Brand/NullusLogoMark.png", "engine/brand/logo-mark.png"),
+    static const std::vector<EditorResourceRecord> records = []
+    {
+        std::vector<EditorResourceRecord> result {
+            MakeRecord("editor.brand.logo.mark", EditorResourceType::Brand, EditorResourceScope::Editor,
+                "Editor/Brand/NullusLogoMark.png", "editor/brand/logo-mark.png"),
+            MakeRecord("engine.brand.logo.mark", EditorResourceType::Brand, EditorResourceScope::RuntimeBuiltin,
+                "Engine/Brand/NullusLogoMark.png", "engine/brand/logo-mark.png"),
 
-        MakeRecord("editor.font.ui.default", EditorResourceType::Font, EditorResourceScope::Editor,
-            "Editor/Fonts/Ruda-Bold.ttf", "editor/fonts/ruda-bold.ttf"),
-        MakeRecord("editor.layout.default", EditorResourceType::Layout, EditorResourceScope::Editor,
-            "Editor/Settings/layout.ini", "editor/settings/layout.ini"),
+            MakeRecord("editor.font.ui.default", EditorResourceType::Font, EditorResourceScope::Editor,
+                "Editor/Fonts/Ruda-Bold.ttf", "editor/fonts/ruda-bold.ttf"),
+            MakeRecord("editor.layout.default", EditorResourceType::Layout, EditorResourceScope::Editor,
+                "Editor/Settings/layout.ini", "editor/settings/layout.ini"),
 
-        MakeRecord("editor.icon.asset.folder", EditorResourceType::Icon, EditorResourceScope::Editor,
-            "Editor/Icons/asset-folder.png", "editor/icons/asset-folder.png"),
-        MakeRecord("editor.icon.asset.texture", EditorResourceType::Icon, EditorResourceScope::Editor,
-            "Editor/Icons/asset-texture.png", "editor/icons/asset-texture.png"),
-        MakeRecord("editor.icon.asset.material", EditorResourceType::Icon, EditorResourceScope::Editor,
-            "Editor/Icons/asset-material.png", "editor/icons/asset-material.png"),
-        MakeRecord("editor.icon.asset.mesh", EditorResourceType::Icon, EditorResourceScope::Editor,
-            "Editor/Icons/asset-mesh.png", "editor/icons/asset-mesh.png"),
-        MakeRecord("editor.icon.asset.prefab", EditorResourceType::Icon, EditorResourceScope::Editor,
-            "Editor/Icons/asset-prefab.png", "editor/icons/asset-prefab.png"),
-        MakeRecord("editor.icon.asset.scene", EditorResourceType::Icon, EditorResourceScope::Editor,
-            "Editor/Brand/NullusLogoMark.png", "editor/brand/logo-mark.png"),
-        MakeRecord("editor.icon.asset.shader", EditorResourceType::Icon, EditorResourceScope::Editor,
-            "Editor/Icons/asset-shader.png", "editor/icons/asset-shader.png"),
-        MakeRecord("editor.icon.asset.script", EditorResourceType::Icon, EditorResourceScope::Editor,
-            "Editor/Icons/asset-script.png", "editor/icons/asset-script.png"),
-        MakeRecord("editor.icon.asset.script.csharp", EditorResourceType::Icon, EditorResourceScope::Editor,
-            "Editor/Icons/asset-script-csharp.png", "editor/icons/asset-script-csharp.png"),
-        MakeRecord("editor.icon.asset.script.lua", EditorResourceType::Icon, EditorResourceScope::Editor,
-            "Editor/Icons/asset-script-lua.png", "editor/icons/asset-script-lua.png"),
-        MakeRecord("editor.icon.asset.font", EditorResourceType::Icon, EditorResourceScope::Editor,
-            "Editor/Icons/asset-font.png", "editor/icons/asset-font.png"),
-        MakeRecord("editor.icon.asset.audio", EditorResourceType::Icon, EditorResourceScope::Editor,
-            "Editor/Icons/asset-default.png", "editor/icons/asset-default.png"),
-        MakeRecord("editor.icon.asset.default", EditorResourceType::Icon, EditorResourceScope::Editor,
-            "Editor/Icons/asset-default.png", "editor/icons/asset-default.png"),
+            MakeRecord("editor.model.helper.cylinder", EditorResourceType::HelperModel, EditorResourceScope::Editor,
+                "Editor/Models/Cylinder.fbx", "editor/models/cylinder.fbx"),
+            MakeRecord("editor.model.helper.plane", EditorResourceType::HelperModel, EditorResourceScope::Editor,
+                "Editor/Models/Plane.fbx", "editor/models/plane.fbx"),
+            MakeRecord("editor.model.helper.vertical-plane", EditorResourceType::HelperModel, EditorResourceScope::Editor,
+                "Editor/Models/Vertical_Plane.fbx", "editor/models/vertical-plane.fbx"),
+            MakeRecord("editor.model.helper.roll", EditorResourceType::HelperModel, EditorResourceScope::Editor,
+                "Editor/Models/Roll.fbx", "editor/models/roll.fbx"),
+            MakeRecord("editor.model.helper.sphere", EditorResourceType::HelperModel, EditorResourceScope::Editor,
+                "Editor/Models/Sphere.fbx", "editor/models/sphere.fbx"),
+            MakeRecord("editor.model.helper.camera", EditorResourceType::HelperModel, EditorResourceScope::Editor,
+                "Editor/Models/Camera.fbx", "editor/models/camera.fbx"),
 
-        MakeRecord("editor.icon.toolbar.move", EditorResourceType::Icon, EditorResourceScope::Editor,
-            "Editor/Icons/toolbar-move.png", "editor/icons/toolbar-move.png"),
-        MakeRecord("editor.icon.toolbar.rotate", EditorResourceType::Icon, EditorResourceScope::Editor,
-            "Editor/Icons/toolbar-rotate.png", "editor/icons/toolbar-rotate.png"),
-        MakeRecord("editor.icon.toolbar.scale", EditorResourceType::Icon, EditorResourceScope::Editor,
-            "Editor/Icons/toolbar-scale.png", "editor/icons/toolbar-scale.png"),
-        MakeRecord("editor.icon.toolbar.pivot", EditorResourceType::Icon, EditorResourceScope::Editor,
-            "Editor/Icons/toolbar-pivot.png", "editor/icons/toolbar-pivot.png"),
-        MakeRecord("editor.icon.toolbar.center", EditorResourceType::Icon, EditorResourceScope::Editor,
-            "Editor/Icons/toolbar-center.png", "editor/icons/toolbar-center.png"),
-        MakeRecord("editor.icon.toolbar.global", EditorResourceType::Icon, EditorResourceScope::Editor,
-            "Editor/Icons/toolbar-global.png", "editor/icons/toolbar-global.png"),
-        MakeRecord("editor.icon.toolbar.local", EditorResourceType::Icon, EditorResourceScope::Editor,
-            "Editor/Icons/toolbar-local.png", "editor/icons/toolbar-local.png"),
+            MakeRecord("editor.shader.grid", EditorResourceType::Shader, EditorResourceScope::Editor,
+                "Editor/Shaders/Grid.hlsl", "editor/shaders/grid.hlsl"),
+            MakeRecord("editor.shader.billboard", EditorResourceType::Shader, EditorResourceScope::Editor,
+                "Editor/Shaders/Billboard.hlsl", "editor/shaders/billboard.hlsl"),
+            MakeRecord("editor.shader.debug-lit-color", EditorResourceType::Shader, EditorResourceScope::Editor,
+                "Editor/Shaders/DebugLitColor.hlsl", "editor/shaders/debug-lit-color.hlsl"),
+            MakeRecord("editor.shader.selection-outline-mask", EditorResourceType::Shader, EditorResourceScope::Editor,
+                "Editor/Shaders/SelectionOutlineMask.hlsl", "editor/shaders/selection-outline-mask.hlsl"),
+            MakeRecord("editor.shader.selection-outline-composite", EditorResourceType::Shader, EditorResourceScope::Editor,
+                "Editor/Shaders/SelectionOutlineComposite.hlsl", "editor/shaders/selection-outline-composite.hlsl")
+        };
 
-        MakeRecord("editor.model.helper.cylinder", EditorResourceType::HelperModel, EditorResourceScope::Editor,
-            "Editor/Models/Cylinder.fbx", "editor/models/cylinder.fbx"),
-        MakeRecord("editor.model.helper.plane", EditorResourceType::HelperModel, EditorResourceScope::Editor,
-            "Editor/Models/Plane.fbx", "editor/models/plane.fbx"),
-        MakeRecord("editor.model.helper.vertical-plane", EditorResourceType::HelperModel, EditorResourceScope::Editor,
-            "Editor/Models/Vertical_Plane.fbx", "editor/models/vertical-plane.fbx"),
-        MakeRecord("editor.model.helper.roll", EditorResourceType::HelperModel, EditorResourceScope::Editor,
-            "Editor/Models/Roll.fbx", "editor/models/roll.fbx"),
-        MakeRecord("editor.model.helper.sphere", EditorResourceType::HelperModel, EditorResourceScope::Editor,
-            "Editor/Models/Sphere.fbx", "editor/models/sphere.fbx"),
-        MakeRecord("editor.model.helper.camera", EditorResourceType::HelperModel, EditorResourceScope::Editor,
-            "Editor/Models/Camera.fbx", "editor/models/camera.fbx"),
-
-        MakeRecord("editor.shader.grid", EditorResourceType::Shader, EditorResourceScope::Editor,
-            "Editor/Shaders/Grid.hlsl", "editor/shaders/grid.hlsl"),
-        MakeRecord("editor.shader.billboard", EditorResourceType::Shader, EditorResourceScope::Editor,
-            "Editor/Shaders/Billboard.hlsl", "editor/shaders/billboard.hlsl"),
-        MakeRecord("editor.shader.debug-lit-color", EditorResourceType::Shader, EditorResourceScope::Editor,
-            "Editor/Shaders/DebugLitColor.hlsl", "editor/shaders/debug-lit-color.hlsl"),
-        MakeRecord("editor.shader.selection-outline-mask", EditorResourceType::Shader, EditorResourceScope::Editor,
-            "Editor/Shaders/SelectionOutlineMask.hlsl", "editor/shaders/selection-outline-mask.hlsl"),
-        MakeRecord("editor.shader.selection-outline-composite", EditorResourceType::Shader, EditorResourceScope::Editor,
-            "Editor/Shaders/SelectionOutlineComposite.hlsl", "editor/shaders/selection-outline-composite.hlsl")
-    };
+        // Icon records are generated from Tools/Icons/icons.manifest.json.
+        auto generatedIcons = GeneratedIconRecords();
+        result.insert(result.end(), generatedIcons.begin(), generatedIcons.end());
+        return result;
+    }();
     return records;
 }
 

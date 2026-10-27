@@ -1190,6 +1190,13 @@ namespace NLS::Render::Backend
 					uavDesc.Format = descriptors.hasSrv ? descriptors.srvDesc.Format : DXGI_FORMAT_R8G8B8A8_UNORM;
 					uavDesc.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE2D;
 					uavDesc.Texture2D.MipSlice = viewDesc->subresourceRange.baseMipLevel;
+                    if (texture->GetDesc().dimension == NLS::Render::RHI::TextureDimension::Texture3D)
+                    {
+                        uavDesc.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE3D;
+                        uavDesc.Texture3D.MipSlice = viewDesc->subresourceRange.baseMipLevel;
+                        uavDesc.Texture3D.FirstWSlice = 0u;
+                        uavDesc.Texture3D.WSize = (std::max)(texture->GetDesc().extent.depth >> viewDesc->subresourceRange.baseMipLevel, 1u);
+                    }
 					m_device->CreateUnorderedAccessView(resource, nullptr, &uavDesc, destination);
 					return;
 				}

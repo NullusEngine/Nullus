@@ -25,15 +25,18 @@ Shader "Nullus/ShaderLab/Transparent"
             Blend SrcAlpha OneMinusSrcAlpha
 
             HLSLPROGRAM
-            #pragma vertex VSMain
+            #pragma multi_compile _ NLS_SKINNED
+#pragma vertex VSMain
             #pragma fragment PSMain
             #include "NullusShaderLibrary/Core.hlsl"
+#include "NullusShaderLibrary/Skinning.hlsl"
 
             struct Attributes
             {
                 float3 positionOS : POSITION;
                 float2 uv : TEXCOORD0;
-            };
+    NLS_SKIN_ATTRIBUTES
+};
 
             struct Varyings
             {
@@ -52,7 +55,7 @@ Shader "Nullus/ShaderLab/Transparent"
             Varyings VSMain(Attributes input)
             {
                 Varyings output;
-                output.positionCS = TransformObjectToHClip(input.positionOS);
+                output.positionCS = TransformObjectToHClip(NLS_SKIN_POSITION(input));
                 output.uv = input.uv;
                 return output;
             }

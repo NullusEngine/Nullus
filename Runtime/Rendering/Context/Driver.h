@@ -70,6 +70,18 @@ public:
      * threaded rendering workers have been started.
      */
     std::string GetRhiThreadModeSummary() const;
+    /**
+     * Foreground/background Jobs worker split that the rendering TaskGraph was
+     * budgeted against.
+     *
+     * The same hardware-derived budget cannot be resolved twice: a host that
+     * starts its own Jobs pool must reuse this split instead of calling
+     * ResolveExecutionPoolBudget again, otherwise both schedulers reserve the
+     * named lanes and the machine is oversubscribed. Zero until the threaded
+     * workers have been started.
+     */
+    uint32_t GetBudgetedJobsForegroundWorkerCount() const;
+    uint32_t GetBudgetedJobsBackgroundWorkerCount() const;
     ::NLS::Render::RHI::NativeRenderDeviceInfo GetNativeDeviceInfo() const;
 	bool CreatePlatformSwapchain(
 		void* platformWindow,

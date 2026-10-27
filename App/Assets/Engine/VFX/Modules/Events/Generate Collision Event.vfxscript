@@ -1,0 +1,86 @@
+{
+  "category": "Events",
+  "deprecated": false,
+  "description": "Emits a collision event when a particle collides.",
+  "exposedVersion": "733836d9-e3d8-b284-d140-b5f9082fc0ed",
+  "id": "1595564e-9d55-754c-063c-95ddc79bb2e1",
+  "kind": "Module",
+  "name": "Generate Collision Event",
+  "suggested": false,
+  "version": 2,
+  "versions": [
+    {
+      "attributes": [],
+      "calls": [],
+      "capabilities": 0,
+      "description": "Emits a collision event when a particle collides.",
+      "graph": {
+        "id": "54785413-7cc8-4ddf-8b73-14d3dad91fe6",
+        "nextNodeId": 3,
+        "nodes": [
+          {
+            "id": 1,
+            "inputs": [],
+            "name": "Module.Event Generation Enabled",
+            "operation": 2,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 0,
+            "value": [
+              1.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 2,
+            "inputs": [
+              1
+            ],
+            "name": "Emitter.GenerateCollision",
+            "operation": 22,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 0,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          }
+        ],
+        "stage": 5
+      },
+      "id": "733836d9-e3d8-b284-d140-b5f9082fc0ed",
+      "inputs": [
+        {
+          "default": [
+            1.0,
+            0.0,
+            0.0,
+            0.0
+          ],
+          "id": "f30f1fac-40c4-6368-4778-37d066d320a7",
+          "name": "Event Generation Enabled",
+          "static": false,
+          "type": 0
+        }
+      ],
+      "major": 1,
+      "minor": 0,
+      "provides": [],
+      "requiresBefore": [],
+      "stages": [
+        6
+      ],
+      "switches": []
+    }
+  ],
+  "visible": true
+}

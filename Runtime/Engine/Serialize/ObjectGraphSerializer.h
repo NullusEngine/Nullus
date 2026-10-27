@@ -2,6 +2,8 @@
 
 #include <string>
 #include <unordered_map>
+#include <functional>
+#include <optional>
 
 #include "Components/Component.h"
 #include "GameObject.h"
@@ -19,6 +21,7 @@ namespace NLS::Engine::Serialize
     class ObjectGraphSerializer
     {
     public:
+        using SceneReferenceMapper = std::function<std::optional<ObjectIdentifier>(InstanceID)>;
         enum class GameObjectOwnershipMode
         {
             SceneFlatList,
@@ -51,6 +54,8 @@ namespace NLS::Engine::Serialize
 
                 context.GetId(gameObject, MakeGameObjectLabel(*gameObject, gameObjectIndex++));
             }
+            for(auto* gameObject:scene.GetGameObjects())
+                if(gameObject&&!gameObject->IsEditorTransient())PreassignComponentIds(*gameObject,context);
 
             PropertyValue::ArrayValue gameObjects;
             for (auto* gameObject : scene.GetGameObjects())
@@ -84,7 +89,7 @@ namespace NLS::Engine::Serialize
             return prefab;
         }
 
-        static ObjectRecord SerializeObjectRecord(const NLS::Object& object, ObjectId objectId)
+        static ObjectRecord SerializeObjectRecord(const NLS::Object& object, ObjectId objectId,const SceneReferenceMapper& mapper = {})
         {
             const auto type = object.GetType();
             ObjectRecord record;
@@ -96,7 +101,7 @@ namespace NLS::Engine::Serialize
                 component == nullptr || !component->SerializeObjectGraphProperties(record.properties))
             {
                 if (type.IsValid())
-                    WriteReflectedFields(object, type, record);
+                    WriteReflectedFields(object, type, record,mapper);
             }
 
             // `enabled` is deliberately graph-owned rather than reflected: it
@@ -122,6 +127,8 @@ namespace NLS::Engine::Serialize
                 m_ids.emplace(object, id);
                 return id;
             }
+            std::optional<ObjectId> FindId(const void* object)const
+            {const auto found=m_ids.find(object);return found==m_ids.end()?std::nullopt:std::optional<ObjectId>(found->second);}
 
         private:
             std::unordered_map<const void*, ObjectId> m_ids;
@@ -171,7 +178,7 @@ namespace NLS::Engine::Serialize
 
                 const auto componentId = context.GetId(component, MakeComponentLabel(objectId, *component, index));
                 components.push_back(PropertyValue::OwnedReference(componentId));
-                WriteComponent(*component, componentId, document);
+                WriteComponent(*component, componentId, document,context);
             }
             record.properties.push_back({"components", PropertyValue::Array(std::move(components))});
 
@@ -198,6 +205,7 @@ namespace NLS::Engine::Serialize
         static void PreassignGameObjectIdsRecursive(const GameObject& gameObject, SerializationContext& context, size_t& index)
         {
             context.GetId(&gameObject, MakeGameObjectLabel(gameObject, index++));
+            PreassignComponentIds(gameObject,context);
             for (auto* child : gameObject.GetChildren())
             {
                 if (child)
@@ -222,15 +230,25 @@ namespace NLS::Engine::Serialize
             }
         }
 
-        static void WriteComponent(const Components::Component& component, ObjectId componentId, ObjectGraphDocument& document)
+        static void PreassignComponentIds(const GameObject& object,SerializationContext& context)
         {
-            auto record = SerializeObjectRecord(component, componentId);
+            const auto owner=context.GetId(&object,"");const auto& components=object.GetComponents();
+            for(size_t i=0;i<components.size();++i)if(components[i])context.GetId(components[i].get(),MakeComponentLabel(owner,*components[i],i));
+        }
+
+        static void WriteComponent(const Components::Component& component, ObjectId componentId, ObjectGraphDocument& document,const SerializationContext& context)
+        {
+            auto record = SerializeObjectRecord(component, componentId,[&context](InstanceID instance)->std::optional<ObjectIdentifier>
+            {
+                const auto id=context.FindId(NLS::Object::IDToPointer(instance));
+                return id?std::optional<ObjectIdentifier>(ObjectIdentifier::LocalObject(MakeLocalIdentifierInFile(*id))):std::nullopt;
+            });
             const auto type = component.GetType();
             record.debugName = type.IsValid() ? type.GetName() : component.GetObjectTypeName();
             document.objects.push_back(std::move(record));
         }
 
-        static void WriteReflectedFields(const NLS::Object& object, const NLS::meta::Type& type, ObjectRecord& record)
+        static void WriteReflectedFields(const NLS::Object& object, const NLS::meta::Type& type, ObjectRecord& record,const SceneReferenceMapper& mapper)
         {
             auto instance = NLS::meta::Variant(
                 const_cast<NLS::Object*>(&object),
@@ -238,13 +256,18 @@ namespace NLS::Engine::Serialize
             for (const auto& field : type.GetFields())
             {
                 const auto value = field.GetValue(instance);
-                record.properties.push_back({field.GetName(), ConvertVariantValue(value)});
+                record.properties.push_back({field.GetName(), ConvertVariantValue(value,mapper)});
             }
         }
 
-        static PropertyValue ConvertVariantValue(const NLS::meta::Variant& value)
+        static PropertyValue ConvertVariantValue(const NLS::meta::Variant& value,const SceneReferenceMapper& mapper)
         {
             const auto valueType = value.GetType();
+            if(mapper&&(valueType==NLS_TYPEOF(PPtr<GameObject>)||valueType==NLS_TYPEOF(PPtr<Components::Component>)))
+            {
+                const auto instance=valueType==NLS_TYPEOF(PPtr<GameObject>)?value.GetValue<PPtr<GameObject>>().GetInstanceID():value.GetValue<PPtr<Components::Component>>().GetInstanceID();
+                if(const auto reference=mapper(instance))return PropertyValue::ObjectReference(*reference);
+            }
             if (valueType.IsArray())
             {
                 if (Internal::IsPPtrTypeName(valueType.GetArrayType()))
@@ -253,7 +276,7 @@ namespace NLS::Engine::Serialize
                     const auto array = value.GetArray();
                     values.reserve(array.Size());
                     for (size_t index = 0; index < array.Size(); ++index)
-                        values.push_back(Internal::SerializePPtrValueOrThrow(array.GetValue(index)));
+                        values.push_back(ConvertVariantValue(array.GetValue(index),mapper));
                     return PropertyValue::Array(std::move(values));
                 }
 
@@ -261,7 +284,7 @@ namespace NLS::Engine::Serialize
                 const auto array = value.GetArray();
                 values.reserve(array.Size());
                 for (size_t index = 0; index < array.Size(); ++index)
-                    values.push_back(ConvertVariantValue(array.GetValue(index)));
+                    values.push_back(ConvertVariantValue(array.GetValue(index),mapper));
                 return PropertyValue::Array(std::move(values));
             }
             if (Internal::IsPPtrTypeName(valueType))

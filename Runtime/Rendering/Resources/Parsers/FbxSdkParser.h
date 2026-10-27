@@ -27,7 +27,8 @@ public:
 		std::vector<std::string>& p_materials,
 		EModelParserFlags p_parserFlags,
 		std::vector<std::string>* p_externalDependencies = nullptr,
-		bool p_bakeNodeTransforms = false);
+		bool p_bakeNodeTransforms = false,
+		const NLS::Animation::ImportSettings& p_animationSettings = {});
 
 	bool PopulateImportedSceneData(
 		const std::filesystem::path& p_sourcePath,

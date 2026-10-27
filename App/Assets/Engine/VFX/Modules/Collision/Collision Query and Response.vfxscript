@@ -1,0 +1,87 @@
+{
+  "category": "Collision",
+  "deprecated": false,
+  "description": "Enables world collision queries without overriding radius or response.",
+  "exposedVersion": "a8be38bc-8385-0bfb-2058-68ccc92f63ec",
+  "id": "7586cb52-808f-80e3-4695-fc6ea053aa28",
+  "kind": "Module",
+  "name": "Collision Query and Response",
+  "suggested": false,
+  "version": 2,
+  "versions": [
+    {
+      "attributes": [],
+      "calls": [],
+      "capabilities": 8,
+      "description": "Enables world collision queries without overriding radius or response.",
+      "graph": {
+        "id": "21affab0-4006-4f6c-9867-4215780cc1dc",
+        "nextNodeId": 3,
+        "nodes": [
+          {
+            "id": 1,
+            "inputs": [],
+            "name": "Module.Collision Enabled",
+            "operation": 2,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 0,
+            "value": [
+              1.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 2,
+            "inputs": [
+              1
+            ],
+            "name": "Emitter.CollisionEnabled",
+            "operation": 22,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 0,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          }
+        ],
+        "stage": 1
+      },
+      "id": "a8be38bc-8385-0bfb-2058-68ccc92f63ec",
+      "inputs": [
+        {
+          "default": [
+            1.0,
+            0.0,
+            0.0,
+            0.0
+          ],
+          "id": "ae70e2c5-647b-bfc3-e764-5aa059878368",
+          "name": "Collision Enabled",
+          "static": false,
+          "type": 0
+        }
+      ],
+      "major": 1,
+      "minor": 0,
+      "provides": [],
+      "requiresBefore": [],
+      "stages": [
+        5,
+        7
+      ],
+      "switches": []
+    }
+  ],
+  "visible": true
+}

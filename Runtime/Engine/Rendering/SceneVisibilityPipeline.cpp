@@ -136,7 +136,9 @@ namespace
 
 	NLS::Render::Geometry::Bounds ExtractWorldBounds(const ScenePrimitiveSnapshotRecord& record)
 	{
-		return NLS::Render::Geometry::TransformBounds(record.modelBounds, record.worldMatrix);
+            auto bounds=NLS::Render::Geometry::TransformBounds(record.modelBounds, record.worldMatrix);
+            const auto padding=record.maximumWorldDisplacement*2.f;
+            bounds.size+=Maths::Vector3(padding,padding,padding);return bounds;
 	}
 
 	float DistanceToBounds(const Maths::Vector3& point, const NLS::Render::Geometry::Bounds& bounds)
@@ -193,7 +195,9 @@ namespace
 		if (record.frustumBehaviour == Components::MeshRenderer::EFrustumBehaviour::DISABLED)
 			return true;
 
-		return options.frustum->BoundsInFrustum(record.modelBounds, record.worldMatrix);
+            return record.maximumWorldDisplacement>0
+                ? options.frustum->BoundsInFrustum(ExtractWorldBounds(record),Maths::Matrix4::Identity)
+                : options.frustum->BoundsInFrustum(record.modelBounds,record.worldMatrix);
 	}
 
 	CullReason RevalidateCandidate(

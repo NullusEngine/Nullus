@@ -56,6 +56,9 @@ namespace
         HashCombine(seed, source.mesh != nullptr ? source.mesh->GetContentRevision() : 0u);
         HashCombine(seed, source.stateMask.mask);
         HashMatrix(seed, source.worldMatrix);
+        HashPointer(seed,source.material);
+        if(source.material){HashCombine(seed,source.material->GetParameterBlock().GetRevision());
+            HashCombine(seed,source.material->GetRenderStateRevision());}
     }
 
     void HashPickableActor(
@@ -454,6 +457,10 @@ bool Editor::Rendering::PickingRenderPass::CanReuseReadablePickingFrameForSignat
     const NLS::Editor::Panels::HitProxyPickingSignature& signature) const
 {
     PromotePendingFrameIfReadbackAvailable();
+    if(const auto* sceneRenderer=dynamic_cast<Engine::Rendering::BaseSceneRenderer*>(&m_renderer);
+        sceneRenderer && sceneRenderer->HasLastVisiblePickablePrimitiveDrawSources())
+        for(const auto& source:*sceneRenderer->GetLastVisiblePickablePrimitiveDrawSources())
+            if(source.material && source.material->GetShader() && source.material->GetShader()->GetMaterialInterface()->usesWorldPositionOffset)return false;
     const auto* readableFrame = m_readbackLifecycle.GetReadableFrame();
     return readableFrame != nullptr &&
         HasCompletedPickingReadback(m_renderer.GetDriver(), *readableFrame) &&
@@ -615,6 +622,7 @@ void Editor::Rendering::PickingRenderPass::Draw(NLS::Render::Data::PipelineState
 bool Editor::Rendering::PickingRenderPass::RenderPickingScene(NLS::Render::Data::PipelineState p_pso)
 {
     NLS_PROFILE_NAMED_SCOPE("PickingRenderPass::RenderPickingScene");
+    p_pso.rasterizationMode = NLS::Render::Settings::ERasterizationMode::FILL;
 	// TODO: Make sure we only render when the view is hovered and not being resized.
 	if (!SupportsPickingReadback())
 		return false;
@@ -661,6 +669,7 @@ std::optional<NLS::Render::Context::RenderPassCommandInput> Editor::Rendering::P
     const NLS::Editor::Panels::HitProxyPickingSignature& pickingSignature)
 {
     NLS_PROFILE_NAMED_SCOPE("PickingRenderPass::BuildThreadedPassInput");
+    p_pso.rasterizationMode = NLS::Render::Settings::ERasterizationMode::FILL;
     using namespace Engine::Rendering;
 
     NLS_ASSERT(m_renderer.HasDescriptor<BaseSceneRenderer::SceneDescriptor>(), "Cannot find SceneDescriptor attached to this renderer");
@@ -952,7 +961,11 @@ void Editor::Rendering::PickingRenderPass::CapturePickableModels(
 
         NLS::Render::Entities::Drawable drawable;
         drawable.mesh = mesh;
-        drawable.material = &m_gameObjectPickingMaterial;
+        auto* sourceMaterial=materials && mesh->GetMaterialIndex()<materials->size()?materials->at(mesh->GetMaterialIndex()):nullptr;
+        auto* shader=sourceMaterial?sourceMaterial->ResolveShaderForLightMode("Picking"):nullptr;
+        auto picking=shader?sourceMaterial->CreateDynamicCopy():nullptr;
+        if(picking){picking->SetShader(shader);PreparePickingMaterial(RegisterPickableGameObject(actor),*picking);}
+        drawable.material = picking?picking.get():&m_gameObjectPickingMaterial;
         drawable.stateMask = stateMask;
         Engine::Rendering::EngineDrawableDescriptor descriptor;
         descriptor.modelMatrix = modelMatrix;
@@ -961,13 +974,14 @@ void Editor::Rendering::PickingRenderPass::CapturePickableModels(
 
         NLS::Render::Resources::MaterialPipelineStateOverrides unculledOverrides;
         unculledOverrides.culling = false;
+        unculledOverrides.wireframe = false;
 
         NLS::Render::Context::RecordedDrawCommandInput drawCommand;
         if (m_renderer.CaptureRecordedDrawCommand(
             drawable,
             unculledOverrides,
             NLS::Render::Settings::EComparaisonAlgorithm::LESS,
-            drawCommand))
+            picking?"Picking":"Forward",drawCommand))
         {
             outDrawCommands.push_back(std::move(drawCommand));
         }
@@ -989,7 +1003,10 @@ void Editor::Rendering::PickingRenderPass::CapturePickableModelSources(
 
         NLS::Render::Entities::Drawable drawable;
         drawable.mesh = source.mesh;
-        drawable.material = &m_gameObjectPickingMaterial;
+        auto* shader=source.material?source.material->ResolveShaderForLightMode("Picking"):nullptr;
+        auto picking=shader?source.material->CreateDynamicCopy():nullptr;
+        if(picking){picking->SetShader(shader);PreparePickingMaterial(RegisterPickableInstance(source.ownerInstanceId),*picking);}
+        drawable.material = picking?picking.get():&m_gameObjectPickingMaterial;
         drawable.stateMask = source.stateMask;
         Engine::Rendering::EngineDrawableDescriptor descriptor;
         descriptor.modelMatrix = source.worldMatrix;
@@ -998,13 +1015,14 @@ void Editor::Rendering::PickingRenderPass::CapturePickableModelSources(
 
         NLS::Render::Resources::MaterialPipelineStateOverrides unculledOverrides;
         unculledOverrides.culling = false;
+        unculledOverrides.wireframe = false;
 
         NLS::Render::Context::RecordedDrawCommandInput drawCommand;
         if (m_renderer.CaptureRecordedDrawCommand(
             drawable,
             unculledOverrides,
             NLS::Render::Settings::EComparaisonAlgorithm::LESS,
-            drawCommand))
+            picking?"Picking":"Forward",drawCommand))
         {
             outDrawCommands.push_back(std::move(drawCommand));
         }
@@ -1070,7 +1088,10 @@ void Editor::Rendering::PickingRenderPass::DrawPickableModelSources(
 
         NLS::Render::Entities::Drawable drawable;
         drawable.mesh = source.mesh;
-        drawable.material = &m_gameObjectPickingMaterial;
+        auto* shader=source.material?source.material->ResolveShaderForLightMode("Picking"):nullptr;
+        auto picking=shader?source.material->CreateDynamicCopy():nullptr;
+        if(picking){picking->SetShader(shader);PreparePickingMaterial(RegisterPickableInstance(source.ownerInstanceId),*picking);}
+        drawable.material = picking?picking.get():&m_gameObjectPickingMaterial;
         drawable.stateMask = source.stateMask;
         drawable.AddDescriptor<Engine::Rendering::EngineDrawableDescriptor>({
             source.worldMatrix
@@ -1078,7 +1099,8 @@ void Editor::Rendering::PickingRenderPass::DrawPickableModelSources(
 
         NLS::Render::Resources::MaterialPipelineStateOverrides unculledOverrides;
         unculledOverrides.culling = false;
-        m_renderer.DrawEntity(drawable, unculledOverrides);
+        unculledOverrides.wireframe = false;
+        m_renderer.DrawEntity(drawable, unculledOverrides,NLS::Render::Settings::EComparaisonAlgorithm::LESS,picking?"Picking":"Forward");
     }
 }
 

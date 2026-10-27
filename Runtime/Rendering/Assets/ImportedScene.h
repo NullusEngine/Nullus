@@ -2,7 +2,9 @@
 
 #include "Assets/ArtifactManifest.h"
 #include "RenderDef.h"
+#include <Animation/ImportSettings.h>
 
+#include <cstdint>
 #include <string>
 #include <vector>
 
@@ -18,7 +20,8 @@ enum class ImportedSceneSubAssetType
     AnimationClip,
     MorphTarget,
     Model,
-    Prefab
+    Prefab,
+    SkeletalMesh
 };
 
 struct ImportedSceneVertexStream
@@ -67,6 +70,13 @@ struct ImportedSceneNamedRecord
     std::string occlusionTextureKey;
     std::string emissiveTextureKey;
     std::string bufferViewKey;
+    // Embedded image payloads keep their encoded bytes (PNG/JPEG) when the
+    // importer can provide them. Raw texel data is normalized to RGBA8.
+    std::vector<uint8_t> embeddedBytes;
+    std::string embeddedFormat;
+    uint32_t embeddedWidth = 0u;
+    uint32_t embeddedHeight = 0u;
+    bool embeddedCompressed = false;
     uint32_t primitiveCount = 0u;
     uint32_t morphTargetCount = 0u;
     bool embedded = false;
@@ -154,6 +164,10 @@ struct SceneImportSettings
     bool importMeshLODs = false;
     uint32_t minLOD = 0u;
     bool autoComputeLODScreenSize = true;
+    Animation::FbxReaderSelection fbxReaderSelection = Animation::FbxReaderSelection::AutodeskWithAssimpFallback;
+    double animationSampleRate = 0;
+    std::vector<std::string> animationTakes;
+    std::string animationTargetSkeleton;
 };
 
 struct ImportedScene
@@ -174,6 +188,7 @@ struct ImportedScene
     std::vector<ImportedSceneNamedRecord> skins;
     std::vector<ImportedSceneNamedRecord> animations;
     std::vector<ImportedSceneNamedRecord> morphTargets;
+    std::shared_ptr<Animation::Model> animationData;
 };
 
 struct GeneratedSceneSubAsset

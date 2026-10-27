@@ -100,11 +100,30 @@ void InspectorRegistry::UnregisterComponentEditorsByIdentifierPrefix(std::string
 
 void InspectorRegistry::RegisterPropertyDrawer(PropertyDrawerRegistration registration)
 {
+    if(!registration.identifier.empty() && std::any_of(m_propertyDrawers.begin(),m_propertyDrawers.end(),[&](const auto& entry){return entry.identifier==registration.identifier;}))
+        throw std::logic_error("Duplicate property drawer identifier: "+registration.identifier);
     if (IsDuplicate(registration))
         throw std::logic_error("Duplicate Inspector property drawer registration: " + registration.identifier);
     m_propertyDrawers.push_back(std::move(registration));
     ++m_version;
 }
+
+bool InspectorRegistry::UnregisterPropertyDrawer(std::string_view identifier)
+{
+    if(std::none_of(m_propertyDrawers.begin(),m_propertyDrawers.end(),[&](const auto& entry){return entry.identifier==identifier;})) return false;
+    // Destroy extension UI state while its defining module is still loaded.
+    const auto listeners=m_drawerListeners;
+    for(const auto& [id,listener]:listeners) if(listener) listener();
+    const auto removed = std::erase_if(m_propertyDrawers, [&](const auto& entry) { return entry.identifier == identifier; });
+    if (removed) ++m_version;
+    return removed != 0;
+}
+
+uint64_t InspectorRegistry::AddPropertyDrawerInvalidationListener(std::function<void()> listener)
+{
+    const auto id=m_nextDrawerListener++;m_drawerListeners.emplace(id,std::move(listener));return id;
+}
+void InspectorRegistry::RemovePropertyDrawerInvalidationListener(uint64_t id) {m_drawerListeners.erase(id);}
 
 void InspectorRegistry::RegisterDecoratorDrawer(DecoratorDrawerRegistration registration)
 {
@@ -130,11 +149,20 @@ std::optional<PropertyDrawerRegistration> InspectorRegistry::ResolvePropertyDraw
     };
 
     if (const auto field = findScope(InspectorDrawerScope::Field, [&](const auto& registration)
-        { return registration.fieldPath == node.path; }))
+        { return registration.fieldPath == node.path && !registration.ownerTypeName.empty() && registration.ownerTypeName == node.ownerTypeName; }))
         return field;
+    if (const auto field = findScope(InspectorDrawerScope::Field, [&](const auto& registration)
+        { return registration.fieldPath == node.path && registration.ownerTypeName.empty(); }))
+        return field;
+    // A named drawer is an explicit field choice; broad Flags/Range/etc.
+    // metadata handlers must not shadow it because they registered earlier.
+    if(node.kind!=InspectorPropertyKind::Array && !node.metadata.customDrawer.empty())
+        if(const auto named=findScope(InspectorDrawerScope::ExplicitMetadata,[&](const auto& registration)
+            {return registration.metadataKey==node.metadata.customDrawer;}))
+            return named;
     if (const auto metadata = findScope(InspectorDrawerScope::ExplicitMetadata, [&](const auto& registration)
         {
-            return MatchesMetadataKey(node, registration.metadataKey);
+            return node.kind!=InspectorPropertyKind::Array && MatchesMetadataKey(node, registration.metadataKey);
         }))
         return metadata;
     if (const auto exact = findScope(InspectorDrawerScope::ExactType, [&](const auto& registration)
@@ -143,6 +171,9 @@ std::optional<PropertyDrawerRegistration> InspectorRegistry::ResolvePropertyDraw
     if (const auto family = findScope(InspectorDrawerScope::TypeFamily, [&](const auto& registration)
         { return registration.valueType.IsValid() && node.valueType.IsValid() && node.valueType.DerivesFrom(registration.valueType); }))
         return family;
+    if (const auto builtin = findScope(InspectorDrawerScope::Builtin, [&](const auto& registration)
+        { return registration.propertyKind == node.kind; }))
+        return builtin;
     return findScope(InspectorDrawerScope::ReadOnlyFallback, [](const auto&) { return true; });
 }
 
@@ -155,6 +186,13 @@ std::vector<DecoratorDrawerRegistration> InspectorRegistry::ResolveDecoratorDraw
             result.push_back(registration);
     }
     return result;
+}
+
+std::optional<PropertyDrawerRegistration> InspectorRegistry::ResolveBuiltinPropertyDrawer(const PropertyNode& node) const
+{
+    const auto found=std::find_if(m_propertyDrawers.begin(),m_propertyDrawers.end(),[&](const auto& entry)
+    {return entry.scope==InspectorDrawerScope::Builtin && entry.propertyKind==node.kind;});
+    return found==m_propertyDrawers.end()?std::nullopt:std::optional<PropertyDrawerRegistration>(*found);
 }
 
 std::optional<ComponentEditorRegistration> InspectorRegistry::ResolveComponentEditor(const meta::Type& type) const
@@ -237,7 +275,9 @@ bool InspectorRegistry::IsDuplicate(const PropertyDrawerRegistration& registrati
         return existing.scope == registration.scope &&
             existing.fieldPath == registration.fieldPath &&
             existing.metadataKey == registration.metadataKey &&
-            existing.valueType == registration.valueType;
+            existing.valueType == registration.valueType &&
+            existing.ownerTypeName == registration.ownerTypeName &&
+            existing.propertyKind == registration.propertyKind;
     });
 }
 } // namespace NLS::Editor::Inspector

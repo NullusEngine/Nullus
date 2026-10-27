@@ -1,55 +1,36 @@
 # Physics Status and Plans
 
-This page states the current state of physics and interaction, the gaps, and the dependencies.
+Physics is **partial**: a PhysX 5.6.1 scene query world and static colliders serve native consumers such as particle collision. Dynamic rigid bodies, complete collision events, and character controllers remain unimplemented.
 
-## Current status: planned
+## Static colliders
 
-### What exists
+1. Add **Physics / Collider** to a scene object.
+2. Select Box, Sphere, or Capsule and configure Half Extents, Radius, Half Height, Layers, and Trigger.
+3. Run the scene. Query geometry synchronizes before component updates; moving, disabling, or deleting objects should update or release their query bodies.
 
-- The project file has a `gravity` key for global gravity acceleration.
-- The component update loop includes the fixed-step phase `OnFixedUpdate`, so scripts can run logic on a fixed step.
-- `Time` exposes `fixedDeltaTime` (default `0.02`) and `maximumDeltaTime` (default `0.1`) plus `fixedFrameCount` for deterministic logic.
+Trigger is a query-filter attribute here, not an Enter/Stay/Exit event API. Half Extents is half the box size. This component publishes static query geometry and does not move under gravity.
 
-### What is missing
+## Native query API
 
-- No rigid bodies, colliders, triggers, raycasts, or shape queries
-- No collision detection or solver, no friction or restitution
-- No character controller
-- No physics debug visualization or physics materials
+`PhysicsWorld` registers boxes, spheres, capsules, and triangle meshes, and updates or removes bodies. Acquire `Read(QueryFilter)` to use `Raycast`, `RaycastAll`, `SweepSphere`, and `OverlapSphere`. Read views retain synchronized access; release them before mutating the world on the same thread.
 
-`gravity` is currently a configuration value, not an input consumed by a solver.
+Scenes own independent query worlds. [Particle Systems](../audio-vfx/particles.md) connect to their owning scene by default. Collider shape, dimensions, layers, and Trigger settings are reflected/scriptable; general queries remain native APIs rather than a complete C# / Lua physics query library.
 
-## Goals
+## Dependencies and build
 
-| Capability | Goal |
-| --- | --- |
-| Collision shapes | Box, sphere, capsule, convex hull, and triangle mesh |
-| Rigid bodies | Mass, damping, kinematic and dynamic modes |
-| Detection and solving | Contact generation, constraint solving, friction, restitution |
-| Queries | Raycasts, sweeps, and overlap queries |
-| Triggers | Enter, stay, and exit events without a physical response |
-| Scene query interface | Cooperation with the scene hierarchy and spatial index |
-| Character controller | Capsule-driven movement, ground detection, steps, and slopes |
-| Debug visualization | Show colliders and contacts in the editor viewport |
+CMake pins PhysX 5.6.1 source. Set `NLS_PHYSX_SOURCE_DIR` for an offline checkout containing `physx/`. SDK sources and build products live in the build directory. The CPU SDK is separate from RHI-driven GPU particle simulation.
 
-## Dependencies and order
+`Tests/Unit/PhysicsWorldTests.cpp` and `PhysicsSceneTests.cpp` cover world queries and scene synchronization. Test definitions or a successful build on one platform do not establish all-platform acceptance.
 
-1. Physics needs a **third-party solver** or a self-written kernel with an explicit boundary. Choosing the solver is an architecture decision and must not be left to whoever implements it.
-2. Fixed-step updates already exist, so stepping can hook into that phase; substeps and interpolation are what still need defining.
-3. Physics objects must cooperate with the spatial index so queries never degrade into full-scene scans; see [Visibility and Occlusion](../large-scenes/visibility-occlusion.md).
-4. Physics components are new reflected types that must be wired into serialization and the Inspector per [Reflection and Serialization](../architecture/reflection-serialization.md).
-5. Once physics API enters the scripting manifest, both C# and Lua bindings are generated from that one manifest; see the [Scripting API Reference](../scripting/api.md).
-6. A kinematic character controller can land before a full solver exists, but it shares shapes and queries with physics, and duplicating that infrastructure creates two competing sets of semantics.
+## Missing capabilities
 
-## Relationship to animation
+- Dynamic rigid-body stepping, contact solving, joints, and a complete friction/restitution authoring workflow.
+- Trigger events, collision callbacks, character controllers, and physics debug visualization.
+- A complete scripting query library, substepping, and presentation interpolation.
 
-Dynamic character control depends on a physics solver; kinematic control first needs shapes, sweeps, and collision queries. Animation state machines coordinate presentation and are not prerequisites for kinematic controllers. The two implementation paths can interleave; see [Animation Status and Plans](../animation/roadmap.md).
+Project `gravity` and fixed-step callbacks do not imply integrated dynamics. [Animation](../animation/roadmap.md) supplies poses and presentation, not a kinematic or dynamic controller.
 
-## Not a commitment
+## Related pages
 
-This page describes goals and dependencies, not a schedule. When implementation status changes, the [Feature Status Matrix](../roadmap/index.md) and the source are authoritative.
-
-## Next steps
-
-- [Lifecycle and Activation](../scene/lifecycle.md) for fixed-step callback timing.
-- [Feature Status Matrix](../roadmap/index.md) for the cross-domain overview.
+- [Lifecycle and Activation](../scene/lifecycle.md) explains fixed-step callbacks.
+- [Feature Status Matrix](../roadmap/index.md) separates capabilities from validation.

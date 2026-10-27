@@ -1,5 +1,7 @@
 #include "UIDocument.h"
 
+#include "UIDocumentResourceResolver.h"
+
 #include "Rendering/UI/UIFontTextShaper.h"
 #include "Rendering/UI/UIFontAtlas.h"
 
@@ -53,6 +55,58 @@ namespace NLS::Engine::UI
             return true;
         }
 
+        template <typename Reference>
+        bool ParseResourceReference(
+            const Json& json,
+            const std::string& path,
+            std::optional<Reference>& output,
+            std::vector<UIDocumentDiagnostic>* diagnostics)
+        {
+            if (!json.is_object())
+            {
+                AddDiagnostic(diagnostics, path, "reference must be an object");
+                return false;
+            }
+
+            Reference reference;
+            if (json.contains("assetId"))
+            {
+                if (!json["assetId"].is_string())
+                {
+                    AddDiagnostic(diagnostics, path + ".assetId", "assetId must be a GUID string");
+                    return false;
+                }
+                const auto text = json["assetId"].get<std::string>();
+                if (!text.empty() && !NLS::Guid::TryParse(text).has_value())
+                {
+                    AddDiagnostic(diagnostics, path + ".assetId", "assetId is not a valid GUID");
+                    return false;
+                }
+                reference.SetAssetIdString(text);
+            }
+            if (json.contains("subAssetKey"))
+            {
+                if (!json["subAssetKey"].is_string())
+                {
+                    AddDiagnostic(diagnostics, path + ".subAssetKey", "subAssetKey must be a string");
+                    return false;
+                }
+                reference.SetSubAssetKey(json["subAssetKey"].get<std::string>());
+            }
+            if (json.contains("path"))
+            {
+                if (!json["path"].is_string())
+                {
+                    AddDiagnostic(diagnostics, path + ".path", "path must be a string");
+                    return false;
+                }
+                reference.SetResourcePath(json["path"].get<std::string>());
+            }
+            if (!reference.IsNull())
+                output = std::move(reference);
+            return true;
+        }
+
         bool ParseNode(
             const Json& json,
             UIDocument::NodeDefinition& output,
@@ -60,8 +114,7 @@ namespace NLS::Engine::UI
             const UINodeGuid& documentId,
             std::unordered_set<UINodeGuid>& seenGuids,
             std::vector<UIDocumentDiagnostic>* diagnostics,
-            uint32_t depth)
-        {
+            uint32_t depth)        {
             if (depth > 1024u)
             {
                 AddDiagnostic(diagnostics, path, "maximum UI node depth exceeded");
@@ -203,11 +256,65 @@ namespace NLS::Engine::UI
                 }
             }
             if (json.contains("fontAssetId") && json["fontAssetId"].is_number_unsigned())
-            {
                 output.fontAssetId = json["fontAssetId"].get<uint64_t>();
-                output.fontPixelSize = std::max<uint16_t>(
+            if (json.contains("fontPixelSize") && json["fontPixelSize"].is_number_unsigned())
+            {
+                output.fontPixelSize = static_cast<uint16_t>(std::clamp<uint32_t>(
+                    json["fontPixelSize"].get<uint32_t>(),
                     1u,
-                    json.value("fontPixelSize", static_cast<uint16_t>(16u)));
+                    65535u));
+            }
+
+            if (json.contains("texture") &&
+                !ParseResourceReference(
+                    json["texture"],
+                    path + ".texture",
+                    output.texture,
+                    diagnostics))
+            {
+                return false;
+            }
+            if (json.contains("font") &&
+                !ParseResourceReference(
+                    json["font"],
+                    path + ".font",
+                    output.font,
+                    diagnostics))
+            {
+                return false;
+            }
+
+            if (json.contains("nineSlice"))
+            {
+                const auto& nineSlice = json["nineSlice"];
+                if (!nineSlice.is_object())
+                {
+                    AddDiagnostic(diagnostics, path + ".nineSlice", "nineSlice must be an object");
+                    return false;
+                }
+                const auto readInset = [&](const char* key, float& target)
+                {
+                    const auto iterator = nineSlice.find(key);
+                    if (iterator == nineSlice.end())
+                        return true;
+                    if (!iterator->is_number())
+                    {
+                        AddDiagnostic(
+                            diagnostics,
+                            path + ".nineSlice." + key,
+                            "nineSlice border must be a number");
+                        return false;
+                    }
+                    target = std::max(0.0f, iterator->get<float>());
+                    return true;
+                };
+                if (!readInset("left", output.nineSlice.left) ||
+                    !readInset("top", output.nineSlice.top) ||
+                    !readInset("right", output.nineSlice.right) ||
+                    !readInset("bottom", output.nineSlice.bottom))
+                {
+                    return false;
+                }
             }
 
             if (json.contains("children"))
@@ -368,9 +475,31 @@ namespace NLS::Engine::UI
         return LoadFromJson(payload->payload, diagnostics);
     }
 
+    void CollectUIResourceReferences(
+        const UIDocument& document,
+        std::vector<UITextureReference>& textures,
+        std::vector<UIFontReference>& fonts)
+    {
+        const auto visit = [&](auto&& self, const UIDocument::NodeDefinition& node) -> void
+        {
+            if (node.texture.has_value() && !node.texture->IsNull())
+                textures.push_back(*node.texture);
+            if (node.font.has_value() && !node.font->IsNull())
+                fonts.push_back(*node.font);
+            for (const auto& child : node.children)
+                self(self, child);
+        };
+        visit(visit, document.GetRootDefinition());
+    }
+
     std::unique_ptr<UIDocumentInstance> UIDocument::Instantiate() const
     {
-        return std::make_unique<UIDocumentInstance>(*this, UIDocumentInstance::BuildElementTree(m_root));
+        std::vector<UIDocumentInstance::ResourceSlot> resourceSlots;
+        auto root = UIDocumentInstance::BuildElementTree(m_root, &resourceSlots);
+        auto instance = std::make_unique<UIDocumentInstance>(*this, std::move(root));
+        instance->m_resourceSlots = std::move(resourceSlots);
+        instance->RefreshResources();
+        return instance;
     }
 
     UIDocumentInstance::UIDocumentInstance(
@@ -478,13 +607,62 @@ namespace NLS::Engine::UI
     void UIDocumentInstance::Tick(const float deltaSeconds)
     {
         (void)deltaSeconds;
+        RefreshResources();
+    }
+
+    void UIDocumentInstance::RefreshResources()
+    {
+        if (m_resourceSlots.empty())
+            return;
+
+        const auto resolver = EnsureUIDocumentResourceResolver();
+        if (!resolver)
+            return;
+
+        resolver->Pump();
+        for (auto& slot : m_resourceSlots)
+        {
+            auto* element = GetElement(slot.nodeGuid);
+            if (element == nullptr)
+                continue;
+
+            if (slot.hasTexture)
+            {
+                const auto resolved = resolver->ResolveTexture(slot.texture);
+                if (resolved.has_value() && resolved->IsValid() &&
+                    (resolved->id != slot.textureId ||
+                     resolved->generation != slot.textureGeneration))
+                {
+                    slot.textureId = resolved->id;
+                    slot.textureGeneration = resolved->generation;
+                    element->SetTexture(
+                        slot.textureId,
+                        slot.textureGeneration,
+                        resolved->width,
+                        resolved->height);
+                }
+            }
+
+            if (slot.hasFont)
+            {
+                const auto fontId = resolver->ResolveFont(slot.font);
+                if (fontId.has_value() && *fontId != 0u && *fontId != slot.fontId)
+                {
+                    slot.fontId = *fontId;
+                    element->SetFont(slot.fontId, element->GetFontPixelSize());
+                }
+            }
+        }
     }
 
     bool UIDocumentInstance::Reload(
         const UIDocument& document,
         std::vector<UIDocumentDiagnostic>* diagnostics)
     {
-        auto nextRoot = BuildElementTree(document.GetRootDefinition());
+        std::vector<ResourceSlot> nextResourceSlots;
+        auto nextRoot = BuildElementTree(
+            document.GetRootDefinition(),
+            &nextResourceSlots);
         if (!nextRoot)
             return false;
         if (m_root)
@@ -503,16 +681,20 @@ namespace NLS::Engine::UI
         }
         m_documentId = document.GetDocumentId();
         m_root = std::move(nextRoot);
+        m_resourceSlots = std::move(nextResourceSlots);
         m_requiresRenderTarget = ContainsRenderTargetRequirement(document.GetRootDefinition());
         m_cachedSnapshot.reset();
         ++m_generation;
         if (m_lastViewport.x > 0.0f && m_lastViewport.y > 0.0f)
             UpdateLayout(m_lastViewport, m_lastDpiScale);
+        RefreshResources();
         (void)diagnostics;
         return true;
     }
 
-    std::unique_ptr<UIElement> UIDocumentInstance::BuildElementTree(const UIDocument::NodeDefinition& definition)
+    std::unique_ptr<UIElement> UIDocumentInstance::BuildElementTree(
+        const UIDocument::NodeDefinition& definition,
+        std::vector<ResourceSlot>* resourceSlots)
     {
         auto element = std::make_unique<UIElement>(definition.type, definition.name, definition.nodeGuid);
         element->SetClassName(definition.className);
@@ -533,9 +715,27 @@ namespace NLS::Engine::UI
         element->SetText(definition.text);
         element->SetPasswordMode(definition.passwordMode);
         element->SetTexture(definition.textureId, definition.textureGeneration);
+        element->SetNineSlice(definition.nineSlice);
         element->SetFont(definition.fontAssetId, definition.fontPixelSize);
+        if (resourceSlots != nullptr &&
+            (definition.texture.has_value() || definition.font.has_value()))
+        {
+            ResourceSlot slot;
+            slot.nodeGuid = definition.nodeGuid;
+            if (definition.texture.has_value())
+            {
+                slot.hasTexture = true;
+                slot.texture = *definition.texture;
+            }
+            if (definition.font.has_value())
+            {
+                slot.hasFont = true;
+                slot.font = *definition.font;
+            }
+            resourceSlots->push_back(std::move(slot));
+        }
         for (const auto& child : definition.children)
-            element->AddChild(BuildElementTree(child));
+            element->AddChild(BuildElementTree(child, resourceSlots));
         return element;
     }
 

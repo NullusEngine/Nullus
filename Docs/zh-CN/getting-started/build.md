@@ -87,11 +87,39 @@ macOS 构建默认选择 Metal 后端。Metal 在非 Apple 平台上不受支持
 | `Editor` | 编辑器 |
 | `Game` | 游戏运行时 |
 | `Launcher` | 项目启动器 |
+| `NullusBuild` | 无界面打包命令行与共享构建流水线 |
 | `NullusUnitTests` | 行为测试（需要 `NLS_BUILD_TESTS=ON`） |
 | `NullusPerformanceTests` | 性能与压力测试（需要 `NLS_BUILD_PERFORMANCE_TESTS=ON`） |
 | `ReflectionTest` | 反射冒烟工具 |
 
 构建产物按配置部署到 `App/` 下，例如 Windows 的 `App/Win64_Debug_Runtime_Shared/Editor.exe`、`App/Win64_Release_Runtime_Shared/Editor.exe`。选择调试器启动配置时要以这个目录结构为准，见[脚本调试与热重载](../scripting/debugging.md)。
+
+## 打包 Player
+
+先构建无界面打包工具，再通过项目 profile 出包：
+
+```powershell
+cmake --build build --config RelWithDebInfo --target Game NullusBuild
+build/bin/RelWithDebInfo/NullusBuild.exe build `
+  --project TestProject/TestProject.nullus `
+  --profile windows-shipping `
+  --player App/Win64_RelWithDebInfo_Runtime_Shared `
+  --output Dist `
+  --validate-launch
+```
+
+流水线读取项目的 `BuildProfiles.json`，用 `NLS_Cook` 烘焙目标平台内容（纹理、ShaderLab pass、材质、模型和 UI），组装 Player、写出 `base.npak`，校验后再运行成品自检。C# 项目会从 `Assets/**/*.cs` 编译项目专用 `GameScripts.dll`，不会复用 Player 模板中的样本程序集。`--player` 指向包含 `Game.exe` 与运行时 DLL 的目录（即 `Game` 目标的 `App/Win64_<Config>_Runtime_Shared` 输出）。profile、`maxTextureSize`、包布局与已知限制见[Player 打包与分发](../platform-build/packaging.md)。
+
+### Linux 与 macOS 成品
+
+为 Linux 添加 `platform: "linux"`、`architecture: "x64"`、`graphicsBackend: "vulkan"` 的 profile；macOS 使用 `platform: "macos"`、`architecture: "arm64"`、`graphicsBackend: "metal"`。Player 模板目录需要包含 `Game`、共享库、`Assets/`，以及可选的 `Scripts/` 和 `Runtime/dotnet/`：
+
+```bash
+NullusBuild build --project MyGame.nullus --profile linux-shipping \
+  --player App/Linux_Release_Shared --output Dist --validate-launch
+```
+
+Linux 成品可以在 Windows 主机上交叉组装；非 Linux 宿主会跳过成品自检，并记录 `build-launch-cross-host` 警告。适配器会把 ELF 的 `RPATH`/`RUNPATH` 重写为 `$ORIGIN`，并在 ZIP 中保留 Unix 可执行模式。macOS 打包要求 macOS 主机与 `.app`（或根目录 `Game`）模板；当前输出明确标记为未签名，Developer ID 与公证尚未接入。Unix 适配器目前只支持 ZIP 或目录输出。Linux 模板现状与移动平台缺口见[Player 打包与分发](../platform-build/packaging.md)。
 
 ## 构建选项
 

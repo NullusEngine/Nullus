@@ -1,0 +1,35 @@
+name: icons
+
+on:
+  push:
+    paths:
+      - "Tools/Icons/**"
+      - "App/Assets/Editor/Icons/**"
+      - "Project/Editor/Icons/**"
+      - ".github/workflows/icons.yml"
+  pull_request:
+    paths:
+      - "Tools/Icons/**"
+      - "App/Assets/Editor/Icons/**"
+      - "Project/Editor/Icons/**"
+      - ".github/workflows/icons.yml"
+  workflow_dispatch:
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
+
+      - name: Validate manifest and generated files
+        run: python Tools/Icons/validate_icons.py --baseline-ref origin/main
+
+      - name: Check generated assets and code are reproducible
+        run: python Tools/Icons/iconbaker.py --check

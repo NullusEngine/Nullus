@@ -1,0 +1,754 @@
+{
+  "emitters": [
+    {
+      "enabled": true,
+      "id": "08f303f0-5551-4d34-9567-8a18d2cd3fb8",
+      "position": [
+        0.0,
+        0.0
+      ],
+      "stacks": [
+        {
+          "enabled": true,
+          "id": "eda2d644-7afb-4e28-bb86-ab2c70e869d7",
+          "iterations": 1,
+          "modules": [],
+          "name": "Emitter Spawn",
+          "stage": 2
+        },
+        {
+          "enabled": true,
+          "id": "aa7dbe60-8598-4207-bc2a-b7109357d6a2",
+          "iterations": 1,
+          "modules": [
+            {
+              "enabled": true,
+              "id": "b6bf3783-605b-43b6-a17c-91e98851f4f4",
+              "inputs": {
+                "Duration": {
+                  "mode": 0,
+                  "parameter": "",
+                  "value": [
+                    5.0,
+                    0.0,
+                    0.0,
+                    0.0
+                  ]
+                },
+                "Loop": {
+                  "mode": 0,
+                  "parameter": "",
+                  "value": [
+                    1.0,
+                    0.0,
+                    0.0,
+                    0.0
+                  ]
+                }
+              },
+              "script": "EmitterState"
+            },
+            {
+              "enabled": true,
+              "id": "fb0dd46a-68f0-478e-9943-9f7ec22cde24",
+              "inputs": {
+                "Rate": {
+                  "mode": 0,
+                  "parameter": "",
+                  "value": [
+                    32,
+                    0,
+                    0,
+                    0
+                  ]
+                }
+              },
+              "script": "SpawnRate"
+            }
+          ],
+          "name": "Emitter Update",
+          "stage": 3
+        },
+        {
+          "enabled": true,
+          "id": "909834d9-ff6e-422b-8ee3-1fced7982993",
+          "iterations": 1,
+          "modules": [
+            {
+              "enabled": true,
+              "id": "e1dde66e-f349-41d6-aca2-46a9bbbb2730",
+              "inputs": {
+                "Color": {
+                  "mode": 0,
+                  "parameter": "",
+                  "value": [
+                    1,
+                    0.1,
+                    0.1,
+                    1
+                  ]
+                },
+                "Lifetime": {
+                  "mode": 0,
+                  "parameter": "",
+                  "value": [
+                    2.0,
+                    0.0,
+                    0.0,
+                    0.0
+                  ]
+                },
+                "Position": {
+                  "mode": 0,
+                  "parameter": "",
+                  "value": [
+                    -0.4,
+                    0,
+                    0,
+                    0
+                  ]
+                },
+                "Size": {
+                  "mode": 0,
+                  "parameter": "",
+                  "value": [
+                    0.05000000074505806,
+                    0.0,
+                    0.0,
+                    0.0
+                  ]
+                },
+                "Velocity": {
+                  "mode": 0,
+                  "parameter": "",
+                  "value": [
+                    0.0,
+                    3.0,
+                    0.0,
+                    0.0
+                  ]
+                }
+              },
+              "script": "InitializeParticle"
+            },
+            {
+              "enabled": true,
+              "id": "dfaafd1c-3d44-43cb-8e65-cf88a5872363",
+              "inputs": {
+                "Center": {
+                  "mode": 0,
+                  "parameter": "",
+                  "value": [
+                    -0.4,
+                    0,
+                    0,
+                    0
+                  ]
+                },
+                "Extent": {
+                  "mode": 0,
+                  "parameter": "",
+                  "value": [
+                    0.1,
+                    0.1,
+                    0.1,
+                    0
+                  ]
+                }
+              },
+              "script": "BoxLocation"
+            }
+          ],
+          "name": "Particle Spawn",
+          "stage": 4
+        },
+        {
+          "enabled": true,
+          "id": "fbd0e450-f435-476b-acf8-50c901e91414",
+          "iterations": 1,
+          "modules": [
+            {
+              "enabled": true,
+              "id": "3e79750d-7b35-40bc-bc2b-2cd8b779fcff",
+              "inputs": {},
+              "script": "SolveForcesAndVelocity"
+            }
+          ],
+          "name": "Particle Update",
+          "stage": 5
+        }
+      ]
+    },
+    {
+      "enabled": true,
+      "id": "5bbfb022-6616-4219-a1ee-a985ee94dc3a",
+      "position": [
+        350,
+        0
+      ],
+      "stacks": [
+        {
+          "enabled": true,
+          "id": "54e27d93-82c0-4bc1-a263-940916531601",
+          "iterations": 1,
+          "modules": [],
+          "name": "Emitter Spawn",
+          "stage": 2
+        },
+        {
+          "enabled": true,
+          "id": "75aac747-c343-4701-b6d5-d5805551106e",
+          "iterations": 1,
+          "modules": [
+            {
+              "enabled": true,
+              "id": "c427c445-6741-4b20-867d-aa2a329b5caa",
+              "inputs": {
+                "Duration": {
+                  "mode": 0,
+                  "parameter": "",
+                  "value": [
+                    5.0,
+                    0.0,
+                    0.0,
+                    0.0
+                  ]
+                },
+                "Loop": {
+                  "mode": 0,
+                  "parameter": "",
+                  "value": [
+                    1.0,
+                    0.0,
+                    0.0,
+                    0.0
+                  ]
+                }
+              },
+              "script": "EmitterState"
+            },
+            {
+              "enabled": true,
+              "id": "2f59bdb2-7903-4c12-bd8a-e577bbe9103d",
+              "inputs": {
+                "Rate": {
+                  "mode": 0,
+                  "parameter": "",
+                  "value": [
+                    32,
+                    0,
+                    0,
+                    0
+                  ]
+                }
+              },
+              "script": "SpawnRate"
+            }
+          ],
+          "name": "Emitter Update",
+          "stage": 3
+        },
+        {
+          "enabled": true,
+          "id": "93bb1507-b4d5-4b9d-9dee-73bc4c1dcb98",
+          "iterations": 1,
+          "modules": [
+            {
+              "enabled": true,
+              "id": "685d3eb9-9411-473d-96ec-eb0fbbb9639a",
+              "inputs": {
+                "Color": {
+                  "mode": 0,
+                  "parameter": "",
+                  "value": [
+                    0.1,
+                    1,
+                    0.1,
+                    1
+                  ]
+                },
+                "Lifetime": {
+                  "mode": 0,
+                  "parameter": "",
+                  "value": [
+                    2.0,
+                    0.0,
+                    0.0,
+                    0.0
+                  ]
+                },
+                "Position": {
+                  "mode": 0,
+                  "parameter": "",
+                  "value": [
+                    -0.4,
+                    0,
+                    0,
+                    0
+                  ]
+                },
+                "Size": {
+                  "mode": 0,
+                  "parameter": "",
+                  "value": [
+                    0.05000000074505806,
+                    0.0,
+                    0.0,
+                    0.0
+                  ]
+                },
+                "Velocity": {
+                  "mode": 0,
+                  "parameter": "",
+                  "value": [
+                    0.0,
+                    3.0,
+                    0.0,
+                    0.0
+                  ]
+                }
+              },
+              "script": "InitializeParticle"
+            },
+            {
+              "enabled": true,
+              "id": "9688588b-47de-4069-b633-6b625338dc83",
+              "inputs": {
+                "Center": {
+                  "mode": 0,
+                  "parameter": "",
+                  "value": [
+                    0.4,
+                    0,
+                    0,
+                    0
+                  ]
+                },
+                "Extent": {
+                  "mode": 0,
+                  "parameter": "",
+                  "value": [
+                    0.1,
+                    0.1,
+                    0.1,
+                    0
+                  ]
+                }
+              },
+              "script": "BoxLocation"
+            }
+          ],
+          "name": "Particle Spawn",
+          "stage": 4
+        },
+        {
+          "enabled": true,
+          "id": "1e77711e-dee2-47e5-a010-5826484de327",
+          "iterations": 1,
+          "modules": [
+            {
+              "enabled": true,
+              "id": "a016094c-5cfe-4b94-94dd-2a3b01ccfc26",
+              "inputs": {},
+              "script": "SolveForcesAndVelocity"
+            }
+          ],
+          "name": "Particle Update",
+          "stage": 5
+        }
+      ]
+    }
+  ],
+  "id": "9a716a6a-8858-434d-8ab6-b092074b131c",
+  "kind": "System",
+  "name": "Warmup and Fixed Tick",
+  "parameters": [],
+  "runtime": {
+    "emitters": [
+      {
+        "attributes": [
+          {
+            "default": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ],
+            "name": "Particles.Position",
+            "type": 2
+          },
+          {
+            "default": [
+              0.0,
+              3.0,
+              0.0,
+              0.0
+            ],
+            "name": "Particles.Velocity",
+            "type": 2
+          },
+          {
+            "default": [
+              1.0,
+              0.5,
+              0.10000000149011612,
+              1.0
+            ],
+            "name": "Particles.Color",
+            "type": 3
+          },
+          {
+            "default": [
+              0.05000000074505806,
+              0.0,
+              0.0,
+              0.0
+            ],
+            "name": "Particles.Size",
+            "type": 0
+          },
+          {
+            "default": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ],
+            "name": "Particles.Age",
+            "type": 0
+          },
+          {
+            "default": [
+              2.0,
+              0.0,
+              0.0,
+              0.0
+            ],
+            "name": "Particles.Lifetime",
+            "type": 0
+          }
+        ],
+        "bursts": [],
+        "capacity": 137,
+        "collision": {
+          "enabled": false,
+          "friction": 0.0,
+          "layers": 4294967295,
+          "radius": 0.0,
+          "restitution": 0.5
+        },
+        "duration": 5.0,
+        "frustumCulling": true,
+        "id": "08f303f0-5551-4d34-9567-8a18d2cd3fb8",
+        "initialCapacity": 3,
+        "interpolatedSpawning": true,
+        "looping": true,
+        "mesh": {
+          "defaultOrientation": [
+            0.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "defaultScale": [
+            1.0,
+            1.0,
+            1.0,
+            0.0
+          ],
+          "lodIndex": -1,
+          "materials": [],
+          "meshIndexAttribute": "Particles.MeshIndex",
+          "meshes": [],
+          "orientationAttribute": "Particles.MeshOrientation",
+          "scaleAttribute": "Particles.Scale"
+        },
+        "name": "CPU Emitter",
+        "renderer": 0,
+        "seed": 1,
+        "simulationStages": [],
+        "sortByViewDepth": false,
+        "spawn": {
+          "id": "2811f4b8-3dfd-46d1-bfbc-79882bd7a8c7",
+          "nextNodeId": 3,
+          "nodes": [],
+          "stage": 0
+        },
+        "spawnRate": 100.0,
+        "sprite": {
+          "alignment": 0,
+          "alphaCutoff": 0.3330000042915344,
+          "blend": 0,
+          "blendSubImages": false,
+          "circularMask": true,
+          "dynamicParameters": [
+            {
+              "attribute": "Particles.DynamicMaterialParameter",
+              "default": [
+                1.0,
+                1.0,
+                1.0,
+                1.0
+              ],
+              "fallbackParameter": ""
+            },
+            {
+              "attribute": "Particles.DynamicMaterialParameter1",
+              "default": [
+                1.0,
+                1.0,
+                1.0,
+                1.0
+              ],
+              "fallbackParameter": ""
+            },
+            {
+              "attribute": "Particles.DynamicMaterialParameter2",
+              "default": [
+                1.0,
+                1.0,
+                1.0,
+                1.0
+              ],
+              "fallbackParameter": ""
+            },
+            {
+              "attribute": "Particles.DynamicMaterialParameter3",
+              "default": [
+                1.0,
+                1.0,
+                1.0,
+                1.0
+              ],
+              "fallbackParameter": ""
+            }
+          ],
+          "emissive": 1.0,
+          "material": {
+            "guid": "",
+            "localId": 0
+          },
+          "materialParameters": [],
+          "softDistance": 0.0,
+          "subImagesX": 1,
+          "subImagesY": 1,
+          "texture": {
+            "guid": "",
+            "localId": 0
+          },
+          "tint": [
+            1.0,
+            1.0,
+            1.0,
+            1.0
+          ],
+          "useMaterialShader": false
+        },
+        "target": 0,
+        "update": {
+          "id": "59cc67fb-4946-4208-922e-b8a35fb588d0",
+          "nextNodeId": 7,
+          "nodes": [],
+          "stage": 1
+        }
+      },
+      {
+        "attributes": [
+          {
+            "default": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ],
+            "name": "Particles.Position",
+            "type": 2
+          },
+          {
+            "default": [
+              0.0,
+              3.0,
+              0.0,
+              0.0
+            ],
+            "name": "Particles.Velocity",
+            "type": 2
+          },
+          {
+            "default": [
+              1.0,
+              0.5,
+              0.10000000149011612,
+              1.0
+            ],
+            "name": "Particles.Color",
+            "type": 3
+          },
+          {
+            "default": [
+              0.05000000074505806,
+              0.0,
+              0.0,
+              0.0
+            ],
+            "name": "Particles.Size",
+            "type": 0
+          },
+          {
+            "default": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ],
+            "name": "Particles.Age",
+            "type": 0
+          },
+          {
+            "default": [
+              2.0,
+              0.0,
+              0.0,
+              0.0
+            ],
+            "name": "Particles.Lifetime",
+            "type": 0
+          }
+        ],
+        "bursts": [],
+        "capacity": 137,
+        "collision": {
+          "enabled": false,
+          "friction": 0.0,
+          "layers": 4294967295,
+          "radius": 0.0,
+          "restitution": 0.5
+        },
+        "duration": 5.0,
+        "frustumCulling": true,
+        "id": "5bbfb022-6616-4219-a1ee-a985ee94dc3a",
+        "initialCapacity": 3,
+        "interpolatedSpawning": true,
+        "looping": true,
+        "mesh": {
+          "defaultOrientation": [
+            0.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "defaultScale": [
+            1.0,
+            1.0,
+            1.0,
+            0.0
+          ],
+          "lodIndex": -1,
+          "materials": [],
+          "meshIndexAttribute": "Particles.MeshIndex",
+          "meshes": [],
+          "orientationAttribute": "Particles.MeshOrientation",
+          "scaleAttribute": "Particles.Scale"
+        },
+        "name": "GPU Emitter",
+        "renderer": 0,
+        "seed": 1,
+        "simulationStages": [],
+        "sortByViewDepth": false,
+        "spawn": {
+          "id": "28af3e94-e08f-487b-b2f0-ef4ba83e65df",
+          "nextNodeId": 3,
+          "nodes": [],
+          "stage": 0
+        },
+        "spawnRate": 100.0,
+        "sprite": {
+          "alignment": 0,
+          "alphaCutoff": 0.3330000042915344,
+          "blend": 0,
+          "blendSubImages": false,
+          "circularMask": true,
+          "dynamicParameters": [
+            {
+              "attribute": "Particles.DynamicMaterialParameter",
+              "default": [
+                1.0,
+                1.0,
+                1.0,
+                1.0
+              ],
+              "fallbackParameter": ""
+            },
+            {
+              "attribute": "Particles.DynamicMaterialParameter1",
+              "default": [
+                1.0,
+                1.0,
+                1.0,
+                1.0
+              ],
+              "fallbackParameter": ""
+            },
+            {
+              "attribute": "Particles.DynamicMaterialParameter2",
+              "default": [
+                1.0,
+                1.0,
+                1.0,
+                1.0
+              ],
+              "fallbackParameter": ""
+            },
+            {
+              "attribute": "Particles.DynamicMaterialParameter3",
+              "default": [
+                1.0,
+                1.0,
+                1.0,
+                1.0
+              ],
+              "fallbackParameter": ""
+            }
+          ],
+          "emissive": 1.0,
+          "material": {
+            "guid": "",
+            "localId": 0
+          },
+          "materialParameters": [],
+          "softDistance": 0.0,
+          "subImagesX": 1,
+          "subImagesY": 1,
+          "texture": {
+            "guid": "",
+            "localId": 0
+          },
+          "tint": [
+            1.0,
+            1.0,
+            1.0,
+            1.0
+          ],
+          "useMaterialShader": false
+        },
+        "target": 1,
+        "update": {
+          "id": "1d3cd62c-2e86-4df3-bb0a-1828f655e4dc",
+          "nextNodeId": 7,
+          "nodes": [],
+          "stage": 1
+        }
+      }
+    ],
+    "id": "9a716a6a-8858-434d-8ab6-b092074b131c",
+    "name": "Warmup and Fixed Tick",
+    "version": 3,
+    "timing": {
+      "fixedTick": true,
+      "fixedTickDelta": 0.03125,
+      "warmupTickCount": 8,
+      "warmupTickDelta": 0.0625
+    }
+  },
+  "version": 5
+}

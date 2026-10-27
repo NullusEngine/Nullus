@@ -554,3 +554,15 @@ Maths::Vector4 Maths::Matrix4::GetColumn(const Matrix4& p_matrix, uint8_t p_colu
 
 	return Vector4(p_matrix.data[p_column], p_matrix.data[p_column + 4], p_matrix.data[p_column + 8], p_matrix.data[p_column + 12]);
 }
+
+Maths::Vector4 Maths::Matrix4::GetRow0() const { return GetRow(*this,0); }
+void Maths::Matrix4::SetRow0(const Vector4& value) { (*this)(0,0)=value.x;(*this)(0,1)=value.y;(*this)(0,2)=value.z;(*this)(0,3)=value.w; }
+
+Maths::Vector4 Maths::Matrix4::GetRow1() const { return GetRow(*this,1); }
+void Maths::Matrix4::SetRow1(const Vector4& value) { (*this)(1,0)=value.x;(*this)(1,1)=value.y;(*this)(1,2)=value.z;(*this)(1,3)=value.w; }
+
+Maths::Vector4 Maths::Matrix4::GetRow2() const { return GetRow(*this,2); }
+void Maths::Matrix4::SetRow2(const Vector4& value) { (*this)(2,0)=value.x;(*this)(2,1)=value.y;(*this)(2,2)=value.z;(*this)(2,3)=value.w; }
+
+Maths::Vector4 Maths::Matrix4::GetRow3() const { return GetRow(*this,3); }
+void Maths::Matrix4::SetRow3(const Vector4& value) { (*this)(3,0)=value.x;(*this)(3,1)=value.y;(*this)(3,2)=value.z;(*this)(3,3)=value.w; }

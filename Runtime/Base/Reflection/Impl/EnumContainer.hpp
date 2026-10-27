@@ -9,6 +9,14 @@
 namespace NLS::meta
 {
         template<typename EnumType>
+        Variant EnumContainer<EnumType>::FromBits(uint64_t bits) const
+        { return Variant(static_cast<EnumType>(static_cast<std::underlying_type_t<EnumType>>(bits))); }
+
+        template<typename EnumType>
+        uint64_t EnumContainer<EnumType>::GetBits(const Argument& value) const
+        { return static_cast<uint64_t>(static_cast<std::underlying_type_t<EnumType>>(value.GetValue<EnumType>())); }
+
+        template<typename EnumType>
         EnumContainer<EnumType>::EnumContainer(
             const std::string &name, 
             const Initializer &initializer

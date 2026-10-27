@@ -97,4 +97,5 @@ DX12 与 Vulkan 默认 `tasks`，Metal 在完成线程归属与并发提交验�
 
 - [相机、光源与画面输出](cameras-lights.md)：把场景渲染出来。
 - [材质与 ShaderLab](materials.md)：写自己的着色器与材质。
+- [距离场](distance-fields.md)：生成模型场、分页全局场与调试显示。
 - [图形后端与大场景特性](backends.md)：后端支持矩阵与大场景优化细节。

@@ -1,0 +1,283 @@
+{
+  "category": "Color",
+  "deprecated": false,
+  "description": "Interpolates color over normalized particle age.",
+  "exposedVersion": "c465b53f-654f-040e-5139-5c4a4f169129",
+  "id": "9d1434a1-12dd-ab12-7a66-b9b7636a2179",
+  "kind": "Module",
+  "name": "Color over Life",
+  "suggested": false,
+  "version": 2,
+  "versions": [
+    {
+      "attributes": [],
+      "calls": [],
+      "capabilities": 0,
+      "description": "Interpolates color over normalized particle age.",
+      "graph": {
+        "id": "f0d93ddc-c878-4953-9169-ab8661ce944e",
+        "nextNodeId": 13,
+        "nodes": [
+          {
+            "id": 1,
+            "inputs": [],
+            "name": "Module.Start",
+            "operation": 2,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 3,
+            "value": [
+              1.0,
+              0.5,
+              0.10000000149011612,
+              1.0
+            ]
+          },
+          {
+            "id": 2,
+            "inputs": [],
+            "name": "Module.End",
+            "operation": 2,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 3,
+            "value": [
+              1.0,
+              0.10000000149011612,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 3,
+            "inputs": [],
+            "name": "Particles.Age",
+            "operation": 1,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 0,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 4,
+            "inputs": [],
+            "name": "Particles.Lifetime",
+            "operation": 1,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 0,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 5,
+            "inputs": [],
+            "name": "",
+            "operation": 0,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 0,
+            "value": [
+              9.999999682655225e-21,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 6,
+            "inputs": [
+              4,
+              5
+            ],
+            "name": "",
+            "operation": 11,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 0,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 7,
+            "inputs": [
+              3,
+              6
+            ],
+            "name": "",
+            "operation": 9,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 0,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 8,
+            "inputs": [],
+            "name": "",
+            "operation": 0,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 0,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 9,
+            "inputs": [],
+            "name": "",
+            "operation": 0,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 0,
+            "value": [
+              1.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 10,
+            "inputs": [
+              7,
+              8,
+              9
+            ],
+            "name": "",
+            "operation": 12,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 0,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 11,
+            "inputs": [
+              1,
+              2,
+              10
+            ],
+            "name": "",
+            "operation": 13,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 3,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 12,
+            "inputs": [
+              11
+            ],
+            "name": "Particles.Color",
+            "operation": 22,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 3,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          }
+        ],
+        "stage": 1
+      },
+      "id": "c465b53f-654f-040e-5139-5c4a4f169129",
+      "inputs": [
+        {
+          "default": [
+            1.0,
+            0.5,
+            0.10000000149011612,
+            1.0
+          ],
+          "id": "81684fb5-45f3-737f-37f9-d30db05882d0",
+          "name": "Start",
+          "static": false,
+          "type": 3
+        },
+        {
+          "default": [
+            1.0,
+            0.10000000149011612,
+            0.0,
+            0.0
+          ],
+          "id": "78c730a7-cec6-736a-e414-77c9af3c19b1",
+          "name": "End",
+          "static": false,
+          "type": 3
+        }
+      ],
+      "major": 1,
+      "minor": 0,
+      "provides": [],
+      "requiresBefore": [],
+      "stages": [
+        5,
+        7
+      ],
+      "switches": []
+    }
+  ],
+  "visible": true
+}

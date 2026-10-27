@@ -7,6 +7,7 @@
 #include "UI/Widgets/Sliders/ESliderOrientation.h"
 #include "UI/Internal/Converter.h"
 #include "ImGui/imgui.h"
+#include "UI/Controls/ScalarControl.h"
 
 namespace NLS::UI::Widgets
 {
@@ -53,15 +54,9 @@ namespace NLS::UI::Widgets
 
 			bool valueChanged = false;
 
-			switch (orientation)
-			{
-			case ESliderOrientation::HORIZONTAL:
-				valueChanged = ImGui::SliderScalar((label + this->m_widgetID).c_str(), m_dataType, &value, &min, &max, format.c_str());
-				break;
-			case ESliderOrientation::VERTICAL:
-				valueChanged = ImGui::VSliderScalar((label + this->m_widgetID).c_str(), Internal::Converter::ToImVec2(verticalModeSize), m_dataType, &value, &min, &max, format.c_str());
-				break;
-			}
+            Controls::ScalarOptions options;options.slider=true;options.minimum=&min;options.maximum=&max;options.format=format.c_str();
+            options.vertical=orientation==ESliderOrientation::VERTICAL;options.size=Internal::Converter::ToImVec2(verticalModeSize);
+            valueChanged=Controls::Scalar((label+this->m_widgetID).c_str(),m_dataType,&value,options).changed;
 
 			if (valueChanged)
 			{

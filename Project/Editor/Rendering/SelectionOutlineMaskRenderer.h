@@ -213,6 +213,7 @@ namespace NLS::Editor::Rendering
         float selectionGroupId = 1.0f;
         float selectionClassification = kSelectionOutlineParentClassification;
         std::vector<Maths::Matrix4> instanceModelMatrices;
+        NLS::Render::Resources::Material* sourceMaterial=nullptr;
     };
 
     // Selection outline is intentionally independent from editor hit-proxy picking:

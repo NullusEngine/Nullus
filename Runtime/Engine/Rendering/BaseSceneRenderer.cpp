@@ -18,12 +18,14 @@
 #include "Math/Vector4.h"
 #include "Debug/Logger.h"
 #include "Rendering/BaseSceneRenderer.h"
+#include "Rendering/Assets/DistanceFieldArtifact.h"
 #include "Rendering/EngineDrawableDescriptor.h"
 #include "Rendering/EngineFrameObjectBindingProvider.h"
 #include "Rendering/LargeSceneSettings.h"
 #include "Rendering/LightGridPrepass.h"
 #include "Rendering/SceneLightingProvider.h"
 #include "Rendering/SceneOcclusion.h"
+#include "Rendering/ParticleSpriteMaterial.h"
 #include "Rendering/SceneVisibilityPipeline.h"
 #include "Core/ResourceManagement/MaterialManager.h"
 #include "Core/ResourceManagement/ShaderManager.h"
@@ -2295,7 +2297,144 @@ BaseSceneRenderer::AllDrawables BaseSceneRenderer::ResolveSceneParse(
 		m_publishedHasVisiblePickablePrimitiveDrawSources =
 			m_hasLastVisiblePickablePrimitiveDrawSources;
 	}
-	return { opaques, decals, transparents, skyboxes };
+    return { opaques, decals, transparents, skyboxes, input.particles };
+}
+
+void BaseSceneRenderer::AppendDistanceFieldScenePass(Render::Context::RenderScenePackage& package,
+    const Render::FrameGraph::FrozenFrameDescriptor& frame,
+    const Render::DistanceField::DistanceFieldDebugSettings& settings, uint64_t frameId)
+{
+    namespace df = Render::DistanceField;
+    namespace context = Render::Context;
+    if (settings.visualization == df::DistanceFieldVisualization::Off && !df::HasDistanceFieldSources())
+        return;
+    const auto device = context::DriverRendererAccess::GetExplicitDevice(m_driver);
+    if (!device || !device->GetCapabilities().SupportsFeature(Render::RHI::RHIDeviceFeature::DistanceFields))
+        return;
+    auto system = df::DistanceFieldSystem::Get(device);
+    m_distanceFieldSystem.store(system);
+    df::DistanceFieldFrameInput input;
+    input.viewId = *m_distanceFieldViewLifetime;
+    input.viewLifetime = m_distanceFieldViewLifetime;
+    input.frameSerial = frameId;
+    input.debug = settings;
+    input.width = frame.descriptor.renderWidth;
+    input.height = frame.descriptor.renderHeight;
+    if (frame.camera)
+    {
+        input.cameraPosition = frame.camera->GetPosition();
+        input.inverseViewProjection = Maths::Matrix4::Inverse(
+            frame.camera->GetProjectionMatrix() * frame.camera->GetViewMatrix());
+        input.traceDistance = frame.camera->GetFar();
+    }
+    input.outputTexture = frame.descriptor.outputColorTexture;
+    if (!input.outputTexture && frame.descriptor.outputColorView)
+        input.outputTexture = frame.descriptor.outputColorView->GetTexture();
+    if (!input.outputTexture)
+    {
+        const auto attachments = Render::FrameGraph::ResolveExternalSceneOutputAttachments(
+            frame.descriptor, "DistanceFieldOutputColor", "DistanceFieldOutputDepth");
+        if (attachments.colorView) input.outputTexture = attachments.colorView->GetTexture();
+    }
+    if (!input.outputTexture)
+        for (auto it = package.passCommandInputs.rbegin(); it != package.passCommandInputs.rend(); ++it)
+            if ((it->kind == context::RenderPassCommandKind::Lighting || it->kind == context::RenderPassCommandKind::ForwardOpaqueColor ||
+                it->kind == context::RenderPassCommandKind::Transparent) && !it->colorAttachmentViews.empty() && it->colorAttachmentViews.front())
+            { input.outputTexture = it->colorAttachmentViews.front()->GetTexture(); break; }
+    const auto appendScene = [&](const RenderScene& scene)
+    {
+        const auto snapshot = scene.CreatePrimitiveSnapshot(frameId);
+        for (const auto& primitive : snapshot.primitiveRecords)
+        {
+            if (!primitive.occupied || primitive.tombstoned || !primitive.ownerAlive || !primitive.ownerActive || !primitive.mesh || !primitive.affectDistanceField || primitive.maximumWorldDisplacement > 0)
+                continue;
+            auto path = primitive.mesh->GetSourceArtifactPath();
+            if (path.empty() || !df::FindMeshDistanceFieldSource(path)) continue;
+            df::DistanceFieldObjectInput object;
+            object.sceneId = primitive.handle.sceneId;
+            object.index = primitive.handle.index;
+            object.generation = primitive.handle.generation;
+            object.meshArtifactPath = std::move(path);
+            object.localToWorld = primitive.worldMatrix * primitive.userMatrix;
+            object.mostlyStatic = primitive.distanceFieldMostlyStatic;
+            input.objects.push_back(std::move(object));
+        }
+    };
+    appendScene(m_renderScene);
+    {
+        std::lock_guard lock(m_additiveRenderScenesMutex);
+        for (const auto& [scene, renderScene] : m_additiveRenderScenes)
+            if (renderScene) appendScene(*renderScene);
+    }
+    input.objects = df::GroupDistanceFieldObjects(std::move(input.objects));
+    auto built = system->BuildFrame(std::move(input));
+    if (built.timingReadback) package.postSubmitBufferReadbacks.push_back(*built.timingReadback);
+    for (auto& pass : built.passes)
+    {
+        const auto passIndex = package.passCommandInputs.size();
+        const auto unitBase = package.parallelCommandWorkUnits.size();
+        auto units = context::BuildRecordedDrawCommandWorkUnitsForPass(pass, passIndex, unitBase);
+        if (units.empty()) continue;
+        if (!package.parallelCommandWorkUnits.empty())
+        {
+            context::WorkUnitDependencyEdge edge;
+            edge.sourceWorkUnitIndex = package.parallelCommandWorkUnits.back().workUnitIndex;
+            edge.targetWorkUnitIndex = units.front().workUnitIndex;
+            units.front().incomingDependencyEdges.push_back(edge);
+            package.workUnitDependencyEdges.push_back(std::move(edge));
+        }
+        // Declare the producer of each shared buffer/texture as an explicit
+        // visibility edge, including the final visualization copy to the view.
+        for (const auto& target : pass.textureResourceAccesses)
+        {
+            for (auto previous = package.parallelCommandWorkUnits.rbegin(); previous != package.parallelCommandWorkUnits.rend(); ++previous)
+            {
+                const auto& accesses = previous->commandInput.textureResourceAccesses;
+                const auto source = std::find_if(accesses.begin(), accesses.end(), [&](const auto& access)
+                { return access.texture == target.texture && access.mode == context::ResourceAccessMode::Write; });
+                if (source == accesses.end()) continue;
+                context::WorkUnitDependencyEdge edge;
+                edge.sourceWorkUnitIndex = previous->workUnitIndex;
+                edge.targetWorkUnitIndex = units.front().workUnitIndex;
+                edge.resourceKind = context::ThreadedDependencyResourceKind::Texture;
+                edge.sourceTextureAccess = *source; edge.targetTextureAccess = target;
+                units.front().incomingDependencyEdges.push_back(edge); package.workUnitDependencyEdges.push_back(std::move(edge));
+                break;
+            }
+        }
+        for (const auto& target : pass.bufferResourceAccesses)
+        {
+            for (auto previous = package.parallelCommandWorkUnits.rbegin(); previous != package.parallelCommandWorkUnits.rend(); ++previous)
+            {
+                const auto& accesses = previous->commandInput.bufferResourceAccesses;
+                const auto source = std::find_if(accesses.begin(), accesses.end(), [&](const auto& access)
+                { return access.buffer == target.buffer && access.mode == context::ResourceAccessMode::Write; });
+                if (source == accesses.end()) continue;
+                context::WorkUnitDependencyEdge edge;
+                edge.sourceWorkUnitIndex = previous->workUnitIndex; edge.targetWorkUnitIndex = units.front().workUnitIndex;
+                edge.resourceKind = context::ThreadedDependencyResourceKind::Buffer;
+                edge.sourceBufferAccess = *source; edge.targetBufferAccess = target;
+                units.front().incomingDependencyEdges.push_back(edge); package.workUnitDependencyEdges.push_back(std::move(edge));
+                break;
+            }
+        }
+        package.parallelCommandWorkUnits.insert(package.parallelCommandWorkUnits.end(),
+            std::make_move_iterator(units.begin()), std::make_move_iterator(units.end()));
+        package.passCommandInputs.push_back(std::move(pass));
+    }
+    package.containsParallelCommandWorkUnits = !package.parallelCommandWorkUnits.empty();
+    package.parallelCommandWorkUnitCount = package.parallelCommandWorkUnits.size();
+    package.parallelDrawCommandBatches = context::BuildParallelDrawCommandBatchMetadata(package.parallelCommandWorkUnits);
+    package.passPlanCount = package.passCommandInputs.size();
+    package.containsComputeDispatchInputs = package.containsComputeDispatchInputs || !built.passes.empty();
+}
+
+void BaseSceneRenderer::AppendParticleScenePass(Render::Context::RenderScenePackage& package,
+    const Render::FrameGraph::FrozenFrameDescriptor& frame, const std::vector<ParticleViewInput>& particles)
+{
+    std::string error;
+    if (!m_particleRenderer.AppendPass(Render::Context::DriverRendererAccess::GetExplicitDevice(m_driver),package,frame,particles,error))
+        throw std::runtime_error("Particle scene pass: "+error);
 }
 
 BaseSceneRenderer::SceneParseInput BaseSceneRenderer::BeginSceneParse(
@@ -2349,7 +2488,7 @@ BaseSceneRenderer::SceneParseInput BaseSceneRenderer::BeginSceneParse(
 	input.publishCullReasonDebugSnapshots = ShouldPublishCullReasonDebugSnapshots();
 	input.cullReasonDebugSnapshotMaxEntries = GetCullReasonDebugSnapshotMaxEntries();
 
-	const auto makeCapture = [this, &input](
+		const auto makeCapture = [this, &input, &frame](
 		SceneSystem::Scene& scene,
 		RenderScene& renderScene,
 		const bool includeSkyboxes,
@@ -2369,6 +2508,46 @@ BaseSceneRenderer::SceneParseInput BaseSceneRenderer::BeginSceneParse(
 			allowDefaultMaterialForUnresolvedExplicitMaterials;
 		capture.trustSceneRenderContentRevision = trustSceneRenderContentRevision;
 		capture.isMainScene = isMainScene;
+        if (!input.skipSceneDrawables)
+            for (auto* component : scene.GetFastAccessComponents().particleSystems)
+            {
+                if (!component || !component->IsActiveAndEnabled()) continue;
+                auto* owner = component->gameobject();
+                if (!owner || !owner->IsAlive() || !frame.descriptor.camera || !frame.descriptor.camera->IsLayerVisible(owner->GetLayer())) continue;
+                component->PrepareForRendering();
+                const auto particleFrame = component->CaptureFrame(); const auto proxy = component->RenderProxy();
+                if (particleFrame && proxy)
+                {
+                    ParticleViewInput particle{proxy,particleFrame,owner->GetTransform()->GetWorldMatrix()};
+                    for (const auto& emitter : particleFrame->system->asset.emitters)
+                    {
+                        std::vector<VFX::SpriteMaterial> materials;
+                        std::vector<std::shared_ptr<const VFX::MeshRenderGeometry>> meshes;
+                        if (emitter.renderer == VFX::RendererType::Mesh)
+                        {
+                            if (!CaptureParticleMesh(emitter.mesh,meshes,particle.materialError)) break;
+                            materials.reserve(meshes.size());
+                            for (std::size_t slot = 0; slot < meshes.size(); ++slot)
+                            {
+                                VFX::SpriteMaterial material;
+                                const auto settings = VFX::ResolveMeshSlotMaterialSettings(emitter.sprite,emitter.mesh,slot);
+                                if (!CaptureParticleSpriteMaterial(settings,material,particle.materialError,{},particleFrame->parameters)) break;
+                                materials.push_back(std::move(material));
+                            }
+                            if (materials.size() != meshes.size()) break;
+                        }
+                        else
+                        {
+                            VFX::SpriteMaterial material;
+                            if (!CaptureParticleSpriteMaterial(emitter.sprite,material,particle.materialError,{},particleFrame->parameters)) break;
+                            materials.push_back(std::move(material));
+                        }
+                        particle.materials.push_back(std::move(materials));
+                        particle.meshes.push_back(std::move(meshes));
+                    }
+                    input.particles.push_back(std::move(particle));
+                }
+            }
 
 		const RenderSceneSyncOptions options {
 			input.defaultMaterial,

@@ -323,5 +323,13 @@ public:
     [[nodiscard]] static std::optional<SerializedByteCursor> ResolveCursor(
         const std::shared_ptr<SerializedByteStream>& stream,
         std::string_view path);
+
+    [[nodiscard]] static std::optional<size_t> GetValueByteSize(
+        const SerializedByteStream& stream, SerializedNodeId node, size_t offset);
+    // Copies encoded values without constructing reflected objects or loading
+    // references. Recomputes padding when a value moves to a different offset.
+    [[nodiscard]] static bool RepackValueBytes(const SerializedTypeTree& tree, SerializedNodeId node,
+        std::span<const uint8_t> bytes, size_t sourceOrigin, size_t destinationOrigin,
+        std::vector<uint8_t>& output);
 };
 } // namespace NLS::Engine::Serialize

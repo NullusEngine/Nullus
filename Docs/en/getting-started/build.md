@@ -87,11 +87,39 @@ This uses the `build/wsl-vulkan` directory. `--install-deps` installs the Vulkan
 | `Editor` | The editor |
 | `Game` | The game runtime |
 | `Launcher` | Project launcher |
+| `NullusBuild` | Headless packaging CLI and shared build pipeline |
 | `NullusUnitTests` | Behavior tests (needs `NLS_BUILD_TESTS=ON`) |
 | `NullusPerformanceTests` | Performance and stress tests (needs `NLS_BUILD_PERFORMANCE_TESTS=ON`) |
 | `ReflectionTest` | Reflection smoke tool |
 
 Executables are deployed under `App/`, for example `App/Win64_Debug_Runtime_Shared/Editor.exe` and `App/Win64_Release_Runtime_Shared/Editor.exe` on Windows. Debugger launch profiles rely on that layout; see [Script Debugging and Hot Reload](../scripting/debugging.md).
+
+## Packaging a player
+
+Build the headless packaging tool, then run a profile from the project:
+
+```powershell
+cmake --build build --config RelWithDebInfo --target Game NullusBuild
+build/bin/RelWithDebInfo/NullusBuild.exe build `
+  --project TestProject/TestProject.nullus `
+  --profile windows-shipping `
+  --player App/Win64_RelWithDebInfo_Runtime_Shared `
+  --output Dist `
+  --validate-launch
+```
+
+The pipeline reads the project's `BuildProfiles.json`, bakes target-platform content with `NLS_Cook` (textures, ShaderLab passes, materials, models and UI), stages the player, writes `base.npak`, validates it and runs the packaged self-test. C# projects are compiled from `Assets/**/*.cs` into a project-specific `GameScripts.dll`; the prebuilt template assembly is never reused. `--player` points at a directory containing `Game.exe` and its runtime DLLs (the `Game` target's `App/Win64_<Config>_Runtime_Shared` output). See [Player Packaging and Distribution](../platform-build/packaging.md) for profiles, `maxTextureSize`, package layout and known limitations.
+
+### Linux and macOS packages
+
+Add a profile whose target uses `platform: "linux"`, `architecture: "x64"` and `graphicsBackend: "vulkan"` (or `platform: "macos"`, `architecture: "arm64"`, `graphicsBackend: "metal"`). The player template must contain `Game`, its shared libraries, `Assets/` and optional `Scripts/`/`Runtime/dotnet/` payloads:
+
+```bash
+NullusBuild build --project MyGame.nullus --profile linux-shipping \
+  --player App/Linux_Release_Shared --output Dist --validate-launch
+```
+
+Linux packages can be assembled from Windows; the packaged self-test is skipped on a non-Linux host with an explicit `build-launch-cross-host` warning. Linux ELF `RPATH`/`RUNPATH` is rewritten to `$ORIGIN`, and ZIP entries carry Unix executable modes. macOS packaging requires a macOS host, a `.app` (or raw `Game`) template, and currently reports unsigned output; Developer ID signing and notarization are not implemented yet. The Unix adapter currently emits ZIP or directory output only. See [Player Packaging and Distribution](../platform-build/packaging.md) for the current Linux template limitation and mobile status.
 
 ## Build options
 

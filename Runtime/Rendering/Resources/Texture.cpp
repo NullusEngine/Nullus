@@ -114,6 +114,7 @@ bool Texture::RecreateRHITextureIfNeeded(
 		return false;
 
 	const auto& existingDesc = m_explicitTexture->GetDesc();
+	bool recreateForUpload = false;
 	if (CanUpdateRHITextureInPlace(existingDesc, width, height, format, initialData))
 	{
 		auto device = TryGetExplicitDevice();
@@ -137,10 +138,15 @@ bool Texture::RecreateRHITextureIfNeeded(
 			1u);
 		updateDesc.debugName = "TextureResourceInPlaceUpdate";
 
-		return device->UpdateTexture(updateDesc).Succeeded();
+		const auto updated = device->UpdateTexture(updateDesc);
+		if (updated.code != RHI::RHIUpdateStatusCode::Unsupported)
+			return updated.Succeeded();
+		// Backends without in-place updates still need to initialize a 1x1
+		// placeholder from its source pixels. Replace it only after upload succeeds.
+		recreateForUpload = true;
 	}
 
-	if (!ShouldRecreateRHITexture(m_explicitTexture->GetDesc(), width, height, format, initialData))
+	if (!recreateForUpload && !ShouldRecreateRHITexture(m_explicitTexture->GetDesc(), width, height, format, initialData))
 	{
 		return true;
 	}

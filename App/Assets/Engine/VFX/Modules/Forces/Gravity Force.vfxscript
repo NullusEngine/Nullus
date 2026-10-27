@@ -1,0 +1,145 @@
+{
+  "category": "Forces",
+  "deprecated": false,
+  "description": "Accumulates acceleration for the force solver.",
+  "exposedVersion": "bdbbe251-aed8-caba-f37d-4d05bd6c7c77",
+  "id": "345c82a2-3542-6cb6-d550-a43319c5abdf",
+  "kind": "Module",
+  "name": "Gravity Force",
+  "suggested": false,
+  "version": 2,
+  "versions": [
+    {
+      "attributes": [
+        {
+          "default": [
+            0.0,
+            0.0,
+            0.0,
+            0.0
+          ],
+          "name": "Particles.PhysicsForce",
+          "type": 2
+        }
+      ],
+      "calls": [],
+      "capabilities": 0,
+      "description": "Accumulates acceleration for the force solver.",
+      "graph": {
+        "id": "59dc96ba-57f8-4460-92f0-37de2c004854",
+        "nextNodeId": 5,
+        "nodes": [
+          {
+            "id": 1,
+            "inputs": [],
+            "name": "Module.Acceleration",
+            "operation": 2,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 2,
+            "value": [
+              0.0,
+              -9.8100004196167,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 2,
+            "inputs": [],
+            "name": "Particles.PhysicsForce",
+            "operation": 1,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 2,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 3,
+            "inputs": [
+              2,
+              1
+            ],
+            "name": "",
+            "operation": 6,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 2,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 4,
+            "inputs": [
+              3
+            ],
+            "name": "Particles.PhysicsForce",
+            "operation": 22,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 2,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          }
+        ],
+        "stage": 1
+      },
+      "id": "bdbbe251-aed8-caba-f37d-4d05bd6c7c77",
+      "inputs": [
+        {
+          "default": [
+            0.0,
+            -9.8100004196167,
+            0.0,
+            0.0
+          ],
+          "id": "9cf4af19-40ba-9519-a185-22dafae65ab2",
+          "metadata": {
+            "displayName": "",
+            "hasRange": false,
+            "maximum": 0.0,
+            "minimum": 0.0,
+            "step": 0.0,
+            "tooltip": "Constant acceleration applied by the force solver.",
+            "unit": "cm/s2",
+            "visibleIf": ""
+          },
+          "name": "Acceleration",
+          "static": false,
+          "type": 2
+        }
+      ],
+      "major": 1,
+      "minor": 0,
+      "provides": [],
+      "requiresBefore": [],
+      "stages": [
+        5,
+        7
+      ],
+      "switches": []
+    }
+  ],
+  "visible": true
+}

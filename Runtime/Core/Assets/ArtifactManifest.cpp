@@ -130,10 +130,10 @@ void Sha256CompressBlocks(
     }
 }
 
-class Sha256Hasher
+class InternalSha256Hasher
 {
 public:
-    Sha256Hasher()
+    InternalSha256Hasher()
     {
 #if defined(_WIN32)
         const auto algorithm = GetWindowsSha256Algorithm();
@@ -145,7 +145,7 @@ public:
 #endif
     }
 
-    ~Sha256Hasher()
+    ~InternalSha256Hasher()
     {
 #if defined(_WIN32)
         if (m_windowsHash != nullptr)
@@ -270,15 +270,15 @@ private:
 #endif
 };
 
-std::array<uint8_t, 32u> Sha256(const uint8_t* bytes, const size_t byteCount)
+std::array<uint8_t, 32u> InternalComputeSha256(const uint8_t* bytes, const size_t byteCount)
 {
-    Sha256Hasher hasher;
+    InternalSha256Hasher hasher;
     if (!hasher.Update(bytes, byteCount))
         return {};
     return hasher.Finalize();
 }
 
-std::string ToHex(const std::array<uint8_t, 32u>& bytes)
+std::string InternalToHex(const std::array<uint8_t, 32u>& bytes)
 {
     std::ostringstream stream;
     stream << std::hex << std::setfill('0');
@@ -434,7 +434,7 @@ std::string BuildArtifactStorageFileName(const uint8_t* bytes, const size_t byte
     if (bytes == nullptr && byteCount > 0u)
         return {};
 
-    return ToHex(Sha256(bytes, byteCount));
+    return InternalToHex(InternalComputeSha256(bytes, byteCount));
 }
 
 std::string BuildArtifactStorageFileNameFromFile(const std::filesystem::path& path)
@@ -443,7 +443,7 @@ std::string BuildArtifactStorageFileNameFromFile(const std::filesystem::path& pa
     if (!stream)
         return {};
 
-    Sha256Hasher hasher;
+    InternalSha256Hasher hasher;
     std::array<uint8_t, 256u * 1024u> buffer {};
     while (stream)
     {
@@ -454,7 +454,7 @@ std::string BuildArtifactStorageFileNameFromFile(const std::filesystem::path& pa
     }
     if (stream.bad())
         return {};
-    return ToHex(hasher.Finalize());
+    return InternalToHex(hasher.Finalize());
 }
 
 void ClearRuntimeArtifactAuthorization()
@@ -493,5 +493,43 @@ bool IsRuntimeArtifactPathAuthorized(const std::string& artifactPath)
     if (!g_runtimeArtifactAuthorizationEnabled)
         return true;
     return g_runtimeAuthorizedArtifactPaths.find(normalized) != g_runtimeAuthorizedArtifactPaths.end();
+}
+
+struct Sha256Hasher::Impl
+{
+    InternalSha256Hasher hasher;
+};
+
+Sha256Hasher::Sha256Hasher()
+    : m_impl(std::make_unique<Impl>())
+{
+}
+
+Sha256Hasher::~Sha256Hasher() = default;
+
+Sha256Hasher::Sha256Hasher(Sha256Hasher&&) noexcept = default;
+
+Sha256Hasher& Sha256Hasher::operator=(Sha256Hasher&&) noexcept = default;
+
+bool Sha256Hasher::Update(const uint8_t* bytes, const size_t byteCount)
+{
+    return m_impl != nullptr && m_impl->hasher.Update(bytes, byteCount);
+}
+
+std::array<uint8_t, 32u> Sha256Hasher::Finalize()
+{
+    if (m_impl == nullptr)
+        return {};
+    return m_impl->hasher.Finalize();
+}
+
+std::array<uint8_t, 32u> ComputeSha256(const uint8_t* bytes, const size_t byteCount)
+{
+    return InternalComputeSha256(bytes, byteCount);
+}
+
+std::string ToHexString(const std::array<uint8_t, 32u>& bytes)
+{
+    return InternalToHex(bytes);
 }
 }

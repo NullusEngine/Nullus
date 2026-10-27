@@ -394,6 +394,8 @@ namespace NLS::Engine::Components
             m_instance->UpdateLayout(viewportSize, m_lastDpiScale);
         if (updatePolicy == UpdatePolicy::EveryFrame)
             m_instance->Tick(deltaSeconds);
+        else
+            m_instance->RefreshResources();
     }
 
     std::shared_ptr<NLS::Render::UI::UIDrawSnapshot> UICanvasComponent::BuildDrawSnapshot(

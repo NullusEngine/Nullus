@@ -18,6 +18,7 @@ namespace NLS::Render::Resources::Parsers
 		uint32_t materialIndex = 0u;
 		uint32_t sourceMeshIndex = std::numeric_limits<uint32_t>::max();
 		std::string sourceKey;
+		std::vector<uint32_t> sourceVertexIndices;
 	};
 
 	/**

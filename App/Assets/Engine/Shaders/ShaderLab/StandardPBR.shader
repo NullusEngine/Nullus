@@ -46,13 +46,15 @@ Shader "Nullus/StandardPBR"
             Blend Off
 
             HLSLPROGRAM
-            #pragma vertex VSMain
+            #pragma multi_compile _ NLS_SKINNED
+#pragma vertex VSMain
             #pragma fragment PSMain
             #pragma shader_feature _ALPHATEST_ON
             #pragma multi_compile _ _NORMALMAP
             #pragma multi_compile _ MAIN_LIGHT_SHADOWS
 
             #include "NullusShaderLibrary/Core.hlsl"
+#include "NullusShaderLibrary/Skinning.hlsl"
             #define NLS_COMMON_TYPES_SHADER_LIBRARY_INTEROP
             #include "CommonTypes.hlsli"
             #undef NLS_COMMON_TYPES_SHADER_LIBRARY_INTEROP
@@ -66,7 +68,8 @@ Shader "Nullus/StandardPBR"
                 float3 normalOS : NORMAL;
                 float3 tangentOS : TEXCOORD1;
                 float3 bitangentOS : TEXCOORD2;
-            };
+    NLS_SKIN_ATTRIBUTES
+};
 
             struct Varyings
             {
@@ -115,14 +118,14 @@ Shader "Nullus/StandardPBR"
             Varyings VSMain(Attributes input)
             {
                 Varyings output;
-                output.positionWS = TransformObjectToWorld(input.positionOS);
+                output.positionWS = TransformObjectToWorld(NLS_SKIN_POSITION(input));
                 output.positionCS = TransformWorldToHClip(output.positionWS);
                 output.uv = input.uv;
                 const NLSTangentFrame tangentFrame = NLSBuildStandardPbrTangentFrame(
                     (float3x3)u_Model,
-                    input.normalOS,
-                    input.tangentOS,
-                    input.bitangentOS);
+                    NLS_SKIN_NORMAL(input),
+                    NLS_SKIN_TANGENT(input),
+                    NLS_SKIN_BITANGENT(input));
                 output.normalWS = tangentFrame.normalWS;
                 output.tangentWS = tangentFrame.tangentWS;
                 output.bitangentWS = tangentFrame.bitangentWS;
@@ -197,12 +200,14 @@ Shader "Nullus/StandardPBR"
             Blend Off
 
             HLSLPROGRAM
-            #pragma vertex VSMain
+            #pragma multi_compile _ NLS_SKINNED
+#pragma vertex VSMain
             #pragma fragment PSMain
             #pragma shader_feature _ALPHATEST_ON
             #pragma multi_compile _ _NORMALMAP
 
             #include "NullusShaderLibrary/Core.hlsl"
+#include "NullusShaderLibrary/Skinning.hlsl"
             #define NLS_COMMON_TYPES_SHADER_LIBRARY_INTEROP
             #include "CommonTypes.hlsli"
             #undef NLS_COMMON_TYPES_SHADER_LIBRARY_INTEROP
@@ -217,7 +222,8 @@ Shader "Nullus/StandardPBR"
                 float3 normalOS : NORMAL;
                 float3 tangentOS : TEXCOORD1;
                 float3 bitangentOS : TEXCOORD2;
-            };
+    NLS_SKIN_ATTRIBUTES
+};
 
             struct Varyings
             {
@@ -270,14 +276,14 @@ Shader "Nullus/StandardPBR"
                 Varyings output;
                 const uint objectSlot = InstanceObjectIndices[u_ObjectIndex + instanceId];
                 const float4x4 model = ObjectData[objectSlot];
-                const float4 worldPosition = mul(model, float4(input.positionOS, 1.0f));
+                const float4 worldPosition = mul(model, float4(NLS_SKIN_POSITION(input), 1.0f));
                 output.positionCS = mul(u_ViewProjection, worldPosition);
                 output.uv = input.uv;
                 const NLSTangentFrame tangentFrame = NLSBuildStandardPbrTangentFrame(
                     (float3x3)model,
-                    input.normalOS,
-                    input.tangentOS,
-                    input.bitangentOS);
+                    NLS_SKIN_NORMAL(input),
+                    NLS_SKIN_TANGENT(input),
+                    NLS_SKIN_BITANGENT(input));
                 output.normalWS = tangentFrame.normalWS;
                 output.tangentWS = tangentFrame.tangentWS;
                 output.bitangentWS = tangentFrame.bitangentWS;
@@ -355,11 +361,13 @@ Shader "Nullus/StandardPBR"
             Blend SrcAlpha OneMinusSrcAlpha
 
             HLSLPROGRAM
-            #pragma vertex VSMain
+            #pragma multi_compile _ NLS_SKINNED
+#pragma vertex VSMain
             #pragma fragment PSMain
             #pragma shader_feature _ALPHATEST_ON
 
             #include "NullusShaderLibrary/Core.hlsl"
+#include "NullusShaderLibrary/Skinning.hlsl"
             #define NLS_COMMON_TYPES_SHADER_LIBRARY_INTEROP
             #include "CommonTypes.hlsli"
             #undef NLS_COMMON_TYPES_SHADER_LIBRARY_INTEROP
@@ -369,7 +377,8 @@ Shader "Nullus/StandardPBR"
             {
                 float3 positionOS : POSITION;
                 float2 uv : TEXCOORD0;
-            };
+    NLS_SKIN_ATTRIBUTES
+};
 
             struct Varyings
             {
@@ -391,7 +400,7 @@ Shader "Nullus/StandardPBR"
             Varyings VSMain(Attributes input)
             {
                 Varyings output;
-                output.positionCS = TransformObjectToHClip(input.positionOS);
+                output.positionCS = TransformObjectToHClip(NLS_SKIN_POSITION(input));
                 output.uv = input.uv;
                 return output;
             }
@@ -427,17 +436,20 @@ Shader "Nullus/StandardPBR"
             Blend Off
 
             HLSLPROGRAM
-            #pragma vertex VSMain
+            #pragma multi_compile _ NLS_SKINNED
+#pragma vertex VSMain
             #pragma fragment PSMain
             #pragma shader_feature _ALPHATEST_ON
 
             #include "NullusShaderLibrary/Core.hlsl"
+#include "NullusShaderLibrary/Skinning.hlsl"
 
             struct Attributes
             {
                 float3 positionOS : POSITION;
                 float2 uv : TEXCOORD0;
-            };
+    NLS_SKIN_ATTRIBUTES
+};
 
             struct Varyings
             {
@@ -457,7 +469,7 @@ Shader "Nullus/StandardPBR"
             Varyings VSMain(Attributes input)
             {
                 Varyings output;
-                output.positionCS = TransformObjectToHClip(input.positionOS);
+                output.positionCS = TransformObjectToHClip(NLS_SKIN_POSITION(input));
                 output.uv = input.uv;
                 return output;
             }

@@ -9,6 +9,8 @@
 #include "Serialize/ObjectGraphDocument.h"
 #include "Serialize/PPtr.h"
 #include "Serialize/PPtrResourceTypes.h"
+#include "GameObject.h"
+#include "Components/Component.h"
 
 namespace NLS::Engine::Serialize
 {
@@ -148,9 +150,11 @@ namespace NLS::Engine::Serialize
             };
         }
 
-        inline const std::array<PPtrObjectGraphHandler, kPPtrResourceTargetCount>& GetPPtrObjectGraphHandlers()
+        inline const std::array<PPtrObjectGraphHandler, kPPtrResourceTargetCount + 2>& GetPPtrObjectGraphHandlers()
         {
-            static const std::array<PPtrObjectGraphHandler, kPPtrResourceTargetCount> handlers = {
+            static const std::array<PPtrObjectGraphHandler, kPPtrResourceTargetCount + 2> handlers = {
+                MakePPtrObjectGraphHandler<GameObject>(),
+                MakePPtrObjectGraphHandler<Components::Component>(),
 #define NLS_ENGINE_SERIALIZE_MAKE_PPTR_OBJECT_GRAPH_HANDLER(type, label, artifactType, subAssetPrefix) MakePPtrObjectGraphHandler<type>(),
                 NLS_ENGINE_SERIALIZE_PPTR_RESOURCE_TARGETS(NLS_ENGINE_SERIALIZE_MAKE_PPTR_OBJECT_GRAPH_HANDLER)
 #undef NLS_ENGINE_SERIALIZE_MAKE_PPTR_OBJECT_GRAPH_HANDLER

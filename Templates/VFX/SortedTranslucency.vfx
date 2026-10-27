@@ -1,0 +1,322 @@
+{
+  "emitters": [
+    {
+      "attributes": [
+        {
+          "default": [
+            0.0,
+            0.0,
+            0.0,
+            0.0
+          ],
+          "name": "Particles.Position",
+          "type": 2
+        },
+        {
+          "default": [
+            0,
+            0.3,
+            0,
+            0
+          ],
+          "name": "Particles.Velocity",
+          "type": 2
+        },
+        {
+          "default": [
+            1.0,
+            0.5,
+            0.10000000149011612,
+            1.0
+          ],
+          "name": "Particles.Color",
+          "type": 3
+        },
+        {
+          "default": [
+            0.45,
+            0,
+            0,
+            0
+          ],
+          "name": "Particles.Size",
+          "type": 0
+        },
+        {
+          "default": [
+            0.0,
+            0.0,
+            0.0,
+            0.0
+          ],
+          "name": "Particles.Age",
+          "type": 0
+        },
+        {
+          "default": [
+            2.0,
+            0.0,
+            0.0,
+            0.0
+          ],
+          "name": "Particles.Lifetime",
+          "type": 0
+        }
+      ],
+      "bursts": [],
+      "capacity": 4096,
+      "collision": {
+        "enabled": false,
+        "friction": 0.0,
+        "layers": 4294967295,
+        "radius": 0.0,
+        "restitution": 0.5
+      },
+      "duration": 5.0,
+      "id": "a89299bf-cead-4f42-8979-3732d79246e6",
+      "interpolatedSpawning": true,
+      "looping": true,
+      "name": "Sorted translucent sprites",
+      "seed": 7,
+      "spawn": {
+        "id": "5d0da222-1183-487a-a59d-61072a6c818b",
+        "nextNodeId": 7,
+        "nodes": [
+          {
+            "id": 1,
+            "inputs": [],
+            "name": "",
+            "operation": 5,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 2,
+            "value": [
+              0.7,
+              0.4,
+              1.2,
+              0
+            ]
+          },
+          {
+            "id": 2,
+            "inputs": [
+              1
+            ],
+            "name": "Particles.Position",
+            "operation": 22,
+            "position": [
+              280.0,
+              0.0
+            ],
+            "type": 2,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 3,
+            "operation": 5,
+            "type": 3,
+            "value": [
+              0.5,
+              0.5,
+              0.5,
+              0
+            ],
+            "name": "",
+            "inputs": [],
+            "position": [
+              0,
+              200
+            ]
+          },
+          {
+            "id": 4,
+            "operation": 0,
+            "type": 3,
+            "value": [
+              0.5,
+              0.5,
+              0.5,
+              0.45
+            ],
+            "name": "",
+            "inputs": [],
+            "position": [
+              0,
+              350
+            ]
+          },
+          {
+            "id": 5,
+            "operation": 6,
+            "type": 3,
+            "value": [
+              0,
+              0,
+              0,
+              0
+            ],
+            "name": "",
+            "inputs": [
+              3,
+              4
+            ],
+            "position": [
+              280,
+              200
+            ]
+          },
+          {
+            "id": 6,
+            "operation": 22,
+            "type": 3,
+            "value": [
+              0,
+              0,
+              0,
+              0
+            ],
+            "name": "Particles.Color",
+            "inputs": [
+              5
+            ],
+            "position": [
+              560,
+              200
+            ]
+          }
+        ],
+        "stage": 0
+      },
+      "spawnRate": 180,
+      "target": 1,
+      "update": {
+        "id": "36de0891-c100-4a47-99c6-8ed07bd163e1",
+        "nextNodeId": 7,
+        "nodes": [
+          {
+            "id": 1,
+            "inputs": [],
+            "name": "Particles.Position",
+            "operation": 1,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 2,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 2,
+            "inputs": [],
+            "name": "Particles.Velocity",
+            "operation": 1,
+            "position": [
+              0.0,
+              130.0
+            ],
+            "type": 2,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 3,
+            "inputs": [],
+            "name": "",
+            "operation": 3,
+            "position": [
+              0.0,
+              250.0
+            ],
+            "type": 0,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 4,
+            "inputs": [
+              2,
+              3
+            ],
+            "name": "",
+            "operation": 8,
+            "position": [
+              240.0,
+              130.0
+            ],
+            "type": 2,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 5,
+            "inputs": [
+              1,
+              4
+            ],
+            "name": "",
+            "operation": 6,
+            "position": [
+              480.0,
+              0.0
+            ],
+            "type": 2,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 6,
+            "inputs": [
+              5
+            ],
+            "name": "Particles.Position",
+            "operation": 22,
+            "position": [
+              720.0,
+              0.0
+            ],
+            "type": 2,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          }
+        ],
+        "stage": 1
+      },
+      "sortByViewDepth": true
+    }
+  ],
+  "id": "5b264c56-e810-440a-bedf-ea4712858801",
+  "name": "Sorted Translucency",
+  "version": 1
+}

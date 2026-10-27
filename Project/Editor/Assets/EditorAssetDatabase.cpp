@@ -336,7 +336,11 @@ bool IsPreimportableAsset(const std::string& assetPath)
         // an artifact manifest, which also leaves the Inspector picker empty.
         assetType == NLS::Core::Assets::AssetType::UIDocument ||
         assetType == NLS::Core::Assets::AssetType::UIStyleSheet ||
-        assetType == NLS::Core::Assets::AssetType::LocalizationTable;
+        assetType == NLS::Core::Assets::AssetType::LocalizationTable ||
+        assetType == NLS::Core::Assets::AssetType::AnimationClip ||
+        assetType == NLS::Core::Assets::AssetType::AnimationGraph ||
+        assetType == NLS::Core::Assets::AssetType::BlendSpace ||
+        assetType == NLS::Core::Assets::AssetType::BoneMask;
 }
 
 int PreimportAssetPriority(const std::string& assetPath)
@@ -353,6 +357,13 @@ int PreimportAssetPriority(const std::string& assetPath)
         return 3;
     case NLS::Core::Assets::AssetType::Prefab:
         return 4;
+    case NLS::Core::Assets::AssetType::AnimationClip:
+        return 5;
+    case NLS::Core::Assets::AssetType::BlendSpace:
+    case NLS::Core::Assets::AssetType::BoneMask:
+        return 6;
+    case NLS::Core::Assets::AssetType::AnimationGraph:
+        return 7;
     default:
         return 5;
     }
@@ -390,6 +401,8 @@ std::vector<std::string> CollectPreimportableAssets(AssetDatabaseFacade& databas
     assets.insert(assets.end(), uiStyleSheets.begin(), uiStyleSheets.end());
     auto localizationTables = database.FindAssets("type:localization", {});
     assets.insert(assets.end(), localizationTables.begin(), localizationTables.end());
+    for(const char* filter:{"type:animation-clip","type:blend-space","type:bone-mask","type:animation-graph"})
+    {auto animationAssets=database.FindAssets(filter,{});assets.insert(assets.end(),animationAssets.begin(),animationAssets.end());}
     assets.erase(
         std::remove_if(
             assets.begin(),
@@ -465,6 +478,14 @@ bool IsWarmPreimportableAsset(
             512u * 1024u).has_value();
     }
 
+    if(assetType==NLS::Core::Assets::AssetType::AnimationClip||assetType==NLS::Core::Assets::AssetType::AnimationGraph||
+       assetType==NLS::Core::Assets::AssetType::BlendSpace||assetType==NLS::Core::Assets::AssetType::BoneMask)
+    {
+        const auto type=assetType==NLS::Core::Assets::AssetType::AnimationClip?NLS::Core::Assets::ArtifactType::AnimationClip:
+            assetType==NLS::Core::Assets::AssetType::AnimationGraph?NLS::Core::Assets::ArtifactType::AnimationGraph:
+            assetType==NLS::Core::Assets::AssetType::BlendSpace?NLS::Core::Assets::ArtifactType::BlendSpace:NLS::Core::Assets::ArtifactType::BoneMask;
+        return NLS::Core::Assets::ReadNativeArtifactPayloadPrefixFromFile(physicalArtifactPath,type,1u,0u,64u*1024u).has_value();
+    }
     if (assetType != NLS::Core::Assets::AssetType::Shader)
         return false;
 

@@ -118,8 +118,11 @@ namespace NLS::Engine::Rendering
 		NLS::Render::Resources::Mesh* mesh = nullptr;
 		NLS::Render::Geometry::BoundingSphere modelBoundingSphere;
 		NLS::Render::Geometry::Bounds modelBounds;
+        float maximumWorldDisplacement = 0;
 		Maths::Matrix4 worldMatrix = Maths::Matrix4::Identity;
 		Maths::Matrix4 userMatrix = Maths::Matrix4::Identity;
+        bool affectDistanceField = true;
+        bool distanceFieldMostlyStatic = true;
 		Components::MeshRenderer::EFrustumBehaviour frustumBehaviour =
 			Components::MeshRenderer::EFrustumBehaviour::DISABLED;
 		ScenePrimitiveVisibilitySettings visibilitySettings;
@@ -337,6 +340,7 @@ namespace NLS::Engine::Rendering
 		NLS::Render::Resources::Mesh* mesh = nullptr;
 		Maths::Matrix4 worldMatrix = Maths::Matrix4::Identity;
 		NLS::Render::Data::StateMask stateMask{};
+        NLS::Render::Resources::Material* material=nullptr;
 	};
 
 		class SceneProxySourceRegistry;
@@ -639,8 +643,11 @@ namespace NLS::Engine::Rendering
 			NLS::Render::Geometry::BoundingSphere modelBoundingSphere;
 			NLS::Render::Geometry::BoundingSphere customBoundingSphere;
 			NLS::Render::Geometry::Bounds modelBounds;
+                float maximumWorldDisplacement = 0;
 			Maths::Matrix4 worldMatrix = Maths::Matrix4::Identity;
 			Maths::Matrix4 userMatrix = Maths::Matrix4::Identity;
+            bool affectDistanceField = true;
+            bool distanceFieldMostlyStatic = true;
 			Maths::Vector3 worldPosition{};
 			Components::MeshRenderer::EFrustumBehaviour frustumBehaviour =
 				Components::MeshRenderer::EFrustumBehaviour::DISABLED;

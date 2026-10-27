@@ -350,15 +350,32 @@ namespace NLS::Engine::UI
         return mask;
     }
 
-    void UIElement::SetTexture(const uint64_t textureId, const uint32_t generation)
+    void UIElement::SetTexture(
+        const uint64_t textureId,
+        const uint32_t generation,
+        const uint32_t width,
+        const uint32_t height)
     {
         const uint32_t normalizedGeneration = textureId == 0u
             ? 0u
             : (generation == 0u ? 1u : generation);
-        if (m_textureId == textureId && m_textureGeneration == normalizedGeneration)
+        if (m_textureId == textureId &&
+            m_textureGeneration == normalizedGeneration &&
+            m_textureWidth == width &&
+            m_textureHeight == height)
             return;
         m_textureId = textureId;
         m_textureGeneration = normalizedGeneration;
+        m_textureWidth = textureId == 0u ? 0u : width;
+        m_textureHeight = textureId == 0u ? 0u : height;
+        MarkPaintDirty();
+    }
+
+    void UIElement::SetNineSlice(const UIInsets& insets)
+    {
+        if (m_nineSlice == insets)
+            return;
+        m_nineSlice = insets;
         MarkPaintDirty();
     }
 
@@ -875,16 +892,108 @@ namespace NLS::Engine::UI
         if ((alpha > 0.0f || textured) &&
             m_layoutRect.width > 0.0f && m_layoutRect.height > 0.0f)
         {
-            snapshot.AddQuad(
-                m_layoutRect.x,
-                m_layoutRect.y,
-                m_layoutRect.x + m_layoutRect.width,
-                m_layoutRect.y + m_layoutRect.height,
-                { color.r, color.g, color.b, textured ? std::max(alpha, 1.0f) : alpha },
-                clipIndex,
-                textured ? m_textureId : 0u,
-                static_cast<uint64_t>(depth),
-                textured ? m_textureGeneration : 0u);
+            const std::array<float, 4> drawColor {
+                color.r, color.g, color.b, textured ? std::max(alpha, 1.0f) : alpha };
+            const bool nineSlice = m_type == UIElementType::NineSlice;
+            if (textured && nineSlice && !m_nineSlice.IsZero() &&
+                m_textureWidth > 0u && m_textureHeight > 0u)
+            {
+                const float width = m_layoutRect.width;
+                const float height = m_layoutRect.height;
+                const float halfWidth = width * 0.5f;
+                const float halfHeight = height * 0.5f;
+                float left = std::clamp(m_nineSlice.left, 0.0f, halfWidth);
+                float right = std::clamp(m_nineSlice.right, 0.0f, halfWidth);
+                float top = std::clamp(m_nineSlice.top, 0.0f, halfHeight);
+                float bottom = std::clamp(m_nineSlice.bottom, 0.0f, halfHeight);
+                if (left + right > width)
+                {
+                    const float scale = width / (left + right);
+                    left *= scale;
+                    right *= scale;
+                }
+                if (top + bottom > height)
+                {
+                    const float scale = height / (top + bottom);
+                    top *= scale;
+                    bottom *= scale;
+                }
+
+                const float textureWidth = static_cast<float>(m_textureWidth);
+                const float textureHeight = static_cast<float>(m_textureHeight);
+                const float sourceLeft = std::clamp(
+                    m_nineSlice.left, 0.0f, textureWidth * 0.5f) / textureWidth;
+                const float sourceRight = std::clamp(
+                    m_nineSlice.right, 0.0f, textureWidth * 0.5f) / textureWidth;
+                const float sourceTop = std::clamp(
+                    m_nineSlice.top, 0.0f, textureHeight * 0.5f) / textureHeight;
+                const float sourceBottom = std::clamp(
+                    m_nineSlice.bottom, 0.0f, textureHeight * 0.5f) / textureHeight;
+
+                const float x[4] = {
+                    m_layoutRect.x,
+                    m_layoutRect.x + left,
+                    m_layoutRect.x + width - right,
+                    m_layoutRect.x + width };
+                const float y[4] = {
+                    m_layoutRect.y,
+                    m_layoutRect.y + top,
+                    m_layoutRect.y + height - bottom,
+                    m_layoutRect.y + height };
+                const float u[4] = { 0.0f, sourceLeft, 1.0f - sourceRight, 1.0f };
+                const float v[4] = { 0.0f, sourceTop, 1.0f - sourceBottom, 1.0f };
+
+                uint32_t quadCount = 0u;
+                for (uint32_t row = 0u; row < 3u; ++row)
+                {
+                    if (y[row + 1u] <= y[row] || v[row + 1u] <= v[row])
+                        continue;
+                    for (uint32_t column = 0u; column < 3u; ++column)
+                    {
+                        if (x[column + 1u] <= x[column] || u[column + 1u] <= u[column])
+                            continue;
+                        snapshot.AddTexturedQuad(
+                            x[column],
+                            y[row],
+                            x[column + 1u],
+                            y[row + 1u],
+                            { u[column], v[row] },
+                            { u[column + 1u], v[row + 1u] },
+                            drawColor,
+                            clipIndex,
+                            m_textureId,
+                            static_cast<uint64_t>(depth),
+                            m_textureGeneration);
+                        ++quadCount;
+                    }
+                }
+                if (quadCount == 0u)
+                {
+                    snapshot.AddQuad(
+                        m_layoutRect.x,
+                        m_layoutRect.y,
+                        m_layoutRect.x + width,
+                        m_layoutRect.y + height,
+                        drawColor,
+                        clipIndex,
+                        m_textureId,
+                        static_cast<uint64_t>(depth),
+                        m_textureGeneration);
+                }
+            }
+            else
+            {
+                snapshot.AddQuad(
+                    m_layoutRect.x,
+                    m_layoutRect.y,
+                    m_layoutRect.x + m_layoutRect.width,
+                    m_layoutRect.y + m_layoutRect.height,
+                    drawColor,
+                    clipIndex,
+                    textured ? m_textureId : 0u,
+                    static_cast<uint64_t>(depth),
+                    textured ? m_textureGeneration : 0u);
+            }
         }
 
         if (!m_text.empty() &&

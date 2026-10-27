@@ -493,3 +493,266 @@ TEST(UIDocumentDesignerModelTests, CanvasDocumentReferenceAssignmentIsAtomicOnPa
     EXPECT_EQ(canvas.GetDocumentReference(), validReference);
     EXPECT_EQ(canvas.GetDocument(), originalDocument);
 }
+
+TEST(UIDocumentDesignerModelTests, PropertyApiValidatesNormalizesAndUndoes)
+{
+    using NLS::Editor::UIDocumentTools::UIDocumentDesignerModel;
+    using Json = UIDocumentDesignerModel::Json;
+
+    ScopedUIDocumentTestDirectory directory;
+    ScopedEditorUndoService undo;
+    const auto sourcePath = directory.Write(
+        "Assets/UI/Hud.ui",
+        UIDocumentDesignerModel::CreateDocumentSource("Hud"));
+
+    UIDocumentDesignerModel model;
+    ASSERT_TRUE(model.Load(sourcePath));
+    const auto rootGuid = model.GetRootGuid();
+
+    EXPECT_FALSE(model.SetNodeProperty(rootGuid, "layout.bogus", 1.0f));
+    EXPECT_FALSE(model.SetNodeProperty(rootGuid, "layout.anchorMin", Json::array({ 0.25f })));
+    EXPECT_FALSE(model.SetNodeProperty(rootGuid, "layout.mode", std::string("Bogus")));
+
+    ASSERT_TRUE(model.SetNodeProperty(
+        rootGuid,
+        "layout.anchorMin",
+        Json::array({ 0.25f, 0.75f })));
+    const auto* anchor = model.GetNodeProperty(rootGuid, "layout.anchorMin");
+    ASSERT_NE(anchor, nullptr);
+    EXPECT_FLOAT_EQ((*anchor)[0].get<float>(), 0.25f);
+    EXPECT_FLOAT_EQ((*anchor)[1].get<float>(), 0.75f);
+
+    ASSERT_TRUE(model.SetNodeProperty(rootGuid, "style.opacity", 4.0f));
+    ASSERT_NE(model.GetNodeProperty(rootGuid, "style.opacity"), nullptr);
+    EXPECT_FLOAT_EQ(model.GetNodeProperty(rootGuid, "style.opacity")->get<float>(), 1.0f);
+
+    ASSERT_TRUE(model.SetNodeProperty(rootGuid, "layout.mode", std::string("Grid")));
+    EXPECT_EQ(
+        model.GetNodeProperty(rootGuid, "layout.mode")->get<std::string>(),
+        "Grid");
+
+    ASSERT_TRUE(undo.Get().RequestUndo().Succeeded());
+    EXPECT_EQ(
+        model.GetNodeProperty(rootGuid, "layout.mode")->get<std::string>(),
+        "Overlay");
+    ASSERT_TRUE(undo.Get().RequestUndo().Succeeded());
+    EXPECT_EQ(model.GetNodeProperty(rootGuid, "style.opacity"), nullptr);
+    ASSERT_TRUE(undo.Get().RequestUndo().Succeeded());
+    EXPECT_EQ(model.GetNodeProperty(rootGuid, "layout.anchorMin"), nullptr);
+}
+
+TEST(UIDocumentDesignerModelTests, DuplicateNodeCreatesFreshIdentifiersAndUndoRemovesCopy)
+{
+    using NLS::Editor::UIDocumentTools::UIDocumentDesignerModel;
+
+    ScopedUIDocumentTestDirectory directory;
+    ScopedEditorUndoService undo;
+    const auto sourcePath = directory.Write(
+        "Assets/UI/Hud.ui",
+        UIDocumentDesignerModel::CreateDocumentSource("Hud"));
+
+    UIDocumentDesignerModel model;
+    ASSERT_TRUE(model.Load(sourcePath));
+    const auto rootGuid = model.GetRootGuid();
+    ASSERT_TRUE(model.AddChild(rootGuid, "Text"));
+    const auto sourceGuid = model.GetSelectedNodeGuid();
+    ASSERT_TRUE(model.SetNodeName(sourceGuid, "Title"));
+    ASSERT_EQ(model.GetChildCount(rootGuid), 1u);
+
+    ASSERT_TRUE(model.DuplicateNode(sourceGuid));
+    const auto copyGuid = model.GetSelectedNodeGuid();
+    EXPECT_NE(copyGuid, sourceGuid);
+    EXPECT_EQ(model.GetChildCount(rootGuid), 2u);
+    EXPECT_EQ(model.FindNode(copyGuid)->value("name", std::string {}), "Title");
+
+    std::string parentGuid;
+    size_t index = 0u;
+    ASSERT_TRUE(model.TryGetNodeLocation(copyGuid, parentGuid, index));
+    EXPECT_EQ(parentGuid, rootGuid);
+    EXPECT_EQ(index, 1u);
+    EXPECT_FALSE(model.DuplicateNode(rootGuid));
+
+    ASSERT_TRUE(undo.Get().RequestUndo().Succeeded());
+    EXPECT_EQ(model.GetChildCount(rootGuid), 1u);
+    EXPECT_EQ(model.FindNode(copyGuid), nullptr);
+}
+
+TEST(UIDocumentDesignerModelTests, MoveNodeRejectsCyclesAndReordersSiblings)
+{
+    using NLS::Editor::UIDocumentTools::UIDocumentDesignerModel;
+
+    ScopedUIDocumentTestDirectory directory;
+    ScopedEditorUndoService undo;
+    const auto sourcePath = directory.Write(
+        "Assets/UI/Hud.ui",
+        UIDocumentDesignerModel::CreateDocumentSource("Hud"));
+
+    UIDocumentDesignerModel model;
+    ASSERT_TRUE(model.Load(sourcePath));
+    const auto rootGuid = model.GetRootGuid();
+    ASSERT_TRUE(model.AddChild(rootGuid, "Panel"));
+    const auto panelGuid = model.GetSelectedNodeGuid();
+    ASSERT_TRUE(model.AddChild(panelGuid, "Text"));
+    const auto textGuid = model.GetSelectedNodeGuid();
+
+    EXPECT_FALSE(model.MoveNode(panelGuid, textGuid, 0u));
+    EXPECT_EQ(model.GetNodeParentGuid(textGuid), panelGuid);
+    EXPECT_FALSE(model.MoveNode(rootGuid, panelGuid, 0u));
+
+    ASSERT_TRUE(model.MoveNode(textGuid, rootGuid, 0u));
+    EXPECT_EQ(model.GetNodeParentGuid(textGuid), rootGuid);
+    const auto& children = model.GetDocument().at("root").at("children");
+    ASSERT_EQ(children.size(), 2u);
+    EXPECT_EQ(children[0].value("nodeGuid", std::string {}), textGuid);
+
+    ASSERT_TRUE(undo.Get().RequestUndo().Succeeded());
+    EXPECT_EQ(model.GetNodeParentGuid(textGuid), panelGuid);
+}
+
+TEST(UIDocumentDesignerModelTests, MultiSelectionPropertyEditsBatchIntoOneCommand)
+{
+    using NLS::Editor::UIDocumentTools::UIDocumentDesignerModel;
+    using Json = UIDocumentDesignerModel::Json;
+
+    ScopedUIDocumentTestDirectory directory;
+    ScopedEditorUndoService undo;
+    const auto sourcePath = directory.Write(
+        "Assets/UI/Hud.ui",
+        UIDocumentDesignerModel::CreateDocumentSource("Hud"));
+
+    UIDocumentDesignerModel model;
+    ASSERT_TRUE(model.Load(sourcePath));
+    const auto rootGuid = model.GetRootGuid();
+    ASSERT_TRUE(model.AddChild(rootGuid, "Text"));
+    const auto firstGuid = model.GetSelectedNodeGuid();
+    ASSERT_TRUE(model.AddChild(rootGuid, "Text"));
+    const auto secondGuid = model.GetSelectedNodeGuid();
+
+    model.SetSelection({ firstGuid, secondGuid });
+    ASSERT_EQ(model.GetSelectedNodes().size(), 2u);
+    const auto historyBefore = undo.Get().GetTransactionCount();
+
+    ASSERT_TRUE(model.SetNodePropertyOnSelection(
+        "layout.size",
+        Json::array({ 40.0f, 20.0f }),
+        true,
+        "Edit UI Size"));
+    EXPECT_EQ(undo.Get().GetTransactionCount(), historyBefore + 1u);
+    EXPECT_FLOAT_EQ(
+        model.GetNodeProperty(firstGuid, "layout.size")->at(0).get<float>(),
+        40.0f);
+    EXPECT_FLOAT_EQ(
+        model.GetNodeProperty(secondGuid, "layout.size")->at(0).get<float>(),
+        40.0f);
+
+    ASSERT_TRUE(undo.Get().RequestUndo().Succeeded());
+    EXPECT_FLOAT_EQ(
+        model.GetNodeProperty(firstGuid, "layout.size")->at(0).get<float>(),
+        160.0f);
+    EXPECT_FLOAT_EQ(
+        model.GetNodeProperty(secondGuid, "layout.size")->at(0).get<float>(),
+        160.0f);
+}
+
+TEST(UIDocumentDesignerModelTests, DiagnosticPathsMapBackToNodes)
+{
+    using NLS::Editor::UIDocumentTools::UIDocumentDesignerModel;
+
+    ScopedUIDocumentTestDirectory directory;
+    ScopedEditorUndoService undo;
+    const auto sourcePath = directory.Write(
+        "Assets/UI/Hud.ui",
+        UIDocumentDesignerModel::CreateDocumentSource("Hud"));
+
+    UIDocumentDesignerModel model;
+    ASSERT_TRUE(model.Load(sourcePath));
+    const auto rootGuid = model.GetRootGuid();
+    ASSERT_TRUE(model.AddChild(rootGuid, "Panel"));
+    const auto panelGuid = model.GetSelectedNodeGuid();
+    ASSERT_TRUE(model.AddChild(panelGuid, "Text"));
+    const auto textGuid = model.GetSelectedNodeGuid();
+
+    const auto path = model.BuildDiagnosticPath(textGuid);
+    EXPECT_EQ(path, "$.root.children[0].children[0]");
+
+    const auto* node = model.FindNodeByDiagnosticPath(path);
+    ASSERT_NE(node, nullptr);
+    EXPECT_EQ(node->value("nodeGuid", std::string {}), textGuid);
+
+    const auto* field = model.FindNodeByDiagnosticPath(path + ".layout.size");
+    ASSERT_NE(field, nullptr);
+    EXPECT_EQ(field->value("nodeGuid", std::string {}), textGuid);
+    EXPECT_EQ(model.FindNodeByDiagnosticPath("$.version"), nullptr);
+}
+
+TEST(UIDocumentDesignerModelTests, CancelTransactionRestoresDocumentSelectionAndHistory)
+{
+    using NLS::Editor::UIDocumentTools::UIDocumentDesignerModel;
+
+    ScopedUIDocumentTestDirectory directory;
+    ScopedEditorUndoService undo;
+    const auto sourcePath = directory.Write(
+        "Assets/UI/Hud.ui",
+        UIDocumentDesignerModel::CreateDocumentSource("Hud"));
+
+    UIDocumentDesignerModel model;
+    ASSERT_TRUE(model.Load(sourcePath));
+    const auto rootGuid = model.GetRootGuid();
+    ASSERT_TRUE(model.AddChild(rootGuid, "Button"));
+    const auto childGuid = model.GetSelectedNodeGuid();
+    const auto documentBefore = model.GetDocument();
+    const auto historyBefore = undo.Get().GetTransactionCount();
+
+    model.BeginTransaction("Edit UI Element");
+    ASSERT_TRUE(model.SetNodeName(childGuid, "Renamed", false));
+    ASSERT_TRUE(model.SetNodeLayoutSize(childGuid, 10.0f, 10.0f, false));
+    ASSERT_TRUE(model.HasActiveTransaction());
+    model.CancelTransaction();
+
+    EXPECT_EQ(model.GetDocument(), documentBefore);
+    EXPECT_EQ(model.GetSelectedNodeGuid(), childGuid);
+    EXPECT_EQ(undo.Get().GetTransactionCount(), historyBefore);
+    EXPECT_FALSE(model.HasActiveTransaction());
+}
+
+TEST(UIDocumentDesignerModelTests, AddChildAtPastesAndVisibilityUseOneCommandEach)
+{
+    using NLS::Editor::UIDocumentTools::UIDocumentDesignerModel;
+
+    ScopedUIDocumentTestDirectory directory;
+    ScopedEditorUndoService undo;
+    const auto sourcePath = directory.Write(
+        "Assets/UI/Hud.ui",
+        UIDocumentDesignerModel::CreateDocumentSource("Hud"));
+
+    UIDocumentDesignerModel model;
+    ASSERT_TRUE(model.Load(sourcePath));
+    const auto rootGuid = model.GetRootGuid();
+
+    ASSERT_TRUE(model.AddChildAt(rootGuid, "Image", 64.0f, 32.0f));
+    const auto placedGuid = model.GetSelectedNodeGuid();
+    const auto* offset = model.GetNodeProperty(placedGuid, "layout.offsetMin");
+    ASSERT_NE(offset, nullptr);
+    EXPECT_FLOAT_EQ((*offset)[0].get<float>(), 64.0f);
+    EXPECT_FLOAT_EQ((*offset)[1].get<float>(), 32.0f);
+
+    ASSERT_TRUE(model.SetNodeVisible(placedGuid, false));
+    ASSERT_NE(model.GetNodeProperty(placedGuid, "style.visible"), nullptr);
+    EXPECT_FALSE(model.GetNodeProperty(placedGuid, "style.visible")->get<bool>());
+    EXPECT_FALSE(model.SetNodeVisible(placedGuid, false));
+    ASSERT_TRUE(undo.Get().RequestUndo().Succeeded());
+    EXPECT_EQ(model.GetNodeProperty(placedGuid, "style.visible"), nullptr);
+
+    const auto serialized = model.SerializeNode(placedGuid);
+    ASSERT_FALSE(serialized.empty());
+    ASSERT_TRUE(model.PasteNode(rootGuid, 0u, serialized));
+    const auto pastedGuid = model.GetSelectedNodeGuid();
+    EXPECT_NE(pastedGuid, placedGuid);
+    EXPECT_EQ(model.GetChildCount(rootGuid), 2u);
+    std::string parentGuid;
+    size_t index = 99u;
+    ASSERT_TRUE(model.TryGetNodeLocation(pastedGuid, parentGuid, index));
+    EXPECT_EQ(parentGuid, rootGuid);
+    EXPECT_EQ(index, 0u);
+    EXPECT_FALSE(model.PasteNode(rootGuid, 0u, "{}"));
+}

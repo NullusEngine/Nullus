@@ -12,6 +12,8 @@
 namespace NLS::Editor::Assets
 {
 constexpr const char* kEditorAssetDragPayloadType = "EditorAsset";
+// Contiguous EditorAssetDragPayload entries; ImGui owns the copied bytes.
+constexpr const char* kEditorAssetsDragPayloadType = "EditorAssets";
 constexpr size_t kEditorAssetDragPayloadPathCapacity = 260u;
 constexpr size_t kEditorAssetDragPayloadSubAssetCapacity = 160u;
 constexpr size_t kEditorAssetDragPayloadGuidCapacity = 37u;

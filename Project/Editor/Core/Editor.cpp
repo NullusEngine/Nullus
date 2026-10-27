@@ -52,6 +52,7 @@
 #include "Panels/EditorStatusBar.h"
 #include "Panels/AssetBrowser.h"
 #include "Panels/FrameInfo.h"
+#include "Panels/IconBrowser.h"
 #include "Panels/Console.h"
 #include "Panels/Inspector.h"
 #include "Panels/Hierarchy.h"
@@ -61,7 +62,13 @@
 #include "Panels/AssetView.h"
 #include "Panels/ViewFrameLifecycle.h"
 #include "Panels/UIDocumentDesigner.h"
+#include "Panels/VfxEditor.h"
+#include "Panels/VfxLibraryEditor.h"
+#include "Panels/MaterialEditor.h"
+#include "Panels/AnimationWorkbench.h"
+#include "Animation/AnimationPreview.h"
 #include "Panels/ProjectSettings.h"
+#include "Panels/BuildProfilesPanel.h"
 #include "Panels/ProfilerPanel.h"
 #include "Engine/PrimitiveType.h"
 #include "Rendering/Context/DriverAccess.h"
@@ -77,6 +84,14 @@ namespace NLS
 {
 namespace
 {
+// Automated editor UI smoke tests can run while the optional VFX WIP panels
+// are being repaired. Normal editor launches keep the panels enabled.
+bool SkipOptionalVfxPanels()
+{
+    const char* value = std::getenv("NLS_EDITOR_SKIP_VFX_PANELS");
+    return value != nullptr && value[0] != '\0' && value[0] != '0';
+}
+
 NLS::Base::Profiling::TracyProfiler g_tracyProfiler;
 std::size_t g_publishedReflectionDiagnosticCount = 0;
 constexpr uint32_t kEditorMainThreadContinuationDrainBudget = 64u;
@@ -988,9 +1003,8 @@ void Editor::Core::Editor::JobSystemLifetime::Shutdown()
 }
 
 Editor::Core::Editor::Editor(Context& p_context)
-    : m_context(p_context), m_panelsManager(m_canvas),
+    : m_context(p_context), m_undoService(), m_panelsManager(m_canvas),
     m_jobSystemLifetime(),
-	  m_undoService(),
     m_editorActions(m_context, m_panelsManager)
 {
     NLS::Base::Profiling::Profiler::SetEnabled(false);
@@ -1198,15 +1212,35 @@ void Editor::Core::Editor::SetupUI()
     logSetupStep("GameView");
     m_panelsManager.CreatePanel<Panels::FrameInfo>("Frame Info", false, frameInfoSettings);
     logSetupStep("FrameInfo");
+    m_panelsManager.CreatePanel<Panels::IconBrowser>("Icon Browser", false, settings);
+    logSetupStep("IconBrowser");
     m_panelsManager.CreatePanel<Panels::UIDocumentDesigner>("UI Designer", false, settings);
     logSetupStep("UIDocumentDesigner");
+    if (!SkipOptionalVfxPanels())
+    {
+        m_panelsManager.CreatePanel<Panels::VfxEditor>("Particle Editor", false, settings,
+            std::filesystem::path(m_context.projectPath) / "Library" / "Editor" / "VFX");
+        logSetupStep("ParticleEditor");
+        m_panelsManager.CreatePanel<Panels::VfxLibraryEditor>("Particle Library Editor",false,settings);
+        logSetupStep("ParticleLibraryEditor");
+    }
+    m_panelsManager.CreatePanel<Panels::MaterialEditor>("Material Editor",false,settings,
+        std::filesystem::path(m_context.projectPath),std::filesystem::path(m_context.engineAssetsPath));
+    logSetupStep("MaterialEditor");
+    m_panelsManager.CreatePanel<AnimationTools::AnimationPreview>("Animation Preview",false,settings);
+    auto& animationPreview=m_panelsManager.GetPanelAs<AnimationTools::AnimationPreview>("Animation Preview");
+    m_panelsManager.CreatePanel<Panels::AnimationWorkbench>("Animation Workbench",false,settings,std::filesystem::path(m_context.projectPath),animationPreview);
     m_panelsManager.CreatePanel<Panels::ProjectSettings>("Project Settings", false, settings);
     logSetupStep("ProjectSettings");
+    m_panelsManager.CreatePanel<Panels::BuildProfilesPanel>("Build Profiles", false, settings);
+    logSetupStep("BuildProfiles");
     m_panelsManager.GetPanelAs<Panels::ProjectSettings>("Project Settings").enabled = false;
+    m_panelsManager.GetPanelAs<Panels::BuildProfilesPanel>("Build Profiles").enabled = false;
     auto& topBar = m_panelsManager.GetPanelAs<Panels::EditorTopBar>("Editor Top Bar");
     topBar.RegisterProjectSettingsPanel(m_panelsManager.GetPanelAs<Panels::ProjectSettings>("Project Settings"));
     topBar.RegisterWindowPanel("Asset Browser", m_panelsManager.GetPanelAs<Panels::AssetBrowser>("Asset Browser"));
     topBar.RegisterWindowPanel("Frame Info", m_panelsManager.GetPanelAs<Panels::FrameInfo>("Frame Info"));
+    topBar.RegisterWindowPanel("Icon Browser", m_panelsManager.GetPanelAs<Panels::IconBrowser>("Icon Browser"));
     topBar.RegisterWindowPanel("Profiler", profilerPanel);
     topBar.RegisterWindowPanel("Console", m_panelsManager.GetPanelAs<Panels::Console>("Console"));
     topBar.RegisterWindowPanel("Asset View", m_panelsManager.GetPanelAs<Panels::AssetView>("Asset View"));
@@ -1215,6 +1249,15 @@ void Editor::Core::Editor::SetupUI()
     topBar.RegisterWindowPanel("Scene View", m_panelsManager.GetPanelAs<Panels::SceneView>("Scene View"));
     topBar.RegisterWindowPanel("Game View", m_panelsManager.GetPanelAs<Panels::GameView>("Game View"));
     topBar.RegisterWindowPanel("UI Designer", m_panelsManager.GetPanelAs<Panels::UIDocumentDesigner>("UI Designer"));
+    if (!SkipOptionalVfxPanels())
+    {
+        topBar.RegisterWindowPanel("Particle Editor", m_panelsManager.GetPanelAs<Panels::VfxEditor>("Particle Editor"));
+        topBar.RegisterWindowPanel("Particle Library Editor",m_panelsManager.GetPanelAs<Panels::VfxLibraryEditor>("Particle Library Editor"));
+    }
+    topBar.RegisterWindowPanel("Material Editor",m_panelsManager.GetPanelAs<Panels::MaterialEditor>("Material Editor"));
+    topBar.RegisterWindowPanel("Animation Workbench",m_panelsManager.GetPanelAs<Panels::AnimationWorkbench>("Animation Workbench"));
+    topBar.RegisterWindowPanel("Animation Preview",m_panelsManager.GetPanelAs<AnimationTools::AnimationPreview>("Animation Preview"));
+    topBar.RegisterWindowPanel("Build Profiles", m_panelsManager.GetPanelAs<Panels::BuildProfilesPanel>("Build Profiles"));
     logSetupStep("RegisterWindows");
     // Scripted editor windows register their menu entries through the script
     // ABI; publish them once the top bar exists.
@@ -1245,6 +1288,8 @@ void Editor::Core::Editor::SetupUI()
 
 void Editor::Core::Editor::PreUpdate()
 {
+    if (NLS::Core::ServiceLocator::Contains<NLS::Editor::Materials::MaterialEditingService>())
+        NLS::Core::ServiceLocator::Get<NLS::Editor::Materials::MaterialEditingService>().Pump();
     (void)NLS::Render::Context::RenderingThreadSystem::PumpGameThreadTasks(64u);
     static_cast<void>(m_undoService.DrainPendingCompletions());
     RefreshProfilerRecordingState();
@@ -1693,6 +1738,12 @@ Render::Data::FrameInfo Editor::Core::Editor::GetCameraPerformanceViewCumulative
 
 void Editor::Core::Editor::HandleGlobalShortcuts()
 {
+    if(m_panelsManager.GetPanelAs<Panels::AnimationWorkbench>("Animation Workbench").OwnsShortcuts())return;
+    if ((!SkipOptionalVfxPanels() &&
+            (m_panelsManager.GetPanelAs<Panels::VfxEditor>("Particle Editor").OwnsShortcuts() ||
+             m_panelsManager.GetPanelAs<Panels::VfxLibraryEditor>("Particle Library Editor").OwnsShortcuts())) ||
+        m_panelsManager.GetPanelAs<Panels::UIDocumentDesigner>("UI Designer").OwnsShortcuts())
+        return;
 	// Continuous edits own Escape until they have either committed or restored
 	// their before state. Text widgets retain their native editing behaviour.
 	if (m_undoService.HasActiveEditSession() && !ImGui::GetIO().WantTextInput &&
@@ -2425,13 +2476,14 @@ void Editor::Core::Editor::UpdatePlayMode(float p_deltaTime)
 		const auto updateSchedule = m_context.scriptRuntime.BeginScheduledFrame(
 			NLS::Scripting::ScriptCallback::Update,
 			scriptFrame);
-		currentScene->Update(delta);
+			currentScene->UpdateGameplay(delta);
 		if (updateSchedule.Succeeded())
 		{
 			const auto flushStatus = m_context.scriptRuntime.FlushScheduledFrame();
 			if (!flushStatus.Succeeded())
 				NLS_LOG_WARNING("Script Update batch failed: " + flushStatus.message);
 		}
+			currentScene->UpdateAnimations(delta);
 	}
 
 	{

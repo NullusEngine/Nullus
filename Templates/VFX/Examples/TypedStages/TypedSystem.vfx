@@ -1,0 +1,694 @@
+{
+  "emitters": [
+    {
+      "id": "dc26d488-3640-4a57-b1c9-052ce18312a4",
+      "enabled": true,
+      "position": [
+        0,
+        0
+      ],
+      "stacks": [],
+      "parent": {
+        "asset": "d9e6cc2e-8aaf-4e59-b9c3-865d620d88b7",
+        "version": "6e3840e4-259f-4ea8-8400-b9007da31fc5"
+      },
+      "stackOverrides": [
+        {
+          "stack": "28acf80a-e607-4fdd-9ffc-3324d729f1d4",
+          "iterations": 3,
+          "name": "Dynamic Offset"
+        }
+      ]
+    },
+    {
+      "enabled": true,
+      "id": "0a898192-8884-4c0d-885f-626dcc8a1dba",
+      "position": [
+        350,
+        0
+      ],
+      "stacks": [
+        {
+          "enabled": true,
+          "id": "ecff7b23-73bb-4a7c-a0be-6c7e4b3018a8",
+          "iterations": 1,
+          "modules": [],
+          "name": "Emitter Spawn",
+          "stage": 2
+        },
+        {
+          "enabled": true,
+          "id": "eb98004f-f282-4981-aa9a-e8f0ba701874",
+          "iterations": 1,
+          "modules": [
+            {
+              "enabled": true,
+              "id": "2c52adbf-43d0-477b-b7b0-be76f5a41daf",
+              "inputs": {
+                "Duration": {
+                  "mode": 0,
+                  "parameter": "",
+                  "value": [
+                    5.0,
+                    0.0,
+                    0.0,
+                    0.0
+                  ]
+                },
+                "Loop": {
+                  "mode": 0,
+                  "parameter": "",
+                  "value": [
+                    1.0,
+                    0.0,
+                    0.0,
+                    0.0
+                  ]
+                }
+              },
+              "script": "EmitterState"
+            },
+            {
+              "enabled": true,
+              "id": "389d31ea-0670-4f92-a61f-44a1315fc468",
+              "inputs": {
+                "Rate": {
+                  "mode": 0,
+                  "parameter": "",
+                  "value": [
+                    100.0,
+                    0.0,
+                    0.0,
+                    0.0
+                  ]
+                }
+              },
+              "script": "SpawnRate"
+            }
+          ],
+          "name": "Emitter Update",
+          "stage": 3
+        },
+        {
+          "enabled": true,
+          "id": "7ecefe5c-0fb0-4641-967f-ea46bda6ecc4",
+          "iterations": 1,
+          "modules": [
+            {
+              "enabled": true,
+              "id": "74251489-e6ab-46b7-86f7-8af06ccd22b0",
+              "inputs": {
+                "Color": {
+                  "mode": 0,
+                  "parameter": "",
+                  "value": [
+                    0.1,
+                    1,
+                    0.2,
+                    1
+                  ]
+                },
+                "Lifetime": {
+                  "mode": 0,
+                  "parameter": "",
+                  "value": [
+                    2.0,
+                    0.0,
+                    0.0,
+                    0.0
+                  ]
+                },
+                "Position": {
+                  "mode": 0,
+                  "parameter": "",
+                  "value": [
+                    -0.55,
+                    0.5,
+                    0,
+                    0
+                  ]
+                },
+                "Size": {
+                  "mode": 0,
+                  "parameter": "",
+                  "value": [
+                    0.06,
+                    0,
+                    0,
+                    0
+                  ]
+                },
+                "Velocity": {
+                  "mode": 0,
+                  "parameter": "",
+                  "value": [
+                    0,
+                    0,
+                    0,
+                    0
+                  ]
+                }
+              },
+              "script": "InitializeParticle"
+            },
+            {
+              "id": "f7e65968-776e-4e1d-92c8-8429413a30ef",
+              "script": "Integer State",
+              "scriptAsset": {
+                "asset": "55134ad4-660c-41ec-bb93-f98318948c08",
+                "version": "683f8bb4-600e-4659-a445-743c7896f7e4"
+              },
+              "enabled": true,
+              "inputs": {
+                "Value": {
+                  "mode": 1,
+                  "type": 4,
+                  "value": 0,
+                  "parameter": "User.Counter"
+                },
+                "Step": {
+                  "mode": 1,
+                  "type": 4,
+                  "value": 0,
+                  "parameter": "User.Step"
+                },
+                "Enabled": {
+                  "mode": 1,
+                  "type": 5,
+                  "value": false,
+                  "parameter": "User.UseLarge"
+                },
+                "Initialize": {
+                  "mode": 0,
+                  "type": 5,
+                  "value": true,
+                  "parameter": ""
+                }
+              }
+            }
+          ],
+          "name": "Particle Spawn",
+          "stage": 4
+        },
+        {
+          "enabled": true,
+          "id": "1238154a-5d0f-48e8-959e-1b49f3ad0672",
+          "iterations": 1,
+          "modules": [
+            {
+              "enabled": true,
+              "id": "e57a5efb-fb97-47cb-80f8-659abff95e8b",
+              "inputs": {},
+              "script": "SolveForcesAndVelocity"
+            },
+            {
+              "id": "d725b1ba-0d63-4fa5-b2cd-5fa9f0e59643",
+              "script": "Integer State",
+              "scriptAsset": {
+                "asset": "55134ad4-660c-41ec-bb93-f98318948c08",
+                "version": "683f8bb4-600e-4659-a445-743c7896f7e4"
+              },
+              "enabled": true,
+              "inputs": {
+                "Value": {
+                  "mode": 1,
+                  "type": 4,
+                  "value": 0,
+                  "parameter": "User.Counter"
+                },
+                "Step": {
+                  "mode": 1,
+                  "type": 4,
+                  "value": 0,
+                  "parameter": "User.Step"
+                },
+                "Enabled": {
+                  "mode": 1,
+                  "type": 5,
+                  "value": false,
+                  "parameter": "User.UseLarge"
+                },
+                "Initialize": {
+                  "mode": 0,
+                  "type": 5,
+                  "value": false,
+                  "parameter": ""
+                }
+              }
+            }
+          ],
+          "name": "Particle Update",
+          "stage": 5
+        }
+      ]
+    }
+  ],
+  "id": "c41c353b-4c5f-46f6-9539-93b70df6dc67",
+  "kind": "System",
+  "name": "Bool and Int32 Particles",
+  "parameters": [
+    {
+      "id": "b0063828-eac2-4783-9451-ea5e26fa58ce",
+      "name": "User.Offset",
+      "type": 2,
+      "value": [
+        0.0015,
+        0,
+        0,
+        0
+      ]
+    },
+    {
+      "id": "40d3e1ed-9c0f-44ea-9443-d43389516ea7",
+      "name": "User.StageEnabled",
+      "type": 5,
+      "value": true
+    },
+    {
+      "id": "b3ebd801-9190-4750-afcf-1f23df91f05f",
+      "name": "User.StageIterations",
+      "type": 4,
+      "value": 3
+    },
+    {
+      "id": "5a9fd1e3-ee0f-4428-bb04-bb5e85bfacfd",
+      "name": "User.Counter",
+      "type": 4,
+      "value": 16777217
+    },
+    {
+      "id": "f7fa0daf-74c2-41d1-b024-22c2bed038d2",
+      "name": "User.Step",
+      "type": 4,
+      "value": 1
+    },
+    {
+      "id": "c40707d6-3d98-4cf6-a8b4-a8e6d0876f4c",
+      "name": "User.UseLarge",
+      "type": 5,
+      "value": true
+    }
+  ],
+  "runtime": {
+    "emitters": [
+      {
+        "attributes": [
+          {
+            "default": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ],
+            "name": "Particles.Position",
+            "type": 2
+          },
+          {
+            "default": [
+              0.0,
+              3.0,
+              0.0,
+              0.0
+            ],
+            "name": "Particles.Velocity",
+            "type": 2
+          },
+          {
+            "default": [
+              1.0,
+              0.5,
+              0.10000000149011612,
+              1.0
+            ],
+            "name": "Particles.Color",
+            "type": 3
+          },
+          {
+            "default": [
+              0.05000000074505806,
+              0.0,
+              0.0,
+              0.0
+            ],
+            "name": "Particles.Size",
+            "type": 0
+          },
+          {
+            "default": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ],
+            "name": "Particles.Age",
+            "type": 0
+          },
+          {
+            "default": [
+              2.0,
+              0.0,
+              0.0,
+              0.0
+            ],
+            "name": "Particles.Lifetime",
+            "type": 0
+          },
+          {
+            "name": "Particles.Counter",
+            "type": 4,
+            "default": 0
+          },
+          {
+            "name": "Particles.Flag",
+            "type": 5,
+            "default": false
+          }
+        ],
+        "bursts": [],
+        "capacity": 256,
+        "collision": {
+          "enabled": false,
+          "friction": 0.0,
+          "layers": 4294967295,
+          "radius": 0.0,
+          "restitution": 0.5
+        },
+        "duration": 5.0,
+        "frustumCulling": true,
+        "id": "dc26d488-3640-4a57-b1c9-052ce18312a4",
+        "initialCapacity": 16,
+        "interpolatedSpawning": true,
+        "looping": true,
+        "mesh": {
+          "defaultOrientation": [
+            0.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "defaultScale": [
+            1.0,
+            1.0,
+            1.0,
+            0.0
+          ],
+          "lodIndex": -1,
+          "materials": [],
+          "meshIndexAttribute": "Particles.MeshIndex",
+          "meshes": [],
+          "orientationAttribute": "Particles.MeshOrientation",
+          "scaleAttribute": "Particles.Scale"
+        },
+        "name": "GPU Typed Emitter",
+        "renderer": 0,
+        "seed": 1,
+        "simulationStages": [],
+        "sortByViewDepth": false,
+        "spawn": {
+          "id": "0892378d-1abb-4528-a1bf-f37a0610f201",
+          "nextNodeId": 3,
+          "nodes": [],
+          "stage": 0
+        },
+        "spawnRate": 100.0,
+        "sprite": {
+          "alignment": 0,
+          "alphaCutoff": 0.3330000042915344,
+          "blend": 0,
+          "blendSubImages": false,
+          "circularMask": true,
+          "dynamicParameters": [
+            {
+              "attribute": "Particles.DynamicMaterialParameter",
+              "default": [
+                1.0,
+                1.0,
+                1.0,
+                1.0
+              ],
+              "fallbackParameter": ""
+            },
+            {
+              "attribute": "Particles.DynamicMaterialParameter1",
+              "default": [
+                1.0,
+                1.0,
+                1.0,
+                1.0
+              ],
+              "fallbackParameter": ""
+            },
+            {
+              "attribute": "Particles.DynamicMaterialParameter2",
+              "default": [
+                1.0,
+                1.0,
+                1.0,
+                1.0
+              ],
+              "fallbackParameter": ""
+            },
+            {
+              "attribute": "Particles.DynamicMaterialParameter3",
+              "default": [
+                1.0,
+                1.0,
+                1.0,
+                1.0
+              ],
+              "fallbackParameter": ""
+            }
+          ],
+          "emissive": 1.0,
+          "material": {
+            "guid": "",
+            "localId": 0
+          },
+          "materialParameters": [],
+          "softDistance": 0.0,
+          "subImagesX": 1,
+          "subImagesY": 1,
+          "texture": {
+            "guid": "",
+            "localId": 0
+          },
+          "tint": [
+            1.0,
+            1.0,
+            1.0,
+            1.0
+          ],
+          "useMaterialShader": false
+        },
+        "target": 1,
+        "update": {
+          "id": "19b40a61-2dbf-4795-8c2a-c362f0717a97",
+          "nextNodeId": 7,
+          "nodes": [],
+          "stage": 1
+        }
+      },
+      {
+        "attributes": [
+          {
+            "default": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ],
+            "name": "Particles.Position",
+            "type": 2
+          },
+          {
+            "default": [
+              0.0,
+              3.0,
+              0.0,
+              0.0
+            ],
+            "name": "Particles.Velocity",
+            "type": 2
+          },
+          {
+            "default": [
+              1.0,
+              0.5,
+              0.10000000149011612,
+              1.0
+            ],
+            "name": "Particles.Color",
+            "type": 3
+          },
+          {
+            "default": [
+              0.05000000074505806,
+              0.0,
+              0.0,
+              0.0
+            ],
+            "name": "Particles.Size",
+            "type": 0
+          },
+          {
+            "default": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ],
+            "name": "Particles.Age",
+            "type": 0
+          },
+          {
+            "default": [
+              2.0,
+              0.0,
+              0.0,
+              0.0
+            ],
+            "name": "Particles.Lifetime",
+            "type": 0
+          },
+          {
+            "name": "Particles.Counter",
+            "type": 4,
+            "default": 0
+          },
+          {
+            "name": "Particles.Flag",
+            "type": 5,
+            "default": false
+          }
+        ],
+        "bursts": [],
+        "capacity": 256,
+        "collision": {
+          "enabled": false,
+          "friction": 0.0,
+          "layers": 4294967295,
+          "radius": 0.0,
+          "restitution": 0.5
+        },
+        "duration": 5.0,
+        "frustumCulling": true,
+        "id": "0a898192-8884-4c0d-885f-626dcc8a1dba",
+        "initialCapacity": 16,
+        "interpolatedSpawning": true,
+        "looping": true,
+        "mesh": {
+          "defaultOrientation": [
+            0.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "defaultScale": [
+            1.0,
+            1.0,
+            1.0,
+            0.0
+          ],
+          "lodIndex": -1,
+          "materials": [],
+          "meshIndexAttribute": "Particles.MeshIndex",
+          "meshes": [],
+          "orientationAttribute": "Particles.MeshOrientation",
+          "scaleAttribute": "Particles.Scale"
+        },
+        "name": "CPU Typed Emitter",
+        "renderer": 0,
+        "seed": 1,
+        "simulationStages": [],
+        "sortByViewDepth": false,
+        "spawn": {
+          "id": "6d55c2cd-d052-4284-b5d3-3e7ba5286854",
+          "nextNodeId": 3,
+          "nodes": [],
+          "stage": 0
+        },
+        "spawnRate": 100.0,
+        "sprite": {
+          "alignment": 0,
+          "alphaCutoff": 0.3330000042915344,
+          "blend": 0,
+          "blendSubImages": false,
+          "circularMask": true,
+          "dynamicParameters": [
+            {
+              "attribute": "Particles.DynamicMaterialParameter",
+              "default": [
+                1.0,
+                1.0,
+                1.0,
+                1.0
+              ],
+              "fallbackParameter": ""
+            },
+            {
+              "attribute": "Particles.DynamicMaterialParameter1",
+              "default": [
+                1.0,
+                1.0,
+                1.0,
+                1.0
+              ],
+              "fallbackParameter": ""
+            },
+            {
+              "attribute": "Particles.DynamicMaterialParameter2",
+              "default": [
+                1.0,
+                1.0,
+                1.0,
+                1.0
+              ],
+              "fallbackParameter": ""
+            },
+            {
+              "attribute": "Particles.DynamicMaterialParameter3",
+              "default": [
+                1.0,
+                1.0,
+                1.0,
+                1.0
+              ],
+              "fallbackParameter": ""
+            }
+          ],
+          "emissive": 1.0,
+          "material": {
+            "guid": "",
+            "localId": 0
+          },
+          "materialParameters": [],
+          "softDistance": 0.0,
+          "subImagesX": 1,
+          "subImagesY": 1,
+          "texture": {
+            "guid": "",
+            "localId": 0
+          },
+          "tint": [
+            1.0,
+            1.0,
+            1.0,
+            1.0
+          ],
+          "useMaterialShader": false
+        },
+        "target": 0,
+        "update": {
+          "id": "5ed7489a-6c00-46ef-b155-9a449a4fd54e",
+          "nextNodeId": 7,
+          "nodes": [],
+          "stage": 1
+        }
+      }
+    ],
+    "id": "c41c353b-4c5f-46f6-9539-93b70df6dc67",
+    "name": "Bool and Int32 Particles",
+    "version": 2
+  },
+  "version": 4
+}

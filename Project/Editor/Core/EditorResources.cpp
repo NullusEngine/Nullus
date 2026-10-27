@@ -20,8 +20,14 @@
 #include <Rendering/Resources/Texture2D.h>
 #include <Rendering/Settings/ETextureFilteringMode.h>
 #include <Utils/PathParser.h>
+#include <UI/UIManager.h>
 
+#include "Assets/AssetIconResolver.h"
 #include "Core/EditorResources.h"
+#include "Icons/EditorIconCatalog.h"
+#include "Icons/Generated/IconAtlas.generated.h"
+#include "Icons/IconPainter.h"
+#include "Icons/IconService.h"
 #include "Resources/RawTextures.h"
 
 using namespace NLS;
@@ -188,108 +194,107 @@ Editor::Core::EditorResources::EditorResources(
     const auto firstFilterBillboard = NLS::Render::Settings::ETextureFilteringMode::NEAREST;
     const auto secondFilterBillboard = NLS::Render::Settings::ETextureFilteringMode::NEAREST;
 
-    {
-        std::vector<uint64_t> raw = BUTTON_PLAY;
-        m_textures["Button_Play"] = TextureLoader::CreateFromMemory(reinterpret_cast<uint8_t*>(raw.data()), 64, 64, firstFilterEditor, secondFilterEditor, false);
-    }
-    {
-        std::vector<uint64_t> raw = BUTTON_PAUSE;
-        m_textures["Button_Pause"] = TextureLoader::CreateFromMemory(reinterpret_cast<uint8_t*>(raw.data()), 64, 64, firstFilterEditor, secondFilterEditor, false);
-    }
-    {
-        std::vector<uint64_t> raw = BUTTON_STOP;
-        m_textures["Button_Stop"] = TextureLoader::CreateFromMemory(reinterpret_cast<uint8_t*>(raw.data()), 64, 64, firstFilterEditor, secondFilterEditor, false);
-    }
-    {
-        std::vector<uint64_t> raw = BUTTON_NEXT;
-        m_textures["Button_Next"] = TextureLoader::CreateFromMemory(reinterpret_cast<uint8_t*>(raw.data()), 64, 64, firstFilterEditor, secondFilterEditor, false);
-    }
-    {
-        std::vector<uint64_t> raw = BUTTON_REFRESH;
-        m_textures["Button_Refresh"] = TextureLoader::CreateFromMemory(reinterpret_cast<uint8_t*>(raw.data()), 64, 64, firstFilterEditor, secondFilterEditor, false);
-    }
+    // Icon textures are owned by IconService: lazy loading, per-file dedup,
+    // DPI tier selection and deferred GPU retirement. editor.icon.* lookups in
+    // GetTexture below delegate here for legacy callers (Asset Browser, etc.).
+    m_iconRegistry = std::make_unique<Icons::IconRegistry>(Icons::IconRegistry::CreateDefault());
 
-    const auto loadEditorIcon = [&](const std::string& id)
+    Icons::IconServiceBindings iconBindings;
+    iconBindings.resolvePath = [this](const std::string_view id)
     {
-        const auto filePath = ResolveDevelopmentPath(id);
-        if (!filePath.has_value())
-        {
-            NLS_LOG_WARNING("[EditorResources] Missing catalog path for texture resource \"" + id + "\"");
-            return;
-        }
-
-        auto* texture = TextureLoader::CreateFromImageFile(filePath->string(), firstFilterEditor, secondFilterEditor, false);
+        return m_catalog.ResolvePath(id, EditorResourceBackendMode::Development);
+    };
+    iconBindings.fileExists = [](const std::string& path)
+    {
+        std::error_code error;
+        return std::filesystem::is_regular_file(path, error);
+    };
+    iconBindings.loadTexture = [firstFilterEditor, secondFilterEditor](const std::string& path)
+        -> std::optional<Icons::IconTexture>
+    {
+        auto* texture = TextureLoader::CreateFromImageFile(
+            path, firstFilterEditor, secondFilterEditor, false);
         if (texture == nullptr)
+            return std::nullopt;
+
+        auto view = texture->GetOrCreateExplicitTextureView("IconService:" + path);
+        if (view == nullptr)
         {
-            NLS_LOG_WARNING(
-                "[EditorResources] Failed to load texture resource \"" + id +
-                "\" from " + filePath->string());
-            return;
+            TextureLoader::Destroy(texture);
+            return std::nullopt;
         }
 
-        if (const auto existing = m_textures.find(id); existing != m_textures.end())
-            TextureLoader::Destroy(existing->second);
-        m_textures[id] = texture;
+        return Icons::IconTexture{ texture, std::move(view) };
+    };
+    iconBindings.destroyTexture = [](NLS::Render::Resources::Texture2D* texture)
+    {
+        TextureLoader::Destroy(texture);
+    };
+    iconBindings.registerTextureView = [](const std::shared_ptr<NLS::Render::RHI::RHITextureView>& view)
+    {
+        if (!NLS::Core::ServiceLocator::Contains<NLS::UI::UIManager>())
+            return NLS::Render::UI::UiTextureId {};
+        return NLS::Core::ServiceLocator::Get<NLS::UI::UIManager>().RegisterStaticTextureView(view);
+    };
+    iconBindings.releaseTextureView = [](const std::shared_ptr<NLS::Render::RHI::RHITextureView>& view)
+    {
+        if (NLS::Core::ServiceLocator::Contains<NLS::UI::UIManager>())
+            NLS::Core::ServiceLocator::Get<NLS::UI::UIManager>().ReleaseStaticTextureView(view);
+    };
+    iconBindings.logWarning = [](const std::string_view message)
+    {
+        NLS_LOG_WARNING(std::string(message));
+    };
+    iconBindings.findAtlasFrame = [](const std::string_view id, const std::uint32_t pixels)
+        -> const Icons::IconAtlasFrame*
+    {
+        static const auto frames = []
+        {
+            std::unordered_map<std::string, Icons::IconAtlasFrame> map;
+            for (const auto& entry : Icons::GeneratedIconAtlasEntries())
+            {
+                map.emplace(
+                    std::string(entry.iconId) + '\x1f' + std::to_string(entry.pixels),
+                    entry.frame);
+            }
+            return map;
+        }();
+
+        const std::string key = std::string(id) + '\x1f' + std::to_string(pixels);
+        const auto found = frames.find(key);
+        return found != frames.end() ? &found->second : nullptr;
+    };
+    iconBindings.resolveAtlasPagePath = [this](const std::string_view pageId)
+    {
+        return m_catalog.ResolvePath(pageId, EditorResourceBackendMode::Development);
     };
 
-    {
-        std::vector<uint64_t> raw = ICON_FILE;
-        m_textures["editor.icon.asset.default"] = TextureLoader::CreateFromMemory(reinterpret_cast<uint8_t*>(raw.data()), 16, 16, firstFilterEditor, secondFilterEditor, false);
-    }
-    {
-        std::vector<uint64_t> raw = ICON_FOLDER;
-        m_textures["editor.icon.asset.folder"] = TextureLoader::CreateFromMemory(reinterpret_cast<uint8_t*>(raw.data()), 16, 16, firstFilterEditor, secondFilterEditor, false);
-    }
-    {
-        std::vector<uint64_t> raw = ICON_TEXTURE;
-        m_textures["editor.icon.asset.texture"] = TextureLoader::CreateFromMemory(reinterpret_cast<uint8_t*>(raw.data()), 16, 16, firstFilterEditor, secondFilterEditor, false);
-    }
-    {
-        std::vector<uint64_t> raw = ICON_MODEL;
-        m_textures["editor.icon.asset.mesh"] = TextureLoader::CreateFromMemory(reinterpret_cast<uint8_t*>(raw.data()), 16, 16, firstFilterEditor, secondFilterEditor, false);
-    }
-    {
-        std::vector<uint64_t> raw = ICON_MATERIAL;
-        m_textures["editor.icon.asset.material"] = TextureLoader::CreateFromMemory(reinterpret_cast<uint8_t*>(raw.data()), 16, 16, firstFilterEditor, secondFilterEditor, false);
-    }
-    {
-        std::vector<uint64_t> raw = ICON_SOUND;
-        m_textures["editor.icon.asset.audio"] = TextureLoader::CreateFromMemory(reinterpret_cast<uint8_t*>(raw.data()), 16, 16, firstFilterEditor, secondFilterEditor, false);
-    }
-    {
-        std::vector<uint64_t> raw = ICON_SCRIPT;
-        m_textures["editor.icon.asset.script"] = TextureLoader::CreateFromMemory(reinterpret_cast<uint8_t*>(raw.data()), 16, 16, firstFilterEditor, secondFilterEditor, false);
-    }
-    {
-        std::vector<uint64_t> raw = ICON_FONT;
-        m_textures["editor.icon.asset.font"] = TextureLoader::CreateFromMemory(reinterpret_cast<uint8_t*>(raw.data()), 16, 16, firstFilterEditor, secondFilterEditor, false);
-    }
+    m_iconService = std::make_unique<Icons::IconService>(*m_iconRegistry, std::move(iconBindings));
+    m_iconPainter = std::make_unique<Icons::IconPainter>(*m_iconService);
 
+    // Scene billboards stay standalone textures owned by EditorResources; the
+    // renderer samples them through GetTexture and never goes through IconPainter.
     for (const auto& record : m_catalog.GetRecords())
     {
-        if (record.type == EditorResourceType::Icon)
-            loadEditorIcon(record.id);
-    }
+        if (record.type != EditorResourceType::SceneTexture)
+            continue;
 
-    {
-        std::vector<uint64_t> raw = BILL_PLIGHT;
-        m_textures["Bill_Point_Light"] = TextureLoader::CreateFromMemory(reinterpret_cast<uint8_t*>(raw.data()), 128, 128, firstFilterBillboard, secondFilterBillboard, false);
-    }
-    {
-        std::vector<uint64_t> raw = BILL_SLIGHT;
-        m_textures["Bill_Spot_Light"] = TextureLoader::CreateFromMemory(reinterpret_cast<uint8_t*>(raw.data()), 128, 128, firstFilterBillboard, secondFilterBillboard, false);
-    }
-    {
-        std::vector<uint64_t> raw = BILL_DLIGHT;
-        m_textures["Bill_Directional_Light"] = TextureLoader::CreateFromMemory(reinterpret_cast<uint8_t*>(raw.data()), 128, 128, firstFilterBillboard, secondFilterBillboard, false);
-    }
-    {
-        std::vector<uint64_t> raw = BILL_ABLIGHT;
-        m_textures["Bill_Ambient_Box_Light"] = TextureLoader::CreateFromMemory(reinterpret_cast<uint8_t*>(raw.data()), 128, 128, firstFilterBillboard, secondFilterBillboard, false);
-    }
-    {
-        std::vector<uint64_t> raw = BILL_ASLIGHT;
-        m_textures["Bill_Ambient_Sphere_Light"] = TextureLoader::CreateFromMemory(reinterpret_cast<uint8_t*>(raw.data()), 128, 128, firstFilterBillboard, secondFilterBillboard, false);
+        const auto sourcePath = m_catalog.ResolvePath(record.id, EditorResourceBackendMode::Development);
+        if (!sourcePath.has_value())
+        {
+            NLS_LOG_WARNING("[EditorResources] Missing catalog path for scene texture \"" + record.id + "\"");
+            continue;
+        }
+
+        auto* texture = TextureLoader::CreateFromImageFile(
+            sourcePath->string(), firstFilterBillboard, secondFilterBillboard, false);
+        if (texture == nullptr)
+        {
+            NLS_LOG_WARNING("[EditorResources] Failed to load scene texture \"" + record.id + "\" from " +
+                sourcePath->string());
+            continue;
+        }
+        m_textures[record.id] = texture;
     }
 
     m_meshPaths["Cylinder"] = "editor.model.helper.cylinder";
@@ -329,49 +334,10 @@ Editor::Core::EditorResources::~EditorResources()
         NLS::Render::Resources::Loaders::ShaderLoader::Destroy(shader);
 }
 
-NLS::Render::Resources::Texture2D* Editor::Core::EditorResources::GetFileIcon(const std::string& p_filename)
-{
-    return GetTexture(GetFileIconId(p_filename));
-}
-
 const char* Editor::Core::EditorResources::GetFileIconId(const std::string& p_filename)
 {
-    using namespace Utils;
-    auto extension = std::filesystem::path(p_filename).extension().string();
-    std::transform(
-        extension.begin(),
-        extension.end(),
-        extension.begin(),
-        [](const unsigned char character) { return static_cast<char>(std::tolower(character)); });
-    if (extension == ".lua")
-        return "editor.icon.asset.script.lua";
-    if (extension == ".cs")
-        return "editor.icon.asset.script.csharp";
-
-    const auto fileType = PathParser::GetFileType(p_filename);
-    switch (fileType)
-    {
-    case PathParser::EFileType::TEXTURE:
-        return "editor.icon.asset.texture";
-    case PathParser::EFileType::MODEL:
-        return "editor.icon.asset.mesh";
-    case PathParser::EFileType::PREFAB:
-        return "editor.icon.asset.prefab";
-    case PathParser::EFileType::SHADER:
-        return "editor.icon.asset.shader";
-    case PathParser::EFileType::MATERIAL:
-        return "editor.icon.asset.material";
-    case PathParser::EFileType::SCENE:
-        return "editor.icon.asset.scene";
-    case PathParser::EFileType::SOUND:
-        return "editor.icon.asset.audio";
-    case PathParser::EFileType::SCRIPT:
-        return "editor.icon.asset.script";
-    case PathParser::EFileType::FONT:
-        return "editor.icon.asset.font";
-    default:
-        return "editor.icon.asset.default";
-    }
+    return NLS::Editor::Assets::AssetIconResolver::IconIdCString(
+        NLS::Editor::Assets::AssetIconResolver::Default().ResolvePath(p_filename));
 }
 
 NLS::Render::Resources::Texture2D* Editor::Core::EditorResources::GetTexture(const std::string& p_id)
@@ -380,6 +346,21 @@ NLS::Render::Resources::Texture2D* Editor::Core::EditorResources::GetTexture(con
         return found->second;
 
     return nullptr;
+}
+
+NLS::Editor::Icons::IconRegistry& Editor::Core::EditorResources::GetIconRegistry()
+{
+    return *m_iconRegistry;
+}
+
+NLS::Editor::Icons::IconService& Editor::Core::EditorResources::GetIconService()
+{
+    return *m_iconService;
+}
+
+NLS::Editor::Icons::IconPainter& Editor::Core::EditorResources::GetIconPainter()
+{
+    return *m_iconPainter;
 }
 
 NLS::Render::Resources::Mesh* Editor::Core::EditorResources::GetMesh(const std::string& p_id)

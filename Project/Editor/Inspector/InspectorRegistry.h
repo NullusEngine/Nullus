@@ -8,6 +8,9 @@
 
 #include "Inspector/ComponentEditor.h"
 #include "Inspector/InspectorTypes.h"
+#include <UI/Controls/Control.h>
+#include "Properties/PropertyControlState.h"
+#include <stdexcept>
 
 namespace NLS::Engine::Components { class Component; }
 
@@ -22,7 +25,8 @@ enum class InspectorDrawerScope : uint8_t
     ExplicitMetadata,
     ExactType,
     TypeFamily,
-    ReadOnlyFallback
+    ReadOnlyFallback,
+    Builtin
 };
 
 struct TargetEditorRegistration
@@ -69,6 +73,27 @@ struct InspectorPropertyDrawerContext
     // Canonical property cursor for drawers that need to read/write staged
     // values directly. PropertyNode is presentation metadata only.
     Serialization::SerializedProperty* serializedProperty = nullptr;
+    UI::Controls::ControlResult interaction;
+    bool structureChanged = false;
+    // Compatibility hook; forwards to the registered shared collection drawer.
+    std::function<UI::Controls::ControlResult()> drawCollection;
+    Serialization::SerializedObject* serializedObject = nullptr;
+    bool readOnly = false;
+    float labelColumnWidth = 0;
+    std::function<UI::Controls::ControlResult(const PropertyNode&)> drawChild;
+    std::function<void(const PropertyNode&)> notifyChanged;
+    std::function<void()> drawMenu;
+    std::function<void(std::string_view,bool)> setExpanded;
+    std::optional<bool> expandedOverride;
+    std::function<UI::Controls::ControlResult()> drawStructure;
+    std::function<UI::Controls::ControlResult()> drawReference;
+    void* state = nullptr;
+    template<class T> T& GetState() const
+    {
+        if(!state) throw std::logic_error("Property drawer state is only available during Draw");
+        return static_cast<Properties::PropertyControlState*>(state)->Get<T>();
+    }
+
 };
 
 struct InspectorDecoratorDrawerContext
@@ -85,8 +110,12 @@ struct PropertyDrawerRegistration
     std::string metadataKey;
     meta::Type valueType;
     // Return true after drawing, including when the control was not changed.
-    // A false return asks InspectorView to continue with its shared drawer.
+    // A false return asks InspectorPropertyEditor to continue with its shared drawer.
     std::function<bool(InspectorPropertyDrawerContext&)> draw;
+    // Field paths are only meaningful inside their declaring type. Empty keeps
+    // the legacy wildcard contract for existing generated registrations.
+    std::string ownerTypeName;
+    std::optional<InspectorPropertyKind> propertyKind;
 };
 
 struct DecoratorDrawerRegistration
@@ -116,9 +145,15 @@ public:
     // able to drop its own entries without touching native registrations.
     void UnregisterComponentEditorsByIdentifierPrefix(std::string_view prefix);
     void RegisterPropertyDrawer(PropertyDrawerRegistration registration);
+    bool UnregisterPropertyDrawer(std::string_view identifier);
+    uint64_t AddPropertyDrawerInvalidationListener(std::function<void()> listener);
+    void RemovePropertyDrawerInvalidationListener(uint64_t id);
+
+    [[nodiscard]] std::weak_ptr<const void> GetLifetime() const { return m_lifetime; }
     void RegisterDecoratorDrawer(DecoratorDrawerRegistration registration);
 
     [[nodiscard]] std::optional<PropertyDrawerRegistration> ResolvePropertyDrawer(const PropertyNode& node) const;
+    [[nodiscard]] std::optional<PropertyDrawerRegistration> ResolveBuiltinPropertyDrawer(const PropertyNode& node) const;
     [[nodiscard]] std::vector<DecoratorDrawerRegistration> ResolveDecoratorDrawers(const PropertyNode& node) const;
     [[nodiscard]] std::optional<ComponentEditorRegistration> ResolveComponentEditor(const meta::Type& type) const;
     // Resolves an editor registered for a script component by the script's
@@ -138,5 +173,9 @@ private:
     std::vector<DecoratorDrawerRegistration> m_decoratorDrawers;
     uint64_t m_version = 1u;
     uint64_t m_lifecycleId = 0u;
+    std::shared_ptr<const void> m_lifetime = std::make_shared<int>();
+    uint64_t m_nextDrawerListener=1;
+    std::unordered_map<uint64_t,std::function<void()>> m_drawerListeners;
+
 };
 } // namespace NLS::Editor::Inspector

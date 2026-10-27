@@ -1,0 +1,6 @@
+#pragma once
+#include <string_view>
+namespace NLS::VFX
+{
+inline constexpr std::string_view kParticleSpriteInterface = R"NLS_PARTICLE(@NLS_PARTICLE_SPRITE_SOURCE@)NLS_PARTICLE";
+}

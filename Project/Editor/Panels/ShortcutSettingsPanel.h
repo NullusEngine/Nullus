@@ -1,4 +1,5 @@
 #pragma once
+#include "Properties/PropertyPanel.h"
 
 #include <string>
 #include <vector>
@@ -35,5 +36,6 @@ namespace NLS::Editor::Panels
         std::string m_selectedCommandId;
 		std::string m_recordingCommandId;
 		std::string m_conflictText;
+        Properties::PropertyPanel m_properties;
 	};
 }

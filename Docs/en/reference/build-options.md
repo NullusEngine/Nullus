@@ -115,6 +115,7 @@ build_windows.bat [Debug|Release] [x64|ARM64]
 | `Editor` | The editor |
 | `Game` | Game runtime |
 | `Launcher` | Project launcher |
+| `NullusBuild` | Headless packaging CLI and shared build pipeline |
 | `NullusUnitTests` | Behavior tests |
 | `NullusPerformanceTests` | Performance and stress tests |
 | `ReflectionTest` | Reflection smoke tool |

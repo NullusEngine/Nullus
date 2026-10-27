@@ -14,6 +14,8 @@
 #include <Math/ExternalReflection.h>
 #include <Math/Bounds.h>
 #include <Math/BoundsInt.h>
+#include <Math/Matrix4.h>
+#include <Serialize/SerializedSpecialTypes.h>
 #include <Math/RectInt.h>
 #include <Math/Vector2.h>
 #include <Math/Vector2Int.h>
@@ -41,6 +43,12 @@ void OverlayMetadata(EditorPropertyMetadata& destination, const EditorPropertyMe
     if (source.rangeMax.has_value()) destination.rangeMax = source.rangeMax;
     if (source.min.has_value()) destination.min = source.min;
     if (source.max.has_value()) destination.max = source.max;
+    if (source.step.has_value()) destination.step = source.step;
+    if (source.numericMinimum) destination.numericMinimum = source.numericMinimum;
+    if (source.numericMaximum) destination.numericMaximum = source.numericMaximum;
+    if (!source.visibleIf.empty()) destination.visibleIf = source.visibleIf;
+    if (!source.enabledIf.empty()) destination.enabledIf = source.enabledIf;
+    if (!source.codeLanguage.empty()) destination.codeLanguage = source.codeLanguage;
     destination.multiline = destination.multiline || source.multiline;
     destination.readOnly = destination.readOnly || source.readOnly;
     destination.hideInInspector = destination.hideInInspector || source.hideInInspector;
@@ -110,6 +118,9 @@ InspectorPropertyKind GetInspectorPropertyKind(const meta::Type& type)
         return InspectorPropertyKind::Color;
     if (type == NLS_TYPEOF(Maths::Rect))
         return InspectorPropertyKind::Rect;
+    if (type == NLS_TYPEOF(Maths::Matrix4)) return InspectorPropertyKind::Matrix;
+    if (type == NLS_TYPEOF(Engine::Serialize::AnimationCurve)) return InspectorPropertyKind::AnimationCurve;
+    if (type == NLS_TYPEOF(Engine::Serialize::Gradient)) return InspectorPropertyKind::Gradient;
     if (type == NLS_TYPEOF(Maths::Vector2Int))
         return InspectorPropertyKind::Vector2Int;
     if (type == NLS_TYPEOF(Maths::Vector3Int))

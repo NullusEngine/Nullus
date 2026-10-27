@@ -1,6 +1,7 @@
 ﻿#pragma once
 
 #include <filesystem>
+#include <memory>
 #include <optional>
 #include <string>
 #include <unordered_map>
@@ -10,6 +11,13 @@
 #include <ResourceManagement/ShaderManager.h>
 
 #include "Core/EditorResourceCatalog.h"
+
+namespace NLS::Editor::Icons
+{
+	class IconPainter;
+	class IconRegistry;
+	class IconService;
+}
 
 namespace NLS::Editor::Core
 {
@@ -30,11 +38,6 @@ namespace NLS::Editor::Core
 		*/
 		~EditorResources();
 
-		/**
-		* Returns the file icon identified by the given string or nullptr on fail
-		* @param p_filename
-		*/
-        NLS::Render::Resources::Texture2D* GetFileIcon(const std::string& p_filename);
         static const char* GetFileIconId(const std::string& p_filename);
 
 		/**
@@ -42,6 +45,12 @@ namespace NLS::Editor::Core
 		* @param p_id
 		*/
         NLS::Render::Resources::Texture2D* GetTexture(const std::string& p_id);
+
+        // Icon system. The service owns icon textures; GetTexture above delegates
+        // editor.icon.* lookups to it for legacy callers.
+        Icons::IconRegistry& GetIconRegistry();
+        Icons::IconService& GetIconService();
+        Icons::IconPainter& GetIconPainter();
 
 		/**
 		* Returns the helper mesh identified by the given string or nullptr on fail
@@ -80,5 +89,8 @@ namespace NLS::Editor::Core
         std::unordered_map<std::string, NLS::Render::Resources::Shader*> m_shaders;
         std::unordered_map<std::string, std::string> m_meshPaths;
         std::unordered_map<std::string, std::string> m_shaderPaths;
+        std::unique_ptr<Icons::IconRegistry> m_iconRegistry;
+        std::unique_ptr<Icons::IconService> m_iconService;
+        std::unique_ptr<Icons::IconPainter> m_iconPainter;
 	};
 }

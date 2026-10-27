@@ -14,6 +14,9 @@ namespace NLS::Game::Launch
 		std::string summaryPath;
 		uint32_t captureAfterFrames = 30u;
 			bool captureSwapchain = false;
+            bool animationValidation = false;
+            bool animationForward = false;
+            float animationTime = .25f;
 	};
 
 	struct ParsedGameLaunchArgs

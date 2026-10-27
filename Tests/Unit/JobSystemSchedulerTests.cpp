@@ -13,6 +13,7 @@
 #include "Jobs/JobRange.h"
 #include "Jobs/JobSafety.h"
 #include "Jobs/JobSystem.h"
+#include "Threading/ExecutionThreadBudget.h"
 
 namespace
 {
@@ -153,6 +154,37 @@ TEST_F(JobSystemSchedulerTests, LifecycleClampsExcessiveWorkerCount)
     EXPECT_TRUE(NLS::Base::Jobs::InitializeJobSystem(config));
     EXPECT_TRUE(NLS::Base::Jobs::IsJobSystemInitialized());
     EXPECT_EQ(NLS::Base::Jobs::GetJobWorkerCount(), 64u);
+}
+
+/**
+ * The automatic JobSystem pool and the rendering TaskGraph share one hardware
+ * budget. Resolving each side independently used to hand both pools
+ * hardware - 1 workers, which oversubscribes the machine.
+ */
+TEST_F(JobSystemSchedulerTests, AutomaticWorkerCountsStayInsideTheSharedBudget)
+{
+    if (NLS::Base::Jobs::IsJobSystemInitialized())
+        GTEST_SKIP() << "Another fixture already owns the global JobSystem";
+
+    NLS::Base::Jobs::JobSystemConfig config;
+    config.workerCount = NLS::Base::Jobs::kAutoJobWorkerCount;
+    config.backgroundWorkerCount = NLS::Base::Jobs::kAutoJobWorkerCount;
+    ASSERT_TRUE(NLS::Base::Jobs::TryInitializeJobSystem(config));
+
+    const uint32_t reportedHardware = std::thread::hardware_concurrency();
+    const uint32_t hardwareWorkers = reportedHardware == 0u
+        ? NLS::Base::Threading::kFallbackHardwareConcurrency
+        : reportedHardware;
+    const auto budget = NLS::Base::Threading::ResolveExecutionPoolBudget(hardwareWorkers);
+
+    const auto foreground = NLS::Base::Jobs::GetJobWorkerCount();
+    const auto background = NLS::Base::Jobs::GetBackgroundJobWorkerCount();
+    EXPECT_EQ(foreground, budget.jobsForegroundWorkerCount);
+    EXPECT_EQ(background, budget.jobsBackgroundWorkerCount);
+    EXPECT_EQ(foreground + background, budget.jobsWorkerCount);
+    EXPECT_LE(
+        budget.taskGraphWorkerCount + foreground + background,
+        budget.totalPoolWorkerCount);
 }
 
 TEST_F(JobSystemSchedulerTests, LifecycleShutdownClearsInitializedState)

@@ -19,6 +19,7 @@
 #include <ServiceLocator.h>
 
 #include "Core/Context.h"
+#include "Materials/MaterialEditingService.h"
 
 namespace NLS::Editor::Serialization
 {
@@ -71,6 +72,13 @@ Material* ResolveMaterial(const SerializedTargetHandle& target)
         return nullptr;
     }
     auto& context = NLS::Core::ServiceLocator::Get<Core::Context>();
+    if (NLS::Core::ServiceLocator::Contains<Materials::MaterialEditingService>())
+    {
+        std::string error;
+        const auto session=NLS::Core::ServiceLocator::Get<Materials::MaterialEditingService>().OpenTarget(
+            target.assetId,target.resourcePath,error);
+        if (session) return session->draft.get();
+    }
     return context.materialManager[NormalizeAssetRelativePath(target.resourcePath)];
 }
 
@@ -574,8 +582,15 @@ ApplyResult MaterialSerializedBackend::DeserializeTarget(
         return ApplyResult::Failure("Material target is no longer available.");
     std::unordered_map<std::string, meta::Variant> values;
     std::string error;
+    auto before=material->CreateDynamicCopy();
     if (!DecodeMaterialValues(stream, values, error) || !ApplyDecodedMaterialValues(*material, values, error))
         return ApplyResult::Failure(error.empty() ? "Material stream could not be applied." : std::move(error));
+    if (NLS::Core::ServiceLocator::Contains<Materials::MaterialEditingService>())
+    {
+        auto& service=NLS::Core::ServiceLocator::Get<Materials::MaterialEditingService>();
+        if (const auto session=service.FindDraft(material);session && !service.CaptureInspectorChanges(*session,*before))
+        {material->CopyRuntimeFrom(*before);return ApplyResult::Failure(session->error);}
+    }
     return ApplyResult::Success();
 }
 

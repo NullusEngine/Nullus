@@ -15,20 +15,24 @@ This handbook is organized as "get a result first, understand the internals seco
 | Scripting | C# (CoreCLR) and Lua 5.4 backends sharing one scripting API manifest |
 | Large scenes | Spatial index, visibility collection, LOD and HLOD, residency budgets, DX12 HZB occlusion |
 | Scheduling | Native JobSystem plus TaskGraph with priorities, named lanes, and work stealing |
+| Animation | Animator, GPU skinning, graphs, state machines, BlendSpace, and Animation Workbench |
+| VFX and queries | CPU/GPU particles, module-stack editor, Sprite/Mesh rendering, and static PhysX scene queries |
+| Packaging | Build Profiles, target cooking, `.npak` content, and desktop Player assembly |
 | Platforms | Windows / Linux / macOS build targets; Windows DX12 and Linux Vulkan are the validated runtime lines |
 
 A finer breakdown with validation status lives in the [Feature Status Matrix](../roadmap/index.md).
 
-## What the engine does not do
+## Current capability limits
 
-Nullus is not a complete game framework out of the box. The following areas have no usable implementation yet; their plans and dependencies live in the linked chapters:
+Animation, particles, static physics queries, and desktop packaging have implementations, with delivery boundaries documented in their chapters. These areas remain incomplete:
 
-- Physics, skeletal animation, audio, particles, and video playback
+- Dynamic rigid bodies, character controllers, audio, and video playback
+- Root Motion, IK, retargeting, complete particle modules/data interfaces, and a general post-processing stack
 - Navigation meshes, behavior trees, multiplayer, and replication
-- A player-facing packager, installer, or content delivery service
-- 2D tooling, visual scripting (node graphs), and a plugin marketplace
+- Installers, automatic updates, content delivery services, and mobile delivery
+- 2D tooling, gameplay visual scripting, and a plugin marketplace
 
-Those chapters are written as goal, current state, gap, and dependency. They do not invent menus, settings, or APIs where nothing is implemented.
+Material, animation, and particle graphs are specialized authoring tools rather than a gameplay visual scripting system. Each chapter separates implementation, automated tests, device execution, and mouse-driven acceptance.
 
 ## Who this is for
 
@@ -39,7 +43,7 @@ Those chapters are written as goal, current state, gap, and dependency. They do 
 
 ## Versioning and compatibility
 
-The engine has no stable release number yet. The project version in `CMakeLists.txt` is `1.0.0` and exists for the build system only. The repository does not promise source API compatibility; read the commit history and the [Feature Status Matrix](../roadmap/index.md) when upgrading.
+The engine has no stable release number yet. The project version in `CMakeLists.txt` is `1.0.0` and identifies builds and Player/package compatibility; it is not a stable API guarantee. The repository does not promise source API compatibility; read the commit history and the [Feature Status Matrix](../roadmap/index.md) when upgrading.
 
 The scripting API has its own versioning: `ScriptApi.json` is currently schema version `2`. A native scripting ABI mismatch makes the runtime refuse to load rather than attempt compatibility. See the [Scripting API Reference](../scripting/api.md).
 

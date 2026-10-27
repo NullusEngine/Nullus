@@ -14,6 +14,7 @@
 #include "ServiceLocator.h"
 #include "UI/UIManager.h"
 #include "ImGui/imgui.h"
+#include "ImGui/imgui_internal.h"
 #include <algorithm>
 #include <chrono>
 #include <cstring>
@@ -922,6 +923,26 @@ bool Editor::Panels::AView::IsMouseWithinView(const Maths::Vector2& mousePositio
     const auto& max = m_image->GetLastDrawMax();
     return mousePosition.x >= min.x && mousePosition.x < max.x &&
         mousePosition.y >= min.y && mousePosition.y < max.y;
+}
+
+bool Editor::Panels::AView::IsMouseHoveringView(const Maths::Vector2& mousePosition) const
+{
+    if (!enabled || !IsOpened() || !IsMouseWithinView(mousePosition) || ImGui::GetCurrentContext() == nullptr)
+        return false;
+
+    auto* window = ImGui::FindWindowByName((name + GetPanelID()).c_str());
+    if (window == nullptr || !ImGui::IsWindowContentHoverable(window))
+        return false;
+
+    // Camera updates run before ImGui::NewFrame(), so use the current mouse position
+    // with ImGui's window hit test instead of last frame's cached hover/focus state.
+    ImGuiWindow* hoveredWindow = nullptr;
+    ImGui::FindHoveredWindowEx({mousePosition.x, mousePosition.y}, false, &hoveredWindow, nullptr);
+    if (hoveredWindow != window)
+        return false;
+
+    const auto& context = *ImGui::GetCurrentContext();
+    return context.ActiveId == 0 || context.ActiveIdAllowOverlap || context.ActiveIdWindow == window;
 }
 
 bool Editor::Panels::AView::HasViewportImageInputBounds() const

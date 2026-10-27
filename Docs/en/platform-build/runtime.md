@@ -73,20 +73,11 @@ The full key list is in [Editor and Project Settings](../editor/settings.md#proj
 
 ## Packaging and distribution
 
-The repository has no player-facing packager yet. What exists is:
+`NullusBuild` and editor build actions share dependency collection, cooking, content packaging, and Player assembly. Project `BuildProfiles.json` selects the target, start scene, keep rules, and output format. See [Player Packaging and Distribution](packaging.md) for configuration and commands.
 
-- Build actions triggered from the editor menu (`Build game`, `Build game and run`, `Temporary build`)
-- The `executable_name` project key that names the target executable
-- Platform-specific artifacts and the runtime asset database
+A packaged executable reads adjacent `Player.info`, which records engine version, target, packages, script payload, and input hash. It checks compatibility before mounting `.npak` content and loading the runtime asset manifest. The package does not depend on the editor's `Library/`; development-project startup can still use the artifact database.
 
-What is missing:
-
-- A final container format for packed and compressed assets
-- Dependency collection and deduplication
-- Installers and an update channel
-- A platform-independent distribution descriptor
-
-These need a decision first about the final shape of runtime loading. If the runtime reads the project's artifact layout directly, no new container format is needed. If single-file distribution is required, the container, index, and verification scheme must be defined first. That tradeoff determines the packager interface and should not be left to implementation time.
+`--package-self-test` runs before normal launch argument parsing and checks containers, the manifest, start scene, and script payload. Passing these checks does not establish game interaction or GPU rendering acceptance. Installers, automatic updates, and mobile distribution remain unavailable.
 
 ## Next steps
 

@@ -436,19 +436,26 @@ namespace NLS::Editor::Core
 		std::optional<std::string> SelectBuildFolder();
 
 		/**
-		* Build the current project
+		* Build the current project with the selected build profile.
+		* The editor delegates to NullusBuild so the UI and CI share one path.
 		* @param p_autoRun
 		* @param p_tempFolder
+		* @param p_profileId empty selects the project default profile
 		*/
-		void Build(bool p_autoRun = false, bool p_tempFolder = false);
+		void Build(bool p_autoRun = false, bool p_tempFolder = false, const std::string& p_profileId = {});
 
 		/**
 		* Build the current project at the given location
-		* @param p_configuration
+		* @param p_configuration retained for callers that still name a configuration
 		* @param p_buildPath
 		* @param p_autoRun
+		* @param p_profileId empty selects the project default profile
 		*/
-		void BuildAtLocation(const std::string& p_configuration, const std::string p_buildPath, bool p_autoRun = false);
+		void BuildAtLocation(
+			const std::string& p_configuration,
+			const std::string p_buildPath,
+			bool p_autoRun = false,
+			const std::string& p_profileId = {});
 		#pragma endregion
 
 		#pragma region ACTION_SYSTEM

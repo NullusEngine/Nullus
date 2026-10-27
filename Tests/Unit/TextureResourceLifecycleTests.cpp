@@ -271,6 +271,32 @@ TEST(TextureResourceLifecycleTests, SameSizeTextureDataUpdateUsesInPlaceUploadIn
     EXPECT_EQ(explicitDevice->lastTextureUpdateDesc.rowPitch, 8u);
 }
 
+TEST(TextureResourceLifecycleTests, UnsupportedTextureUpdatesReplaceOnlyAfterSuccessfulUpload)
+{
+    NLS::Render::Settings::DriverSettings settings;
+    settings.graphicsBackend = NLS::Render::Settings::EGraphicsBackend::NONE;
+    settings.enableExplicitRHI = false;
+    NLS::Render::Context::Driver driver(settings);
+    NLS::Core::ServiceLocator::Provide(driver);
+    auto device = std::make_shared<TestExplicitDevice>(); SetTextureTestDevice(driver,device);
+    TestTextureResource texture;
+    const auto original = texture.GetTextureHandle();
+    const auto originalView = texture.GetOrCreateExplicitTextureView("TextureBeforeUnsupportedUpdate");
+    const uint32_t pixel = 0xff0000ff;
+    device->textureUpdateResult = {NLS::Render::RHI::RHIUpdateStatusCode::BackendFailure,"Failed upload"};
+    EXPECT_FALSE(texture.RecreateForTest(1,1,&pixel)); EXPECT_EQ(texture.GetTextureHandle(),original);
+    device->textureUpdateResult.code = NLS::Render::RHI::RHIUpdateStatusCode::Unsupported;
+    device->failTextureCreateCall = device->textureCreateCalls+1;
+    EXPECT_FALSE(texture.RecreateForTest(1,1,&pixel));
+    EXPECT_EQ(texture.GetTextureHandle(),original);
+    EXPECT_EQ(texture.GetOrCreateExplicitTextureView("TextureAfterRejectedUpload"),originalView);
+    ASSERT_TRUE(texture.RecreateForTest(1,1,&pixel));
+    EXPECT_NE(texture.GetTextureHandle(),original);
+    EXPECT_NE(texture.GetOrCreateExplicitTextureView("TextureAfterSuccessfulUpload"),originalView);
+    EXPECT_EQ(device->lastTextureUploadDesc.data,&pixel);
+    EXPECT_EQ(device->lastTextureUploadDesc.dataSize,sizeof(pixel));
+}
+
 TEST(TextureResourceLifecycleTests, FailedCreateFromMemoryUploadKeepsFallbackTextureCompatibility)
 {
     NLS::Render::Settings::DriverSettings settings;

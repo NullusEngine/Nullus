@@ -1517,6 +1517,21 @@ TEST(InspectorCoreTests, AssetBrowserReimportAndReloadInvalidateMatchingAssetSco
         });
 }
 
+TEST(InspectorCoreTests, ImporterMetadataRewritePreservesOwnershipButExternalEditsDoNot)
+{
+    TemporaryInspectorAssetProject project;
+    const auto path=project.root/"Assets/Cube.obj.meta";
+    { std::ofstream file(path); file << "DISTANCE_FIELD_RESOLUTION_SCALE=0.5\n"; }
+    const auto expected=NLS::Editor::Panels::TestHooks::CaptureAssetBrowserWatcherStateForTesting(path);
+    ASSERT_FALSE(expected.metadataHash.empty());
+    { std::ofstream file(path); file << "DISTANCE_FIELD_RESOLUTION_SCALE=0.5\n"; }
+    std::filesystem::last_write_time(path,expected.lastWriteTime+std::chrono::seconds(2));
+    EXPECT_TRUE(NLS::Editor::Panels::TestHooks::MatchesAssetBrowserWatcherStateForTesting(expected,path));
+    { std::ofstream file(path); file << "DISTANCE_FIELD_RESOLUTION_SCALE=0.2\n"; }
+    std::filesystem::last_write_time(path,expected.lastWriteTime);
+    EXPECT_FALSE(NLS::Editor::Panels::TestHooks::MatchesAssetBrowserWatcherStateForTesting(expected,path));
+}
+
 TEST(InspectorCoreTests, AssetBrowserExternalRefreshInvalidatesMatchingAssetScopeWithoutSelection)
 {
     ScopedInspectorUndoService undoScope;

@@ -34,6 +34,12 @@ cbuffer MaterialConstants : register(b0, space2)
 
 VSOutput BuildObjectMaskVertex(VSInput input, uint instanceId)
 {
+#if defined(NLS_SKINNED)
+    input.Position=NLSSkinPosition(input.Position,input.skinJoints,input.skinWeights);
+    input.Normal=NLSSkinNormal(input.Normal,input.skinJoints,input.skinWeights);
+    input.Tangent=NLSSkinDirection(input.Tangent,input.skinJoints,input.skinWeights);
+    input.Bitangent=NLSSkinDirection(input.Bitangent,input.skinJoints,input.skinWeights);
+#endif
     VSOutput output;
     const uint objectSlot = InstanceObjectIndices[u_ObjectIndex + instanceId];
     const float4x4 model = ObjectData[objectSlot];

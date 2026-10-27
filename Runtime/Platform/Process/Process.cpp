@@ -242,16 +242,22 @@ InstallResourceRoots ResolveInstallResourceRoots(const std::filesystem::path& ex
 
     auto installRoot = executableDirectory;
     std::error_code error;
-    for (auto candidate = executableDirectory; !candidate.empty(); candidate = candidate.parent_path())
+    // Installed players are identified by Player.info next to the executable.
+    // Do not walk parent directories in that case: a game installed inside a
+    // development checkout must never bind to the checkout's App/TestProject.
+    if (!std::filesystem::is_regular_file(executableDirectory / "Player.info", error))
     {
-        if (std::filesystem::is_directory(candidate / "Assets" / "Editor", error) ||
-            std::filesystem::is_directory(candidate / "App" / "Assets" / "Editor", error))
+        for (auto candidate = executableDirectory; !candidate.empty(); candidate = candidate.parent_path())
         {
-            installRoot = candidate;
-            break;
+            if (std::filesystem::is_directory(candidate / "Assets" / "Editor", error) ||
+                std::filesystem::is_directory(candidate / "App" / "Assets" / "Editor", error))
+            {
+                installRoot = candidate;
+                break;
+            }
+            if (candidate == candidate.parent_path())
+                break;
         }
-        if (candidate == candidate.parent_path())
-            break;
     }
 
     auto assetsRoot = installRoot / "Assets";
@@ -267,6 +273,19 @@ InstallResourceRoots ResolveInstallResourceRoots(const std::filesystem::path& ex
     roots.editorAssetsRoot = NormalizePath(assetsRoot / "Editor");
     roots.engineAssetsRoot = NormalizePath(assetsRoot / "Engine");
     return roots;
+}
+
+std::string CurrentArtifactPlatformTag()
+{
+#if defined(_WIN32)
+    return "win64";
+#elif defined(__APPLE__)
+    return "macos";
+#elif defined(__linux__)
+    return "linux";
+#else
+    return "unknown";
+#endif
 }
 
 } // namespace NLS::Platform::Process

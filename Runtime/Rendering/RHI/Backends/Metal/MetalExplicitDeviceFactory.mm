@@ -2556,6 +2556,51 @@ namespace NLS::Render::Backend
                                   threadsPerThreadgroup:m_currentComputePipeline->GetThreadgroupSize()];
             }
 
+            NLS::Render::RHI::RHICommandRecordingResult DrawIndirect(
+                const std::shared_ptr<NLS::Render::RHI::RHIBuffer>& arguments, uint64_t offset = 0) override
+            {
+                using namespace NLS::Render::RHI;
+                const auto valid = ValidateIndirectArguments(arguments,offset,sizeof(RHIDrawIndirectArguments));
+                if (!valid.Succeeded()) return valid;
+                const auto buffer = std::dynamic_pointer_cast<MetalBuffer>(arguments);
+                if (!m_recording || !CanDraw() || !buffer || buffer->GetBuffer() == nil)
+                    return {RHICommandRecordingStatusCode::InvalidArgument,"Metal indirect draw requires an active graphics pass and Metal arguments"};
+                [m_renderEncoder drawPrimitives:ToMetalPrimitiveType(m_currentGraphicsPipeline->GetDesc().primitiveTopology)
+                                indirectBuffer:buffer->GetBuffer() indirectBufferOffset:offset];
+                return {};
+            }
+
+            NLS::Render::RHI::RHICommandRecordingResult DrawIndexedIndirect(
+                const std::shared_ptr<NLS::Render::RHI::RHIBuffer>& arguments, uint64_t offset = 0) override
+            {
+                using namespace NLS::Render::RHI;
+                const auto valid = ValidateIndirectArguments(arguments,offset,sizeof(RHIDrawIndexedIndirectArguments));
+                if (!valid.Succeeded()) return valid;
+                const auto buffer = std::dynamic_pointer_cast<MetalBuffer>(arguments);
+                if (!m_recording || !CanDraw() || m_indexBuffer == nil || !buffer || buffer->GetBuffer() == nil)
+                    return {RHICommandRecordingStatusCode::InvalidArgument,"Metal indexed indirect draw requires graphics, index and argument buffers"};
+                [m_renderEncoder drawIndexedPrimitives:ToMetalPrimitiveType(m_currentGraphicsPipeline->GetDesc().primitiveTopology)
+                        indexType:m_indexType == IndexType::UInt16 ? MTLIndexTypeUInt16 : MTLIndexTypeUInt32
+                        indexBuffer:m_indexBuffer indexBufferOffset:m_indexBufferOffset
+                        indirectBuffer:buffer->GetBuffer() indirectBufferOffset:offset];
+                return {};
+            }
+
+            NLS::Render::RHI::RHICommandRecordingResult DispatchIndirect(
+                const std::shared_ptr<NLS::Render::RHI::RHIBuffer>& arguments, uint64_t offset = 0) override
+            {
+                using namespace NLS::Render::RHI;
+                const auto valid = ValidateIndirectArguments(arguments,offset,sizeof(RHIDispatchIndirectArguments));
+                if (!valid.Succeeded()) return valid;
+                const auto buffer = std::dynamic_pointer_cast<MetalBuffer>(arguments);
+                if (!m_recording || m_computeEncoder == nil || !m_currentComputePipeline ||
+                    m_currentComputePipeline->GetPipelineState() == nil || !buffer || buffer->GetBuffer() == nil)
+                    return {RHICommandRecordingStatusCode::InvalidArgument,"Metal indirect dispatch requires a compute encoder and Metal arguments"};
+                [m_computeEncoder dispatchThreadgroupsWithIndirectBuffer:buffer->GetBuffer() indirectBufferOffset:offset
+                    threadsPerThreadgroup:m_currentComputePipeline->GetThreadgroupSize()];
+                return {};
+            }
+
             void CopyBuffer(
                 const std::shared_ptr<NLS::Render::RHI::RHIBuffer>& source,
                 const std::shared_ptr<NLS::Render::RHI::RHIBuffer>& destination,
@@ -4975,6 +5020,10 @@ namespace NLS::Render::Backend
                 capabilities.SetFeature(NLS::Render::RHI::RHIDeviceFeature::BackendReady, true);
                 capabilities.SetFeature(NLS::Render::RHI::RHIDeviceFeature::Graphics, true);
                 capabilities.SetFeature(NLS::Render::RHI::RHIDeviceFeature::Compute, true);
+                capabilities.SetFeature(NLS::Render::RHI::RHIDeviceFeature::DrawIndirect, true);
+                capabilities.SetFeature(NLS::Render::RHI::RHIDeviceFeature::DrawIndexedIndirect, true);
+                capabilities.SetFeature(NLS::Render::RHI::RHIDeviceFeature::DispatchIndirect, true);
+                capabilities.SetFeature(NLS::Render::RHI::RHIDeviceFeature::IndirectFirstInstance, true);
                 capabilities.SetFeature(NLS::Render::RHI::RHIDeviceFeature::AsyncCompute, false,
                     "Metal async compute scheduling remains gated to match the current DX12 runtime policy");
                 capabilities.SetFeature(NLS::Render::RHI::RHIDeviceFeature::DedicatedComputeQueue, true,

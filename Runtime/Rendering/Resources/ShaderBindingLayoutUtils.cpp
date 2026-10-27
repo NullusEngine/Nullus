@@ -30,6 +30,7 @@ namespace
 		case NLS::Render::Resources::ShaderResourceKind::UniformBuffer: return NLS::Render::RHI::BindingType::UniformBuffer;
 		case NLS::Render::Resources::ShaderResourceKind::StructuredBuffer: return NLS::Render::RHI::BindingType::StructuredBuffer;
 		case NLS::Render::Resources::ShaderResourceKind::StorageBuffer: return NLS::Render::RHI::BindingType::StorageBuffer;
+        case NLS::Render::Resources::ShaderResourceKind::StorageTexture: return NLS::Render::RHI::BindingType::RWTexture;
 		case NLS::Render::Resources::ShaderResourceKind::SampledTexture: return NLS::Render::RHI::BindingType::Texture;
 		case NLS::Render::Resources::ShaderResourceKind::Sampler:
 		default:

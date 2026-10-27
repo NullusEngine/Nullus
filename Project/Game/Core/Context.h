@@ -47,6 +47,19 @@ namespace NLS::Game
 
 		void ShutdownThreadedRendering();
 
+			/**
+			 * Starts the general Jobs pool from the rendering budget.
+			 *
+			 * The pool must outlive any background artifact work and must be
+			 * drained before the rendering threads unregister, so it is started
+			 * right after the Driver resolves the shared hardware budget and
+			 * shut down ahead of ShutdownThreadedRendering(). Uses
+			 * TryInitializeJobSystem so an embedding host that already owns a
+			 * pool keeps it.
+			 */
+			void StartJobSystemFromRenderingBudget();
+			void ShutdownJobSystemIfOwned();
+
 	public:
 		const std::string engineAssetsPath;
 		const std::string projectAssetsPath;
@@ -76,5 +89,6 @@ namespace NLS::Game
 		std::optional<std::string> m_projectPathOverride;
 		NLS::ListenerID m_sceneLoadListener = NLS::InvalidListenerID;
 		NLS::ListenerID m_sceneComponentAddedListener = NLS::InvalidListenerID;
+			bool m_ownsJobSystem = false;
 	};
 }

@@ -1,5 +1,9 @@
 #include "Engine/Assets/RuntimeAssetDatabase.h"
+#include "Rendering/Assets/DistanceFieldArtifact.h"
+#include "Rendering/Assets/SceneImportPipeline.h"
 
+#include "Rendering/Assets/ShaderArtifact.h"
+#include "Rendering/Resources/Loaders/ShaderPassArtifactRegistry.h"
 #include "Serialize/ObjectGraphDocument.h"
 
 #include <algorithm>
@@ -32,6 +36,19 @@ bool HasWindowsRootNameSyntax(const std::string& path)
 
     const auto first = static_cast<unsigned char>(path[0]);
     return std::isalpha(first) && path[1] == ':';
+}
+
+bool IsEditorHostTexturePlatform(const NLS::Core::Assets::ArtifactType type, const std::string& platform, const std::string& target)
+{
+    // Standalone texture imports contain native compression and use a concrete
+    // host target. Editor programs/materials are portable and use "editor".
+    // Permit only the current editor's texture target in that dependency closure;
+    // packaged platform builds still require an exact target match.
+#if defined(_WIN32)
+    return target == "editor" && type == NLS::Core::Assets::ArtifactType::Texture && platform == "win64-dx12";
+#else
+    return false;
+#endif
 }
 
 bool ContainsEntry(const RuntimeAssetManifest& manifest, const RuntimeAssetRef& reference)
@@ -179,7 +196,8 @@ bool ValidateRuntimeArtifact(
     const std::string& targetPlatform,
     NLS::Core::Assets::ImportDiagnosticList& diagnostics)
 {
-    if (!artifact.targetPlatform.empty() && artifact.targetPlatform != targetPlatform)
+    if (!artifact.targetPlatform.empty() && artifact.targetPlatform != targetPlatform &&
+        !IsEditorHostTexturePlatform(artifact.artifactType,artifact.targetPlatform,targetPlatform))
     {
         diagnostics.Add({
             NLS::Core::Assets::ImportDiagnosticSeverity::Error,
@@ -221,6 +239,44 @@ bool ValidateRuntimeArtifact(
     return true;
 }
 
+void AddDistanceFieldRuntimeDependencies(const NLS::Core::Assets::ArtifactManifest& manifest,
+    const NLS::Core::Assets::ImportedArtifact& artifact, std::vector<RuntimeAssetRef>& dependencies,
+    std::queue<RuntimeAssetRef>& pending)
+{
+    std::vector<std::string> keys;
+    if (artifact.artifactType == NLS::Core::Assets::ArtifactType::Mesh)
+    {
+        keys.push_back(NLS::Render::DistanceField::DistanceFieldSubAssetKey(artifact.subAssetKey));
+        if (artifact.subAssetKey.starts_with("mesh:"))
+            if (const auto primitive=NLS::Render::Assets::ParsePrimitiveMeshSourceKey(artifact.subAssetKey.substr(5)))
+            {
+                const auto groupKey=NLS::Render::DistanceField::DistanceFieldSubAssetKey("mesh:"+primitive->first);
+                if (manifest.FindSubAsset(groupKey))
+                {
+                    keys.push_back(groupKey);
+                    // Keep the membership complete even for a mesh-only pack. A
+                    // renderer containing just one part must use its own field.
+                    for (const auto& member:manifest.subAssets)
+                        if (member.artifactType==NLS::Core::Assets::ArtifactType::Mesh && member.subAssetKey!=artifact.subAssetKey && member.subAssetKey.starts_with("mesh:"))
+                            if (const auto other=NLS::Render::Assets::ParsePrimitiveMeshSourceKey(member.subAssetKey.substr(5));other && other->first==primitive->first)
+                            {
+                                RuntimeAssetRef reference{manifest.sourceAssetId,member.subAssetKey};
+                                AddUniqueDependency(dependencies,reference); pending.push(std::move(reference));
+                            }
+                }
+            }
+    }
+    else if (artifact.artifactType == NLS::Core::Assets::ArtifactType::MeshDistanceField && artifact.loaderId == "mesh-distance-field")
+        for (uint32_t mip = 0; mip < 2; ++mip) keys.push_back(artifact.subAssetKey + ":mip" + std::to_string(mip));
+    for (const auto& key : keys)
+        if (manifest.FindSubAsset(key))
+        {
+            RuntimeAssetRef reference{manifest.sourceAssetId, key};
+            AddUniqueDependency(dependencies, reference);
+            pending.push(std::move(reference));
+        }
+}
+
 bool ShouldIncludeSiblingArtifactsForRoot(
     const NLS::Core::Assets::ArtifactManifest& manifest,
     const RuntimeAssetRef& root,
@@ -238,6 +294,34 @@ RuntimeAssetDatabase::RuntimeAssetDatabase(RuntimeAssetManifest manifest)
     : m_manifest(std::move(manifest))
 {
     RebuildEntryIndex();
+
+    // Packaged materials address shaders by source path. Register the pass
+    // artifacts from the manifest so MaterialLoader can bind them without an
+    // ArtifactDB (which is a development-only database).
+    std::map<std::string, std::vector<std::string>> shaderPasses;
+    for (const auto& entry : m_manifest.entries)
+    {
+        if (entry.artifactType != NLS::Core::Assets::ArtifactType::Shader ||
+            entry.artifactPath.empty())
+        {
+            continue;
+        }
+        const auto artifact = NLS::Render::Assets::LoadShaderArtifact(entry.artifactPath);
+        if (!artifact.has_value() || artifact->sourcePath.empty())
+            continue;
+        shaderPasses[artifact->sourcePath].push_back(entry.artifactPath);
+    }
+    for (auto& [sourcePath, artifacts] : shaderPasses)
+    {
+        NLS::Render::Resources::Loaders::RegisterShaderPassArtifacts(
+            sourcePath,
+            std::move(artifacts));
+    }
+}
+
+bool IsRuntimeAssetPlatformCompatible(Core::Assets::ArtifactType type, const std::string& platform, const std::string& target)
+{
+    return platform == target || IsEditorHostTexturePlatform(type,platform,target);
 }
 
 const RuntimeAssetManifestEntry* RuntimeAssetDatabase::Resolve(
@@ -253,6 +337,25 @@ const RuntimeAssetManifestEntry* RuntimeAssetDatabase::Resolve(const RuntimeAsse
     if (found != m_entryIndex.end() && found->second < m_manifest.entries.size())
         return &m_manifest.entries[found->second];
     return nullptr;
+}
+
+const RuntimeAssetManifestEntry* RuntimeAssetDatabase::ResolvePrimary(
+    NLS::Core::Assets::AssetId assetId) const
+{
+    if (!assetId.IsValid())
+        return nullptr;
+
+    const RuntimeAssetManifestEntry* first = nullptr;
+    for (const auto& entry : m_manifest.entries)
+    {
+        if (entry.assetId != assetId)
+            continue;
+        if (entry.subAssetKey.empty())
+            return &entry;
+        if (first == nullptr)
+            first = &entry;
+    }
+    return first;
 }
 
 const RuntimeAssetManifestEntry* RuntimeAssetDatabase::ResolveByLocalIdentifierInFile(
@@ -290,6 +393,23 @@ void RuntimeAssetDatabase::RebuildEntryIndex()
             Serialize::MakeLocalIdentifierInFile(entry.assetId.GetGuid(), entry.subAssetKey)
         }] = index;
     }
+    std::map<std::string, NLS::Core::Assets::ArtifactManifest> distanceFieldManifests;
+    for (const auto& entry : m_manifest.entries)
+    {
+        auto& manifest = distanceFieldManifests[entry.assetId.ToString()];
+        manifest.sourceAssetId = entry.assetId;
+        manifest.targetPlatform = m_manifest.targetPlatform;
+        NLS::Core::Assets::ImportedArtifact artifact;
+        artifact.sourceAssetId = entry.assetId;
+        artifact.subAssetKey = entry.subAssetKey;
+        artifact.artifactType = entry.artifactType;
+        artifact.loaderId = entry.loaderId;
+        artifact.artifactPath = entry.artifactPath;
+        artifact.contentHash = entry.contentHash;
+        manifest.subAssets.push_back(std::move(artifact));
+    }
+    for (const auto& [key, manifest] : distanceFieldManifests)
+        NLS::Render::DistanceField::RegisterDistanceFieldManifest(manifest);
 }
 
 void RuntimeManifestBuilder::AddArtifactManifest(NLS::Core::Assets::ArtifactManifest manifest)
@@ -303,9 +423,11 @@ const NLS::Core::Assets::ArtifactManifest* RuntimeManifestBuilder::FindManifest(
 {
     for (const auto& manifest : m_manifests)
     {
-        if (manifest.sourceAssetId == assetId && manifest.targetPlatform == targetPlatform)
+        const bool hostTextures = !manifest.subAssets.empty() && std::all_of(manifest.subAssets.begin(),manifest.subAssets.end(),[&](const auto& artifact)
+        { return IsEditorHostTexturePlatform(artifact.artifactType,manifest.targetPlatform,targetPlatform); });
+        if (manifest.sourceAssetId == assetId && (manifest.targetPlatform == targetPlatform || hostTextures))
             return &manifest;
-        if (manifest.targetPlatform != targetPlatform)
+        if (manifest.targetPlatform != targetPlatform && !hostTextures)
             continue;
         const auto found = std::find_if(
             manifest.subAssets.begin(),
@@ -327,16 +449,26 @@ RuntimeManifestBuildResult RuntimeManifestBuilder::Build(
     RuntimeManifestBuildResult result;
     result.manifest.schemaVersion = 1u;
     result.manifest.targetPlatform = targetPlatform;
-    result.manifest.roots = roots;
+    result.manifest.roots.clear();
 
     std::queue<RuntimeAssetRef> pending;
     std::unordered_set<RuntimeAssetRef> visited;
-    for (const auto& root : roots)
+    for (auto root : roots)
+    {
+        // Callers may reference an asset by GUID alone. Normalise that to the
+        // manifest's primary sub-asset so lookups and reasons stay consistent.
+        if (root.subAssetKey.empty())
+        {
+            if (const auto* manifest = FindManifest(root.assetId, targetPlatform))
+                root.subAssetKey = manifest->primarySubAssetKey;
+        }
+        result.manifest.roots.push_back(root);
         pending.push(root);
+    }
 
     while (!pending.empty())
     {
-        const auto current = pending.front();
+        auto current = pending.front();
         pending.pop();
 
         if (!visited.insert(current).second)
@@ -355,6 +487,22 @@ RuntimeManifestBuildResult RuntimeManifestBuilder::Build(
             });
             continue;
         }
+
+        if (current.subAssetKey.empty())
+            current.subAssetKey = sourceManifest->primarySubAssetKey;
+        if (current.subAssetKey.empty())
+        {
+            result.diagnostics.Add({
+                NLS::Core::Assets::ImportDiagnosticSeverity::Error,
+                "runtime-manifest-missing-root-subasset",
+                current.assetId,
+                current.subAssetKey,
+                "",
+                true
+            });
+            continue;
+        }
+        visited.insert(current);
 
         const auto* currentArtifact = sourceManifest->FindSubAsset(current.subAssetKey);
         if (!currentArtifact)
@@ -381,6 +529,7 @@ RuntimeManifestBuildResult RuntimeManifestBuilder::Build(
             pending.push(*dependencyRef);
         }
 
+        AddDistanceFieldRuntimeDependencies(*sourceManifest, *currentArtifact, currentDependencies, pending);
         const auto addArtifact = [&](const NLS::Core::Assets::ImportedArtifact& artifact)
         {
             if (!ValidateRuntimeArtifact(
@@ -453,7 +602,7 @@ RuntimeManifestBuildResult RuntimeManifestBuilder::BuildAssetPacks(
 
         while (!pending.empty())
         {
-            const auto current = pending.front();
+            auto current = pending.front();
             pending.pop();
 
             if (!visited.insert(current).second)
@@ -462,6 +611,12 @@ RuntimeManifestBuildResult RuntimeManifestBuilder::BuildAssetPacks(
             const auto* sourceManifest = FindManifest(current.assetId, result.manifest.targetPlatform);
             if (!sourceManifest)
                 continue;
+
+            if (current.subAssetKey.empty())
+                current.subAssetKey = sourceManifest->primarySubAssetKey;
+            if (current.subAssetKey.empty())
+                continue;
+            visited.insert(current);
 
             const auto* currentArtifact = sourceManifest->FindSubAsset(current.subAssetKey);
             if (!currentArtifact)
@@ -478,6 +633,7 @@ RuntimeManifestBuildResult RuntimeManifestBuilder::BuildAssetPacks(
                 pending.push(*dependencyRef);
             }
 
+            AddDistanceFieldRuntimeDependencies(*sourceManifest, *currentArtifact, dependencies, pending);
             const auto addPackArtifact = [&](const NLS::Core::Assets::ImportedArtifact& artifact)
             {
                 if (!ValidateRuntimeArtifact(

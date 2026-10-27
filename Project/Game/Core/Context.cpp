@@ -6,6 +6,7 @@
 #include "Core/Context.h"
 
 #include <Core/ServiceLocator.h>
+#include <Engine/UI/UIDocumentResourceResolver.h>
 #include <Engine/UI/UIDocumentSourceResolver.h>
 #include <Debug/Logger.h>
 #include <stdexcept>
@@ -19,6 +20,7 @@
 #include "RuntimeAssetManifestStartup.h"
 #include <Scripting/ScriptComponent.h>
 #include <Scripting/ScriptRuntimeSetup.h>
+#include <Jobs/JobSystem.h>
 using namespace NLS;
 using namespace NLS::Core;
 using namespace NLS::Core::ResourceManagement;
@@ -112,11 +114,26 @@ namespace
 			}
 		}
 
-		const auto cwd = std::filesystem::current_path();
-		const auto packagedSettings = cwd / "Data" / "User" / "Game.ini";
-		if (std::filesystem::exists(packagedSettings))
+		// Installed players locate content through the executable's install
+		// root, never through the working directory or a development project
+		// above it. This keeps packaged games working from any cwd, including
+		// read-only installs and paths with non-ASCII characters.
+		const auto installRoots = NLS::Platform::Process::ResolveInstallResourceRoots();
+		const auto packagedSettings = installRoots.installRoot / "Data" / "User" / "Game.ini";
+		std::error_code packagedError;
+		if (std::filesystem::is_regular_file(packagedSettings, packagedError))
 		{
 			result.settingsPath = packagedSettings.string();
+			result.assetsPath = (packagedSettings.parent_path() / "Assets").string() + Utils::PathParser::Separator();
+			result.scriptsPath = (packagedSettings.parent_path() / "Scripts").string() + Utils::PathParser::Separator();
+			return result;
+		}
+
+		const auto cwd = std::filesystem::current_path();
+		const auto workingDirectorySettings = cwd / "Data" / "User" / "Game.ini";
+		if (std::filesystem::exists(workingDirectorySettings))
+		{
+			result.settingsPath = workingDirectorySettings.string();
 			result.assetsPath = (cwd / "Data" / "User" / "Assets").string() + Utils::PathParser::Separator();
 			result.scriptsPath = (cwd / "Data" / "User" / "Scripts").string() + Utils::PathParser::Separator();
 			return result;
@@ -211,6 +228,22 @@ Game::Context::Context(
 {
 	const auto resolvedProjectPaths = ResolveGameProjectPaths(m_projectPathOverride);
 
+	// A packaged player is detected from its install root. It mounts the
+	// shipped .npak archives and must never fall back to Library/ArtifactDB or
+	// a development project discovered by walking parent directories.
+	const auto packagedRuntime = RuntimeAssets::DetectPackagedRuntime(
+		NLS::Platform::Process::ResolveInstallResourceRoots().installRoot);
+	if (packagedRuntime.has_value())
+	{
+		std::string compatibilityError;
+		if (!RuntimeAssets::ValidatePackagedRuntimeCompatibility(*packagedRuntime, &compatibilityError))
+			throw std::runtime_error("Game startup failed: " + compatibilityError);
+		NLS_LOG_INFO(
+			"Game runtime using packaged content: " +
+			std::to_string(packagedRuntime->packages.size()) + " package(s) under " +
+			packagedRuntime->packagesRoot.string());
+	}
+
 	MeshManager::ProvideAssetPaths(projectAssetsPath, engineAssetsPath);
 	TextureManager::ProvideAssetPaths(projectAssetsPath, engineAssetsPath);
 	ShaderManager::ProvideAssetPaths(projectAssetsPath, engineAssetsPath);
@@ -251,12 +284,27 @@ Game::Context::Context(
 	else
 		NLS_LOG_WARNING("Game runtime could not resolve a project settings file. Falling back to in-memory defaults.");
 
-	runtimeAssetDatabase = RuntimeAssets::LoadRuntimeAssetDatabaseForProjectSettings(resolvedProjectPaths.settingsPath);
+	runtimeAssetDatabase = RuntimeAssets::LoadRuntimeAssetDatabaseForProjectSettings(
+		resolvedProjectPaths.settingsPath,
+		packagedRuntime.has_value() ? &*packagedRuntime : nullptr);
 	if (runtimeAssetDatabase.has_value())
 	{
-		const auto artifactDatabasePath =
-			RuntimeAssets::ResolveRuntimeArtifactDatabasePathForProjectSettings(resolvedProjectPaths.settingsPath);
-		NLS_LOG_INFO("Game runtime loaded ArtifactDB: " + artifactDatabasePath.string());
+		if (packagedRuntime.has_value())
+		{
+			NLS_LOG_INFO("Game runtime loaded packaged runtime asset manifest: " +
+				packagedRuntime->manifestPath.string());
+		}
+		else
+		{
+			const auto artifactDatabasePath =
+				RuntimeAssets::ResolveRuntimeArtifactDatabasePathForProjectSettings(resolvedProjectPaths.settingsPath);
+			NLS_LOG_INFO("Game runtime loaded ArtifactDB: " + artifactDatabasePath.string());
+		}
+	}
+	else if (packagedRuntime.has_value())
+	{
+		throw std::runtime_error(
+			"Game startup failed: the packaged runtime asset manifest could not be loaded.");
 	}
 
 	/* Settings */
@@ -336,6 +384,10 @@ Game::Context::Context(
 	/* Graphics context creation */
 	driver = std::make_unique<NLS::Render::Context::Driver>(driverSettings);
 
+	// The Driver owns the single hardware-derived pool budget; the general Jobs
+	// pool reuses its split instead of resolving hardware concurrency again.
+	StartJobSystemFromRenderingBudget();
+
 	const auto runtimeReadiness = driver->EvaluateGameMainRuntimeReadiness(graphicsBackend);
 	if (runtimeReadiness.primaryWarning.has_value())
 		NLS_LOG_WARNING(runtimeReadiness.primaryWarning.value());
@@ -394,6 +446,21 @@ Game::Context::Context(
 
 	NLS::Scripting::ScriptRuntimeSetupOptions scriptingOptions;
 	scriptingOptions.projectRoot = std::filesystem::path(resolvedProjectPaths.assetsPath).parent_path();
+	if (packagedRuntime.has_value())
+	{
+		// Packaged scripts and the self-contained .NET runtime live under the
+		// install root; never resolve them from the build tree.
+		const auto& scripts = packagedRuntime->descriptor.scripts;
+		const auto installRoot = packagedRuntime->installRoot;
+		if (!scripts.dotnetRoot.empty())
+			scriptingOptions.dotnetRoot = installRoot / std::filesystem::path(scripts.dotnetRoot);
+		if (!scripts.managedRuntimeConfig.empty())
+			scriptingOptions.managedRuntimeConfig = installRoot / std::filesystem::path(scripts.managedRuntimeConfig);
+		if (!scripts.managedAssembly.empty())
+			scriptingOptions.managedAssembly = installRoot / std::filesystem::path(scripts.managedAssembly);
+		if (!scripts.scriptApiDirectory.empty())
+			scriptingOptions.scriptApiDirectory = installRoot / std::filesystem::path(scripts.scriptApiDirectory);
+	}
 	const auto scriptingSetup = NLS::Scripting::InitializeScriptRuntime(scriptRuntime, scriptingOptions);
 	if (!scriptingSetup.status.Succeeded())
 	{
@@ -441,7 +508,14 @@ Game::Context::~Context()
 		scene->ComponentAddedEvent.RemoveListener(m_sceneComponentAddedListener);
 		m_sceneComponentAddedListener = NLS::InvalidListenerID;
 	}
+	// Drain the job pool before the rendering threads unregister so no
+	// background continuation can outlive the thread it submits to.
+	ShutdownJobSystemIfOwned();
 	ShutdownThreadedRendering();
+	// Release UI texture registrations while the driver/services are still
+	// alive; the resolver's texture views must not outlive them.
+	NLS::Engine::UI::ClearUIDocumentResourceResolver();
+
 	meshManager.UnloadResources();
 	textureManager.UnloadResources();
 	shaderManager.UnloadResources();
@@ -455,4 +529,43 @@ void Game::Context::ShutdownThreadedRendering()
 		NLS::Engine::Rendering::SceneRenderStoreRegistry::ReleaseAll();
 		driver->ShutdownThreadedRendering();
 	}
+}
+
+void Game::Context::StartJobSystemFromRenderingBudget()
+{
+	if (driver == nullptr)
+		return;
+
+	NLS::Base::Jobs::JobSystemConfig config;
+	config.workerCount = driver->GetBudgetedJobsForegroundWorkerCount();
+	config.backgroundWorkerCount = driver->GetBudgetedJobsBackgroundWorkerCount();
+	if (config.workerCount == 0u)
+	{
+		NLS_LOG_WARNING(
+			"Game jobs: the rendering budget reported no foreground job workers; "
+			"background artifact loads will run inline.");
+		return;
+	}
+
+	m_ownsJobSystem = NLS::Base::Jobs::TryInitializeJobSystem(config);
+	NLS_LOG_INFO(
+		"Game jobs: foregroundWorkers=" +
+		std::to_string(NLS::Base::Jobs::GetJobWorkerCount()) +
+		" backgroundWorkers=" +
+		std::to_string(NLS::Base::Jobs::GetBackgroundJobWorkerCount()) +
+		" requestedForegroundWorkers=" +
+		std::to_string(config.workerCount) +
+		" requestedBackgroundWorkers=" +
+		std::to_string(config.backgroundWorkerCount) +
+		" ownsJobSystem=" +
+		(m_ownsJobSystem ? "true" : "false"));
+}
+
+void Game::Context::ShutdownJobSystemIfOwned()
+{
+	if (!m_ownsJobSystem)
+		return;
+
+	m_ownsJobSystem = false;
+	NLS::Base::Jobs::ShutdownJobSystem(NLS::Base::Jobs::JobSystemShutdownMode::DrainAcceptedWork);
 }

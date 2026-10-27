@@ -50,6 +50,12 @@ EditorViewSettingsObject& EditorSettings::GetViewSettingsObject()
     return object;
 }
 
+EditorUIDesignerSettingsObject& EditorSettings::GetUIDesignerSettingsObject()
+{
+    static EditorUIDesignerSettingsObject object;
+    return object;
+}
+
 EditorRuntimeSettingsObject& EditorSettings::GetRuntimeSettingsObject()
 {
     static EditorRuntimeSettingsObject object;
@@ -146,6 +152,14 @@ void EditorSettings::RegisterSettingObjects(EditorSettingsRegistry& p_registry)
         EditorSettingPersistenceScope::User,
         [] { return meta::Variant(GetViewSettingsObject(), meta::variant_policy::NoCopy {}); },
         NLS_TYPEOF(EditorViewSettingsObject)
+    });
+    p_registry.Register({
+        "editor.ui-designer",
+        "UI Designer",
+        "Editor/UI Designer",
+        EditorSettingPersistenceScope::User,
+        [] { return meta::Variant(GetUIDesignerSettingsObject(), meta::variant_policy::NoCopy {}); },
+        NLS_TYPEOF(EditorUIDesignerSettingsObject)
     });
     p_registry.Register({
         "editor.large-scene",

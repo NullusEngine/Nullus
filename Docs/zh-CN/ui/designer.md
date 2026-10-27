@@ -4,17 +4,24 @@
 
 ## UI Document Designer
 
-### 创建一个屏幕界面
+### 创建并编辑屏幕界面
 
 前置条件：用 `NLS_ENABLE_GAME_UI=ON` 构建编辑器，打开可运行且已经保存的场景。
 
 1. 在 Asset Browser 的项目目录右键，选择 `Create > UI Document`，命名为 `HUD`。编辑器创建 `.ui` 文件并打开 UI Designer；也可双击文件或从 `Window > UI Designer` 找到面板。
-2. 在设计器的 Hierarchy 选中根节点，在 `Controls` 点击 `Panel` 添加子节点。设 `Name` 为 `StatusPanel`、`Layout > Size` 为 `(320, 100)`，把 `Style > Background` 设为不透明颜色。
-3. 在预览中确认面板可见。点击 `Save`，应显示 `Saved`；`Undo` / `Redo` 可回退或恢复设计操作，`Reload` 重新读磁盘文档。
-4. 在场景中创建空对象 `HUD`，通过 Inspector 的组件添加入口加入 `UICanvasComponent`。把 `.ui` 文件拖到 `Document` 引用字段，设置 `Render Mode` 为 `Screen Overlay`。
-5. 保存场景并进入 Play。预期 Game View 上出现有色面板。需要文字时添加 Text/Button，填写 `Text`，并按项目字体资源配置字体；需要脚本控制时给元素唯一名字，通过 Canvas API 查找。
+2. 在左侧 Palette 搜索或点击控件，它会作为选中节点的子节点创建；也可以把控件直接拖到画布上的目标位置，按落点创建并定位。
+3. 在画布上拖动元素移动其 `offsetMin`，拖动 8 个手柄改变尺寸；吸附参考线与网格可在工具栏开关。父容器为 `Stack` / `Flex` / `Grid` 时位置由布局决定，手柄会提示不可直接拖动。
+4. 右侧 Inspector 编辑完整布局字段（锚点/枢轴/偏移/尺寸/最小最大尺寸/边距/内边距/间距/宽高比/flexGrow/网格列/裁剪）、样式（背景色/文字色/透明度/可见/启用/交互）与内容（文本/密码/字体尺寸）；字段由编辑器侧反射 ViewModel 驱动，与场景 Inspector 共用同一套属性控件与元数据；多选时不同字段显示 `—`，编辑应用到全部选中节点。3×3 锚点预设会保持元素当前矩形不变。
+5. 层级树支持 `F2` / 双击内联重命名、拖拽排序与换父（拒绝拖入自身子树）、右键菜单（新建/复制/删除/显隐/前后序）与显隐开关。
+6. 快捷键：`Del` 删除、`Ctrl+D` 复制、`Ctrl+C/V` 复制粘贴、方向键微调 1px（`Shift` 10px）、`F` 适配全部、`Shift+F` 适配选中、`Ctrl+±` 缩放、`Ctrl+0` 100%、`Ctrl+S` 保存、`Esc` 取消当前手势。
+7. 保存写回 `.ui` 文档；仅 warning 的文档允许保存，存在 error 时保存被禁用。Problems 中的行可点击定位到对应元素；关闭/切换/重载有未保存修改的文档会先弹出 Save / Discard / Cancel，磁盘文件被外部修改时面板顶部提示 Reload / Keep Local。
+8. 在场景中创建空对象 `HUD`，通过 Inspector 的组件添加入口加入 `UICanvasComponent`。把 `.ui` 文件拖到 `Document` 引用字段，设置 `Render Mode` 为 `Screen Overlay`。
+9. 保存场景并进入 Play。Game View 上应出现与设计器画布一致的布局；需要脚本控制时给元素唯一名字，通过 Canvas API 查找。
 
-设计器能编辑名称、文本、布局模式/大小/间距与背景色。完整文档 schema 的所有字段尚未全部做成控件；更多样式和资源配置仍需编辑 JSON。文档能解析只证明格式有效，字体、输入与最终画面仍需在目标后端运行检查。
+画布使用运行时 `UIDocument` / `UIElement` 的同一套布局引擎生成预览：文档 revision 变化时重建实例，
+字体图集就绪后使用与 Game View 相同的字形四边形；纹理与字体资源选择、九宫格边框等属于后续阶段。
+
+设计器状态（网格/吸附/参考线/线框/隐藏元素）位于 `Editor/UI Designer` 设置分类。
 
 编辑器提供 `UIDocumentDesigner` 面板，用于打开与编辑 UI 文档：
 

@@ -11,6 +11,8 @@
 
 #include <Rendering/Context/DriverAccess.h>
 #include <Rendering/Context/RenderingThreadSystem.h>
+#include <Jobs/JobSystem.h>
+#include <Jobs/BackgroundJobQueue.h>
 #include <Rendering/UI/UIDrawSnapshotAdapter.h>
 #include <Rendering/RHI/Core/RHIDevice.h>
 #include <Rendering/RHI/Core/RHIResource.h>
@@ -21,6 +23,12 @@
 #include <Rendering/Tooling/MaterialVisualEvidence.h>
 #include <Scripting/ScriptEngineApi.h>
 #include <Components/UICanvasComponent.h>
+#include <Components/AnimatorComponent.h>
+#include <Components/SkinnedMeshRenderer.h>
+#include <Components/MeshFilter.h>
+#include <Components/MeshRenderer.h>
+#include <Core/ResourceManagement/MaterialManager.h>
+#include <Rendering/Resources/Mesh.h>
 #include <Engine/UI/UIDocumentSourceResolver.h>
 
 #include "Assembly.h"
@@ -38,7 +46,7 @@ Game::Core::Game::Game(
 	m_context(p_context),
 	m_sceneRenderer(Engine::Rendering::CreateSceneRenderer(
 		*p_context.driver,
-		materialValidation.has_value()
+			materialValidation.has_value()&&(!materialValidation->animationValidation||materialValidation->animationForward)
 			? Engine::Rendering::SceneRendererKind::Forward
 			: Engine::Rendering::GetDefaultSceneRendererKind())),
 	m_materialValidation(std::move(materialValidation))
@@ -68,6 +76,12 @@ Game::Core::Game::Game(
 	if (auto* scene = m_context.sceneManager.GetCurrentScene())
 	{
 		scene->Play();
+            if(m_materialValidation&&m_materialValidation->animationValidation)
+            {
+                for(auto* animator:scene->GetFastAccessComponents().animators)
+                {animator->Pause();animator->Seek(m_materialValidation->animationTime);}
+                scene->UpdateAnimations(0);
+            }
 	}
 }
 
@@ -79,6 +93,13 @@ Game::Core::Game::~Game()
 void Game::Core::Game::PreUpdate()
 {
 	(void)Render::Context::RenderingThreadSystem::PumpGameThreadTasks(64u);
+	// Async artifact loads hand their resource uploads back to the game thread;
+	// without this drain the JobSystem path records a failure instead of
+	// completing, so the pump has to share the frame budget above.
+	(void)NLS::Base::Jobs::DrainMainThreadContinuations(64u);
+		// Materials requested by skinned scene components must finish even before
+		// the first visible drawable exists. Finalization runs on the game thread.
+		m_context.materialManager.PumpAsyncLoads(4u);
 	m_context.device->PollEvents();
 }
 
@@ -368,13 +389,32 @@ void Game::Core::Game::Update(float p_deltaTime)
 		const auto updateSchedule = m_context.scriptRuntime.BeginScheduledFrame(
 			NLS::Scripting::ScriptCallback::Update,
 			scriptFrame);
-		currentScene->Update(delta);
+			currentScene->UpdateGameplay(delta);
 		if (updateSchedule.Succeeded())
 		{
 			const auto flushStatus = m_context.scriptRuntime.FlushScheduledFrame();
 			if (!flushStatus.Succeeded())
 				NLS_LOG_WARNING("Script Update batch failed: " + flushStatus.message);
 		}
+			currentScene->UpdateAnimations(delta);
+			if(m_materialValidation.has_value()&&(m_frameIndex==1||m_presentedFrames+1==m_materialValidation->captureAfterFrames))
+			{
+				for(auto* object:currentScene->GetGameObjects())
+				{
+					if(auto* animator=object->GetComponent<Engine::Components::AnimatorComponent>())
+						NLS_LOG_INFO("[AnimationValidation] Animator "+object->GetName()+" pose="+std::to_string(bool(animator->CaptureFrame()))+" error="+animator->LastError());
+					if(auto* skinned=object->GetComponent<Engine::Components::SkinnedMeshRenderer>())
+					{
+						auto* filter=object->GetComponent<Engine::Components::MeshFilter>();
+						NLS_LOG_INFO("[AnimationValidation] Skin "+object->GetName()+" mesh="+std::to_string(filter&&filter->ResolveMesh())+" error="+skinned->LastError());
+						if(auto* renderer=object->GetComponent<Engine::Components::MeshRenderer>())
+							for(const auto& path:renderer->GetMaterialPaths())
+								NLS_LOG_INFO("[AnimationValidation] Material path="+path+" resolved="+std::to_string(bool(renderer->ResolveMaterialAtIndex(0)))+" state="+std::to_string(int(m_context.materialManager.TryProbeAsyncArtifactLoad(path))));
+						if(auto* geometry=filter?filter->ResolveMesh():nullptr)
+							NLS_LOG_INFO("[AnimationValidation] Bounds center="+std::to_string(geometry->GetBounds().center.x)+","+std::to_string(geometry->GetBounds().center.y)+","+std::to_string(geometry->GetBounds().center.z));
+					}
+				}
+			}
 
 		const auto lateSchedule = m_context.scriptRuntime.BeginScheduledFrame(
 			NLS::Scripting::ScriptCallback::LateUpdate,
@@ -516,13 +556,15 @@ void Game::Core::Game::PostUpdate()
 			const uint32_t height = m_materialValidationReadbackHeight;
 			const uint32_t channels = 4u;
 			const auto& pixels = *m_materialValidationReadbackPixels;
-		const auto evidence = Render::Tooling::AnalyzeMaterialVisualEvidence(
+            const std::vector<Render::Tooling::MaterialVisualProbe> animationProbes={
+                {"Cooked animation silhouette",{.25f,.1f,.75f,.9f},Render::Tooling::MaterialVisualChannel::Blue}};
+			const auto evidence = Render::Tooling::AnalyzeMaterialVisualEvidence(
 			pixels.data(),
 			width,
 			height,
 			channels,
 			width * channels,
-			Render::Tooling::BuildDefaultImportedMaterialVisualProbes());
+				m_materialValidation->animationValidation?animationProbes:Render::Tooling::BuildDefaultImportedMaterialVisualProbes());
 
 		std::string writeError;
 		if (!outputPath.empty() && !Render::Tooling::WriteMaterialVisualEvidencePng(

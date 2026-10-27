@@ -2,6 +2,7 @@
 
 #include "Assets/ArtifactLoadTelemetry.h"
 #include "Assets/AssetPath.h"
+#include "Assets/ContentSource.h"
 
 #include <algorithm>
 #include <charconv>
@@ -59,6 +60,14 @@ const char* ToMetadataString(const ArtifactType type)
     case ArtifactType::UIStyleSheet: return "ui-style-sheet";
     case ArtifactType::Font: return "font";
     case ArtifactType::LocalizationTable: return "localization";
+    case ArtifactType::VfxSystem: return "vfx-system";
+    case ArtifactType::VfxScript: return "vfx-script";
+    case ArtifactType::VfxEmitter: return "vfx-emitter";
+    case ArtifactType::MeshDistanceField: return "mesh-distance-field";
+    case ArtifactType::SkeletalMesh: return "skinned-mesh";
+    case ArtifactType::AnimationGraph: return "animation-graph";
+    case ArtifactType::BlendSpace: return "blend-space";
+    case ArtifactType::BoneMask: return "bone-mask";
     case ArtifactType::Unknown:
     case ArtifactType::Count:
         break;
@@ -84,6 +93,14 @@ ArtifactType ArtifactTypeFromMetadataString(const std::string& value)
     if (value == "ui-style-sheet") return ArtifactType::UIStyleSheet;
     if (value == "font") return ArtifactType::Font;
     if (value == "localization") return ArtifactType::LocalizationTable;
+    if (value == "vfx-system") return ArtifactType::VfxSystem;
+    if (value == "vfx-script") return ArtifactType::VfxScript;
+    if (value == "vfx-emitter") return ArtifactType::VfxEmitter;
+    if (value == "mesh-distance-field") return ArtifactType::MeshDistanceField;
+    if (value == "skinned-mesh") return ArtifactType::SkeletalMesh;
+    if (value == "animation-graph") return ArtifactType::AnimationGraph;
+    if (value == "blend-space") return ArtifactType::BlendSpace;
+    if (value == "bone-mask") return ArtifactType::BoneMask;
     return ArtifactType::Unknown;
 }
 
@@ -788,15 +805,47 @@ std::optional<NativeArtifactPayloadPrefix> ReadNativeArtifactPayloadPrefixFromFi
         path.generic_string()
     });
 
-    std::ifstream input(path, std::ios::binary);
-    if (!input)
-        return std::nullopt;
+    // Artifact bytes may live in a mounted .npak package instead of on disk.
+    // Both backends share the same header, metadata, and payload validation.
+    const auto readBytes = [&path](const uint64_t offset, void* destination, const size_t byteCount)
+    {
+        if (HasContentMounts())
+        {
+            if (ContentSourceTable::Get().ReadAt(path, offset, destination, byteCount, nullptr))
+                return true;
+            return false;
+        }
+        std::ifstream input(path, std::ios::binary);
+        if (!input)
+            return false;
+        input.seekg(static_cast<std::streamoff>(offset), std::ios::beg);
+        if (!input)
+            return false;
+        if (byteCount > 0u)
+        {
+            input.read(reinterpret_cast<char*>(destination), static_cast<std::streamsize>(byteCount));
+            if (input.gcount() != static_cast<std::streamsize>(byteCount))
+                return false;
+        }
+        return true;
+    };
+
+    const auto querySize = [&path]() -> std::optional<uint64_t>
+    {
+        if (HasContentMounts())
+        {
+            if (const auto size = ContentSourceTable::Get().GetSize(path); size.has_value())
+                return size;
+        }
+        std::error_code error;
+        const auto fileSize = std::filesystem::file_size(path, error);
+        if (error)
+            return std::nullopt;
+        return fileSize;
+    };
 
     std::array<uint8_t, kNativeArtifactHeaderSize> headerBytes {};
-    input.read(
-        reinterpret_cast<char*>(headerBytes.data()),
-        static_cast<std::streamsize>(headerBytes.size()));
-    if (input.gcount() != static_cast<std::streamsize>(headerBytes.size()))
+    if (!readBytes(0u, headerBytes.data(), headerBytes.size()))
         return std::nullopt;
 
     NativeArtifactHeader header;
@@ -812,11 +861,10 @@ std::optional<NativeArtifactPayloadPrefix> ReadNativeArtifactPayloadPrefixFromFi
         return std::nullopt;
     }
 
-    std::error_code error;
-    const auto fileSize = std::filesystem::file_size(path, error);
-    if (error ||
-        header.payloadOffset > fileSize ||
-        header.payloadSize > fileSize - header.payloadOffset ||
+    const auto fileSize = querySize();
+    if (!fileSize.has_value() ||
+        header.payloadOffset > *fileSize ||
+        header.payloadSize > *fileSize - header.payloadOffset ||
         header.payloadOffset != kNativeArtifactHeaderSize + header.metadataSize)
     {
         return std::nullopt;
@@ -824,11 +872,10 @@ std::optional<NativeArtifactPayloadPrefix> ReadNativeArtifactPayloadPrefixFromFi
 
     std::string metadataText;
     metadataText.resize(static_cast<size_t>(header.metadataSize));
-    if (header.metadataSize > 0u)
+    if (header.metadataSize > 0u &&
+        !readBytes(kNativeArtifactHeaderSize, metadataText.data(), metadataText.size()))
     {
-        input.read(metadataText.data(), static_cast<std::streamsize>(metadataText.size()));
-        if (input.gcount() != static_cast<std::streamsize>(metadataText.size()))
-            return std::nullopt;
+        return std::nullopt;
     }
 
     auto metadata = DeserializeMetadata(metadataText);
@@ -839,20 +886,13 @@ std::optional<NativeArtifactPayloadPrefix> ReadNativeArtifactPayloadPrefixFromFi
         return std::nullopt;
     }
 
-    input.seekg(static_cast<std::streamoff>(header.payloadOffset), std::ios::beg);
-    if (!input)
-        return std::nullopt;
-
     NativeArtifactPayloadPrefix result;
     result.metadata = std::move(*metadata);
     result.bytes.resize(prefixSize);
-    if (prefixSize > 0u)
+    if (prefixSize > 0u &&
+        !readBytes(header.payloadOffset, result.bytes.data(), result.bytes.size()))
     {
-        input.read(
-            reinterpret_cast<char*>(result.bytes.data()),
-            static_cast<std::streamsize>(result.bytes.size()));
-        if (input.gcount() != static_cast<std::streamsize>(result.bytes.size()))
-            return std::nullopt;
+        return std::nullopt;
     }
     result.payloadSize = header.payloadSize;
     result.payloadOffset = header.payloadOffset;
@@ -865,15 +905,43 @@ std::optional<NativeArtifactPayloadText> ReadNativeArtifactPayloadTextFromFile(
     const uint32_t expectedSchemaVersion,
     const uint64_t maxMetadataBytes)
 {
-    std::ifstream input(path, std::ios::binary);
-    if (!input)
-        return std::nullopt;
+    const auto readBytes = [&path](const uint64_t offset, void* destination, const size_t byteCount)
+    {
+        if (HasContentMounts())
+        {
+            if (ContentSourceTable::Get().ReadAt(path, offset, destination, byteCount, nullptr))
+                return true;
+            return false;
+        }
+        std::ifstream input(path, std::ios::binary);
+        if (!input)
+            return false;
+        input.seekg(static_cast<std::streamoff>(offset), std::ios::beg);
+        if (!input)
+            return false;
+        if (byteCount > 0u)
+        {
+            input.read(reinterpret_cast<char*>(destination), static_cast<std::streamsize>(byteCount));
+            if (input.gcount() != static_cast<std::streamsize>(byteCount))
+                return false;
+        }
+        return true;
+    };
+
+    std::optional<uint64_t> fileSize;
+    if (HasContentMounts())
+        fileSize = ContentSourceTable::Get().GetSize(path);
+    if (!fileSize.has_value())
+    {
+        std::error_code error;
+        const auto size = std::filesystem::file_size(path, error);
+        if (error)
+            return std::nullopt;
+        fileSize = size;
+    }
 
     std::array<uint8_t, kNativeArtifactHeaderSize> headerBytes {};
-    input.read(
-        reinterpret_cast<char*>(headerBytes.data()),
-        static_cast<std::streamsize>(headerBytes.size()));
-    if (input.gcount() != static_cast<std::streamsize>(headerBytes.size()))
+    if (!readBytes(0u, headerBytes.data(), headerBytes.size()))
         return std::nullopt;
 
     NativeArtifactHeader header;
@@ -890,11 +958,8 @@ std::optional<NativeArtifactPayloadText> ReadNativeArtifactPayloadTextFromFile(
         return std::nullopt;
     }
 
-    std::error_code error;
-    const auto fileSize = std::filesystem::file_size(path, error);
-    if (error ||
-        header.payloadOffset > fileSize ||
-        header.payloadSize > fileSize - header.payloadOffset ||
+    if (header.payloadOffset > *fileSize ||
+        header.payloadSize > *fileSize - header.payloadOffset ||
         header.payloadOffset != kNativeArtifactHeaderSize + header.metadataSize)
     {
         return std::nullopt;
@@ -903,17 +968,16 @@ std::optional<NativeArtifactPayloadText> ReadNativeArtifactPayloadTextFromFile(
     RecordArtifactLoadTelemetry({
         ArtifactLoadTelemetryStage::NativeArtifactFileRead,
         {},
-        static_cast<size_t>(fileSize),
+        static_cast<size_t>(*fileSize),
         path.generic_string()
     });
 
     std::string metadataText;
     metadataText.resize(static_cast<size_t>(header.metadataSize));
-    if (header.metadataSize > 0u)
+    if (header.metadataSize > 0u &&
+        !readBytes(kNativeArtifactHeaderSize, metadataText.data(), metadataText.size()))
     {
-        input.read(metadataText.data(), static_cast<std::streamsize>(metadataText.size()));
-        if (input.gcount() != static_cast<std::streamsize>(metadataText.size()))
-            return std::nullopt;
+        return std::nullopt;
     }
 
     auto metadata = DeserializeMetadata(metadataText);
@@ -926,11 +990,10 @@ std::optional<NativeArtifactPayloadText> ReadNativeArtifactPayloadTextFromFile(
 
     std::string payload;
     payload.resize(static_cast<size_t>(header.payloadSize));
-    if (header.payloadSize > 0u)
+    if (header.payloadSize > 0u &&
+        !readBytes(header.payloadOffset, payload.data(), payload.size()))
     {
-        input.read(payload.data(), static_cast<std::streamsize>(payload.size()));
-        if (input.gcount() != static_cast<std::streamsize>(payload.size()))
-            return std::nullopt;
+        return std::nullopt;
     }
 
     RecordArtifactLoadTelemetry({

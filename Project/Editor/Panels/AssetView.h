@@ -30,6 +30,7 @@ namespace NLS::Editor::Panels
 			bool p_opened,
 			const UI::PanelWindowSettings& p_windowSettings
 		);
+        ~AssetView() override;
 
 		/**
 		 * Returns the scene used by this view
@@ -65,6 +66,7 @@ namespace NLS::Editor::Panels
 		* @param p_material
 		*/
         void SetMaterial(Render::Resources::Material& p_material);
+        void SetOwnedMaterial(std::shared_ptr<Render::Resources::Material> material);
 
 		/**
 		* Return the currently previewed resource
@@ -82,6 +84,7 @@ namespace NLS::Editor::Panels
         Engine::Components::MeshFilter* m_meshFilter = nullptr;
         Engine::Components::MeshRenderer* m_modelRenderer = nullptr;
 		ViewableResource m_resource;
+        std::shared_ptr<Render::Resources::Material> m_ownedMaterial;
         Engine::SceneSystem::Scene m_scene;
 	};
 }

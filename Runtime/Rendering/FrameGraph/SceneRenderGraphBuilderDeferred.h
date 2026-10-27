@@ -24,6 +24,7 @@ namespace NLS::Render::FrameGraph
     using DeferredScenePassDescriptor = ThreadedRenderSceneGraphPassDescriptor<>;
 
     inline constexpr size_t kDeferredGBufferColorAttachmentCount = 3u;
+    inline constexpr uint32_t kForwardOpaqueStencilBit = 0x80u;
     inline constexpr size_t kDeferredGBufferDepthTextureIndex = kDeferredGBufferColorAttachmentCount;
     inline constexpr size_t kDeferredGBufferTextureCount = kDeferredGBufferColorAttachmentCount + 1u;
     inline constexpr NLS::Render::RHI::TextureFormat kDeferredGBufferDepthFormat =
@@ -136,7 +137,9 @@ namespace NLS::Render::FrameGraph
         GBuffer,
         Decal,
         Lighting,
-        Transparent
+        Transparent,
+        ForwardOpaqueDepth,
+        ForwardOpaqueColor
     };
 
     struct DeferredPreparedSceneResources

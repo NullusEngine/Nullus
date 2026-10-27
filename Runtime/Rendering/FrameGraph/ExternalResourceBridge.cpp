@@ -223,7 +223,7 @@ namespace NLS::Render::FrameGraph
         desc.extent.height = height;
         desc.extent.depth = 1u;
         desc.format = NLS::Render::RHI::TextureFormat::Depth24Stencil8;
-        desc.usage = NLS::Render::RHI::TextureUsageFlags::DepthStencilAttachment;
+        desc.usage = NLS::Render::RHI::TextureUsageFlags::DepthStencilAttachment | NLS::Render::RHI::TextureUsageFlags::Sampled;
         desc.debugName = "SceneDepth";
         return desc;
     }

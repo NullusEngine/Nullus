@@ -1,0 +1,130 @@
+name: Package Windows Player
+
+# Independent packaging workflow: it builds the headless NullusBuild tool, runs
+# the container/pipeline tests, and (when a project is supplied) produces a
+# distributable player. The editor build is deliberately not a dependency so
+# packaging can be validated without the full UI toolchain.
+
+on:
+  workflow_dispatch:
+    inputs:
+      project:
+        description: "Project file relative to the repository root (optional)"
+        required: false
+        type: string
+      profile:
+        description: "Build profile id (empty uses the project default)"
+        required: false
+        type: string
+      player:
+        description: "Prebuilt player template directory (optional)"
+        required: false
+        type: string
+  pull_request:
+    branches: [main]
+    paths:
+      - "Runtime/Build/**"
+      - "Runtime/Core/Assets/**"
+      - "Runtime/Engine/Assets/PlayerDescriptor*"
+      - "Tools/NullusBuild/**"
+      - "Tests/Unit/Build*Tests.cpp"
+      - "Tests/Unit/PackageInspectionTests.cpp"
+      - ".github/workflows/package_windows.yml"
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  package:
+    runs-on: windows-2022
+    env:
+      NLS_BUILD_CONFIGURATION: Release
+    steps:
+      - uses: actions/checkout@v4
+        timeout-minutes: 15
+        with:
+          submodules: "true"
+
+      - name: Setup .NET SDK
+        timeout-minutes: 10
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "8.0.408"
+
+      - name: Restore managed scripting projects
+        timeout-minutes: 10
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          dotnet restore 'Managed/Nullus.Managed/Nullus.Managed.csproj' --nologo
+          dotnet restore 'Managed/Nullus.GameScripts/Nullus.GameScripts.csproj' --nologo
+
+      - name: Configure
+        timeout-minutes: 20
+        shell: powershell
+        run: >
+          cmake -S . -B build\package -G "Visual Studio 17 2022" -A x64
+          -DCMAKE_CONFIGURATION_TYPES=${{ env.NLS_BUILD_CONFIGURATION }}
+          -DNLS_BUILD_TESTS=ON
+
+      - name: Restore MetaParser
+        timeout-minutes: 10
+        shell: powershell
+        run: dotnet restore 'build\package\Tools\MetaParser\generated\src\MetaParser.csproj' --nologo
+
+      - name: Build NullusBuild and tests
+        timeout-minutes: 60
+        shell: powershell
+        run: >
+          cmake --build build/package --config ${{ env.NLS_BUILD_CONFIGURATION }}
+          --target NullusBuild NullusBuildTests Game -- /m:1
+
+      - name: Run packaging tests
+        timeout-minutes: 30
+        shell: powershell
+        run: |
+          $testExe = (Resolve-Path "build/package/build-tests/${{ env.NLS_BUILD_CONFIGURATION }}/NullusBuildTests.exe").Path
+          & $testExe
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Report platform capabilities
+        shell: powershell
+        run: |
+          & "build/package/bin/${{ env.NLS_BUILD_CONFIGURATION }}/NullusBuild.exe" capabilities
+
+      - name: Build project
+        if: ${{ inputs.project != '' }}
+        timeout-minutes: 60
+        shell: powershell
+        run: |
+          $args = @(
+            "build",
+            "--project", "${{ inputs.project }}",
+            "--output", "Dist/ci"
+          )
+          if ("${{ inputs.profile }}" -ne "") { $args += @("--profile", "${{ inputs.profile }}") }
+          if ("${{ inputs.player }}" -ne "") { $args += @("--player", "${{ inputs.player }}") }
+          & "build/package/bin/${{ env.NLS_BUILD_CONFIGURATION }}/NullusBuild.exe" @args
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Validate produced packages
+        if: ${{ inputs.project != '' }}
+        shell: powershell
+        run: |
+          $packages = Get-ChildItem "Dist/ci" -Directory |
+            Where-Object { Test-Path (Join-Path $_.FullName 'Player.info') }
+          if (-not $packages) { throw "No packaged product was produced." }
+          foreach ($package in $packages) {
+            & "build/package/bin/${{ env.NLS_BUILD_CONFIGURATION }}/NullusBuild.exe" validate --package $package.FullName
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          }
+
+      - name: Upload packaged artifacts
+        if: ${{ inputs.project != '' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-player-package
+          path: |
+            Dist/ci/**
+          if-no-files-found: error

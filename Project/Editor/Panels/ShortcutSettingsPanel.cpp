@@ -1,4 +1,5 @@
 #include "Panels/ShortcutSettingsPanel.h"
+#include "Properties/ShortcutPropertyDrawer.h"
 
 #include <algorithm>
 #include <array>
@@ -373,15 +374,15 @@ namespace NLS::Editor::Panels
                 m_conflictText.clear();
                 if (doubleClicked)
                 {
-                    shortcutService.ClearBinding(command->id);
-                    m_recordingCommandId = command->id;
+                    m_selectedCommandId = command->id;
                 }
             }
             ImGui::NextColumn();
-            if (m_recordingCommandId == command->id)
-                ImGui::TextColored(ImVec4(0.55f, 0.70f, 1.0f, 1.0f), "Press shortcut...");
-            else
-                ImGui::TextUnformatted(shortcutService.GetBindingDisplayText(command->id).c_str());
+            auto binding=shortcutService.GetBinding(command->id);
+            Inspector::ReflectedPropertyOptions options;options.layout=Inspector::PropertyEditorLayout::ValueOnly;
+            const auto edit=m_properties.DrawValue(command->id,"Shortcut",binding,options);
+            if(edit.changed && !Properties::ApplyShortcutBinding(command->id,binding,m_conflictText))
+                m_properties.CancelEdits();
             ImGui::NextColumn();
         }
 

@@ -160,6 +160,14 @@ const char* SchemaNameForArtifactType(const ArtifactType artifactType)
     case ArtifactType::MorphTarget: return "morphTarget";
     case ArtifactType::Model: return "model";
     case ArtifactType::UIDocument: return "ui-document";
+    case ArtifactType::VfxSystem: return "vfx-system";
+    case ArtifactType::VfxScript: return "vfx-script";
+    case ArtifactType::VfxEmitter: return "vfx-emitter";
+    case ArtifactType::MeshDistanceField: return "mesh-distance-field";
+    case ArtifactType::SkeletalMesh: return "skinned-mesh";
+    case ArtifactType::AnimationGraph: return "animation-graph";
+    case ArtifactType::BlendSpace: return "blend-space";
+    case ArtifactType::BoneMask: return "bone-mask";
     case ArtifactType::UIStyleSheet: return "ui-style-sheet";
     case ArtifactType::Font: return "font";
     case ArtifactType::LocalizationTable: return "localization";
@@ -193,6 +201,10 @@ uint32_t SchemaVersionForArtifactType(const ArtifactType artifactType)
     case ArtifactType::UIStyleSheet:
     case ArtifactType::Font:
     case ArtifactType::LocalizationTable:
+    case ArtifactType::VfxSystem:
+    case ArtifactType::VfxScript:
+    case ArtifactType::VfxEmitter:
+    case ArtifactType::MeshDistanceField:
     case ArtifactType::Unknown:
     case ArtifactType::Count:
         return 1u;

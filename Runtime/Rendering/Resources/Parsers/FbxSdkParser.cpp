@@ -1,4 +1,5 @@
 #include "Rendering/Resources/Parsers/FbxSdkParser.h"
+#include "Rendering/Resources/Parsers/FbxAnimation.h"
 
 #ifndef NLS_HAS_AUTODESK_FBX_SDK
 #define NLS_HAS_AUTODESK_FBX_SDK 0
@@ -998,6 +999,7 @@ void EmitPolygonVertex(
 	ParsedMeshData& parsedMesh)
 {
 	parsedMesh.indices.push_back(static_cast<uint32_t>(parsedMesh.vertices.size()));
+	parsedMesh.sourceVertexIndices.push_back(static_cast<uint32_t>(mesh->GetPolygonVertex(polygonIndex,polygonVertexIndex)));
 	parsedMesh.vertices.push_back(ReadPolygonVertex(
 		mesh,
 		controlPoints,
@@ -1101,7 +1103,7 @@ void ConvertNurbsAndPatches(FbxManager* manager, FbxNode* node)
 		ConvertNurbsAndPatches(manager, node->GetChild(childIndex));
 }
 
-void ConfigureModelOnlyFbxImport(FbxIOSettings& ioSettings)
+void ConfigureModelOnlyFbxImport(FbxIOSettings& ioSettings,const NLS::Animation::ImportSettings& animation)
 {
 	ioSettings.SetBoolProp(IMP_FBX_MODEL, true);
 	ioSettings.SetBoolProp(IMP_FBX_MATERIAL, true);
@@ -1111,8 +1113,8 @@ void ConfigureModelOnlyFbxImport(FbxIOSettings& ioSettings)
 	ioSettings.SetBoolProp(IMP_FBX_TANGENT, true);
 	ioSettings.SetBoolProp(IMP_FBX_BINORMAL, true);
 	ioSettings.SetBoolProp(IMP_FBX_VERTEXCOLOR, true);
-	ioSettings.SetBoolProp(IMP_FBX_LINK, false);
-	ioSettings.SetBoolProp(IMP_FBX_ANIMATION, false);
+	ioSettings.SetBoolProp(IMP_FBX_LINK, animation.importSkeleton);
+	ioSettings.SetBoolProp(IMP_FBX_ANIMATION, animation.importAnimations);
 	ioSettings.SetBoolProp(IMP_FBX_CHARACTER, false);
 	ioSettings.SetBoolProp(IMP_FBX_CONSTRAINT, false);
 	ioSettings.SetBoolProp(IMP_FBX_AUDIO, false);
@@ -1268,7 +1270,8 @@ void ProcessNode(
 bool LoadFbxScene(
 	const std::string& sourcePath,
 	FbxPtr<FbxManager>& outManager,
-	FbxPtr<FbxScene>& outScene)
+	FbxPtr<FbxScene>& outScene,
+	const NLS::Animation::ImportSettings& animation)
 {
 	NLS_PROFILE_NAMED_SCOPE("AssetImport::FbxSdk::LoadFbxScene");
 	const auto managerStart = std::chrono::steady_clock::now();
@@ -1283,7 +1286,7 @@ bool LoadFbxScene(
 	FbxPtr<FbxIOSettings> ioSettings(FbxIOSettings::Create(outManager.get(), IOSROOT));
 	if (!ioSettings)
 		return false;
-	ConfigureModelOnlyFbxImport(*ioSettings);
+	ConfigureModelOnlyFbxImport(*ioSettings,animation);
 	outManager->SetIOSettings(ioSettings.get());
 
 	FbxPtr<FbxImporter> importer(FbxImporter::Create(outManager.get(), ""));
@@ -1338,13 +1341,14 @@ bool LoadSceneData(
 	std::vector<std::string>& materials,
 	std::vector<std::string>* externalDependencies,
 	const bool bakeNodeTransforms,
-	ImportedScene& importedScene)
+	ImportedScene& importedScene,
+	const NLS::Animation::ImportSettings& animation = {})
 {
 	NLS_PROFILE_NAMED_SCOPE("AssetImport::FbxSdk::LoadSceneData");
 	FbxPtr<FbxManager> manager;
 	FbxPtr<FbxScene> scene;
 	const auto readStart = std::chrono::steady_clock::now();
-	if (!LoadFbxScene(fileName, manager, scene))
+	if (!LoadFbxScene(fileName, manager, scene, animation))
 	{
 		LogFbxSdkImportTiming(fileName, "LoadFbxSceneFailed", MillisecondsSince(readStart), 0u, 0u);
 		return false;
@@ -1414,6 +1418,9 @@ bool LoadSceneData(
 		}
 	}
 
+	std::string animationError;
+	importedScene.animationData=BuildFbxSdkAnimation(scene.get(),importedScene,meshes,animation,globalScale,animationError);
+	if(!animationError.empty()){NLS_LOG_ERROR(animationError);return false;}
 	LogFbxSdkImportTiming(
 		fileName,
 		"ProcessMeshes",
@@ -1427,7 +1434,7 @@ bool LoadSceneData(
 		meshCount,
 		materialCount);
 
-	return !meshes.empty();
+	return !meshes.empty() || (importedScene.animationData && !importedScene.animationData->clips.empty());
 }
 }
 
@@ -1457,7 +1464,8 @@ bool FbxSdkParser::LoadModelData(
 	std::vector<std::string>& p_materials,
 	EModelParserFlags p_parserFlags,
 	std::vector<std::string>* p_externalDependencies,
-	bool p_bakeNodeTransforms)
+	bool p_bakeNodeTransforms,
+	const NLS::Animation::ImportSettings& p_animationSettings)
 {
 	NLS_PROFILE_NAMED_SCOPE("AssetImport::FbxSdk::LoadModelData");
 	p_meshes.clear();
@@ -1475,7 +1483,8 @@ bool FbxSdkParser::LoadModelData(
 		p_materials,
 		p_externalDependencies,
 		p_bakeNodeTransforms,
-		importedScene);
+		importedScene,
+		p_animationSettings);
 	if (!loaded)
 		return false;
 
@@ -1520,7 +1529,8 @@ bool FbxSdkParser::LoadModelData(
 	std::vector<std::string>& p_materials,
 	EModelParserFlags,
 	std::vector<std::string>* p_externalDependencies,
-	bool)
+	bool,
+	const NLS::Animation::ImportSettings&)
 {
 	p_meshes.clear();
 	p_materials.clear();

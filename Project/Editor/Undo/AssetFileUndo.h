@@ -5,6 +5,7 @@
 #include <string>
 
 #include <Assets/AssetId.h>
+#include "Rendering/Assets/MaterialAsset.h"
 
 #include "Undo/EditorUndoService.h"
 
@@ -35,6 +36,10 @@ namespace NLS::Editor::Undo::AssetFile
     std::string assetIdentifier = {},
     std::string label = "Create Asset",
     NLS::Core::Assets::AssetId assetId = {});
+
+[[nodiscard]] UndoCommandPtr MakeCreateMaterialCommand(
+    const std::filesystem::path& projectRoot,const std::filesystem::path& destinationPath,
+    NLS::Render::Assets::MaterialAsset asset,std::string label = "Create Material");
 
 // Creates one directory. Undo succeeds only while it is still empty, avoiding
 // an unsafe recursive delete of content created outside the Undo timeline.

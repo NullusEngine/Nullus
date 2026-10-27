@@ -4,6 +4,7 @@
 
 #include "Panels/MenuBar.h"
 #include "Panels/ProjectSettings.h"
+#include "Panels/BuildProfilesPanel.h"
 #include "Core/EditorActions.h"
 #include "Debug/TracyProfilerLauncher.h"
 #include <Debug/Logger.h>
@@ -86,10 +87,25 @@ void Editor::Panels::MenuBar::CreateEditMenu()
 void Editor::Panels::MenuBar::CreateBuildMenu()
 {
 	auto& buildMenu = CreateWidget<Widgets::MenuList>("Build");
-	buildMenu.CreateWidget<Widgets::MenuItem>("Build game").ClickedEvent					+=	EDITOR_BIND(Build, false, false);
-	buildMenu.CreateWidget<Widgets::MenuItem>("Build game and run").ClickedEvent			+=	EDITOR_BIND(Build, true, false);
+	buildMenu.CreateWidget<Widgets::MenuItem>("Build game").ClickedEvent += [this]
+	{
+		EDITOR_EXEC(Build(false, false));
+	};
+	buildMenu.CreateWidget<Widgets::MenuItem>("Build game and run").ClickedEvent += [this]
+	{
+		EDITOR_EXEC(Build(true, false));
+	};
 	buildMenu.CreateWidget<Widgets::Separator>();
-	buildMenu.CreateWidget<Widgets::MenuItem>("Temporary build").ClickedEvent			+=	EDITOR_BIND(Build, true, true);
+	buildMenu.CreateWidget<Widgets::MenuItem>("Temporary build").ClickedEvent += [this]
+	{
+		EDITOR_EXEC(Build(true, true));
+	};
+	buildMenu.CreateWidget<Widgets::Separator>();
+	buildMenu.CreateWidget<Widgets::MenuItem>("Build Profiles...").ClickedEvent += [this]
+	{
+		auto& panel = EDITOR_PANEL(Panels::BuildProfilesPanel, "Build Profiles");
+		panel.Open();
+	};
 }
 
 void Editor::Panels::MenuBar::CreateWindowMenu()

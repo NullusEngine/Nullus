@@ -19,5 +19,6 @@ public:
     virtual Settings::EPrimitiveMode GetPrimitiveMode() const = 0;
     virtual uint32_t GetVertexStride() const = 0;
     virtual IndexType GetIndexType() const = 0;
+    virtual void NotifySubmitted(uint64_t frameId)const {(void)frameId;}
 };
 }

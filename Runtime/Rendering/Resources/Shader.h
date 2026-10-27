@@ -13,6 +13,7 @@
 #include "Rendering/RHI/RHITypes.h"
 #include "Rendering/Resources/UniformInfo.h"
 #include "Rendering/Resources/ShaderReflection.h"
+#include "Rendering/Resources/MaterialParameterSchema.h"
 #include "Rendering/Resources/ShaderParameterStruct.h"
 #include "Rendering/ShaderCompiler/ShaderCompilationTypes.h"
 #include "Rendering/ShaderLab/ShaderLabTypes.h"
@@ -56,6 +57,12 @@ namespace NLS::Render::Resources
 		ShaderReflection GetReflection() const;
 		std::vector<ShaderParameterStruct> GetParameterStructs() const;
 		std::shared_ptr<const ShaderReflection> GetReflectionSnapshot() const;
+		std::shared_ptr<const ShaderReflection> GetReflectionSnapshot(
+            ShaderCompiler::ShaderTargetPlatform target, uint64_t keywordHash) const;
+		bool HasVariantReflections() const;
+        std::shared_ptr<const MaterialParameterSchema> GetMaterialParameterSchema() const;
+        std::shared_ptr<const MaterialShaderInterface> GetMaterialInterface() const;
+        std::string GetDependencySnapshotId() const;
 		bool HasParameterStructs() const;
 		ShaderCompiler::ShaderSourceLanguage GetSourceLanguage() const;
 		std::optional<NLS::Render::ShaderLab::ShaderLabPassState> GetShaderLabPassState() const;
@@ -100,6 +107,10 @@ namespace NLS::Render::Resources
 			std::string importedArtifactSubAssetKey;
 			std::string shaderLabLightMode;
 			std::optional<ShaderLab::ShaderLabPassState> shaderLabPassState;
+			std::vector<ShaderVariantReflection> variantReflections;
+            MaterialParameterSchema parameterSchema;
+            MaterialShaderInterface materialInterface;
+            std::string dependencySnapshotId;
 		};
 		struct RuntimeData
 		{
@@ -112,6 +123,10 @@ namespace NLS::Render::Resources
 			std::string shaderLabLightMode;
 			std::optional<ShaderLab::ShaderLabPassState> shaderLabPassState;
 			uint64_t generation = 0u;
+			std::vector<ShaderVariantReflection> variantReflections;
+            MaterialParameterSchema parameterSchema;
+            MaterialShaderInterface materialInterface;
+            std::string dependencySnapshotId;
 		};
 
 		Shader(const std::string p_path, ShaderCompiler::ShaderSourceLanguage p_sourceLanguage = ShaderCompiler::ShaderSourceLanguage::HLSL);
@@ -127,7 +142,9 @@ namespace NLS::Render::Resources
 			std::string importedArtifactSourcePath = {},
 			std::string importedArtifactSubAssetKey = {},
 			std::string shaderLabLightMode = {},
-			std::optional<ShaderLab::ShaderLabPassState> shaderLabPassState = std::nullopt);
+			std::optional<ShaderLab::ShaderLabPassState> shaderLabPassState = std::nullopt,
+            std::vector<ShaderVariantReflection> variantReflections = {},
+            MaterialParameterSchema parameterSchema = {},MaterialShaderInterface materialInterface = {},std::string dependencySnapshotId = {});
 		void SetReflection(ShaderReflection reflection);
 		void SetParameterStructs(std::vector<ShaderParameterStruct> parameterStructs);
 		void SetCompiledArtifact(ShaderCompiledArtifact artifact);

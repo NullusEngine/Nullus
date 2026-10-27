@@ -91,6 +91,8 @@ namespace
 
     bool CanRenderPassUseInRenderPassChildCommandRecording(const RenderPassCommandInput& passInput)
     {
+        if (std::any_of(passInput.recordedDrawCommands.begin(),passInput.recordedDrawCommands.end(),
+            [](const auto& draw) { return draw.indirectArguments != nullptr; })) return false;
         if (!IsRenderPassEligibleForParallelRecording(passInput))
             return false;
 

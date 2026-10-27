@@ -539,8 +539,8 @@ TEST(SerializedObjectCanonicalTests, DirectStreamArrayStructureUsesOnlyTheByteSt
     EXPECT_EQ(values.GetArrayElementAtIndex(0u).GetLongValue(), 10);
     ASSERT_TRUE(values.SetArraySize(4u));
     EXPECT_EQ(values.GetArraySize(), 4u);
-    EXPECT_EQ(values.GetArrayElementAtIndex(2u).GetLongValue(), 0);
-    EXPECT_EQ(values.GetArrayElementAtIndex(3u).GetLongValue(), 0);
+    EXPECT_EQ(values.GetArrayElementAtIndex(2u).GetLongValue(), 20);
+    EXPECT_EQ(values.GetArrayElementAtIndex(3u).GetLongValue(), 20);
     ASSERT_TRUE(serialized.ApplyModifiedPropertiesWithoutUndo());
     EXPECT_EQ(backend->GetInt32(target, 20u), 99);
 }
@@ -566,8 +566,8 @@ TEST(SerializedObjectCanonicalTests, DirectStreamArrayStructureAppliesAtomically
     // byte offset.
     EXPECT_EQ(backend->GetInt32(firstTarget, 0u), 3);
     EXPECT_EQ(backend->GetInt32(secondTarget, 0u), 3);
-    EXPECT_EQ(backend->GetInt32(firstTarget, 12u), 0);
-    EXPECT_EQ(backend->GetInt32(secondTarget, 12u), 0);
+    EXPECT_EQ(backend->GetInt32(firstTarget, 12u), 20);
+    EXPECT_EQ(backend->GetInt32(secondTarget, 12u), 20);
     EXPECT_EQ(backend->GetInt32(firstTarget, 16u), 99);
     EXPECT_EQ(backend->GetInt32(secondTarget, 16u), 77);
 

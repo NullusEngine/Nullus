@@ -24,6 +24,10 @@ Menu items end up next to the built-in panels in the editor's top-level menus.
 
 ## Editor-side data channel
 
+All reflected detail panels must use `Inspector::InspectorPropertyEditor`. It owns the single implementation of typed property controls, layouts, registered drawers, mixed/read-only values, references and collections. `InspectorView` provides selection and prefab actions; `ReflectedPropertyEditor` adapts document values to a staged `SerializedObject` without constructing an Inspector panel.
+
+Use `ReflectedPropertyEditor::Draw/DrawValues` for document values, `PropertyEditorContext` for an existing serialized stream, and `ApplyReflectedEdit` for the document's preview/commit/cancel boundary. Pass ranges, drag steps, color semantics and custom drawer keys as metadata. Compact VFX rows use `PropertyEditorLayout::ValueOnly` inside their own table; numeric, vector, color and enum widgets must not be reimplemented in each panel. Domain layouts, graph canvases and binding selectors can surround the shared controls. `SharedPropertyEditor` tests enforce the common route.
+
 Scripts never write component objects directly. Reads and writes go through:
 
 ```text
@@ -71,6 +75,12 @@ Exceptions thrown by a script or editor are caught:
 - Script `CustomPropertyDrawer` registration is not exposed.
 - There is no arbitrary ImGui passthrough.
 - Extension points are limited to Inspectors, tool windows, and menu items.
+
+## Icon registration boundary
+
+- Built-in icons are generated from `Tools/Icons/icons.manifest.json`; `editor.icon.*` ids stay stable after release, and script extensions reference built-in ids directly.
+- Native modules can register module icons at startup through `IconRegistry::Register` and call `UnregisterModule` on unload. Ids must follow `editor.icon.<domain>.<name>`; never use file paths or transient textures as icon ids.
+- Script extensions do not expose icon registration yet. Add new icons to the manifest on the native side first, then reference them from scripts.
 
 ## Relationship to native editor code
 

@@ -546,6 +546,15 @@ void PopulateGltfSceneFromJson(
             record.translation = ReadNumberArray(node, "translation", {});
             record.rotation = ReadNumberArray(node, "rotation", {});
             record.scale = ReadNumberArray(node, "scale", {});
+            if(const auto* values=FindArray(node,"matrix");values&&values->size()==16)
+            {
+                NLS::Maths::Matrix4 matrix;
+                for(size_t row=0;row<4;++row)for(size_t column=0;column<4;++column)matrix.data[row*4+column]=(*values)[column*4+row].get<float>();
+                NLS::Animation::Transform transform;std::string error;
+                if(NLS::Animation::Decompose(matrix,transform,error))
+                {record.translation={transform.translation.x,transform.translation.y,transform.translation.z};record.rotation={transform.rotation.x,transform.rotation.y,transform.rotation.z,transform.rotation.w};record.scale={transform.scale.x,transform.scale.y,transform.scale.z};}
+                else scene.diagnostics.push_back({"gltf-node-transform-unsupported",error});
+            }
             scene.nodes.push_back(std::move(record));
         }
 
@@ -595,8 +604,8 @@ void PopulateGltfSceneFromJson(
                         record.joints.push_back(IndexedKey("node", joint.get<size_t>()));
                 }
             }
-            scene.skins.push_back(std::move(record));
             scene.skeletons.push_back({record.skeletonKey.empty() ? record.sourceKey : record.skeletonKey, record.name});
+            scene.skins.push_back(std::move(record));
         }
     }
 
@@ -816,6 +825,7 @@ const char* ToSubAssetPrefix(const ImportedSceneSubAssetType type)
     case ImportedSceneSubAssetType::Texture: return "texture";
     case ImportedSceneSubAssetType::Skeleton: return "skeleton";
     case ImportedSceneSubAssetType::Skin: return "skin";
+    case ImportedSceneSubAssetType::SkeletalMesh: return "skinned-mesh";
     case ImportedSceneSubAssetType::AnimationClip: return "animation";
     case ImportedSceneSubAssetType::MorphTarget: return "morph-target";
     case ImportedSceneSubAssetType::Model: return "model";
@@ -879,6 +889,9 @@ std::vector<GeneratedSceneSubAsset> GenerateSceneSubAssets(const ImportedScene& 
     AddSubAssets(records, ImportedSceneSubAssetType::Skeleton, scene.skeletons);
     AddSubAssets(records, ImportedSceneSubAssetType::Skin, scene.skins);
     AddSubAssets(records, ImportedSceneSubAssetType::Texture, scene.textures);
+    if (scene.animationData)
+        for (const auto& mesh : scene.animationData->meshes)
+            records.push_back({ImportedSceneSubAssetType::SkeletalMesh,"skinned-mesh:"+mesh.id,mesh.id,mesh.name});
 
     const auto sceneKey = StableSceneKey(scene);
     records.push_back({

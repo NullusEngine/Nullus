@@ -1,0 +1,1015 @@
+{
+  "emitters": [
+    {
+      "attributes": [
+        {
+          "default": [
+            0.0,
+            0.0,
+            0.0,
+            0.0
+          ],
+          "name": "Particles.Position",
+          "type": 2
+        },
+        {
+          "default": [
+            -1,
+            2,
+            0,
+            0
+          ],
+          "name": "Particles.Velocity",
+          "type": 2
+        },
+        {
+          "default": [
+            1.0,
+            0.5,
+            0.10000000149011612,
+            1.0
+          ],
+          "name": "Particles.Color",
+          "type": 3
+        },
+        {
+          "default": [
+            0.05000000074505806,
+            0.0,
+            0.0,
+            0.0
+          ],
+          "name": "Particles.Size",
+          "type": 0
+        },
+        {
+          "default": [
+            0.0,
+            0.0,
+            0.0,
+            0.0
+          ],
+          "name": "Particles.Age",
+          "type": 0
+        },
+        {
+          "default": [
+            2.0,
+            0.0,
+            0.0,
+            0.0
+          ],
+          "name": "Particles.Lifetime",
+          "type": 0
+        },
+        {
+          "name": "Particles.Scale",
+          "type": 2,
+          "default": [
+            0.3,
+            0.3,
+            0.3,
+            0
+          ]
+        },
+        {
+          "name": "Particles.MeshOrientation",
+          "type": 3,
+          "default": [
+            0,
+            0,
+            0,
+            1
+          ]
+        }
+      ],
+      "bursts": [],
+      "capacity": 2048,
+      "collision": {
+        "enabled": false,
+        "friction": 0.0,
+        "layers": 4294967295,
+        "radius": 0.0,
+        "restitution": 0.5
+      },
+      "duration": 5.0,
+      "id": "af496e65-5787-48d5-9daa-dc339e9596d8",
+      "interpolatedSpawning": true,
+      "looping": true,
+      "name": "CPU Shards",
+      "seed": 1,
+      "spawn": {
+        "id": "c8971a31-2dc1-4c3e-85bc-deb8cbfbbcd8",
+        "nextNodeId": 3,
+        "nodes": [
+          {
+            "id": 1,
+            "inputs": [],
+            "name": "",
+            "operation": 5,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 2,
+            "value": [
+              0.5,
+              0.5,
+              0.5,
+              0.0
+            ]
+          },
+          {
+            "id": 2,
+            "inputs": [
+              1
+            ],
+            "name": "Particles.Position",
+            "operation": 22,
+            "position": [
+              280.0,
+              0.0
+            ],
+            "type": 2,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          }
+        ],
+        "stage": 0
+      },
+      "spawnRate": 30,
+      "target": 0,
+      "update": {
+        "id": "1756973c-9955-4df3-abf3-80a6c4ea8d98",
+        "nextNodeId": 18,
+        "nodes": [
+          {
+            "id": 1,
+            "inputs": [],
+            "name": "Particles.Position",
+            "operation": 1,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 2,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 2,
+            "inputs": [],
+            "name": "Particles.Velocity",
+            "operation": 1,
+            "position": [
+              0.0,
+              130.0
+            ],
+            "type": 2,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 3,
+            "inputs": [],
+            "name": "",
+            "operation": 3,
+            "position": [
+              0.0,
+              250.0
+            ],
+            "type": 0,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 4,
+            "inputs": [
+              2,
+              3
+            ],
+            "name": "",
+            "operation": 8,
+            "position": [
+              240.0,
+              130.0
+            ],
+            "type": 2,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 5,
+            "inputs": [
+              1,
+              4
+            ],
+            "name": "",
+            "operation": 6,
+            "position": [
+              480.0,
+              0.0
+            ],
+            "type": 2,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 6,
+            "inputs": [
+              5
+            ],
+            "name": "Particles.Position",
+            "operation": 22,
+            "position": [
+              720.0,
+              0.0
+            ],
+            "type": 2,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 7,
+            "operation": 0,
+            "type": 0,
+            "value": [
+              1.5,
+              0,
+              0,
+              0
+            ],
+            "name": "",
+            "inputs": [],
+            "position": [
+              200,
+              400
+            ]
+          },
+          {
+            "id": 8,
+            "operation": 1,
+            "type": 0,
+            "value": [
+              0,
+              0,
+              0,
+              0
+            ],
+            "name": "Particles.Age",
+            "inputs": [],
+            "position": [
+              430,
+              400
+            ]
+          },
+          {
+            "id": 9,
+            "operation": 8,
+            "type": 0,
+            "value": [
+              0,
+              0,
+              0,
+              0
+            ],
+            "name": "",
+            "inputs": [
+              7,
+              8
+            ],
+            "position": [
+              660,
+              400
+            ]
+          },
+          {
+            "id": 10,
+            "operation": 14,
+            "type": 0,
+            "value": [
+              0,
+              0,
+              0,
+              0
+            ],
+            "name": "",
+            "inputs": [
+              9
+            ],
+            "position": [
+              890,
+              400
+            ]
+          },
+          {
+            "id": 11,
+            "operation": 15,
+            "type": 0,
+            "value": [
+              0,
+              0,
+              0,
+              0
+            ],
+            "name": "",
+            "inputs": [
+              9
+            ],
+            "position": [
+              200,
+              540
+            ]
+          },
+          {
+            "id": 12,
+            "operation": 0,
+            "type": 3,
+            "value": [
+              0,
+              0,
+              1,
+              0
+            ],
+            "name": "",
+            "inputs": [],
+            "position": [
+              430,
+              540
+            ]
+          },
+          {
+            "id": 13,
+            "operation": 0,
+            "type": 3,
+            "value": [
+              0,
+              0,
+              0,
+              1
+            ],
+            "name": "",
+            "inputs": [],
+            "position": [
+              660,
+              540
+            ]
+          },
+          {
+            "id": 14,
+            "operation": 8,
+            "type": 3,
+            "value": [
+              0,
+              0,
+              0,
+              0
+            ],
+            "name": "",
+            "inputs": [
+              10,
+              12
+            ],
+            "position": [
+              890,
+              540
+            ]
+          },
+          {
+            "id": 15,
+            "operation": 8,
+            "type": 3,
+            "value": [
+              0,
+              0,
+              0,
+              0
+            ],
+            "name": "",
+            "inputs": [
+              11,
+              13
+            ],
+            "position": [
+              200,
+              680
+            ]
+          },
+          {
+            "id": 16,
+            "operation": 6,
+            "type": 3,
+            "value": [
+              0,
+              0,
+              0,
+              0
+            ],
+            "name": "",
+            "inputs": [
+              14,
+              15
+            ],
+            "position": [
+              430,
+              680
+            ]
+          },
+          {
+            "id": 17,
+            "operation": 22,
+            "type": 3,
+            "value": [
+              0,
+              0,
+              0,
+              0
+            ],
+            "name": "Particles.MeshOrientation",
+            "inputs": [
+              16
+            ],
+            "position": [
+              660,
+              680
+            ]
+          }
+        ],
+        "stage": 1
+      },
+      "renderer": 1,
+      "initialCapacity": 32,
+      "mesh": {
+        "meshes": [
+          {
+            "guid": "4e16656a-cc1e-44e0-befc-b00108056221",
+            "localId": 184820792548304152
+          }
+        ],
+        "materials": [],
+        "meshIndexAttribute": "Particles.MeshIndex",
+        "lodIndex": -1,
+        "scaleAttribute": "Particles.Scale",
+        "orientationAttribute": "Particles.MeshOrientation",
+        "defaultScale": [
+          0.3,
+          0.3,
+          0.3,
+          0
+        ],
+        "defaultOrientation": [
+          0,
+          0,
+          0,
+          1
+        ]
+      },
+      "sprite": {
+        "blend": 3,
+        "circularMask": false,
+        "tint": [
+          1,
+          1,
+          1,
+          1
+        ]
+      },
+      "sortByViewDepth": false
+    },
+    {
+      "attributes": [
+        {
+          "default": [
+            0.0,
+            0.0,
+            0.0,
+            0.0
+          ],
+          "name": "Particles.Position",
+          "type": 2
+        },
+        {
+          "default": [
+            1,
+            2,
+            0,
+            0
+          ],
+          "name": "Particles.Velocity",
+          "type": 2
+        },
+        {
+          "default": [
+            0.1,
+            0.6,
+            1,
+            1
+          ],
+          "name": "Particles.Color",
+          "type": 3
+        },
+        {
+          "default": [
+            0.05000000074505806,
+            0.0,
+            0.0,
+            0.0
+          ],
+          "name": "Particles.Size",
+          "type": 0
+        },
+        {
+          "default": [
+            0.0,
+            0.0,
+            0.0,
+            0.0
+          ],
+          "name": "Particles.Age",
+          "type": 0
+        },
+        {
+          "default": [
+            2.0,
+            0.0,
+            0.0,
+            0.0
+          ],
+          "name": "Particles.Lifetime",
+          "type": 0
+        },
+        {
+          "name": "Particles.Scale",
+          "type": 2,
+          "default": [
+            0.3,
+            0.3,
+            0.3,
+            0
+          ]
+        },
+        {
+          "name": "Particles.MeshOrientation",
+          "type": 3,
+          "default": [
+            0,
+            0,
+            0,
+            1
+          ]
+        }
+      ],
+      "bursts": [],
+      "capacity": 2048,
+      "collision": {
+        "enabled": false,
+        "friction": 0.0,
+        "layers": 4294967295,
+        "radius": 0.0,
+        "restitution": 0.5
+      },
+      "duration": 5.0,
+      "id": "13b7fbc8-558f-42bd-985d-e39717b8b73d",
+      "interpolatedSpawning": true,
+      "looping": true,
+      "name": "GPU Shards",
+      "seed": 1,
+      "spawn": {
+        "id": "1011ace4-40f3-4f54-b6f7-4d83db5684ba",
+        "nextNodeId": 3,
+        "nodes": [
+          {
+            "id": 1,
+            "inputs": [],
+            "name": "",
+            "operation": 5,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 2,
+            "value": [
+              0.5,
+              0.5,
+              0.5,
+              0.0
+            ]
+          },
+          {
+            "id": 2,
+            "inputs": [
+              1
+            ],
+            "name": "Particles.Position",
+            "operation": 22,
+            "position": [
+              280.0,
+              0.0
+            ],
+            "type": 2,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          }
+        ],
+        "stage": 0
+      },
+      "spawnRate": 30,
+      "target": 1,
+      "update": {
+        "id": "fafea664-bb7b-4178-9c6d-e4c6e992a04c",
+        "nextNodeId": 18,
+        "nodes": [
+          {
+            "id": 1,
+            "inputs": [],
+            "name": "Particles.Position",
+            "operation": 1,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 2,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 2,
+            "inputs": [],
+            "name": "Particles.Velocity",
+            "operation": 1,
+            "position": [
+              0.0,
+              130.0
+            ],
+            "type": 2,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 3,
+            "inputs": [],
+            "name": "",
+            "operation": 3,
+            "position": [
+              0.0,
+              250.0
+            ],
+            "type": 0,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 4,
+            "inputs": [
+              2,
+              3
+            ],
+            "name": "",
+            "operation": 8,
+            "position": [
+              240.0,
+              130.0
+            ],
+            "type": 2,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 5,
+            "inputs": [
+              1,
+              4
+            ],
+            "name": "",
+            "operation": 6,
+            "position": [
+              480.0,
+              0.0
+            ],
+            "type": 2,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 6,
+            "inputs": [
+              5
+            ],
+            "name": "Particles.Position",
+            "operation": 22,
+            "position": [
+              720.0,
+              0.0
+            ],
+            "type": 2,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 7,
+            "operation": 0,
+            "type": 0,
+            "value": [
+              1.5,
+              0,
+              0,
+              0
+            ],
+            "name": "",
+            "inputs": [],
+            "position": [
+              200,
+              400
+            ]
+          },
+          {
+            "id": 8,
+            "operation": 1,
+            "type": 0,
+            "value": [
+              0,
+              0,
+              0,
+              0
+            ],
+            "name": "Particles.Age",
+            "inputs": [],
+            "position": [
+              430,
+              400
+            ]
+          },
+          {
+            "id": 9,
+            "operation": 8,
+            "type": 0,
+            "value": [
+              0,
+              0,
+              0,
+              0
+            ],
+            "name": "",
+            "inputs": [
+              7,
+              8
+            ],
+            "position": [
+              660,
+              400
+            ]
+          },
+          {
+            "id": 10,
+            "operation": 14,
+            "type": 0,
+            "value": [
+              0,
+              0,
+              0,
+              0
+            ],
+            "name": "",
+            "inputs": [
+              9
+            ],
+            "position": [
+              890,
+              400
+            ]
+          },
+          {
+            "id": 11,
+            "operation": 15,
+            "type": 0,
+            "value": [
+              0,
+              0,
+              0,
+              0
+            ],
+            "name": "",
+            "inputs": [
+              9
+            ],
+            "position": [
+              200,
+              540
+            ]
+          },
+          {
+            "id": 12,
+            "operation": 0,
+            "type": 3,
+            "value": [
+              0,
+              0,
+              1,
+              0
+            ],
+            "name": "",
+            "inputs": [],
+            "position": [
+              430,
+              540
+            ]
+          },
+          {
+            "id": 13,
+            "operation": 0,
+            "type": 3,
+            "value": [
+              0,
+              0,
+              0,
+              1
+            ],
+            "name": "",
+            "inputs": [],
+            "position": [
+              660,
+              540
+            ]
+          },
+          {
+            "id": 14,
+            "operation": 8,
+            "type": 3,
+            "value": [
+              0,
+              0,
+              0,
+              0
+            ],
+            "name": "",
+            "inputs": [
+              10,
+              12
+            ],
+            "position": [
+              890,
+              540
+            ]
+          },
+          {
+            "id": 15,
+            "operation": 8,
+            "type": 3,
+            "value": [
+              0,
+              0,
+              0,
+              0
+            ],
+            "name": "",
+            "inputs": [
+              11,
+              13
+            ],
+            "position": [
+              200,
+              680
+            ]
+          },
+          {
+            "id": 16,
+            "operation": 6,
+            "type": 3,
+            "value": [
+              0,
+              0,
+              0,
+              0
+            ],
+            "name": "",
+            "inputs": [
+              14,
+              15
+            ],
+            "position": [
+              430,
+              680
+            ]
+          },
+          {
+            "id": 17,
+            "operation": 22,
+            "type": 3,
+            "value": [
+              0,
+              0,
+              0,
+              0
+            ],
+            "name": "Particles.MeshOrientation",
+            "inputs": [
+              16
+            ],
+            "position": [
+              660,
+              680
+            ]
+          }
+        ],
+        "stage": 1
+      },
+      "renderer": 1,
+      "initialCapacity": 32,
+      "mesh": {
+        "meshes": [
+          {
+            "guid": "4e16656a-cc1e-44e0-befc-b00108056221",
+            "localId": 184820792548304152
+          }
+        ],
+        "materials": [],
+        "meshIndexAttribute": "Particles.MeshIndex",
+        "lodIndex": -1,
+        "scaleAttribute": "Particles.Scale",
+        "orientationAttribute": "Particles.MeshOrientation",
+        "defaultScale": [
+          0.3,
+          0.3,
+          0.3,
+          0
+        ],
+        "defaultOrientation": [
+          0,
+          0,
+          0,
+          1
+        ]
+      },
+      "sprite": {
+        "blend": 3,
+        "circularMask": false,
+        "tint": [
+          1,
+          1,
+          1,
+          1
+        ]
+      },
+      "sortByViewDepth": false
+    }
+  ],
+  "id": "1a3c9d4f-96f7-46d5-8d98-894110493b25",
+  "name": "Mesh Shards",
+  "version": 1
+}

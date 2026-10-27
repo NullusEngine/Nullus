@@ -7,6 +7,7 @@
 #include "Inspector/NativeReflectionAdapter.h"
 #include "Inspector/ObjectReferenceSupport.h"
 #include "Inspector/PropertyTypeTraits.h"
+#include "Inspector/InspectorRegistry.h"
 #include "Inspector/ScriptSerializedAdapter.h"
 #include "Serialization/SerializedObject.h"
 
@@ -60,6 +61,12 @@ InspectorPropertyKind GetPropertyKind(const Serialization::SerializedProperty& p
     case Serialization::SerializedPropertyType::Vector4: return InspectorPropertyKind::Vector4;
     case Serialization::SerializedPropertyType::Quaternion: return InspectorPropertyKind::Quaternion;
     case Serialization::SerializedPropertyType::Rect: return InspectorPropertyKind::Rect;
+    case Serialization::SerializedPropertyType::Vector2Int: return InspectorPropertyKind::Vector2Int;
+    case Serialization::SerializedPropertyType::Vector3Int: return InspectorPropertyKind::Vector3Int;
+    case Serialization::SerializedPropertyType::RectInt: return InspectorPropertyKind::RectInt;
+    case Serialization::SerializedPropertyType::BoundsInt: return InspectorPropertyKind::BoundsInt;
+    case Serialization::SerializedPropertyType::AnimationCurve: return InspectorPropertyKind::AnimationCurve;
+    case Serialization::SerializedPropertyType::Gradient: return InspectorPropertyKind::Gradient;
     case Serialization::SerializedPropertyType::Bounds: return InspectorPropertyKind::Bounds;
     case Serialization::SerializedPropertyType::Integer:
     case Serialization::SerializedPropertyType::Character:
@@ -83,7 +90,8 @@ InspectorPropertyKind GetPropertyKind(const Serialization::SerializedProperty& p
 
 PropertyNode BuildNode(
     const Serialization::SerializedProperty& property,
-    const InspectorTargetSet& targets)
+    const InspectorTargetSet& targets,
+    Serialization::SerializedObject& owner)
 {
     PropertyNode node;
     node.path = PropertyPath(std::string(property.GetPropertyPath()));
@@ -99,8 +107,33 @@ PropertyNode BuildNode(
     node.targets = targets.targets;
     if (const auto* primary = targets.Primary(); primary != nullptr)
         node.target = *primary;
-    if (const auto value = property.GetValue(); value.IsValid())
-        node.valueType = value.GetType();
+    node.isFixedBuffer=property.IsFixedBuffer();
+    node.fixedBufferSize=property.GetFixedBufferSize();
+
+    // TypeTree owns serialization; labels and drawers come from the reflected
+    // declaring field and the same metadata registry as the scene Inspector.
+    const auto* stream = owner.GetPrimaryByteStream();
+    const auto schema = stream ? stream->GetSchema() : nullptr;
+    const auto* schemaNode = schema ? schema->FindPath(node.path.ToString()) : nullptr;
+    if(schemaNode && schemaNode->typeId!=meta::InvalidTypeID) node.valueType=meta::Type(schemaNode->typeId,property.IsArray());
+    if(!node.valueType.IsValid()) if(const auto value=property.GetValue();value.IsValid()) node.valueType=value.GetType();
+    const auto* parent = schemaNode ? schema->FindNode(schemaNode->parent) : nullptr;
+    if (parent && parent->typeId != meta::InvalidTypeID)
+    {
+        const meta::Type declaringType(parent->typeId);
+        node.ownerTypeName = declaringType.GetName();
+        if (declaringType.IsValid())
+            for (const auto& field : declaringType.GetFields())
+                if (field.GetName() == node.fieldName)
+                {
+                    node.ownerTypeName=field.GetClassType().GetName();
+                    node.metadata = InspectorMetadataRegistry::Get().Resolve(
+                        declaringType,field.GetName(),BuildEditorPropertyMetadata(field));
+                    node.readOnly |= node.metadata.readOnly;
+                    if (!node.metadata.displayName.empty()) node.displayName = node.metadata.displayName;
+                    break;
+                }
+    }
 
     // Asset references such as Engine::UI::UIDocumentReference persist a value
     // type (an AssetId plus a resource path), so their byte stream node is a
@@ -110,6 +143,12 @@ PropertyNode BuildNode(
     // the accessor backend cannot commit, leaving the reference unassignable.
     if (node.valueType.IsValid() && IsSupportedInspectorObjectReferenceType(node.valueType))
         node.kind = InspectorPropertyKind::ObjectReference;
+    if (node.valueType.IsValid())
+    {
+        const auto reflectedKind = GetInspectorPropertyKind(node.valueType);
+        if (node.kind == InspectorPropertyKind::Struct && reflectedKind != InspectorPropertyKind::Struct)
+            node.kind = reflectedKind;
+    }
 
     if (const auto* primary = targets.Primary(); primary != nullptr)
     {
@@ -160,15 +199,17 @@ std::vector<PropertyNode> InspectorProjectionBuilder::BuildPropertyProjection(
 
     std::vector<Ancestor> ancestors;
     const auto rootDepth = iterator.GetDepth();
-    while (iterator.NextVisible(true))
+    bool enterChildren=true;
+    while (iterator.NextVisible(enterChildren))
     {
         const auto depth = iterator.GetDepth();
         if (depth < rootDepth)
             continue;
 
-        auto node = BuildNode(iterator, targets);
-        if (node.metadata.hideInInspector)
-            continue;
+        auto node = BuildNode(iterator, targets, serializedObject);
+        const auto drawer=InspectorRegistry::Get().ResolvePropertyDrawer(node);
+        enterChildren=(!searchText.empty() && node.kind==InspectorPropertyKind::Array) || (node.kind==InspectorPropertyKind::Struct && (!drawer || drawer->scope==InspectorDrawerScope::Builtin));
+        if (node.metadata.hideInInspector) {enterChildren=false;continue;}
 
         while (!ancestors.empty() && ancestors.back().depth >= depth)
             ancestors.pop_back();

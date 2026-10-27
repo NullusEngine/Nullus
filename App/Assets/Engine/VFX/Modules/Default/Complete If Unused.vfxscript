@@ -1,0 +1,86 @@
+{
+  "category": "Default",
+  "deprecated": false,
+  "description": "Completes the whole System once every emitter has been empty for the grace period.",
+  "exposedVersion": "daa69b9b-c9e9-c57d-2d92-4c0c0f843d54",
+  "id": "5cbd182d-2ff2-7f6d-8a86-68f2197fd4f8",
+  "kind": "Module",
+  "name": "Complete If Unused",
+  "suggested": false,
+  "version": 2,
+  "versions": [
+    {
+      "attributes": [],
+      "calls": [],
+      "capabilities": 32,
+      "description": "Completes the whole System once every emitter has been empty for the grace period.",
+      "graph": {
+        "id": "6ae9d7b3-a621-4c4f-a9c8-598bd17401cb",
+        "nextNodeId": 3,
+        "nodes": [
+          {
+            "id": 1,
+            "inputs": [],
+            "name": "Module.Unused Grace Period",
+            "operation": 2,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 0,
+            "value": [
+              0.5,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 2,
+            "inputs": [
+              1
+            ],
+            "name": "Emitter.UnusedGracePeriod",
+            "operation": 22,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 0,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          }
+        ],
+        "stage": 4
+      },
+      "id": "daa69b9b-c9e9-c57d-2d92-4c0c0f843d54",
+      "inputs": [
+        {
+          "default": [
+            0.5,
+            0.0,
+            0.0,
+            0.0
+          ],
+          "id": "09b2c34f-6134-e06f-d875-468610c053de",
+          "name": "Unused Grace Period",
+          "static": false,
+          "type": 0
+        }
+      ],
+      "major": 1,
+      "minor": 0,
+      "provides": [],
+      "requiresBefore": [],
+      "stages": [
+        3
+      ],
+      "switches": []
+    }
+  ],
+  "visible": true
+}

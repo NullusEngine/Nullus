@@ -127,6 +127,31 @@ TEST(MaterialVariantKeyTests, BuildsPassAndPipelineVariantKeysFromMaterialPipeli
     EXPECT_NE(gbufferKey.stableKey, changedPipelineKey.stableKey);
 }
 
+TEST(MaterialVariantKeyTests, RasterizationOverridesHaveDistinctCacheAndPassKeys)
+{
+    using namespace NLS::Render::Resources;
+    Material material;
+    NLS::Render::Data::PipelineState pipelineState;
+    pipelineState.rasterizationMode = NLS::Render::Settings::ERasterizationMode::LINE;
+
+    MaterialPipelineStateOverrides inherited;
+    auto filled = inherited;
+    filled.wireframe = false;
+    auto wireframe = inherited;
+    wireframe.wireframe = true;
+
+    EXPECT_NE(inherited, filled);
+    EXPECT_NE(filled, wireframe);
+    EXPECT_NE(inherited.GetHash(), filled.GetHash());
+    EXPECT_NE(filled.GetHash(), wireframe.GetHash());
+    const auto key = [&](const MaterialPipelineStateOverrides& overrides)
+    {
+        return BuildMaterialPassVariantKey(material, "DeferredLighting", pipelineState, overrides).stableKey;
+    };
+    EXPECT_NE(key(inherited), key(filled));
+    EXPECT_NE(key(filled), key(wireframe));
+}
+
 TEST(MaterialVariantKeyTests, IncludesRenderTargetFormatsInPassVariantKey)
 {
     NLS::Render::Resources::Material material;

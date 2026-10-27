@@ -115,6 +115,7 @@ build_windows.bat [Debug|Release] [x64|ARM64]
 | `Editor` | 编辑器 |
 | `Game` | 游戏运行时 |
 | `Launcher` | 项目启动器 |
+| `NullusBuild` | 无界面打包命令行与共享构建流水线 |
 | `NullusUnitTests` | 行为测试 |
 | `NullusPerformanceTests` | 性能与压力测试 |
 | `ReflectionTest` | 反射冒烟工具 |

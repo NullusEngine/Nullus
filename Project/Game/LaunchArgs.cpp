@@ -16,6 +16,9 @@ namespace NLS::Game::Launch
 		std::printf("  --no-renderdoc               Disable RenderDoc debugging\n");
 		std::printf("  --capture-after-frames <N>  Automatically capture frame after N presents\n");
 		std::printf("  --material-validation-output <path>   Write a renderer readback PNG for material validation\n");
+            std::printf("  --animation-validation-output <path>  Read back a cooked animation scene and verify its silhouette\n");
+            std::printf("  --animation-validation-time <seconds> Seek animation before capture (default 0.25)\n");
+            std::printf("  --animation-validation-forward        Validate the Forward renderer instead of the default renderer\n");
 		std::printf("  --material-validation-summary <path>  Write material validation analysis text\n");
 		std::printf("  --material-validation-after-frames <N> Capture material validation after N presents\n");
 			std::printf("  --material-validation-swapchain Capture the presented Game output\n");
@@ -80,7 +83,24 @@ namespace NLS::Game::Launch
 					return parsed;
 				}
 			}
-			else if (arg == "--material-validation-output" && i + 1 < argc)
+                else if (arg == "--animation-validation-output" && i + 1 < argc)
+                {
+                    if(!parsed.materialValidation)parsed.materialValidation=MaterialValidationLaunchSettings{};
+                    parsed.materialValidation->animationValidation=true;
+                    parsed.materialValidation->outputPath=argv[++i];
+                }
+                else if (arg == "--animation-validation-time" && i + 1 < argc)
+                {
+                    if(!parsed.materialValidation)parsed.materialValidation=MaterialValidationLaunchSettings{};
+                    try{parsed.materialValidation->animationTime=std::stof(argv[++i]);}
+                    catch(...){parsed.hasError=true;return parsed;}
+                }
+                else if (arg == "--animation-validation-forward")
+                {
+                    if(!parsed.materialValidation)parsed.materialValidation=MaterialValidationLaunchSettings{};
+                    parsed.materialValidation->animationForward=true;
+                }
+				else if (arg == "--material-validation-output" && i + 1 < argc)
 			{
 				if (!parsed.materialValidation.has_value())
 					parsed.materialValidation = MaterialValidationLaunchSettings {};

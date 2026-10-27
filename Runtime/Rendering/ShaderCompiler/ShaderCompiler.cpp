@@ -943,6 +943,8 @@ namespace NLS::Render::ShaderCompiler
 				return ShaderResourceKind::StructuredBuffer;
 			if (typeToken == "UAV" && formatToken == "struct")
 				return ShaderResourceKind::StorageBuffer;
+            if ((typeToken == "UAV" || typeToken.rfind("RWTexture", 0) == 0) && dimToken != "buf" && dimToken != "r/w")
+                return ShaderResourceKind::StorageTexture;
 			if (typeToken == "texture")
 				return ShaderResourceKind::SampledTexture;
 			if (typeToken.find("StructuredBuffer") != std::string::npos)
@@ -1100,6 +1102,9 @@ namespace NLS::Render::ShaderCompiler
 					property.name = resourceName;
 					property.kind = ParseDxcResourceKind(typeToken, formatToken, dimToken);
 					property.type = ParseResourceUniformType(typeToken, dimToken);
+                    if (dimToken == "3d") property.textureDimension = RHI::TextureDimension::Texture3D;
+                    else if (dimToken == "cube") property.textureDimension = RHI::TextureDimension::TextureCube;
+                    else if (dimToken == "2darray") property.textureDimension = RHI::TextureDimension::Texture2DArray;
 					property.stage = stage;
 					property.stageMask = ToShaderStageMask(stage);
 					property.bindingIndex = binding->index;

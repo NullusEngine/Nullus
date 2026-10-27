@@ -19,6 +19,7 @@
 #include "Rendering/RHI/Core/RHICommand.h"
 #include "Rendering/RHI/Core/RHIDevice.h"
 #include "Rendering/RHI/Core/RHIEnums.h"
+#include "Rendering/RHI/Utils/UploadContext/UploadContext.h"
 #include "RenderDef.h"
 
 namespace NLS::Render::RHI
@@ -50,7 +51,9 @@ namespace NLS::Render::Context
         Compute,
         Decal,
         UIOverlay,
-        SwapchainOutput
+        SwapchainOutput,
+        ForwardOpaqueDepth,
+        ForwardOpaqueColor
     };
 
     inline constexpr const char kUIOverlayRenderPassDebugName[] = "RHIFrameGraph::UIOverlay";
@@ -70,6 +73,10 @@ namespace NLS::Render::Context
         Data::ObjectDrawConstants objectConstants;
         bool usesObjectIndex = false;
         bool objectBindingImmutable = false;
+        std::shared_ptr<RHI::RHIBuffer> indirectArguments;
+        uint64_t indirectArgumentOffset = 0;
+        // Strong owners include immutable particle frames and their device lifetime.
+        std::shared_ptr<const void> resourceOwner;
     };
 
     struct NLS_RENDER_API RecordedComputeBindingSetInput
@@ -99,6 +106,7 @@ namespace NLS::Render::Context
         RHI::PipelineStageMask destinationStages = RHI::PipelineStageMask::None;
         RHI::AccessMask sourceAccess = RHI::AccessMask::None;
         RHI::AccessMask destinationAccess = RHI::AccessMask::None;
+        bool useTrackedBeforeState = false;
     };
 
     enum class ResourceAccessMode : uint8_t
@@ -139,11 +147,23 @@ namespace NLS::Render::Context
         std::vector<std::shared_ptr<RHI::RHIBuffer>> uavBarrierBuffersBefore;
         std::vector<std::shared_ptr<RHI::RHIBuffer>> uavBarrierBuffersAfter;
         std::vector<std::shared_ptr<RHI::RHIBuffer>> shaderReadBuffersAfter;
+        std::vector<BufferVisibilityTransition> exportedBufferVisibilityTransitions;
         std::vector<BufferResourceAccess> bufferResourceAccesses;
         std::vector<TextureResourceAccess> textureResourceAccesses;
         std::vector<TextureVisibilityTransition> textureVisibilityTransitionsBefore;
         std::vector<TextureVisibilityTransition> exportedTextureVisibilityTransitions;
+        std::shared_ptr<RHI::UploadContext> uploadContext;
+        std::vector<RHI::UploadTextureRequest> textureUploadsBefore;
+        std::shared_ptr<RHI::RHIBuffer> indirectArguments;
+        uint64_t indirectArgumentOffset = 0;
+        std::shared_ptr<const void> resourceOwner;
+        std::vector<TextureVisibilityTransition> textureCopyTransitionsBefore;
+        std::vector<RHI::RHITextureCopyDesc> textureCopiesAfter;
+        std::shared_ptr<RHI::RHITimestampQuery> timestampBegin, timestampEnd;
     };
+
+    NLS_RENDER_API uint64_t RecordComputeDispatchInputs(RHI::RHICommandBuffer& commandBuffer,
+        const std::vector<RecordedComputeDispatchInput>& dispatchInputs, bool recordShaderReadBarriers = true);
 
     enum class QueueDependencyPolicy : uint8_t
     {
@@ -191,6 +211,8 @@ namespace NLS::Render::Context
         std::shared_ptr<RHI::RHIGraphicsPipeline> outputPipeline;
         std::shared_ptr<RHI::RHIBindingSet> outputBindingSet;
         std::vector<RecordedDrawCommandInput> recordedDrawCommands;
+        // On a graphics pass these execute on its graphics command buffer before BeginRenderPass.
+        // Such passes are kept whole; child command recording and draw slicing are disabled.
         std::vector<RecordedComputeDispatchInput> computeDispatchInputs;
         bool requiresFrameData = false;
         bool requiresObjectData = false;

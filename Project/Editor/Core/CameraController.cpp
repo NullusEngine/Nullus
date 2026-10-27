@@ -20,13 +20,35 @@ using namespace NLS;
 Editor::Core::CameraController::CameraController(
 	Editor::Panels::AView& p_view,
 	Render::Entities::Camera& p_camera
-) :
-	m_inputManager(*EDITOR_CONTEXT(inputManager)),
-	m_window(*EDITOR_CONTEXT(window)),
-	m_view(p_view),
-	m_camera(p_camera)
+) : CameraController(p_camera,*EDITOR_CONTEXT(inputManager),*EDITOR_CONTEXT(window))
 {
-	m_camera.SetFov(60.0f);
+    m_view = &p_view;
+    m_camera.SetFov(60.0f);
+}
+
+Editor::Core::CameraController::CameraController(Render::Entities::Camera& camera,
+    Windowing::Inputs::InputManager& input, Windowing::Window& window)
+    : m_inputManager(input),m_window(window),m_camera(camera)
+{}
+
+Editor::Core::CameraController::~CameraController()
+{
+    if (IsCameraControlActive() || m_forcedNoMouseCursorChange) ResetMouseInteractionState();
+}
+
+void Editor::Core::CameraController::SetViewportInputBounds(const Maths::Vector2& minimum,const Maths::Vector2& maximum,bool available)
+{
+    m_viewportMin = minimum; m_viewportMax = maximum;
+    m_hasViewportBounds = available && maximum.x > minimum.x && maximum.y > minimum.y;
+    SetViewportHeight(maximum.y-minimum.y);
+}
+
+void Editor::Core::CameraController::ClearViewportInputBounds()
+{
+    m_hasViewportBounds = false; m_inputActive = false;
+    m_leftMousePressed = false; m_firstMouse = true;
+    m_currentMovementSpeed = Maths::Vector3::Zero; m_targetSpeed = Maths::Vector3::Zero;
+    if (IsCameraControlActive() || m_forcedNoMouseCursorChange) ResetMouseInteractionState();
 }
 
 namespace
@@ -123,12 +145,15 @@ void Editor::Core::CameraController::HandleInputs(float p_deltaTime)
     if (!m_window.IsFocused())
     {
         ResetMouseInteractionState();
+        return;
     }
 
     const Maths::Vector2 mousePosition = m_inputManager.GetMousePosition();
-    const bool viewportInputAvailable = m_view.HasViewportImageInputBounds();
-    const bool mouseOverView = viewportInputAvailable && m_view.IsMouseWithinView(mousePosition);
-    const bool inputActive = mouseOverView || m_inputActive;
+    const bool viewportInputAvailable = m_view ? m_view->HasViewportImageInputBounds() : m_hasViewportBounds;
+    const bool mouseOverView = viewportInputAvailable && (m_view ? m_view->IsMouseHoveringView(mousePosition) :
+        mousePosition.x >= m_viewportMin.x && mousePosition.x < m_viewportMax.x &&
+        mousePosition.y >= m_viewportMin.y && mousePosition.y < m_viewportMax.y);
+    const bool inputActive = mouseOverView && (!m_view || m_inputActive);
     const bool capturingMouse = m_leftMousePressed || IsCameraControlActive();
     const bool shouldProcessMouseState = inputActive || capturingMouse;
 
@@ -138,15 +163,16 @@ void Editor::Core::CameraController::HandleInputs(float p_deltaTime)
 
 		if (mouseOverView && !NLS_SERVICE(NLS::UI::UIManager).IsAnyItemActive())
 		{
-			if (auto target = GetTargetGameObject())
+			auto* target = GetTargetGameObject();
+			if (target || (!m_view && m_focusState && m_focusState->hasFocus))
 			{
-                auto targetPos = target->GetTransform()->GetWorldPosition();
+                auto targetPos = target ? target->GetTransform()->GetWorldPosition() : m_focusState->focusPoint;
 
-				float dist = GetActorFocusDist(*target);
+				float dist = target ? GetActorFocusDist(*target) : m_focusState->focusDistance;
 
 				if (m_inputManager.IsKeyPressed(Windowing::Inputs::EKey::KEY_F))
 				{
-                    MoveToTarget(*target);
+                    MoveToPoint(targetPos,dist);
 				}
 
 				auto focusObjectFromAngle = [this, &targetPos, &dist]( const Maths::Vector3& offset)
@@ -235,8 +261,10 @@ void Editor::Core::CameraController::HandleInputs(float p_deltaTime)
                 {
                     if (auto target = GetTargetGameObject())
                     {
-                        HandleCameraOrbit(*target, mouseOffset, wasFirstMouse);
+                        HandleCameraOrbit(target->GetTransform()->GetWorldPosition(), mouseOffset, wasFirstMouse);
                     }
+                    else if (m_focusState && m_focusState->hasFocus)
+                        HandleCameraOrbit(m_focusState->focusPoint,mouseOffset,wasFirstMouse);
                 }
                 else if (m_interactionState == SceneViewCameraInteractionStateId::Pan)
                 {
@@ -258,6 +286,11 @@ void Editor::Core::CameraController::MoveToTarget(Engine::GameObject& p_target)
 {
     const Maths::Vector3 focusPoint = p_target.GetTransform()->GetWorldPosition();
     const float focusDistance = GetActorFocusDist(p_target);
+    MoveToPoint(focusPoint,focusDistance);
+}
+
+void Editor::Core::CameraController::MoveToPoint(const Maths::Vector3& focusPoint,const float focusDistance)
+{
 	m_cameraDestinations.push({
 		focusPoint -
 		m_camera.GetRotation() *
@@ -283,6 +316,7 @@ void Editor::Core::CameraController::ResetMouseInteractionState()
 
 void Editor::Core::CameraController::ResetNavigationInteractionState()
 {
+    const bool ownedCursorControl = IsCameraControlActive() || m_forcedNoMouseCursorChange;
     m_firstMouse = true;
     m_pendingMouseDeltaSuppressionFrames = 0u;
     if (m_forcedNoMouseCursorChange)
@@ -290,8 +324,11 @@ void Editor::Core::CameraController::ResetNavigationInteractionState()
         NLS_SERVICE(NLS::UI::UIManager).PopCustomCursorControl();
         m_forcedNoMouseCursorChange = false;
     }
-    m_window.SetInfiniteCursorWrapEnabled(false);
-    m_window.SetCursorMode(Cursor::ECursorMode::NORMAL);
+    if (ownedCursorControl)
+    {
+        m_window.SetInfiniteCursorWrapEnabled(false);
+        m_window.SetCursorMode(Cursor::ECursorMode::NORMAL);
+    }
     if (const auto restoredCursorShape = m_cursorShapeLease.Release())
         m_window.SetCursorShape(*restoredCursorShape);
     m_interactionState = SceneViewCameraInteractionStateId::Neutral;
@@ -411,7 +448,7 @@ Engine::GameObject* Editor::Core::CameraController::GetTargetGameObject() const
 	{
 		return m_lockedGameObject;
 	}
-	else if (EDITOR_EXEC(IsAnyGameObjectSelected()))
+    else if (m_view && EDITOR_EXEC(IsAnyGameObjectSelected()))
 	{
 		return EDITOR_EXEC(GetSelectedGameObject());
 	}
@@ -461,7 +498,7 @@ Maths::Vector3 RemoveRoll(const Maths::Vector3& p_ypr)
 }
 
 void Editor::Core::CameraController::HandleCameraOrbit(
-	Engine::GameObject& p_target,
+    const Maths::Vector3& target,
 	const Maths::Vector2& p_mouseOffset,
 	bool p_firstMouse
 )
@@ -472,16 +509,14 @@ void Editor::Core::CameraController::HandleCameraOrbit(
 	{
 		m_ypr = Maths::Quaternion::EulerAngles(m_camera.GetRotation());
 		m_ypr = RemoveRoll(m_ypr);
-		m_orbitTarget = &p_target.GetTransform()->GetTransform();
-		m_orbitStartOffset = -Maths::Vector3::Forward * Maths::Vector3::Distance(m_orbitTarget->GetWorldPosition(), m_camera.GetPosition());
+        m_orbitStartOffset = -Maths::Vector3::Forward * Maths::Vector3::Distance(target, m_camera.GetPosition());
 	}
 
 	m_ypr.y += -mouseOffset.x;
 	m_ypr.x += -mouseOffset.y;
 	m_ypr.x = std::max(std::min(m_ypr.x, 90.0f), -90.0f);
 
-	auto& target = p_target.GetTransform()->GetTransform();
-	Maths::Transform pivotTransform(target.GetWorldPosition());
+    Maths::Transform pivotTransform(target);
 	Maths::Transform cameraTransform(m_orbitStartOffset);
 	cameraTransform.SetParent(pivotTransform);
 	pivotTransform.RotateLocal(Maths::Quaternion(m_ypr));
@@ -490,8 +525,8 @@ void Editor::Core::CameraController::HandleCameraOrbit(
     if (m_focusState != nullptr)
     {
         *m_focusState = {
-            target.GetWorldPosition(),
-            Maths::Vector3::Distance(target.GetWorldPosition(), m_camera.GetPosition()),
+            target,
+            Maths::Vector3::Distance(target, m_camera.GetPosition()),
             true
         };
     }

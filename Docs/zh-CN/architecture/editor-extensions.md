@@ -24,6 +24,10 @@
 
 ## 编辑器侧数据通道
 
+所有通过反射显示的细节面板必须使用 `Inspector::InspectorPropertyEditor`。类型控件、属性布局、自定义 Drawer、混合值/只读状态、引用与集合编辑只保留这一份实现。`InspectorView` 提供选择与 Prefab 操作；`ReflectedPropertyEditor` 把文档值接入暂存的 `SerializedObject`，不再构造 Inspector 面板。
+
+文档值使用 `ReflectedPropertyEditor::Draw/DrawValues`，已有序列化流通过 `PropertyEditorContext` 接入，文档预览/提交/取消通过 `ApplyReflectedEdit` 处理。范围、拖动步进、颜色语义和自定义 Drawer 标识均作为元数据传入。VFX 紧凑行在自身表格里使用 `PropertyEditorLayout::ValueOnly`；各面板不得重新实现数值、向量、颜色、枚举等基础控件。模块栈、图画布和绑定方式选择可以保留领域布局。`SharedPropertyEditor` 测试检查这条公共路径。
+
 脚本不直接写组件对象。读写统一经过：
 
 ```text
@@ -71,6 +75,12 @@ serializedObject -> SerializedProperty -> ApplyModifiedProperties()
 - 不开放脚本 `CustomPropertyDrawer` 注册；
 - 不提供任意 ImGui 直通调用；
 - 扩展点限于 Inspector、工具窗口与菜单项。
+
+## 图标注册边界
+
+- 内置图标由 `Tools/Icons/icons.manifest.json` 生成，`editor.icon.*` ID 发布后保持稳定，脚本扩展直接引用内置 ID。
+- 原生模块可在启动时通过 `IconRegistry::Register` 注册模块图标，并在卸载时调用 `UnregisterModule`；ID 必须符合 `editor.icon.<domain>.<name>`，不得把文件路径或临时纹理当作图标 ID。
+- 脚本扩展当前不暴露图标注册 API；需要新图标时先在 Manifest（原生侧）登记，再在脚本中引用。
 
 ## 与原生编辑器代码的关系
 

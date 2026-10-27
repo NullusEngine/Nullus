@@ -2,6 +2,7 @@
 
 #include "Rendering/RenderDef.h"
 #include "Rendering/Resources/ShaderReflection.h"
+#include "Rendering/Resources/MaterialParameterSchema.h"
 #include "Rendering/ShaderCompiler/ShaderCompilationTypes.h"
 #include "Rendering/ShaderLab/ShaderLabTypes.h"
 
@@ -32,6 +33,10 @@ struct ShaderArtifact
     std::string shaderLabLightMode;
     std::optional<ShaderLab::ShaderLabPassState> shaderLabPassState;
     std::vector<ShaderArtifactStage> stages;
+    std::vector<Resources::ShaderVariantReflection> variantReflections;
+    Resources::MaterialParameterSchema parameterSchema;
+    std::string dependencySnapshotId;
+    Resources::MaterialShaderInterface materialInterface;
 };
 
 NLS_RENDER_API std::vector<uint8_t> SerializeShaderArtifact(const ShaderArtifact& artifact);

@@ -11,6 +11,7 @@
 
 #include <string>
 #include <vector>
+#include <cstdint>
 
 namespace NLS::meta
 {
@@ -32,6 +33,8 @@ namespace NLS::meta
 
         virtual std::string GetKey(const Argument &value) const = 0;
         virtual Variant GetValue(const std::string &key) const = 0;
+        virtual Variant FromBits(uint64_t bits) const = 0;
+        virtual uint64_t GetBits(const Argument& value) const = 0;
 
         Type GetParentType(void) const;
 

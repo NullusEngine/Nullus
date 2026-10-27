@@ -1,5 +1,7 @@
 #pragma once
 
+namespace NLS::Render::RHI { class UploadBackend; class RHITimestampQuery; }
+
 #include <atomic>
 #include <cstdint>
 #include <memory>
@@ -69,6 +71,8 @@ namespace NLS::Render::RHI
         virtual const RHIDeviceCapabilities& GetCapabilities() const = 0;
         virtual NativeRenderDeviceInfo GetNativeDeviceInfo() const = 0;
         virtual bool IsBackendReady() const = 0;
+        virtual std::shared_ptr<UploadBackend> CreateUploadBackend() { return {}; }
+        virtual std::shared_ptr<RHITimestampQuery> CreateTimestampQuery() { return {}; }
         virtual std::shared_ptr<RHIQueue> GetQueue(QueueType queueType) = 0;
         virtual std::shared_ptr<RHISwapchain> CreateSwapchain(const SwapchainDesc& desc) = 0;
         virtual std::shared_ptr<RHIBuffer> CreateBuffer(const RHIBufferDesc& desc, const RHIBufferUploadDesc& uploadDesc) = 0;

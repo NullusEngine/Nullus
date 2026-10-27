@@ -1,0 +1,278 @@
+{
+  "category": "Initialization",
+  "deprecated": false,
+  "description": "Sets the initial particle attributes.",
+  "exposedVersion": "c4a318f5-780b-b04f-8076-63eada71a2a6",
+  "id": "6360183b-6e73-1a6b-fcb6-9838a7adc36e",
+  "kind": "Module",
+  "name": "Initialize Particle",
+  "suggested": false,
+  "version": 2,
+  "versions": [
+    {
+      "attributes": [],
+      "calls": [],
+      "capabilities": 0,
+      "description": "Sets the initial particle attributes.",
+      "graph": {
+        "id": "c4bf552c-698f-4c84-acf0-828882e101cb",
+        "nextNodeId": 11,
+        "nodes": [
+          {
+            "id": 1,
+            "inputs": [],
+            "name": "Module.Lifetime",
+            "operation": 2,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 0,
+            "value": [
+              2.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 2,
+            "inputs": [],
+            "name": "Module.Position",
+            "operation": 2,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 2,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 3,
+            "inputs": [],
+            "name": "Module.Velocity",
+            "operation": 2,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 2,
+            "value": [
+              0.0,
+              3.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 4,
+            "inputs": [],
+            "name": "Module.Color",
+            "operation": 2,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 3,
+            "value": [
+              1.0,
+              0.5,
+              0.10000000149011612,
+              1.0
+            ]
+          },
+          {
+            "id": 5,
+            "inputs": [],
+            "name": "Module.Size",
+            "operation": 2,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 0,
+            "value": [
+              0.05000000074505806,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 6,
+            "inputs": [
+              4
+            ],
+            "name": "Particles.Color",
+            "operation": 22,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 3,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 7,
+            "inputs": [
+              1
+            ],
+            "name": "Particles.Lifetime",
+            "operation": 22,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 0,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 8,
+            "inputs": [
+              2
+            ],
+            "name": "Particles.Position",
+            "operation": 22,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 2,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 9,
+            "inputs": [
+              5
+            ],
+            "name": "Particles.Size",
+            "operation": 22,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 0,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 10,
+            "inputs": [
+              3
+            ],
+            "name": "Particles.Velocity",
+            "operation": 22,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 2,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          }
+        ],
+        "stage": 0
+      },
+      "id": "c4a318f5-780b-b04f-8076-63eada71a2a6",
+      "inputs": [
+        {
+          "default": [
+            2.0,
+            0.0,
+            0.0,
+            0.0
+          ],
+          "id": "799b0bc2-25bc-d1dd-353f-4b303fa7694a",
+          "name": "Lifetime",
+          "static": false,
+          "type": 0
+        },
+        {
+          "default": [
+            0.0,
+            0.0,
+            0.0,
+            0.0
+          ],
+          "id": "f44a0928-f4ab-b879-db3a-04b4856cf456",
+          "name": "Position",
+          "static": false,
+          "type": 2
+        },
+        {
+          "default": [
+            0.0,
+            3.0,
+            0.0,
+            0.0
+          ],
+          "id": "594f3f46-ea1c-fccd-eb29-48d799bf5c46",
+          "name": "Velocity",
+          "static": false,
+          "type": 2
+        },
+        {
+          "default": [
+            1.0,
+            0.5,
+            0.10000000149011612,
+            1.0
+          ],
+          "id": "b76ddc37-9865-1601-a420-04617dd3a434",
+          "name": "Color",
+          "static": false,
+          "type": 3
+        },
+        {
+          "default": [
+            0.05000000074505806,
+            0.0,
+            0.0,
+            0.0
+          ],
+          "id": "a3cb6b66-2771-eeff-aca0-28daedd39c20",
+          "name": "Size",
+          "static": false,
+          "type": 0
+        }
+      ],
+      "major": 1,
+      "minor": 0,
+      "provides": [],
+      "requiresBefore": [],
+      "stages": [
+        4
+      ],
+      "switches": []
+    }
+  ],
+  "visible": true
+}

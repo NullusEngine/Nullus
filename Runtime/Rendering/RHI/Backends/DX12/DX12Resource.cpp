@@ -22,6 +22,7 @@
 #include "Rendering/RHI/Backends/DX12/DX12TextureViewUtils.h"
 #include "Rendering/Context/DriverAccess.h"
 #include "Rendering/RHI/Utils/UploadContext/UploadContext.h"
+#include "Rendering/RHI/Utils/UploadContext/TextureUploadRegion.h"
 
 #if defined(_WIN32)
 #include <Windows.h>
@@ -631,36 +632,28 @@ namespace NLS::Render::Backend
 			textureResource == nullptr ||
 			update.data == nullptr ||
 			update.dataSize == 0u ||
-			textureDesc.format != NLS::Render::RHI::TextureFormat::RGBA8 ||
-			update.mipLevel != 0u ||
-			update.arrayLayer != 0u ||
-			update.z != 0u ||
 			update.extent.width == 0u ||
-			update.extent.height == 0u ||
-			update.extent.depth != 1u ||
-			update.x + update.extent.width > textureDesc.extent.width ||
-			update.y + update.extent.height > textureDesc.extent.height)
+            update.extent.height == 0u)
 		{
 			return false;
 		}
 
-		const size_t sourceRowPitch = update.rowPitch != 0u
-			? update.rowPitch
-			: static_cast<size_t>(update.extent.width) * 4u;
-		const size_t sourceSlicePitch = update.slicePitch != 0u
-			? update.slicePitch
-			: sourceRowPitch * static_cast<size_t>(update.extent.height);
-		if (sourceRowPitch < static_cast<size_t>(update.extent.width) * 4u ||
-			sourceSlicePitch < sourceRowPitch * static_cast<size_t>(update.extent.height) ||
-			update.dataSize < sourceSlicePitch)
-		{
+        NLS::Render::RHI::TextureUploadRegionLayout layout;
+        std::string layoutError;
+        if (!NLS::Render::RHI::ValidateTextureUploadRegion(textureDesc, update.mipLevel,
+            update.arrayLayer, {static_cast<int32_t>(update.x), static_cast<int32_t>(update.y),
+                static_cast<int32_t>(update.z)}, update.extent,
+            update.rowPitch, update.slicePitch, update.dataSize, layout, layoutError))
 			return false;
-		}
+        const size_t sourceRowPitch = layout.rowPitch;
+        const size_t sourceSlicePitch = layout.slicePitch;
 
 		const UINT nativeRowPitch = static_cast<UINT>(AlignUp(
 			sourceRowPitch,
 			D3D12_TEXTURE_DATA_PITCH_ALIGNMENT));
-		const UINT64 uploadBufferSize = static_cast<UINT64>(nativeRowPitch) * update.extent.height;
+        const UINT64 nativeSlicePitch = AlignUp(static_cast<UINT64>(nativeRowPitch) * layout.rows,
+            D3D12_TEXTURE_DATA_PLACEMENT_ALIGNMENT);
+        const UINT64 uploadBufferSize = nativeSlicePitch * update.extent.depth;
 		D3D12_HEAP_PROPERTIES uploadHeapProperties{};
 		uploadHeapProperties.Type = D3D12_HEAP_TYPE_UPLOAD;
 		uploadHeapProperties.CreationNodeMask = 1;
@@ -693,12 +686,13 @@ namespace NLS::Render::Backend
 		if (FAILED(hr) || uploadBase == nullptr)
 			return false;
 		const auto* sourceBytes = static_cast<const uint8_t*>(update.data);
-		for (uint32_t row = 0u; row < update.extent.height; ++row)
+        for (uint32_t z = 0u; z < update.extent.depth; ++z)
+        for (uint32_t row = 0u; row < layout.rows; ++row)
 		{
 			std::memcpy(
-				uploadBase + static_cast<size_t>(row) * nativeRowPitch,
-				sourceBytes + static_cast<size_t>(row) * sourceRowPitch,
-				static_cast<size_t>(update.extent.width) * 4u);
+                uploadBase + z * nativeSlicePitch + static_cast<size_t>(row) * nativeRowPitch,
+                sourceBytes + z * sourceSlicePitch + static_cast<size_t>(row) * sourceRowPitch,
+                layout.rowBytes);
 		}
 		uploadBuffer->Unmap(0, nullptr);
 
@@ -719,7 +713,7 @@ namespace NLS::Render::Backend
 			barrier.Transition.pResource = textureResource;
 			barrier.Transition.StateBefore = beforeDxState;
 			barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_DEST;
-			barrier.Transition.Subresource = 0u;
+            barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
 			commandList->ResourceBarrier(1u, &barrier);
 		}
 
@@ -736,7 +730,7 @@ namespace NLS::Render::Backend
 		D3D12_TEXTURE_COPY_LOCATION destinationLocation{};
 		destinationLocation.pResource = textureResource;
 		destinationLocation.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
-		destinationLocation.SubresourceIndex = 0u;
+        destinationLocation.SubresourceIndex = update.arrayLayer * textureDesc.mipLevels + update.mipLevel;
 		D3D12_BOX sourceBox{};
 		sourceBox.left = 0u;
 		sourceBox.top = 0u;
@@ -744,13 +738,17 @@ namespace NLS::Render::Backend
 		sourceBox.right = update.extent.width;
 		sourceBox.bottom = update.extent.height;
 		sourceBox.back = 1u;
-		commandList->CopyTextureRegion(
+        for (uint32_t z = 0; z < update.extent.depth; ++z)
+        {
+        sourceLocation.PlacedFootprint.Offset = z * nativeSlicePitch;
+        commandList->CopyTextureRegion(
 			&destinationLocation,
 			update.x,
 			update.y,
-			0u,
+            update.z + z,
 			&sourceLocation,
 			&sourceBox);
+        }
 
 		outFinalState = textureDesc.usage != NLS::Render::RHI::TextureUsageFlags::None
 			? ResolveUploadedTextureState(textureDesc)
@@ -765,7 +763,7 @@ namespace NLS::Render::Backend
 			barrier.Transition.pResource = textureResource;
 			barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_DEST;
 			barrier.Transition.StateAfter = finalDxState;
-			barrier.Transition.Subresource = 0u;
+            barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
 			commandList->ResourceBarrier(1u, &barrier);
 		}
 		if (FAILED(commandList->Close()))
@@ -824,6 +822,7 @@ namespace NLS::Render::Backend
 			static_cast<uint32_t>(NLS::Render::RHI::BufferUsageFlags::CopySrc) |
 			static_cast<uint32_t>(NLS::Render::RHI::BufferUsageFlags::Vertex) |
 			static_cast<uint32_t>(NLS::Render::RHI::BufferUsageFlags::Index) |
+				static_cast<uint32_t>(NLS::Render::RHI::BufferUsageFlags::Indirect) |
 			static_cast<uint32_t>(NLS::Render::RHI::BufferUsageFlags::Uniform) |
 			static_cast<uint32_t>(NLS::Render::RHI::BufferUsageFlags::ShaderRead);
 		const auto bits = static_cast<uint32_t>(usage);
@@ -838,6 +837,8 @@ namespace NLS::Render::Backend
 		class DX12UploadBackend final : public NLS::Render::RHI::UploadBackend
 		{
 		public:
+            uint32_t TextureRowAlignment() const override { return D3D12_TEXTURE_DATA_PITCH_ALIGNMENT; }
+            uint32_t TextureSliceAlignment() const override { return D3D12_TEXTURE_DATA_PLACEMENT_ALIGNMENT; }
 			explicit DX12UploadBackend(ID3D12Device* device)
 				: m_device(device)
 			{
@@ -2296,10 +2297,10 @@ namespace NLS::Render::Backend
 			desc.extent.width == textureDesc.extent.width &&
 			desc.extent.height == textureDesc.extent.height &&
 			(std::max)(desc.extent.depth, 1u) == (std::max)(textureDesc.extent.depth, 1u);
-		if (!fullTextureUpdate && textureDesc.format != NLS::Render::RHI::TextureFormat::RGBA8)
+        if (!fullTextureUpdate && (NLS::Render::RHI::IsTextureFormatCompressed(textureDesc.format) || textureDesc.format == NLS::Render::RHI::TextureFormat::RGB8))
 			return {
 				NLS::Render::RHI::RHIUpdateStatusCode::Unsupported,
-				"DX12 texture region updates currently support RGBA8 only"
+				"DX12 texture region updates do not support compressed textures"
 			};
 
 		auto* nativeTexture = dynamic_cast<NativeDX12Texture*>(desc.texture.get());
@@ -2320,7 +2321,7 @@ namespace NLS::Render::Backend
 			};
 		}
 
-		if (!fullTextureUpdate)
+        if (!fullTextureUpdate || (!NLS::Render::RHI::IsTextureFormatCompressed(textureDesc.format) && textureDesc.format != NLS::Render::RHI::TextureFormat::RGB8))
 		{
 			NLS::Render::RHI::ResourceState finalState = textureDesc.usage != NLS::Render::RHI::TextureUsageFlags::None
 				? ResolveUploadedTextureState(textureDesc)

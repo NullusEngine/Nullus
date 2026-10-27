@@ -1,0 +1,368 @@
+{
+  "category": "Constraints",
+  "deprecated": false,
+  "description": "Stores the pivot, rest axis and length used by the pendulum constraint.",
+  "exposedVersion": "7d7fcb47-6e4b-2d66-2275-08ccc96db971",
+  "id": "7a70ccf0-48dd-f272-e5e9-21a843008619",
+  "kind": "Module",
+  "name": "Pendulum Setup",
+  "suggested": false,
+  "version": 2,
+  "versions": [
+    {
+      "attributes": [
+        {
+          "default": [
+            0.0,
+            0.0,
+            0.0,
+            0.0
+          ],
+          "name": "Particles.PendulumPivot",
+          "type": 2
+        },
+        {
+          "default": [
+            0.0,
+            -1.0,
+            0.0,
+            0.0
+          ],
+          "name": "Particles.PendulumRestAxis",
+          "type": 2
+        },
+        {
+          "default": [
+            1.0,
+            0.0,
+            0.0,
+            0.0
+          ],
+          "name": "Particles.PendulumLength",
+          "type": 0
+        },
+        {
+          "default": [
+            0.0,
+            0.0,
+            0.0,
+            0.0
+          ],
+          "name": "Particles.PendulumSpring",
+          "type": 0
+        },
+        {
+          "default": [
+            20.0,
+            0.0,
+            0.0,
+            0.0
+          ],
+          "name": "Particles.PendulumTightness",
+          "type": 0
+        }
+      ],
+      "calls": [],
+      "capabilities": 0,
+      "description": "Stores the pivot, rest axis and length used by the pendulum constraint.",
+      "graph": {
+        "id": "a16b8fd8-53b9-449f-bece-50e3b85432ea",
+        "nextNodeId": 12,
+        "nodes": [
+          {
+            "id": 1,
+            "inputs": [],
+            "name": "Module.Pendulum Pivot",
+            "operation": 2,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 2,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 2,
+            "inputs": [],
+            "name": "Module.Pendulum Rest Axis",
+            "operation": 2,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 2,
+            "value": [
+              0.0,
+              -1.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 3,
+            "inputs": [
+              2
+            ],
+            "name": "",
+            "operation": 18,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 2,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 4,
+            "inputs": [],
+            "name": "Module.Pendulum Length",
+            "operation": 2,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 0,
+            "value": [
+              1.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 5,
+            "inputs": [],
+            "name": "Module.Enable Spring Driver",
+            "operation": 2,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 0,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 6,
+            "inputs": [],
+            "name": "Module.Spring Tightness",
+            "operation": 2,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 0,
+            "value": [
+              20.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 7,
+            "inputs": [
+              4
+            ],
+            "name": "Particles.PendulumLength",
+            "operation": 22,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 0,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 8,
+            "inputs": [
+              1
+            ],
+            "name": "Particles.PendulumPivot",
+            "operation": 22,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 2,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 9,
+            "inputs": [
+              3
+            ],
+            "name": "Particles.PendulumRestAxis",
+            "operation": 22,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 2,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 10,
+            "inputs": [
+              5
+            ],
+            "name": "Particles.PendulumSpring",
+            "operation": 22,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 0,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 11,
+            "inputs": [
+              6
+            ],
+            "name": "Particles.PendulumTightness",
+            "operation": 22,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 0,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          }
+        ],
+        "stage": 0
+      },
+      "id": "7d7fcb47-6e4b-2d66-2275-08ccc96db971",
+      "inputs": [
+        {
+          "default": [
+            0.0,
+            0.0,
+            0.0,
+            0.0
+          ],
+          "id": "34d067fb-f5bf-02c7-ccaa-24376fa0b23a",
+          "name": "Pendulum Pivot",
+          "static": false,
+          "type": 2
+        },
+        {
+          "default": [
+            0.0,
+            -1.0,
+            0.0,
+            0.0
+          ],
+          "id": "16e7b9d4-1a9a-68d4-d6b4-4c24dbdbd501",
+          "name": "Pendulum Rest Axis",
+          "static": false,
+          "type": 2
+        },
+        {
+          "default": [
+            1.0,
+            0.0,
+            0.0,
+            0.0
+          ],
+          "id": "996e0153-1e8e-93c5-4fb3-b0b757c44c36",
+          "name": "Pendulum Length",
+          "static": false,
+          "type": 0
+        },
+        {
+          "default": [
+            0.0,
+            0.0,
+            0.0,
+            0.0
+          ],
+          "id": "f3cbc86d-5647-330f-6792-fb5a15d66d6e",
+          "metadata": {
+            "displayName": "",
+            "hasRange": false,
+            "maximum": 0.0,
+            "minimum": 0.0,
+            "step": 0.0,
+            "tooltip": "Enables the spring settings on the pendulum constraint.",
+            "unit": "",
+            "visibleIf": ""
+          },
+          "name": "Enable Spring Driver",
+          "static": false,
+          "type": 0
+        },
+        {
+          "default": [
+            20.0,
+            0.0,
+            0.0,
+            0.0
+          ],
+          "id": "772e868c-eb0c-644b-344c-0d511cacd06a",
+          "metadata": {
+            "displayName": "",
+            "hasRange": true,
+            "maximum": 1000.0,
+            "minimum": 0.0,
+            "step": 0.009999999776482582,
+            "tooltip": "Spring correction strength used by the pendulum constraint.",
+            "unit": "",
+            "visibleIf": "Enable Spring Driver"
+          },
+          "name": "Spring Tightness",
+          "static": false,
+          "type": 0
+        }
+      ],
+      "major": 1,
+      "minor": 0,
+      "provides": [],
+      "requiresBefore": [],
+      "stages": [
+        4
+      ],
+      "switches": []
+    }
+  ],
+  "visible": true
+}

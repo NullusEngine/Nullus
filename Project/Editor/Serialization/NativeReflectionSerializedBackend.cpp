@@ -18,12 +18,14 @@ using Engine::Serialize::SerializedReferenceTable;
 
 bool SameType(const meta::Type& left, const meta::Type& right)
 {
-    return left.IsValid() && right.IsValid() &&
-        (left == right || left.GetID() == right.GetID());
+    return left.IsValid() && right.IsValid() && (left == right || left.GetID() == right.GetID());
 }
 
-std::string RootFieldName(const std::string_view path)
+std::string RootFieldName(const Engine::Serialize::SerializedTypeTree& schema, std::string_view path)
 {
+    const auto rootPath = schema.GetPath(schema.GetRoot());
+    if (!rootPath.empty() && path.size() > rootPath.size() && path.starts_with(rootPath) && path[rootPath.size()] == '.')
+        path.remove_prefix(rootPath.size() + 1);
     const auto dot = path.find('.');
     const auto array = path.find(".Array");
     const auto end = (std::min)(
@@ -50,8 +52,7 @@ Object* NativeReflectionSerializedBackend::Resolve(const SerializedTargetHandle&
             return nullptr;
         return Object::IDToPointer(instanceId);
     }
-    return target.instanceId == Engine::Serialize::InstanceID_None
-        ? nullptr : Object::IDToPointer(target.instanceId);
+    return target.instanceId == Engine::Serialize::InstanceID_None ? nullptr : Object::IDToPointer(target.instanceId);
 }
 
 Engine::Serialize::TypeTreeResult NativeReflectionSerializedBackend::BuildTypeTree(
@@ -85,7 +86,7 @@ Engine::Serialize::StreamResult NativeReflectionSerializedBackend::SerializeTarg
     auto* object = Resolve(target);
     if (object == nullptr || schema == nullptr)
         return {nullptr, "Serialized reflected target is no longer valid."};
-    meta::Variant source(object, meta::variant_policy::WrapObject {});
+    meta::Variant source(object, meta::variant_policy::WrapObject{});
     std::vector<uint8_t> bytes;
     std::string error;
     if (!NativeSerializedStreamCodec::EncodeVariant(source, *schema, references, bytes, &error))
@@ -106,10 +107,8 @@ ValidationResult NativeReflectionSerializedBackend::ValidateAndNormalize(
         return ValidationResult::Failure("Serialized reflected target is no longer valid.");
     for (const auto& path : modifiedPaths)
     {
-        const auto field = object->GetType().GetField(RootFieldName(path.ToString()));
-        if (!field.IsValid() || field.IsReadOnly() ||
-            !NativeSerializedStreamCodec::ResolveCursor(
-                std::make_shared<SerializedByteStream>(stream), path.ToString()).has_value())
+        const auto field = object->GetType().GetField(RootFieldName(*stream.GetSchema(), path.ToString()));
+        if (!field.IsValid() || field.IsReadOnly() || !NativeSerializedStreamCodec::ResolveCursor(std::make_shared<SerializedByteStream>(stream), path.ToString()).has_value())
         {
             return ValidationResult::Failure(
                 "Serialized reflected property is no longer writable: " + path.ToString());
@@ -128,10 +127,13 @@ ApplyResult NativeReflectionSerializedBackend::DeserializeTarget(
     if (object == nullptr || schema == nullptr)
         return ApplyResult::Failure("Serialized reflected target is no longer valid.");
 
-    struct PendingField { std::string name; meta::Variant value; };
+    struct PendingField
+    {
+        std::string name;
+        meta::Variant value;
+    };
     std::vector<PendingField> pending;
-    const auto references = stream.GetReferences() != nullptr
-        ? *stream.GetReferences() : SerializedReferenceTable {};
+    const auto references = stream.GetReferences() != nullptr ? *stream.GetReferences() : SerializedReferenceTable{};
     auto streamCopy = std::make_shared<SerializedByteStream>(stream);
     for (auto node = schema->GetFirstChild(schema->GetRoot()); node != nullptr;
          node = schema->GetNextSibling(node->id))
@@ -139,7 +141,7 @@ ApplyResult NativeReflectionSerializedBackend::DeserializeTarget(
         const auto field = object->GetType().GetField(node->serializedName);
         if (!field.IsValid() || field.IsReadOnly())
             continue;
-        const auto cursor = NativeSerializedStreamCodec::ResolveCursor(streamCopy, node->serializedName);
+        const auto cursor = NativeSerializedStreamCodec::ResolveCursor(streamCopy, schema->GetPath(node->id));
         const auto valueTree = NativeSerializedStreamCodec::BuildTypeTree(field.GetType(), {"value", false});
         if (!cursor.has_value() || valueTree == nullptr)
             return ApplyResult::Failure("Serialized reflected field is unavailable: " + node->serializedName);
@@ -154,7 +156,7 @@ ApplyResult NativeReflectionSerializedBackend::DeserializeTarget(
         pending.push_back({node->serializedName, *decoded});
     }
 
-    meta::Variant instance(object, meta::variant_policy::WrapObject {});
+    meta::Variant instance(object, meta::variant_policy::WrapObject{});
     std::vector<PendingField> before;
     before.reserve(pending.size());
     for (const auto& value : pending)
@@ -178,7 +180,7 @@ SerializedVersionStamp NativeReflectionSerializedBackend::GetVersion(
     if (object == nullptr)
         return {};
     const auto typeHash = static_cast<uint64_t>(
-        std::hash<std::string> {}(object->GetType().GetName()));
+        std::hash<std::string>{}(object->GetType().GetName()));
     const auto instance = static_cast<uint64_t>(object->GetInstanceID());
     return {instance ^ (typeHash << 1u), typeHash, typeHash};
 }

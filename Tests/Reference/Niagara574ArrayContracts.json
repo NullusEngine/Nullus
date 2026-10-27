@@ -1,0 +1,93 @@
+{
+  "baseline": "UE 5.7.4 Niagara",
+  "evidence": "Source-derived contract; not a live Unreal Editor execution capture",
+  "sources": [
+    {
+      "path": "Engine/Plugins/FX/Niagara/Source/Niagara/Classes/NiagaraDataInterfaceArrayImpl.h",
+      "sha256": "f7be39076f4f036a2bc7f9a0291af871c2051becfd381749dab5271f55875b3a"
+    },
+    {
+      "path": "Engine/Plugins/FX/Niagara/Shaders/Private/NiagaraDataInterfaceArrayTemplate.ush",
+      "sha256": "109da2003431ee7577a798ef5af47f63dabfdb5ada05d777fbb777c4c9c1afe6"
+    },
+    {
+      "path": "Engine/Plugins/FX/Niagara/Source/Niagara/Private/NiagaraDataInterfaceArrayImpl.cpp",
+      "sha256": "22c1b4500b006329ae0d53576b952c7ce202347dadf7b8d68469d6e1dc4da7a5"
+    },
+    {
+      "path": "Engine/Plugins/FX/Niagara/Source/Niagara/Private/NiagaraDataInterfaceCurve.cpp",
+      "sha256": "0c2383c0fdfb612d27d5fefdab3faa8c3e352bf70fb11739d9195f1f35269ba2"
+    }
+  ],
+  "array": {
+    "values": [
+      10,
+      20,
+      30
+    ],
+    "cases": [
+      {
+        "index": -2147483648,
+        "get": 10,
+        "valid": false
+      },
+      {
+        "index": -1,
+        "get": 10,
+        "valid": false
+      },
+      {
+        "index": 0,
+        "get": 10,
+        "valid": true
+      },
+      {
+        "index": 1,
+        "get": 20,
+        "valid": true
+      },
+      {
+        "index": 2,
+        "get": 30,
+        "valid": true
+      },
+      {
+        "index": 3,
+        "get": 30,
+        "valid": false
+      },
+      {
+        "index": 2147483647,
+        "get": 30,
+        "valid": false
+      }
+    ],
+    "empty_get": 0,
+    "empty_length": 0,
+    "empty_valid": false
+  },
+  "functions": {
+    "Get": {
+      "inputs": [
+        "Int32"
+      ],
+      "result": "ElementType"
+    },
+    "Length": {
+      "inputs": [],
+      "result": "Int32"
+    },
+    "IsValidIndex": {
+      "inputs": [
+        "Int32"
+      ],
+      "result": "Bool"
+    },
+    "SampleCurve": {
+      "inputs": [
+        "Float"
+      ],
+      "result": "Float"
+    }
+  }
+}

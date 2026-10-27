@@ -76,6 +76,7 @@ namespace NLS::Engine::Rendering
 	{
 		SceneOcclusionPrimitiveInput primitive;
 		NLS::Render::Geometry::Bounds modelBounds;
+        float maximumWorldDisplacement = 0;
 		Maths::Matrix4 worldMatrix = Maths::Matrix4::Identity;
 	};
 

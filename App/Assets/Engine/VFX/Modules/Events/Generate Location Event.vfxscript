@@ -1,0 +1,86 @@
+{
+  "category": "Events",
+  "deprecated": false,
+  "description": "Emits a location event for every spawned or moving particle.",
+  "exposedVersion": "f5dc9696-5b67-35f5-0bc8-977bca1094fe",
+  "id": "bcb50f51-ade6-d589-28fe-6e48838cbbae",
+  "kind": "Module",
+  "name": "Generate Location Event",
+  "suggested": false,
+  "version": 2,
+  "versions": [
+    {
+      "attributes": [],
+      "calls": [],
+      "capabilities": 0,
+      "description": "Emits a location event for every spawned or moving particle.",
+      "graph": {
+        "id": "234553a9-9095-47ce-8f58-f57c1d050ced",
+        "nextNodeId": 3,
+        "nodes": [
+          {
+            "id": 1,
+            "inputs": [],
+            "name": "Module.Event Generation Enabled",
+            "operation": 2,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 0,
+            "value": [
+              1.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 2,
+            "inputs": [
+              1
+            ],
+            "name": "Emitter.GenerateSpawn",
+            "operation": 22,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 0,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          }
+        ],
+        "stage": 5
+      },
+      "id": "f5dc9696-5b67-35f5-0bc8-977bca1094fe",
+      "inputs": [
+        {
+          "default": [
+            1.0,
+            0.0,
+            0.0,
+            0.0
+          ],
+          "id": "8ee85aac-d32f-bffb-8ffc-7d14b5cb21e2",
+          "name": "Event Generation Enabled",
+          "static": false,
+          "type": 0
+        }
+      ],
+      "major": 1,
+      "minor": 0,
+      "provides": [],
+      "requiresBefore": [],
+      "stages": [
+        6
+      ],
+      "switches": []
+    }
+  ],
+  "visible": true
+}

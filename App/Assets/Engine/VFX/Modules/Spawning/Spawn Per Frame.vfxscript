@@ -1,0 +1,123 @@
+{
+  "category": "Spawning",
+  "deprecated": false,
+  "description": "Spawns an exact number of particles every simulation sub-step.",
+  "exposedVersion": "bbd19e9e-9771-a3f2-bf17-0a40174e4269",
+  "id": "e8e72d0f-2fd5-5766-c406-4367f42d1e91",
+  "kind": "Module",
+  "name": "Spawn Per Frame",
+  "suggested": false,
+  "version": 2,
+  "versions": [
+    {
+      "attributes": [],
+      "calls": [],
+      "capabilities": 0,
+      "description": "Spawns an exact number of particles every simulation sub-step.",
+      "graph": {
+        "id": "2f78e0da-6149-49b9-b36f-cb1f545ac534",
+        "nextNodeId": 5,
+        "nodes": [
+          {
+            "id": 1,
+            "inputs": [],
+            "name": "Module.Count",
+            "operation": 2,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 0,
+            "value": [
+              1.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 2,
+            "inputs": [],
+            "name": "Emitter.SpawnPerFrame",
+            "operation": 1,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 0,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 3,
+            "inputs": [
+              2,
+              1
+            ],
+            "name": "",
+            "operation": 6,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 0,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 4,
+            "inputs": [
+              3
+            ],
+            "name": "Emitter.SpawnPerFrame",
+            "operation": 22,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 0,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          }
+        ],
+        "stage": 4
+      },
+      "id": "bbd19e9e-9771-a3f2-bf17-0a40174e4269",
+      "inputs": [
+        {
+          "default": [
+            1.0,
+            0.0,
+            0.0,
+            0.0
+          ],
+          "id": "41661334-e232-bfb8-0773-5d08b53b9e83",
+          "name": "Count",
+          "static": false,
+          "type": 0
+        }
+      ],
+      "major": 1,
+      "minor": 0,
+      "provides": [],
+      "requiresBefore": [],
+      "stages": [
+        3
+      ],
+      "switches": []
+    }
+  ],
+  "visible": true
+}

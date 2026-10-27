@@ -113,6 +113,15 @@ void ApplyProjectTextureResolution(
 
 }
 
+std::string ResolveModelTextureBuildTargetPlatform(const std::string& artifactTargetPlatform)
+{
+#if defined(_WIN32)
+    if (artifactTargetPlatform == "editor")
+        return "win64-dx12";
+#endif
+    return artifactTargetPlatform;
+}
+
 void ApplyModelTextureFallback(ResolvedModelTextureReference& result)
 {
     result.kind = ModelTextureResolutionKind::ModelEmbeddedFallback;

@@ -84,9 +84,17 @@ namespace NLS::Engine::UI
         [[nodiscard]] bool IsPressed() const { return m_pressed; }
         [[nodiscard]] bool IsFocused() const { return m_focused; }
         [[nodiscard]] uint32_t GetStateMask() const;
-        void SetTexture(uint64_t textureId, uint32_t generation = 1u);
+        void SetTexture(
+            uint64_t textureId,
+            uint32_t generation = 1u,
+            uint32_t width = 0u,
+            uint32_t height = 0u);
         [[nodiscard]] uint64_t GetTextureId() const { return m_textureId; }
         [[nodiscard]] uint32_t GetTextureGeneration() const { return m_textureGeneration; }
+        [[nodiscard]] uint32_t GetTextureWidth() const { return m_textureWidth; }
+        [[nodiscard]] uint32_t GetTextureHeight() const { return m_textureHeight; }
+        void SetNineSlice(const UIInsets& insets);
+        [[nodiscard]] const UIInsets& GetNineSlice() const { return m_nineSlice; }
         void SetFont(uint64_t fontAssetId, uint16_t pixelSize = 16u);
         [[nodiscard]] uint64_t GetFontAssetId() const { return m_fontAssetId; }
         [[nodiscard]] uint16_t GetFontPixelSize() const { return m_fontPixelSize; }
@@ -158,6 +166,9 @@ namespace NLS::Engine::UI
         bool m_focused = false;
         uint64_t m_textureId = 0u;
         uint32_t m_textureGeneration = 0u;
+        uint32_t m_textureWidth = 0u;
+        uint32_t m_textureHeight = 0u;
+        UIInsets m_nineSlice;
         uint64_t m_fontAssetId = 0u;
         uint16_t m_fontPixelSize = 16u;
         bool m_passwordMode = false;

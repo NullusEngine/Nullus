@@ -4,16 +4,17 @@
 
 #include "Core/GizmoOperation.h"
 #include "Core/SceneViewImGuizmo.h"
+#include "Icons/Generated/IconIds.generated.h"
 #include "Panels/MenuBar.h"
 #include "Panels/Toolbar.h"
 
 namespace NLS::Editor::Panels
 {
-    inline const char* GetToolbarPivotIconId(const Editor::Core::SceneViewGizmoPivot p_pivot)
+    inline Icons::IconId GetToolbarPivotIconId(const Editor::Core::SceneViewGizmoPivot p_pivot)
     {
         return p_pivot == Editor::Core::SceneViewGizmoPivot::Center
-            ? "editor.icon.toolbar.center"
-            : "editor.icon.toolbar.pivot";
+            ? Icons::EditorIcons::ToolbarCenter
+            : Icons::EditorIcons::ToolbarPivot;
     }
 
     class EditorTopBar : public UI::PanelViewportBar
@@ -34,14 +35,21 @@ namespace NLS::Editor::Panels
         void DrawToolbarRow();
         void DrawSceneToolRow(float p_rowY, float p_availableWidth);
         void DrawSceneToolButton(
-            const char* p_iconId,
+            const char* p_widgetId,
+            Icons::IconId p_icon,
             const char* p_tooltip,
             Editor::Core::EGizmoOperation p_operation,
             bool p_active);
-        bool DrawIconTextButton(const char* p_iconId, const char* p_label, const char* p_tooltip);
+        bool DrawIconTextButton(
+            const char* p_widgetId,
+            Icons::IconId p_icon,
+            const char* p_label,
+            const char* p_tooltip);
 
     private:
         MenuBar m_menuBar;
         Toolbar m_toolbar;
+        bool m_iconsPreloaded = false;
+        bool m_idlePreloadComplete = false;
     };
 }

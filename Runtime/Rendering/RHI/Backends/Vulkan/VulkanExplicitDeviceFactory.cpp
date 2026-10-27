@@ -881,6 +881,8 @@ namespace NLS::Render::Backend
 			void Begin() override
 			{
                 m_explicitResourceStates = false;
+                m_indirectBufferKeepAlive.clear();
+                m_indexBufferBound = false;
 #if NLS_HAS_VULKAN
 				if (m_commandBuffer == nullptr)
 					return;
@@ -1062,7 +1064,9 @@ namespace NLS::Render::Backend
 							barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
 							barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
 							barrier.image = image;
-							barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
+                            barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
+                            if(desc.depthStencilAttachment->view->GetTexture()->GetDesc().format==NLS::Render::RHI::TextureFormat::Depth24Stencil8)
+                                barrier.subresourceRange.aspectMask|=VK_IMAGE_ASPECT_STENCIL_BIT;
 							barrier.subresourceRange.baseMipLevel = 0;
 							barrier.subresourceRange.levelCount = 1;
 							barrier.subresourceRange.baseArrayLayer = 0;
@@ -1095,7 +1099,7 @@ namespace NLS::Render::Backend
 					case NLS::Render::RHI::TextureFormat::RGB8: return VK_FORMAT_R8G8B8A8_UNORM;
 					case NLS::Render::RHI::TextureFormat::RGBA16F: return VK_FORMAT_R16G16B16A16_SFLOAT;
 					case NLS::Render::RHI::TextureFormat::Depth32F: return VK_FORMAT_D32_SFLOAT;
-					case NLS::Render::RHI::TextureFormat::Depth24Stencil8: return VK_FORMAT_D32_SFLOAT;
+					case NLS::Render::RHI::TextureFormat::Depth24Stencil8: return VK_FORMAT_D32_SFLOAT_S8_UINT;
 					case NLS::Render::RHI::TextureFormat::RGBA8:
 					default: return VK_FORMAT_R8G8B8A8_UNORM;
 					}
@@ -1412,6 +1416,8 @@ namespace NLS::Render::Backend
 					return;
 				vkCmdBindIndexBuffer(m_commandBuffer, vkBuffer, view.offset,
 					view.indexType == NLS::Render::RHI::IndexType::UInt16 ? VK_INDEX_TYPE_UINT16 : VK_INDEX_TYPE_UINT32);
+                    m_indexBufferBound = true;
+                    m_indirectBufferKeepAlive.push_back(view.buffer);
 #endif
 			}
 			void Draw(uint32_t vertexCount, uint32_t instanceCount, uint32_t firstVertex, uint32_t firstInstance) override
@@ -1435,7 +1441,17 @@ namespace NLS::Render::Backend
 					vkCmdDispatch(m_commandBuffer, groupCountX, groupCountY, groupCountZ);
 #endif
 			}
-			void CopyBuffer(const std::shared_ptr<NLS::Render::RHI::RHIBuffer>& source, const std::shared_ptr<NLS::Render::RHI::RHIBuffer>& destination, const NLS::Render::RHI::RHIBufferCopyRegion& region) override
+                NLS::Render::RHI::RHICommandRecordingResult DrawIndirect(
+                    const std::shared_ptr<NLS::Render::RHI::RHIBuffer>& arguments, uint64_t offset = 0) override
+                { return RecordIndirect(arguments,offset,0); }
+                NLS::Render::RHI::RHICommandRecordingResult DrawIndexedIndirect(
+                    const std::shared_ptr<NLS::Render::RHI::RHIBuffer>& arguments, uint64_t offset = 0) override
+                { return RecordIndirect(arguments,offset,1); }
+                NLS::Render::RHI::RHICommandRecordingResult DispatchIndirect(
+                    const std::shared_ptr<NLS::Render::RHI::RHIBuffer>& arguments, uint64_t offset = 0) override
+                { return RecordIndirect(arguments,offset,2); }
+
+				void CopyBuffer(const std::shared_ptr<NLS::Render::RHI::RHIBuffer>& source, const std::shared_ptr<NLS::Render::RHI::RHIBuffer>& destination, const NLS::Render::RHI::RHIBufferCopyRegion& region) override
 			{
 #if NLS_HAS_VULKAN
 				if (m_commandBuffer == nullptr || source == nullptr || destination == nullptr)
@@ -1647,10 +1663,8 @@ namespace NLS::Render::Backend
 					vkBarrier.image = image;
 					const auto textureFormat = tb.texture->GetDesc().format;
 					vkBarrier.subresourceRange.aspectMask =
-						(textureFormat == NLS::Render::RHI::TextureFormat::Depth24Stencil8 ||
-						 textureFormat == NLS::Render::RHI::TextureFormat::Depth32F)
-							? VK_IMAGE_ASPECT_DEPTH_BIT
-							: VK_IMAGE_ASPECT_COLOR_BIT;
+                        textureFormat==NLS::Render::RHI::TextureFormat::Depth24Stencil8?VK_IMAGE_ASPECT_DEPTH_BIT|VK_IMAGE_ASPECT_STENCIL_BIT:
+                        textureFormat==NLS::Render::RHI::TextureFormat::Depth32F?VK_IMAGE_ASPECT_DEPTH_BIT:VK_IMAGE_ASPECT_COLOR_BIT;
 					vkBarrier.subresourceRange.baseMipLevel = baseMipLevel;
 					vkBarrier.subresourceRange.levelCount = mipLevelCount;
 					vkBarrier.subresourceRange.baseArrayLayer = baseArrayLayer;
@@ -1667,6 +1681,18 @@ namespace NLS::Render::Backend
 
 				VkPipelineStageFlags srcStage = VK_PIPELINE_STAGE_ALL_COMMANDS_BIT;
 				VkPipelineStageFlags dstStage = VK_PIPELINE_STAGE_ALL_COMMANDS_BIT;
+                    // Host readback and indirect argument reads need their real destination stages.
+                    if (!barrier.bufferBarriers.empty() || !barrier.textureBarriers.empty())
+                    {
+                        srcStage = 0; dstStage = 0;
+                        const auto include = [&](const auto& transition)
+                        {
+                            srcStage |= ToVkPipelineStages(transition.sourceStageMask);
+                            dstStage |= ToVkPipelineStages(transition.destinationStageMask);
+                        };
+                        for (const auto& transition : barrier.bufferBarriers) include(transition);
+                        for (const auto& transition : barrier.textureBarriers) include(transition);
+                    }
 
 				vkCmdPipelineBarrier(
 					m_commandBuffer,
@@ -1684,6 +1710,28 @@ namespace NLS::Render::Backend
 #endif
 
 		private:
+                NLS::Render::RHI::RHICommandRecordingResult RecordIndirect(
+                    const std::shared_ptr<NLS::Render::RHI::RHIBuffer>& arguments, uint64_t offset, uint32_t kind)
+                {
+                    using namespace NLS::Render::RHI;
+                    const auto bytes = kind == 0 ? sizeof(RHIDrawIndirectArguments) : kind == 1 ? sizeof(RHIDrawIndexedIndirectArguments) : sizeof(RHIDispatchIndirectArguments);
+                    const auto valid = ValidateIndirectArguments(arguments,offset,static_cast<uint32_t>(bytes));
+                    if (!valid.Succeeded()) return valid;
+#if NLS_HAS_VULKAN
+                    const auto native = arguments->GetNativeBufferHandle();
+                    if (!m_recording || !m_commandBuffer || native.backend != BackendType::Vulkan || !native.handle ||
+                        (kind < 2 && (!m_inRenderPass || m_computePipelineBound || !m_boundPipeline)) ||
+                        (kind == 1 && !m_indexBufferBound) || (kind == 2 && (m_inRenderPass || !m_computePipelineBound)))
+                        return {RHICommandRecordingStatusCode::InvalidArgument,"Vulkan indirect command requires a matching pipeline, render scope and Vulkan arguments"};
+                    const auto buffer = static_cast<VkBuffer>(native.handle);
+                    if (kind == 0) vkCmdDrawIndirect(m_commandBuffer,buffer,offset,1,sizeof(RHIDrawIndirectArguments));
+                    else if (kind == 1) vkCmdDrawIndexedIndirect(m_commandBuffer,buffer,offset,1,sizeof(RHIDrawIndexedIndirectArguments));
+                    else vkCmdDispatchIndirect(m_commandBuffer,buffer,offset);
+                    m_indirectBufferKeepAlive.push_back(arguments); return {};
+#else
+                    return {RHICommandRecordingStatusCode::BackendFailure,"Vulkan indirect commands are unavailable"};
+#endif
+                }
 			std::string m_debugName;
 			bool m_recording = false;
 			bool m_inRenderPass = false;
@@ -1708,6 +1756,8 @@ namespace NLS::Render::Backend
 			std::shared_ptr<NLS::Render::RHI::RHIGraphicsPipeline> m_boundPipeline;
 			std::shared_ptr<NLS::Render::RHI::RHIComputePipeline> m_boundComputePipeline;
 			bool m_computePipelineBound = false;
+                bool m_indexBufferBound = false;
+                std::vector<std::shared_ptr<NLS::Render::RHI::RHIBuffer>> m_indirectBufferKeepAlive;
 
 #if NLS_HAS_VULKAN
 			VkImageLayout GetTrackedImageLayout(
@@ -1772,9 +1822,33 @@ namespace NLS::Render::Backend
 #endif
 
 #if NLS_HAS_VULKAN
+                static VkPipelineStageFlags ToVkPipelineStages(NLS::Render::RHI::PipelineStageMask mask)
+                {
+                    using NLS::Render::RHI::PipelineStageMask;
+                    if (mask == PipelineStageMask::AllCommands) return VK_PIPELINE_STAGE_ALL_COMMANDS_BIT;
+                    VkPipelineStageFlags stages = 0;
+                    const auto has = [&](PipelineStageMask bit) { return (static_cast<uint32_t>(mask)&static_cast<uint32_t>(bit)) != 0; };
+                    if (has(PipelineStageMask::Copy)) stages |= VK_PIPELINE_STAGE_TRANSFER_BIT;
+                    if (has(PipelineStageMask::VertexInput)) stages |= VK_PIPELINE_STAGE_VERTEX_INPUT_BIT;
+                    if (has(PipelineStageMask::VertexShader)) stages |= VK_PIPELINE_STAGE_VERTEX_SHADER_BIT;
+                    if (has(PipelineStageMask::FragmentShader)) stages |= VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
+                    if (has(PipelineStageMask::ComputeShader)) stages |= VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT;
+                    if (has(PipelineStageMask::RenderTarget)) stages |= VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+                    if (has(PipelineStageMask::DepthStencil)) stages |= VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT|VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT;
+                    if (has(PipelineStageMask::Host)) stages |= VK_PIPELINE_STAGE_HOST_BIT;
+                    if (has(PipelineStageMask::DrawIndirect)) stages |= VK_PIPELINE_STAGE_DRAW_INDIRECT_BIT;
+                    return stages ? stages : VK_PIPELINE_STAGE_ALL_COMMANDS_BIT;
+                }
 			static VkAccessFlags ToVkAccessFlags(NLS::Render::RHI::AccessMask mask)
 			{
 				VkAccessFlags flags = 0;
+                    if (static_cast<uint32_t>(mask) & static_cast<uint32_t>(NLS::Render::RHI::AccessMask::HostRead)) flags |= VK_ACCESS_HOST_READ_BIT;
+                    if (static_cast<uint32_t>(mask) & static_cast<uint32_t>(NLS::Render::RHI::AccessMask::HostWrite)) flags |= VK_ACCESS_HOST_WRITE_BIT;
+                    if (static_cast<uint32_t>(mask) & static_cast<uint32_t>(NLS::Render::RHI::AccessMask::VertexRead)) flags |= VK_ACCESS_VERTEX_ATTRIBUTE_READ_BIT;
+                    if (static_cast<uint32_t>(mask) & static_cast<uint32_t>(NLS::Render::RHI::AccessMask::IndexRead)) flags |= VK_ACCESS_INDEX_READ_BIT;
+                    if (static_cast<uint32_t>(mask) & static_cast<uint32_t>(NLS::Render::RHI::AccessMask::UniformRead)) flags |= VK_ACCESS_UNIFORM_READ_BIT;
+                    if (static_cast<uint32_t>(mask) & static_cast<uint32_t>(NLS::Render::RHI::AccessMask::IndirectRead))
+                        flags |= VK_ACCESS_INDIRECT_COMMAND_READ_BIT;
 				if (static_cast<uint32_t>(mask) & static_cast<uint32_t>(NLS::Render::RHI::AccessMask::MemoryRead))
 					flags |= VK_ACCESS_MEMORY_READ_BIT;
 				if (static_cast<uint32_t>(mask) & static_cast<uint32_t>(NLS::Render::RHI::AccessMask::MemoryWrite))
@@ -1809,6 +1883,7 @@ namespace NLS::Render::Backend
 				case NLS::Render::RHI::ResourceState::RenderTarget:
 					return VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
 				case NLS::Render::RHI::ResourceState::DepthRead:
+				case NLS::Render::RHI::ResourceState::DepthRead | NLS::Render::RHI::ResourceState::ShaderRead:
 					return VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL;
 				case NLS::Render::RHI::ResourceState::DepthWrite:
 					return VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
@@ -2179,9 +2254,9 @@ namespace NLS::Render::Backend
 			case NLS::Render::RHI::TextureFormat::Depth32F: return VK_FORMAT_D32_SFLOAT;
 			// D24_UNORM_S8_UINT is not supported by several Vulkan 1.1
 			// implementations (including the AMD adapter used for the Windows
-			// smoke run). The RHI only requires a depth attachment here, so use the
-			// widely supported 32-bit depth format for this logical format as well.
-			case NLS::Render::RHI::TextureFormat::Depth24Stencil8: return VK_FORMAT_D32_SFLOAT;
+			// smoke run). Preserve stencil using a 32-bit depth/stencil format. Use the
+			// same physical format for images, views, barriers and pipelines.
+			case NLS::Render::RHI::TextureFormat::Depth24Stencil8: return VK_FORMAT_D32_SFLOAT_S8_UINT;
 			case NLS::Render::RHI::TextureFormat::BC1: return srgb ? VK_FORMAT_BC1_RGBA_SRGB_BLOCK : VK_FORMAT_BC1_RGBA_UNORM_BLOCK;
 			case NLS::Render::RHI::TextureFormat::BC3: return srgb ? VK_FORMAT_BC3_SRGB_BLOCK : VK_FORMAT_BC3_UNORM_BLOCK;
 			case NLS::Render::RHI::TextureFormat::BC5: return VK_FORMAT_BC5_UNORM_BLOCK;
@@ -2697,6 +2772,19 @@ namespace NLS::Render::Backend
 			NLS::Render::RHI::ResourceState GetState() const override { return m_state; }
 			uint64_t GetGPUAddress() const override { return 0; } // Vulkan doesn't use GPU addresses like DX12
 			NLS::Render::RHI::NativeHandle GetNativeBufferHandle() override { return { NLS::Render::RHI::BackendType::Vulkan, reinterpret_cast<void*>(m_buffer) }; }
+#if NLS_HAS_VULKAN
+                VkDevice GetDevice() const { return m_device; }
+                bool ReadData(void* destination, size_t size)
+                {
+                    if (m_desc.memoryUsage != NLS::Render::RHI::MemoryUsage::GPUToCPU || !destination || size > m_desc.size) return false;
+                    void* mapped = nullptr;
+                    if (vmaMapMemory(m_allocator,m_allocation,&mapped) != VK_SUCCESS || !mapped) return false;
+                    const auto result = vmaInvalidateAllocation(m_allocator,m_allocation,0,size);
+                    if (result == VK_SUCCESS) std::memcpy(destination,mapped,size);
+                    vmaUnmapMemory(m_allocator,m_allocation);
+                    return result == VK_SUCCESS;
+                }
+#endif
 			NLS::Render::RHI::RHIUpdateResult UpdateData(const NLS::Render::RHI::RHIBufferUploadDesc& uploadDesc) override
 			{
 #if NLS_HAS_VULKAN
@@ -2727,7 +2815,58 @@ namespace NLS::Render::Backend
 #endif
 		};
 
-		class NativeVulkanTexture final : public NLS::Render::RHI::RHITexture
+#if NLS_HAS_VULKAN
+            class VulkanBufferReadbackToken final : public NLS::Render::RHI::RHICompletionToken
+            {
+            public:
+                std::shared_ptr<void> deviceOwner;
+                std::shared_ptr<NLS::Render::RHI::RHIBuffer> source;
+                std::shared_ptr<NativeVulkanBuffer> staging;
+                std::shared_ptr<NLS::Render::RHI::RHICommandPool> pool;
+                std::shared_ptr<NLS::Render::RHI::RHICommandBuffer> commands;
+                std::shared_ptr<NativeVulkanFence> fence;
+                void* destination = nullptr;
+                size_t size = 0;
+                bool submitted = false;
+                ~VulkanBufferReadbackToken() override
+                {
+                    // Abandonment never releases an in-flight copy or writes the caller's memory.
+                    if (submitted && !fence->IsSignaled())
+                    {
+                        struct Lifetime { std::shared_ptr<void> device; std::vector<std::shared_ptr<void>> resources; };
+                        auto lifetime = std::make_shared<Lifetime>();
+                        lifetime->device = deviceOwner; lifetime->resources = {source,staging,pool,commands,fence};
+                        NLS::Render::Context::RhiCommandListExecutor::Get().DeferRelease({std::move(lifetime)});
+                    }
+                }
+                std::string_view GetDebugName() const override { return "VulkanBufferReadback"; }
+                NLS::Render::RHI::RHICompletionStatus Poll() override
+                {
+                    std::lock_guard lock(m_mutex); return Complete(vkGetFenceStatus(staging->GetDevice(),fence->GetFence()));
+                }
+                NLS::Render::RHI::RHICompletionStatus Wait(uint64_t timeout) override
+                {
+                    std::lock_guard lock(m_mutex);
+                    if (m_status.IsComplete()) return m_status;
+                    const auto nativeFence = fence->GetFence();
+                    return Complete(vkWaitForFences(staging->GetDevice(),1,&nativeFence,VK_TRUE,timeout ? timeout : UINT64_MAX));
+                }
+            private:
+                NLS::Render::RHI::RHICompletionStatus Complete(VkResult result)
+                {
+                    using namespace NLS::Render::RHI;
+                    if (m_status.IsComplete() || result == VK_NOT_READY || result == VK_TIMEOUT) return m_status;
+                    if (result == VK_ERROR_DEVICE_LOST) m_status = {RHICompletionStatusCode::DeviceLost,"Vulkan device lost during buffer readback"};
+                    else if (result != VK_SUCCESS || !staging->ReadData(destination,size))
+                        m_status = {RHICompletionStatusCode::Failed,"Vulkan buffer readback fence, mapping or cache invalidation failed"};
+                    else m_status = {RHICompletionStatusCode::Success,{}};
+                    return m_status;
+                }
+                std::mutex m_mutex;
+                NLS::Render::RHI::RHICompletionStatus m_status;
+            };
+#endif
+			class NativeVulkanTexture final : public NLS::Render::RHI::RHITexture
 		{
 		public:
 			NativeVulkanTexture(VkDevice device, VmaAllocator allocator, const NLS::Render::RHI::RHITextureDesc& desc, const NLS::Render::RHI::RHITextureUploadDesc&)
@@ -2826,7 +2965,7 @@ namespace NLS::Render::Backend
 				case NLS::Render::RHI::TextureFormat::BC7: return srgb ? VK_FORMAT_BC7_SRGB_BLOCK : VK_FORMAT_BC7_UNORM_BLOCK;
 				case NLS::Render::RHI::TextureFormat::BC6H: return VK_FORMAT_BC6H_UFLOAT_BLOCK;
 				case NLS::Render::RHI::TextureFormat::Depth32F: return VK_FORMAT_D32_SFLOAT;
-				case NLS::Render::RHI::TextureFormat::Depth24Stencil8: return VK_FORMAT_D32_SFLOAT;
+				case NLS::Render::RHI::TextureFormat::Depth24Stencil8: return VK_FORMAT_D32_SFLOAT_S8_UINT;
 				default: return VK_FORMAT_R8G8B8A8_UNORM;
 				}
 			}
@@ -2909,10 +3048,8 @@ namespace NLS::Render::Backend
 				const auto effectiveColorSpace = usesDefaultViewFormat ? textureDesc.colorSpace : desc.colorSpace;
 				viewInfo.format = ToVkFormat(effectiveFormat, effectiveColorSpace);
 				viewInfo.subresourceRange.aspectMask =
-					(textureFormat == NLS::Render::RHI::TextureFormat::Depth24Stencil8 ||
-					 textureFormat == NLS::Render::RHI::TextureFormat::Depth32F)
-						? VK_IMAGE_ASPECT_DEPTH_BIT
-						: VK_IMAGE_ASPECT_COLOR_BIT;
+                        textureFormat==NLS::Render::RHI::TextureFormat::Depth24Stencil8?VK_IMAGE_ASPECT_DEPTH_BIT|VK_IMAGE_ASPECT_STENCIL_BIT:
+                        textureFormat==NLS::Render::RHI::TextureFormat::Depth32F?VK_IMAGE_ASPECT_DEPTH_BIT:VK_IMAGE_ASPECT_COLOR_BIT;
 				viewInfo.subresourceRange.baseMipLevel = desc.subresourceRange.baseMipLevel;
 				viewInfo.subresourceRange.levelCount = desc.subresourceRange.mipLevelCount != 0u
 					? desc.subresourceRange.mipLevelCount
@@ -2979,7 +3116,7 @@ namespace NLS::Render::Backend
 				case NLS::Render::RHI::TextureFormat::BC7: return srgb ? VK_FORMAT_BC7_SRGB_BLOCK : VK_FORMAT_BC7_UNORM_BLOCK;
 				case NLS::Render::RHI::TextureFormat::BC6H: return VK_FORMAT_BC6H_UFLOAT_BLOCK;
 				case NLS::Render::RHI::TextureFormat::Depth32F: return VK_FORMAT_D32_SFLOAT;
-				case NLS::Render::RHI::TextureFormat::Depth24Stencil8: return VK_FORMAT_D32_SFLOAT;
+				case NLS::Render::RHI::TextureFormat::Depth24Stencil8: return VK_FORMAT_D32_SFLOAT_S8_UINT;
 				default: return VK_FORMAT_R8G8B8A8_UNORM;
 				}
 			}
@@ -3444,7 +3581,8 @@ namespace NLS::Render::Backend
 								auto srvHandle = entry.textureView->GetNativeShaderResourceView();
 								if (srvHandle.backend == NLS::Render::RHI::BackendType::Vulkan)
 									imageInfo.imageView = static_cast<VkImageView>(srvHandle.handle);
-								imageInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+								imageInfo.imageLayout = entry.textureState == (NLS::Render::RHI::ResourceState::DepthRead | NLS::Render::RHI::ResourceState::ShaderRead)
+									? VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL : VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 							}
 							if (imageInfo.imageView == VK_NULL_HANDLE)
 							{
@@ -4072,6 +4210,17 @@ namespace NLS::Render::Backend
 						break;
 					}
 					attr.offset = va.offset;
+					using NLS::Render::RHI::RHIVertexFormat;
+					switch (va.format)
+					{
+					case RHIVertexFormat::Float: attr.format = VK_FORMAT_R32_SFLOAT; break;
+					case RHIVertexFormat::Float2: attr.format = VK_FORMAT_R32G32_SFLOAT; break;
+					case RHIVertexFormat::Float3: attr.format = VK_FORMAT_R32G32B32_SFLOAT; break;
+					case RHIVertexFormat::Float4: attr.format = VK_FORMAT_R32G32B32A32_SFLOAT; break;
+					case RHIVertexFormat::UInt16x4: attr.format = VK_FORMAT_R16G16B16A16_UINT; break;
+					case RHIVertexFormat::UNorm16x4: attr.format = VK_FORMAT_R16G16B16A16_UNORM; break;
+					default: break;
+					}
 					vertexAttributes.push_back(attr);
 				}
 
@@ -4191,7 +4340,7 @@ namespace NLS::Render::Backend
 				// and overlay descriptors omit the color list even though they are
 				// executed in a color pass, so keep one conventional RGBA attachment
 				// as the backend fallback.
-				const size_t colorAttachmentCount = std::max<size_t>(1u, m_desc.renderTargetLayout.colorFormats.size());
+				const size_t colorAttachmentCount = m_desc.renderTargetLayout.colorFormats.size();
 				std::vector<VkPipelineColorBlendAttachmentState> colorBlendAttachments(colorAttachmentCount);
 				for (size_t index = 0; index < colorBlendAttachments.size(); ++index)
 				{
@@ -4304,7 +4453,7 @@ namespace NLS::Render::Backend
 				case NLS::Render::RHI::TextureFormat::BC7: return VK_FORMAT_BC7_UNORM_BLOCK;
 				case NLS::Render::RHI::TextureFormat::BC6H: return VK_FORMAT_BC6H_UFLOAT_BLOCK;
 				case NLS::Render::RHI::TextureFormat::Depth32F: return VK_FORMAT_D32_SFLOAT;
-				case NLS::Render::RHI::TextureFormat::Depth24Stencil8: return VK_FORMAT_D32_SFLOAT;
+				case NLS::Render::RHI::TextureFormat::Depth24Stencil8: return VK_FORMAT_D32_SFLOAT_S8_UINT;
 				default: return VK_FORMAT_R8G8B8A8_UNORM;
 				}
 			}
@@ -4319,7 +4468,7 @@ namespace NLS::Render::Backend
 				VkAttachmentReference depthRef = {};
 
 				// Color attachments
-				const size_t pipelineColorCount = std::max<size_t>(1u, m_desc.renderTargetLayout.colorFormats.size());
+				const size_t pipelineColorCount = m_desc.renderTargetLayout.colorFormats.size();
 				const std::string_view vertexShaderName = m_desc.vertexShader != nullptr
 					? m_desc.vertexShader->GetDebugName()
 					: std::string_view{};
@@ -4482,7 +4631,8 @@ namespace NLS::Render::Backend
 #endif
 		}
 
-		class NativeVulkanExplicitDevice final : public NLS::Render::RHI::RHIDevice
+		class NativeVulkanExplicitDevice final : public NLS::Render::RHI::RHIDevice,
+            public std::enable_shared_from_this<NativeVulkanExplicitDevice>
 		{
 		public:
 			~NativeVulkanExplicitDevice()
@@ -4778,6 +4928,47 @@ namespace NLS::Render::Backend
 			}
 
 			// Readback support
+                NLS::Render::RHI::RHIReadbackResult BeginReadBuffer(const NLS::Render::RHI::RHIBufferReadbackDesc& desc) override
+                {
+                    using namespace NLS::Render::RHI;
+#if NLS_HAS_VULKAN
+                    const auto source = std::dynamic_pointer_cast<NativeVulkanBuffer>(desc.source);
+                    if (!source || source->GetDevice() != m_device || !desc.data || !desc.size ||
+                        !HasBufferUsage(source->GetDesc().usage,BufferUsageFlags::CopySrc) ||
+                        desc.sourceOffset > source->GetDesc().size || desc.size > source->GetDesc().size-desc.sourceOffset)
+                        return {RHIReadbackStatusCode::InvalidArgument,"Vulkan buffer readback requires a valid CopySrc range and destination"};
+                    auto token = std::make_shared<VulkanBufferReadbackToken>();
+                    token->deviceOwner = shared_from_this(); token->source = source; token->destination = desc.data; token->size = static_cast<size_t>(desc.size);
+                    RHIBufferDesc staging;
+                    staging.size = token->size; staging.usage = BufferUsageFlags::CopyDst; staging.memoryUsage = MemoryUsage::GPUToCPU;
+                    staging.debugName = desc.debugName.empty() ? "VulkanBufferReadback" : desc.debugName;
+                    token->staging = std::dynamic_pointer_cast<NativeVulkanBuffer>(CreateBuffer(staging,{}));
+                    token->pool = CreateCommandPool(QueueType::Graphics,"VulkanBufferReadback");
+                    token->fence = std::dynamic_pointer_cast<NativeVulkanFence>(CreateFence("VulkanBufferReadbackComplete"));
+                    if (!token->staging || !token->pool || !token->fence) return {RHIReadbackStatusCode::BackendFailure,"Vulkan buffer readback allocation failed"};
+                    token->commands = token->pool->CreateCommandBuffer("VulkanBufferReadback");
+                    if (!token->commands) return {RHIReadbackStatusCode::BackendFailure,"Vulkan readback command allocation failed"};
+                    token->commands->Begin();
+                    RHIBarrierDesc before;
+                    before.bufferBarriers = {{source,desc.sourceState,ResourceState::CopySrc,PipelineStageMask::AllCommands,
+                        PipelineStageMask::Copy,AccessMask::MemoryRead|AccessMask::MemoryWrite,AccessMask::CopyRead}};
+                    token->commands->Barrier(before);
+                    token->commands->CopyBuffer(source,token->staging,{desc.sourceOffset,0,desc.size});
+                    RHIBarrierDesc after;
+                    after.bufferBarriers = {
+                        {token->staging,ResourceState::CopyDst,ResourceState::CopyDst,PipelineStageMask::Copy,PipelineStageMask::Host,AccessMask::CopyWrite,AccessMask::HostRead},
+                        {source,ResourceState::CopySrc,desc.sourceState,PipelineStageMask::Copy,PipelineStageMask::AllCommands,AccessMask::CopyRead,AccessMask::MemoryRead|AccessMask::MemoryWrite}};
+                    token->commands->Barrier(after); token->commands->End();
+                    RHISubmitDesc submit;
+                    submit.commandBuffers = {token->commands}; submit.signalFence = token->fence; submit.waitSemaphores = desc.waitSemaphores;
+                    const auto result = NLS::Render::Context::RhiCommandListExecutor::Get().RunBackendOperation("VulkanBufferReadback",[&] { return GetQueue(QueueType::Graphics)->SubmitChecked(submit); });
+                    token->submitted = result.Succeeded() || result.mayHaveQueuedGpuWork;
+                    if (!result.Succeeded()) return {RHIReadbackStatusCode::BackendFailure,result.message};
+                    return {RHIReadbackStatusCode::Success,{},std::move(token)};
+#else
+                    return {RHIReadbackStatusCode::BackendFailure,"Vulkan is not compiled"};
+#endif
+                }
 			void ReadPixels(
 			    const std::shared_ptr<NLS::Render::RHI::RHITexture>& texture,
 			    uint32_t x,
@@ -4986,7 +5177,9 @@ namespace NLS::Render::Backend
 				{
 					const auto& subresource = uploadDesc.subresources[index];
 					if (subresource.data != nullptr && subresource.dataSize != 0u)
-						blocks.push_back({ subresource.data, subresource.dataSize, uploadDesc.mipLevel + index, uploadDesc.arrayLayer });
+                            blocks.push_back({subresource.data,subresource.dataSize,
+                                uploadDesc.mipLevel+index%std::max(1u,texture->GetDesc().mipLevels),
+                                uploadDesc.arrayLayer+index/std::max(1u,texture->GetDesc().mipLevels)});
 				}
 			}
 			if (blocks.empty())
@@ -5762,7 +5955,11 @@ namespace NLS::Render::Backend
 			&queuePriority
 		};
 
-		// Vulkan 1.1 baseline: use the classic render-pass path.
+			VkPhysicalDeviceFeatures availableFeatures{};
+			vkGetPhysicalDeviceFeatures(physicalDevice,&availableFeatures);
+			VkPhysicalDeviceFeatures enabledFeatures{};
+			enabledFeatures.drawIndirectFirstInstance = availableFeatures.drawIndirectFirstInstance;
+			// Vulkan 1.1 baseline: use the classic render-pass path.
 		const VkDeviceCreateInfo deviceCreateInfo{
 			VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO,
 			nullptr,
@@ -5773,7 +5970,7 @@ namespace NLS::Render::Backend
 			nullptr,
                 static_cast<uint32_t>(enabledDeviceExtensions.size()),
                 enabledDeviceExtensions.data(),
-			nullptr
+			&enabledFeatures
 		};
 
 		VkDevice device = VK_NULL_HANDLE;
@@ -5795,6 +5992,10 @@ namespace NLS::Render::Backend
 		capabilities.backendReady = true;
 		capabilities.supportsGraphics = true;
 		capabilities.supportsCompute = true;
+        capabilities.SetFeature(NLS::Render::RHI::RHIDeviceFeature::DrawIndirect,true);
+        capabilities.SetFeature(NLS::Render::RHI::RHIDeviceFeature::DrawIndexedIndirect,true);
+        capabilities.SetFeature(NLS::Render::RHI::RHIDeviceFeature::DispatchIndirect,true);
+        capabilities.SetFeature(NLS::Render::RHI::RHIDeviceFeature::IndirectFirstInstance,enabledFeatures.drawIndirectFirstInstance == VK_TRUE);
 		capabilities.supportsSwapchain = true;
 		capabilities.supportsFramebufferBlit = true;
 		// Vulkan uses the same transfer/blit path for depth resources as the

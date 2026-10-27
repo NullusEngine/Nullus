@@ -14,8 +14,11 @@
 #include "Assets/SourceFileHashCache.h"
 #include "Rendering/Assets/MaterialConversion.h"
 #include "Rendering/Assets/MeshArtifact.h"
+#include "Rendering/Assets/AnimationArtifacts.h"
+#include "Rendering/Assets/SceneModelReader.h"
 #include "Rendering/Assets/SceneImportPipeline.h"
 #include "Rendering/Assets/StaticMeshBuilder.h"
+#include "Rendering/Assets/DistanceFieldBuilder.h"
 #include "Rendering/Assets/TextureArtifact.h"
 #include "Rendering/Assets/TextureEncoder.h"
 #include "Rendering/Assets/TextureFormatResolver.h"
@@ -2108,6 +2111,7 @@ NLS::Core::Assets::ArtifactType ToArtifactType(const NLS::Render::Assets::Import
     switch (type)
     {
     case ImportedSceneSubAssetType::Mesh: return ArtifactType::Mesh;
+    case ImportedSceneSubAssetType::SkeletalMesh: return ArtifactType::SkeletalMesh;
     case ImportedSceneSubAssetType::Material: return ArtifactType::Material;
     case ImportedSceneSubAssetType::Texture: return ArtifactType::Texture;
     case ImportedSceneSubAssetType::Skeleton: return ArtifactType::Skeleton;
@@ -3585,6 +3589,8 @@ std::string SerializeGenericSubAsset(
     const NLS::Render::Assets::ImportedScene& scene,
     const NLS::Render::Assets::GeneratedSceneSubAsset& subAsset)
 {
+    const auto animation = NLS::Render::Assets::SerializeAnimationSubAsset(scene,subAsset);
+    if(!animation.empty())return std::string(reinterpret_cast<const char*>(animation.data()),animation.size());
     std::ostringstream stream;
     stream << "NULLUS_IMPORTED_SCENE_ARTIFACT=1\n";
     stream << "SCENE=" << scene.sceneKey << '\n';
@@ -4078,16 +4084,7 @@ NLS::Render::Assets::TextureBackendCapabilities BuildExternalTextureDirectXCapab
 
 std::string ResolveExternalTextureBuildTargetPlatform(const std::string& artifactTargetPlatform)
 {
-    if (artifactTargetPlatform == "editor")
-    {
-#if defined(_WIN32)
-        return "win64-dx12";
-#else
-        return artifactTargetPlatform;
-#endif
-    }
-
-    return artifactTargetPlatform;
+    return ResolveModelTextureBuildTargetPlatform(artifactTargetPlatform);
 }
 
 void AppendTextureFormatResolverDiagnostics(
@@ -4639,7 +4636,9 @@ bool LoadWithAssimpParser(
         meshes,
         materialNames,
         parserFlags,
-        parserExternalDependencies);
+        parserExternalDependencies,
+        false,
+        NLS::Render::Assets::AnimationSettingsForAsset(request.meta));
     hasDetailedScene = parsed && parser.PopulateImportedSceneData(
         request.sourcePath,
         SourceFormatForExtension(extension),
@@ -4697,7 +4696,9 @@ bool LoadFbxWithAutodesk(
         meshes,
         materialNames,
         parserFlags,
-        parserExternalDependencies);
+        parserExternalDependencies,
+        false,
+        NLS::Render::Assets::AnimationSettingsForAsset(request.meta));
     hasDetailedScene = parsed && parser.PopulateImportedSceneData(
         request.sourcePath,
         NLS::Render::Assets::SceneModelSourceFormat::Fbx,
@@ -5168,6 +5169,11 @@ ExternalModelImportResult ImportExternalModelAsset(const ExternalModelImportRequ
             &parserExternalDependencies);
     }
     timingStats.sourceMeshCount = sourceMeshes.size();
+    std::string animationError;
+    if(!NLS::Render::Assets::AttachAnimationSceneData(request.sourcePath,scene,animationError))
+    {AddError(result.diagnostics,request.meta.id,request.sourcePath,"animation-import-failed",animationError);return result;}
+    if(!NLS::Render::Assets::StabilizeAnimationIdentities(scene,request.previousManifest,animationError))
+    {AddError(result.diagnostics,request.meta.id,request.sourcePath,"animation-identity-conflict",animationError);return result;}
     timingStats.sceneMeshCount = scene.meshes.size();
     timingStats.materialCount = scene.materials.size();
     timingStats.textureCount = scene.textures.size();
@@ -5489,6 +5495,36 @@ ExternalModelImportResult ImportExternalModelAsset(const ExternalModelImportRequ
         }
     }
     timingStats.payloadCount = payloads.size();
+
+    const auto distanceFieldSettings = NLS::Render::DistanceField::ReadDistanceFieldBuildSettings(
+        request.meta.settings, request.projectRoot);
+    if (distanceFieldSettings.Enabled())
+    {
+        std::map<std::string,NLS::Render::Assets::MeshArtifactData> distanceFieldMeshes;
+        for (const auto subAssetIndex : meshSubAssetIndices)
+        {
+            const auto& subAsset = subAssets[subAssetIndex];
+            auto mesh = BuildMeshSubAssetData(subAsset, sourceMeshes, meshSerializationContext);
+            if (!mesh) continue;
+            distanceFieldMeshes.emplace(subAsset.key,std::move(*mesh));
+        }
+        std::vector<std::string> diagnostics;
+        std::optional<ImportCancellationTokenHandle> distanceFieldCancellation;
+        const auto* cancellation=GetImportCancellation(request,distanceFieldCancellation);
+        if (!NLS::Render::DistanceField::AppendDistanceFieldModelPayloads(scene,distanceFieldMeshes,
+            distanceFieldSettings,payloads,diagnostics,nullptr,cancellation))
+        {
+            AddError(result.diagnostics,request.meta.id,request.sourcePath,
+                cancellation && cancellation->IsCancellationRequested() ? "asset-import-cancelled" : "mesh-distance-field-build-failed",
+                diagnostics.empty()?"Distance field build failed":diagnostics.back());
+            timingStats.status="failed";
+            return result;
+        }
+        for (auto& diagnostic:diagnostics)
+            result.diagnostics.push_back({NLS::Core::Assets::AssetDiagnosticSeverity::Warning,
+                "mesh-distance-field-quality",request.meta.id,request.sourcePath,std::move(diagnostic)});
+        timingStats.payloadCount = payloads.size();
+    }
 
     NLS::Core::Assets::ArtifactWriteRequest writeRequest;
     writeRequest.sourceAssetId = request.meta.id;

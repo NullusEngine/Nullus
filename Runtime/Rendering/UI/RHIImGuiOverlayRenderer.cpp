@@ -118,7 +118,8 @@ namespace NLS::Render::UI
         RHI::RHIDevice& device,
         RHI::RHICommandBuffer& commandBuffer,
         const UiDrawDataSnapshot& snapshot,
-        const size_t frameResourceSlot)
+        const size_t frameResourceSlot,
+        const RHI::RHIRenderTargetLayoutDesc& renderTargetLayout)
     {
         NLS_PROFILE_NAMED_SCOPE("UIOverlay::PrepareFrameResources");
         std::unique_lock<std::mutex> lock;
@@ -156,7 +157,7 @@ namespace NLS::Render::UI
         const bool fontAtlasWasUploaded = m_fontAtlas.IsUploaded();
         {
             NLS_PROFILE_NAMED_SCOPE("UIOverlay::EnsureGraphicsPipeline");
-            if (!EnsureGraphicsPipeline(device, result.message))
+            if (!EnsureGraphicsPipeline(device, renderTargetLayout, result.message))
             {
                 result.success = false;
                 return result;
@@ -233,6 +234,7 @@ namespace NLS::Render::UI
         buffers.preparedIndexCount = snapshot.totalIndexCount;
         buffers.preparedSnapshotAddress = &snapshot;
         buffers.hasPreparedSnapshot = true;
+        buffers.preparedGraphicsPipeline = m_graphicsPipeline;
         buffers.fontAtlasUploadTransitionRequired = !fontAtlasWasUploaded && m_fontAtlas.IsUploaded();
         buffers.preparedFontAtlasTextureView = m_fontAtlas.TextureView();
         buffers.preparedFontAtlasBindingSet = m_fontAtlas.BindingSet();
@@ -457,6 +459,7 @@ namespace NLS::Render::UI
                     m_fontAtlasBindingLayout,
                     m_fontAtlas.Sampler(),
                     command.textureId,
+                    snapshot.frameId,
                     errorMessage))
                 {
                     return false;
@@ -633,8 +636,14 @@ namespace NLS::Render::UI
 
     bool RHIImGuiOverlayRenderer::EnsureGraphicsPipeline(
         RHI::RHIDevice& device,
+        const RHI::RHIRenderTargetLayoutDesc& renderTargetLayout,
         std::string& errorMessage)
     {
+        if (renderTargetLayout.colorFormats.empty())
+        {
+            errorMessage = "UI overlay requires a color render target layout";
+            return false;
+        }
         const uint64_t deviceCacheIdentity = device.GetCacheIdentity();
         if (m_pipelineDeviceCacheIdentity != 0u && m_pipelineDeviceCacheIdentity != deviceCacheIdentity)
         {
@@ -648,7 +657,18 @@ namespace NLS::Render::UI
         }
 
         if (m_graphicsPipeline != nullptr)
-            return true;
+        {
+            const auto& previous = m_graphicsPipeline->GetDesc().renderTargetLayout;
+            bool compatible = previous.colorFormats == renderTargetLayout.colorFormats &&
+                previous.hasDepth == renderTargetLayout.hasDepth &&
+                (!previous.hasDepth || previous.depthFormat == renderTargetLayout.depthFormat) &&
+                previous.sampleCount == renderTargetLayout.sampleCount;
+            for (size_t index = 0u; compatible && index < previous.colorFormats.size(); ++index)
+                compatible = previous.GetColorSpace(index) == renderTargetLayout.GetColorSpace(index);
+            if (compatible)
+                return true;
+            m_graphicsPipeline.reset();
+        }
 
         m_pipelineDeviceCacheIdentity = deviceCacheIdentity;
         if (m_pipelineLayout == nullptr)
@@ -739,6 +759,7 @@ namespace NLS::Render::UI
         desc.pipelineLayout = m_pipelineLayout;
         desc.vertexShader = m_vertexShaderModule;
         desc.fragmentShader = m_fragmentShaderModule;
+        desc.renderTargetLayout = renderTargetLayout;
         desc.rasterState.cullEnabled = false;
         desc.depthStencilState.depthTest = false;
         desc.depthStencilState.depthWrite = false;
@@ -929,13 +950,14 @@ namespace NLS::Render::UI
                     result.success = false;
                     return result;
                 }
-                if (m_graphicsPipeline == nullptr)
+                const auto& pipeline = m_dynamicBuffersByFrameSlot.at(frameResourceSlot).preparedGraphicsPipeline;
+                if (pipeline == nullptr)
                 {
                     result.success = false;
                     result.message = "UI overlay graphics pipeline is not prepared";
                     return result;
                 }
-                commandBuffer.BindGraphicsPipeline(m_graphicsPipeline);
+                commandBuffer.BindGraphicsPipeline(pipeline);
             }
 
             commandBuffer.SetViewport({

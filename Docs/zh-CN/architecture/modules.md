@@ -27,6 +27,12 @@ Nullus 按“运行时库 + 项目程序 + 工具”三层组织。运行时库�
 | `Rendering` | RHI、FrameGraph、着色器编译与 ShaderLab、渲染资源、编辑器 UI 桥接 |
 | `Scripting` | 语言无关脚本运行时与 C#/Lua 后端 |
 | `UI` | 编辑器界面框架与 Dear ImGui 扩展 |
+| `Animation` / `AnimationCompiler` | 姿态、片段与图程序求值，以及动画源导入和编译 |
+| `Physics` | PhysX CPU 场景查询世界与静态碰撞几何 |
+| `VFX` / `VFXCompiler` | CPU/GPU 粒子运行时、模块栈编译与后端程序 |
+| `MaterialCompiler` | 材质/ShaderGraph 编译、依赖快照与 Cook |
+| `Cook` | Editor 与命令行共享的目标平台资产构建 |
+| `Build` | Build Profile、依赖收集、打包、平台适配与成品校验 |
 
 依赖方向是单向的：`Base` 不依赖 `Engine`，`Engine` 不依赖 `Editor`。`Project/*` 可以依赖 `Runtime/*`，反之不成立。
 
@@ -66,6 +72,9 @@ Editor 与 Game 共享引擎代码，因此编辑器视口与运行时画面来�
 | `Tools/StackDump` | 崩溃栈转储工具 |
 | `Tools/BuildCleanEnvironment` | 清理构建子进程的重复 `Path`/`PATH` |
 | `Tools/Docs` | 本手册的校验与 Wiki 同步工具 |
+| `Tools/NullusBuild` | 无界面 Player 打包、检查与校验 |
+| `Tools/Material` / `Tools/VFX` | 材质与粒子编译及辅助工具 |
+| `Tools/Icons` | 图标清单、SVG 源、确定性生成与校验 |
 
 ## 生成代码
 

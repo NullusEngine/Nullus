@@ -38,7 +38,14 @@ namespace NLS::Render::RHI
         Position,
         TexCoord,
         Normal,
-        Color
+        Color,
+        BlendIndices,
+        BlendWeights
+    };
+
+    enum class RHIVertexFormat : uint8_t
+    {
+        AutoFloat, Float, Float2, Float3, Float4, UInt16x4, UNorm16x4
     };
 
     struct NLS_RENDER_API RHIVertexAttributeDesc
@@ -49,6 +56,7 @@ namespace NLS::Render::RHI
         uint32_t elementSize = 0;
         RHIVertexSemantic semantic = RHIVertexSemantic::Automatic;
         uint32_t semanticIndex = 0;
+        RHIVertexFormat format = RHIVertexFormat::AutoFloat;
     };
 
     struct NLS_RENDER_API RHIVertexBufferLayoutDesc

@@ -11,6 +11,8 @@
 #include <span>
 #include <vector>
 
+#include "Assets/ContentSource.h"
+
 #if defined(_WIN32)
 #ifndef NOMINMAX
 #define NOMINMAX
@@ -50,11 +52,32 @@ struct ScopedFileHandle
 };
 #endif
 
+// Reads artifact bytes from a mounted .npak package when the path resolves to
+// packaged content, and from the filesystem otherwise. The package path keeps
+// the same range semantics as the file path, so callers do not need two code
+// paths.
 class ArtifactFileReader
 {
 public:
     explicit ArtifactFileReader(const std::filesystem::path& path)
     {
+        if (NLS::Core::Assets::HasContentMounts())
+        {
+            if (auto resolved = NLS::Core::Assets::ContentSourceTable::Get().ResolveContentPath(path);
+                resolved.has_value())
+            {
+                if (const auto size = resolved->source->GetSize(resolved->relativePath);
+                    size.has_value())
+                {
+                    m_source = std::move(resolved->source);
+                    m_sourceKey = std::move(resolved->relativePath);
+                    m_size = *size;
+                    m_valid = true;
+                }
+                return;
+            }
+        }
+
 #if defined(_WIN32)
         m_file.value = CreateFileW(
             path.c_str(),
@@ -114,6 +137,23 @@ public:
         if (fileOffset > m_size || totalByteSize > m_size - fileOffset)
             return false;
 
+        if (m_source != nullptr)
+        {
+            uint64_t offset = fileOffset;
+            for (const auto& range : ranges)
+            {
+                if (isCancelled())
+                    return false;
+                if (range.byteSize > 0u &&
+                    !m_source->ReadAt(m_sourceKey, offset, range.destination, range.byteSize, nullptr))
+                {
+                    return false;
+                }
+                offset += range.byteSize;
+            }
+            return !isCancelled();
+        }
+
 #if defined(_WIN32)
         LARGE_INTEGER seekOffset {};
         seekOffset.QuadPart = static_cast<LONGLONG>(fileOffset);
@@ -167,6 +207,8 @@ public:
     }
 
 private:
+    std::shared_ptr<const NLS::Core::Assets::IContentSource> m_source;
+    std::string m_sourceKey;
 #if defined(_WIN32)
     ScopedFileHandle m_file;
 #else
@@ -175,6 +217,36 @@ private:
     uint64_t m_size = 0u;
     bool m_valid = false;
 };
+
+    // Read-only, bounded probe used by preview classification and tests.
+    inline bool ReadArtifactFilePrefix(
+        const std::filesystem::path& path,
+        void* destination,
+        const size_t byteCount)
+    {
+        ArtifactFileReader reader(path);
+        if (!reader.IsOpen() || byteCount > reader.Size())
+            return false;
+        const ArtifactFileReadRange range {destination, byteCount};
+        return reader.Read(0u, std::span<const ArtifactFileReadRange>(&range, 1u), nullptr);
+    }
+
+    inline std::optional<uint64_t> GetArtifactFileSize(const std::filesystem::path& path)
+    {
+        if (NLS::Core::Assets::HasContentMounts())
+        {
+            if (const auto size = NLS::Core::Assets::ContentSourceTable::Get().GetSize(path);
+                size.has_value())
+            {
+                return size;
+            }
+        }
+        std::error_code error;
+        const auto size = std::filesystem::file_size(path, error);
+        if (error)
+            return std::nullopt;
+        return size;
+    }
 
 inline bool ReadArtifactFileBytes(
     const std::filesystem::path& path,
@@ -212,6 +284,25 @@ inline std::optional<ArtifactFileMapping> MapArtifactFileReadOnly(
     };
     if (isCancelled())
         return std::nullopt;
+
+    // Packaged content has no filesystem path to map. Fall back to a bounded
+    // read so callers that only need a read-only view still work.
+    if (NLS::Core::Assets::HasContentMounts() &&
+        NLS::Core::Assets::ContentSourceTable::Get().Exists(path))
+    {
+        auto bytes = std::make_shared<std::vector<uint8_t>>();
+        if (!ReadArtifactFileBytes(path, *bytes, cancellationFlag) ||
+            bytes->empty() ||
+            bytes->size() > static_cast<size_t>((std::numeric_limits<size_t>::max)()))
+        {
+            return std::nullopt;
+        }
+        return ArtifactFileMapping {
+            bytes,
+            bytes->data(),
+            bytes->size()
+        };
+    }
 
     struct MappingState
     {
@@ -270,9 +361,18 @@ inline std::optional<ArtifactFileMapping> MapArtifactFileReadOnly(
         static_cast<size_t>(fileSize.QuadPart)
     };
 #else
-    (void)path;
-    (void)cancellationFlag;
-    return std::nullopt;
+    // The portable build reads through the content source or the file reader
+    // instead of mapping, so a read-backed view is always used.
+    if (cancellationFlag != nullptr && cancellationFlag->load(std::memory_order_acquire))
+        return std::nullopt;
+    auto bytes = std::make_shared<std::vector<uint8_t>>();
+    if (!ReadArtifactFileBytes(path, *bytes, cancellationFlag) || bytes->empty())
+        return std::nullopt;
+    return ArtifactFileMapping {
+        bytes,
+        bytes->data(),
+        bytes->size()
+    };
 #endif
 }
 

@@ -18,6 +18,7 @@ namespace NLS::Core::ResourceManagement
 
 		static void ProvideAssetPaths(const std::string& p_projectAssetsPath, const std::string& p_engineAssetsPath);
 		static const std::string& ProjectAssetsRoot();
+        static const std::string& EngineAssetsRoot() { return GetEngineAssetsPath(); }
 
 		/**
 		* Create the resource identified by the given path

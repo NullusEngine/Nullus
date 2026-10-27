@@ -12261,12 +12261,6 @@ TEST(RendererFrameObjectBindingTests, DeferredThreadedOffscreenPackageCarriesExt
     meshRenderer->FillWithMaterial(sceneMaterial);
     meshActor.GetTransform()->SetWorldPosition({0.0f, 0.0f, -6.0f});
     scene.CreateGameObject("LightActor").AddComponent<NLS::Engine::Components::LightComponent>();
-    renderer.AddDescriptor<NLS::Engine::Rendering::BaseSceneRenderer::SceneDescriptor>({
-        scene,
-        std::nullopt,
-        nullptr
-    });
-
     NLS::Render::Entities::Camera camera;
     NLS::Render::Data::FrameDescriptor frameDescriptor;
     frameDescriptor.renderWidth = 256u;
@@ -12274,24 +12268,42 @@ TEST(RendererFrameObjectBindingTests, DeferredThreadedOffscreenPackageCarriesExt
     frameDescriptor.camera = &camera;
     frameDescriptor.outputBuffer = &outputBuffer;
 
-    auto observedScene = NLS::Tests::ObserveNextRenderSceneForTest(driver);
-    ASSERT_NO_THROW(renderer.BeginFrame(frameDescriptor));
-    EXPECT_FALSE(renderer.HasPendingLightGridFrameInputs());
-    ASSERT_NO_THROW(renderer.EndFrame());
+    using NLS::Render::Settings::ERasterizationMode;
+    for (const auto mode : { ERasterizationMode::FILL, ERasterizationMode::LINE, ERasterizationMode::FILL })
+    {
+        SCOPED_TRACE(static_cast<int>(mode));
+        NLS::Render::Context::DriverUIAccess::SetPolygonMode(driver, mode);
+        renderer.AddDescriptor<NLS::Engine::Rendering::BaseSceneRenderer::SceneDescriptor>({
+            scene, std::nullopt, nullptr
+        });
+        auto observedScene = NLS::Tests::ObserveNextRenderSceneForTest(driver);
+        ASSERT_NO_THROW(renderer.BeginFrame(frameDescriptor));
+        EXPECT_FALSE(renderer.HasPendingLightGridFrameInputs());
+        ASSERT_NO_THROW(renderer.EndFrame());
 
-    EXPECT_EQ(observedScene.wait_for(std::chrono::seconds::zero()), std::future_status::timeout);
-    ASSERT_TRUE(NLS::Render::Context::DriverTestAccess::TryDrainThreadedRendering(driver));
-    ASSERT_EQ(observedScene.wait_for(std::chrono::seconds::zero()), std::future_status::ready);
-    const auto package = observedScene.get();
-    ASSERT_EQ(package.passCommandInputs.size(), 2u);
-    const auto& lightingPass = package.passCommandInputs[1];
-    EXPECT_EQ(lightingPass.kind, NLS::Render::Context::RenderPassCommandKind::Lighting);
-    EXPECT_FALSE(lightingPass.targetsSwapchain);
-    EXPECT_TRUE(lightingPass.usesColorAttachment);
-    ASSERT_FALSE(lightingPass.colorAttachmentViews.empty());
-    EXPECT_NE(lightingPass.colorAttachmentViews.front(), nullptr);
-    ASSERT_FALSE(package.extractedTextures.empty());
-    EXPECT_NE(package.extractedTextures.front(), nullptr);
+        EXPECT_EQ(observedScene.wait_for(std::chrono::seconds::zero()), std::future_status::timeout);
+        ASSERT_TRUE(NLS::Render::Context::DriverTestAccess::TryDrainThreadedRendering(driver));
+        ASSERT_EQ(observedScene.wait_for(std::chrono::seconds::zero()), std::future_status::ready);
+        const auto package = observedScene.get();
+        ASSERT_EQ(package.passCommandInputs.size(), 2u);
+        const auto& geometryPass = package.passCommandInputs[0];
+        ASSERT_EQ(geometryPass.recordedDrawCommands.size(), 1u);
+        ASSERT_NE(geometryPass.recordedDrawCommands.front().pipeline, nullptr);
+        EXPECT_EQ(geometryPass.recordedDrawCommands.front().pipeline->GetDesc().rasterState.wireframe,
+            mode == ERasterizationMode::LINE);
+
+        const auto& lightingPass = package.passCommandInputs[1];
+        EXPECT_EQ(lightingPass.kind, NLS::Render::Context::RenderPassCommandKind::Lighting);
+        EXPECT_FALSE(lightingPass.targetsSwapchain);
+        EXPECT_TRUE(lightingPass.usesColorAttachment);
+        ASSERT_FALSE(lightingPass.colorAttachmentViews.empty());
+        EXPECT_NE(lightingPass.colorAttachmentViews.front(), nullptr);
+        ASSERT_EQ(lightingPass.recordedDrawCommands.size(), 1u);
+        ASSERT_NE(lightingPass.recordedDrawCommands.front().pipeline, nullptr);
+        EXPECT_FALSE(lightingPass.recordedDrawCommands.front().pipeline->GetDesc().rasterState.wireframe);
+        ASSERT_FALSE(package.extractedTextures.empty());
+        EXPECT_NE(package.extractedTextures.front(), nullptr);
+    }
 }
 
 TEST(RendererFrameObjectBindingTests, DeferredRenderCommandHandlesMissingDescriptor)

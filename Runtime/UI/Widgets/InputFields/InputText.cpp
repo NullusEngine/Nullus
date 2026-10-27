@@ -1,5 +1,6 @@
 #include "UI/Widgets/InputFields/InputText.h"
 #include "ImGui/imgui.h"
+#include "UI/Controls/TextControl.h"
 
 namespace NLS::UI::Widgets
 {
@@ -12,9 +13,9 @@ void InputText::_Draw_Impl()
 {
     std::string previousContent = content;
 
-    content.resize(256, '\0');
-    bool enterPressed = ImGui::InputText((label + m_widgetID).c_str(), &content[0], 256, ImGuiInputTextFlags_EnterReturnsTrue | (selectAllOnClick ? ImGuiInputTextFlags_AutoSelectAll : 0));
-    content = content.c_str();
+    const auto result=Controls::Text((label+m_widgetID).c_str(),content,false,{}, {},
+        ImGuiInputTextFlags_EnterReturnsTrue | (selectAllOnClick?ImGuiInputTextFlags_AutoSelectAll:0));
+    const bool enterPressed=result.completed && ImGui::IsKeyPressed(ImGuiKey_Enter);
 
     if (content != previousContent)
     {

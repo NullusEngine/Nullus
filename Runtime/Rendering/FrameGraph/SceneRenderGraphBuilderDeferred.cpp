@@ -17,6 +17,16 @@ namespace NLS::Render::FrameGraph
     namespace
     {
         constexpr std::string_view kDeferredAggregateHelperPassName = "EditorHelperPass";
+        using PassKind=NLS::Render::Context::RenderPassCommandKind;
+        ThreadedRenderScenePassMetadata ForwardOpaqueMetadata(PassKind kind,uint64_t count)
+        {
+            ThreadedRenderScenePassMetadata metadata;metadata.commandKind=kind;
+            metadata.role=ThreadedRenderScenePassRole::Auxiliary;
+            metadata.executionMode=kind==PassKind::ForwardOpaqueDepth?ThreadedRenderScenePassExecutionMode::Recorded:ThreadedRenderScenePassExecutionMode::Output;
+            metadata.graphPassName=kind==PassKind::ForwardOpaqueDepth?"ForwardOpaqueDepth":"ForwardOpaqueColor";
+            metadata.propagatesColorOutput=kind==PassKind::ForwardOpaqueColor;metadata.propagatesDepthOutput=false;
+            metadata.visibleDrawCountContribution=count;return metadata;
+        }
 
         bool IsDeferredScenePassKind(const NLS::Render::Context::RenderPassCommandKind kind)
         {
@@ -493,6 +503,7 @@ namespace NLS::Render::FrameGraph
         {
             const bool needsDeferredDepth =
                 passInput.kind == NLS::Render::Context::RenderPassCommandKind::Transparent ||
+                passInput.kind == PassKind::ForwardOpaqueColor ||
                 passInput.kind == NLS::Render::Context::RenderPassCommandKind::Helper;
             if (!needsDeferredDepth ||
                 !passInput.usesDepthStencilAttachment ||
@@ -832,6 +843,8 @@ namespace NLS::Render::FrameGraph
                 return FindPackagePassInputByKind(package, NLS::Render::Context::RenderPassCommandKind::Lighting);
             case DeferredScenePassExecutionKind::Transparent:
                 return FindPackagePassInputByKind(package, NLS::Render::Context::RenderPassCommandKind::Transparent);
+            case DeferredScenePassExecutionKind::ForwardOpaqueDepth:return FindPackagePassInputByKind(package,PassKind::ForwardOpaqueDepth);
+            case DeferredScenePassExecutionKind::ForwardOpaqueColor:return FindPackagePassInputByKind(package,PassKind::ForwardOpaqueColor);
             default:
                 return nullptr;
             }
@@ -1042,14 +1055,17 @@ namespace NLS::Render::FrameGraph
                 passInput.requiresLightingData = true;
 				passInput.targetsSwapchain = package.targetsSwapchain;
 				passInput.usesColorAttachment = true;
-				// Lighting PSOs retain the frame depth attachment layout even though
-				// depth testing is disabled. On a swapchain pass the driver supplies the
-				// independent swapchain depth target; GBuffer depth remains shader-read
-				// input and must not be attached to the same pass.
+				// Match the recorded lighting PSO's attachment layout, including PSOs
+				// without depth. GBuffer depth stays a sampled input; an attached depth
+				// target, when required, comes from the independent frame output.
 				passInput.usesDepthStencilAttachment =
 					package.targetsSwapchain || package.externalSceneOutputDepthView != nullptr;
+                if (!passInput.recordedDrawCommands.empty() && passInput.recordedDrawCommands.front().pipeline)
+                    passInput.usesDepthStencilAttachment = passInput.recordedDrawCommands.front().pipeline->GetDesc().renderTargetLayout.hasDepth;
 				passInput.writesDepthStencilAttachment = false;
-				if (!package.targetsSwapchain)
+                    if (FindPackagePassInputByKind(package,PassKind::ForwardOpaqueDepth))
+                        passInput.depthStencilAttachmentView=resources.gbufferDepthView;
+                    else if (!package.targetsSwapchain)
 					passInput.depthStencilAttachmentView = package.externalSceneOutputDepthView;
 				passInput.gbufferTextures = resources.gbufferTextures;
                 for (const auto& texture : resources.gbufferTextures)
@@ -1104,6 +1120,23 @@ namespace NLS::Render::FrameGraph
                         NLS::Render::RHI::PipelineStageMask::DepthStencil,
                         NLS::Render::RHI::AccessMask::DepthStencilRead);
                 }
+                break;
+            }
+            case DeferredScenePassExecutionKind::ForwardOpaqueDepth:
+            case DeferredScenePassExecutionKind::ForwardOpaqueColor:
+            {
+                if(!typedPassInput)throw std::invalid_argument("ForwardOpaque pass has no typed draw source");
+                passInput.recordedDrawCommands=typedPassInput->recordedDrawCommands;passInput.drawCount=passInput.recordedDrawCommands.size();
+                const bool depth=executionKind==DeferredScenePassExecutionKind::ForwardOpaqueDepth;
+                passInput.requiresFrameData=true;passInput.requiresObjectData=true;passInput.requiresLightingData=!depth;
+                passInput.targetsSwapchain=!depth && package.targetsSwapchain;passInput.usesColorAttachment=!depth;
+                passInput.usesDepthStencilAttachment=true;passInput.writesDepthStencilAttachment=depth;
+                passInput.depthStencilAttachmentView=resources.gbufferDepthView;
+                if(resources.gbufferDepthView)AddFullTextureResourceAccess(passInput,resources.gbufferDepthView->GetTexture(),
+                    depth?NLS::Render::Context::ResourceAccessMode::Write:NLS::Render::Context::ResourceAccessMode::Read,
+                    depth?NLS::Render::RHI::ResourceState::DepthWrite:NLS::Render::RHI::ResourceState::DepthRead,
+                    NLS::Render::RHI::PipelineStageMask::DepthStencil,
+                    depth?NLS::Render::RHI::AccessMask::DepthStencilRead|NLS::Render::RHI::AccessMask::DepthStencilWrite:NLS::Render::RHI::AccessMask::DepthStencilRead);
                 break;
             }
             default:
@@ -1471,6 +1504,8 @@ namespace NLS::Render::FrameGraph
             return DeferredScenePassExecutionKind::Lighting;
         case NLS::Render::Context::RenderPassCommandKind::Transparent:
             return DeferredScenePassExecutionKind::Transparent;
+        case PassKind::ForwardOpaqueDepth:return DeferredScenePassExecutionKind::ForwardOpaqueDepth;
+        case PassKind::ForwardOpaqueColor:return DeferredScenePassExecutionKind::ForwardOpaqueColor;
         default:
             return DeferredScenePassExecutionKind::Unknown;
         }
@@ -2037,6 +2072,8 @@ namespace NLS::Render::FrameGraph
         scenePassMetadata.insert(scenePassMetadata.end(), lightGridSource.metadata.begin(), lightGridSource.metadata.end());
         if (deferredPassDescriptors.size() > 0u)
             scenePassMetadata.push_back(deferredPassDescriptors.descriptors[0].metadata);
+        if(const auto* depth=FindPackagePassInputByKind(package,PassKind::ForwardOpaqueDepth))
+            scenePassMetadata.push_back(ForwardOpaqueMetadata(PassKind::ForwardOpaqueDepth,depth->drawCount));
         if (deferredPassDescriptors.size() > 1u &&
             deferredPassDescriptors.descriptors[1].metadata.commandKind == NLS::Render::Context::RenderPassCommandKind::Decal)
         {
@@ -2047,6 +2084,9 @@ namespace NLS::Render::FrameGraph
         {
             if (deferredPassDescriptors.descriptors[i].metadata.commandKind != NLS::Render::Context::RenderPassCommandKind::Decal)
                 scenePassMetadata.push_back(deferredPassDescriptors.descriptors[i].metadata);
+            if(deferredPassDescriptors.descriptors[i].metadata.commandKind==PassKind::Lighting)
+                if(const auto* color=FindPackagePassInputByKind(package,PassKind::ForwardOpaqueColor))
+                    scenePassMetadata.push_back(ForwardOpaqueMetadata(PassKind::ForwardOpaqueColor,color->drawCount));
         }
         PromotePreparedComputeConsumerDependencies(scenePassMetadata);
         const auto appendedMetadataBegin = scenePassMetadata.size();
@@ -2138,6 +2178,7 @@ namespace NLS::Render::FrameGraph
                         resolvedOutputAttachments,
                         {
                             NLS::Render::Context::RenderPassCommandKind::Lighting,
+                            PassKind::ForwardOpaqueColor,
                             NLS::Render::Context::RenderPassCommandKind::Transparent,
                             NLS::Render::Context::RenderPassCommandKind::Helper
                         });
@@ -2160,6 +2201,7 @@ namespace NLS::Render::FrameGraph
             "DeferredOutputDepthView",
             {
                 NLS::Render::Context::RenderPassCommandKind::Lighting,
+                PassKind::ForwardOpaqueColor,
                 NLS::Render::Context::RenderPassCommandKind::Transparent
             });
         RegisterExternalSceneOutputExtractions(package, frameDescriptor);

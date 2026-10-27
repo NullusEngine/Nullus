@@ -4,6 +4,7 @@
 
 #include "UI/Widgets/DataWidget.h"
 #include "ImGui/imgui.h"
+#include "UI/Controls/ScalarControl.h"
 
 namespace NLS::UI::Widgets
 {
@@ -46,7 +47,9 @@ namespace NLS::UI::Widgets
 			if (selectAllOnClick)
 				flags |= ImGuiInputTextFlags_AutoSelectAll;
 
-			bool enterPressed = ImGui::InputScalar((label + this->m_widgetID).c_str(), m_dataType, &value, step != 0.0f ? &step : nullptr, fastStep != 0.0f ? &fastStep : nullptr, format.c_str(), flags);
+			Controls::ScalarOptions options;options.step=step!=0?&step:nullptr;options.fastStep=fastStep!=0?&fastStep:nullptr;options.format=format.c_str();options.textFlags=flags;
+            const auto result=Controls::Scalar((label+this->m_widgetID).c_str(),m_dataType,&value,options);
+            const bool enterPressed=result.completed && ImGui::IsKeyPressed(ImGuiKey_Enter);
 
 			if (previousValue != value)
 			{

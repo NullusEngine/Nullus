@@ -89,7 +89,7 @@ namespace NLS::Render::Backend
 			const D3D12_RESOURCE_STATES stateBefore,
 			const D3D12_RESOURCE_STATES stateAfter)
 		{
-			if (resource == nullptr)
+			if (resource == nullptr || stateBefore == stateAfter)
 				return;
 
 			D3D12_RESOURCE_BARRIER barrier{};
@@ -207,7 +207,8 @@ namespace NLS::Render::Backend
 				return false;
 			}
 
-			if (desc.extent.width == 0u || desc.extent.height == 0u || desc.extent.depth != 1u)
+            if (desc.extent.width == 0u || desc.extent.height == 0u || desc.extent.depth == 0u ||
+                (destinationDesc.dimension != NLS::Render::RHI::TextureDimension::Texture3D && desc.extent.depth != 1u))
 			{
 				NLS_LOG_ERROR("NativeDX12CommandBuffer::CopyBufferToTexture requires a non-empty single-depth copy extent");
 				return false;
@@ -217,9 +218,10 @@ namespace NLS::Render::Backend
 			const uint32_t mipHeight = MipDimension(destinationDesc.extent.height, desc.mipLevel);
 			if (desc.textureOffset.x >= mipWidth ||
 				desc.textureOffset.y >= mipHeight ||
-				desc.textureOffset.z != 0u ||
-				desc.textureOffset.x + desc.extent.width > mipWidth ||
-				desc.textureOffset.y + desc.extent.height > mipHeight)
+                desc.extent.width > mipWidth - desc.textureOffset.x ||
+                desc.extent.height > mipHeight - desc.textureOffset.y ||
+                desc.textureOffset.z >= (destinationDesc.dimension == NLS::Render::RHI::TextureDimension::Texture3D ? MipDimension(destinationDesc.extent.depth, desc.mipLevel) : 1u) ||
+                desc.extent.depth > (destinationDesc.dimension == NLS::Render::RHI::TextureDimension::Texture3D ? MipDimension(destinationDesc.extent.depth, desc.mipLevel) : 1u) - desc.textureOffset.z)
 			{
 				NLS_LOG_ERROR("NativeDX12CommandBuffer::CopyBufferToTexture copy box is outside the destination mip bounds");
 				return false;
@@ -246,8 +248,12 @@ namespace NLS::Render::Backend
 			const uint32_t minimumRowPitch = NLS::Render::RHI::CalculateTextureRowPitch(destinationDesc.format, desc.extent.width);
 			const uint32_t rowPitch = desc.rowPitch != 0u ? desc.rowPitch : minimumRowPitch;
 			const uint32_t blockRows = (desc.extent.height + descriptor->blockHeight - 1u) / descriptor->blockHeight;
-			const uint64_t requiredBytes = blockRows > 0u
-				? (static_cast<uint64_t>(blockRows - 1u) * rowPitch) + minimumRowPitch
+            const uint64_t slicePitch = desc.slicePitch ? desc.slicePitch : uint64_t(rowPitch) * blockRows;
+            if (rowPitch < minimumRowPitch || slicePitch < uint64_t(rowPitch) * blockRows ||
+                (desc.extent.depth > 1u && slicePitch % D3D12_TEXTURE_DATA_PLACEMENT_ALIGNMENT != 0u))
+                return false;
+            const uint64_t requiredBytes = blockRows > 0u
+                ? uint64_t(desc.extent.depth - 1u) * slicePitch + (static_cast<uint64_t>(blockRows - 1u) * rowPitch) + minimumRowPitch
 				: 0u;
 			if (requiredBytes == 0u ||
 				desc.bufferOffset > sourceDesc.size ||
@@ -664,6 +670,9 @@ namespace NLS::Render::Backend
 			m_recordedPipelineKeepAlive.clear();
 			m_recordedComputePipelineKeepAlive.clear();
 			m_recordedBufferKeepAlive.clear();
+        m_recordedTextureKeepAlive.clear();
+        m_recordedQueryKeepAlive.clear();
+			m_indexBufferBound = false;
 			m_partialTextureStateDirty.clear();
 			m_descriptorHeapsSet = false;
 			m_descriptorTablesDirty = false;
@@ -735,6 +744,9 @@ namespace NLS::Render::Backend
 			{
 				NLS_PROFILE_NAMED_SCOPE("DX12CommandReset::BufferKeepAlive");
 				m_recordedBufferKeepAlive.clear();
+                m_recordedTextureKeepAlive.clear();
+                m_recordedQueryKeepAlive.clear();
+				m_indexBufferBound = false;
 			}
 			{
 				NLS_PROFILE_NAMED_SCOPE("DX12CommandReset::BoundPipelineState");
@@ -1014,6 +1026,8 @@ namespace NLS::Render::Backend
 			m_commandList->OMSetRenderTargets(static_cast<UINT>(boundRtvHandles.size()), boundRtvHandles.data(), FALSE, &dsvHandle);
 		else if (!boundRtvHandles.empty())
 			m_commandList->OMSetRenderTargets(static_cast<UINT>(boundRtvHandles.size()), boundRtvHandles.data(), FALSE, nullptr);
+        else
+            m_commandList->OMSetRenderTargets(0,nullptr,FALSE,hasDSV?&dsvHandle:nullptr);
 
 		for (const auto& clearRequest : clearPlan.colorClearRequests)
 		{
@@ -1439,6 +1453,7 @@ namespace NLS::Render::Backend
 			? DXGI_FORMAT_R16_UINT
 			: DXGI_FORMAT_R32_UINT;
 		m_commandList->IASetIndexBuffer(&ibView);
+			m_indexBufferBound = true;
 		m_recordedBufferKeepAlive.push_back(view.buffer);
 #else
 		(void)view;
@@ -1595,7 +1610,53 @@ namespace NLS::Render::Backend
 #endif
 	}
 
-	void NativeDX12CommandBuffer::CopyBuffer(
+		NLS::Render::RHI::RHICommandRecordingResult NativeDX12CommandBuffer::DrawIndirect(
+			const std::shared_ptr<NLS::Render::RHI::RHIBuffer>& arguments, uint64_t offset)
+		{ return RecordIndirect(arguments,offset,0); }
+
+		NLS::Render::RHI::RHICommandRecordingResult NativeDX12CommandBuffer::DrawIndexedIndirect(
+			const std::shared_ptr<NLS::Render::RHI::RHIBuffer>& arguments, uint64_t offset)
+		{ return RecordIndirect(arguments,offset,1); }
+
+		NLS::Render::RHI::RHICommandRecordingResult NativeDX12CommandBuffer::DispatchIndirect(
+			const std::shared_ptr<NLS::Render::RHI::RHIBuffer>& arguments, uint64_t offset)
+		{ return RecordIndirect(arguments,offset,2); }
+
+		NLS::Render::RHI::RHICommandRecordingResult NativeDX12CommandBuffer::RecordIndirect(
+			const std::shared_ptr<NLS::Render::RHI::RHIBuffer>& arguments, uint64_t offset, uint32_t kind)
+		{
+			using namespace NLS::Render::RHI;
+			const uint32_t bytes = kind == 0 ? sizeof(RHIDrawIndirectArguments) : kind == 1 ? sizeof(RHIDrawIndexedIndirectArguments) : sizeof(RHIDispatchIndirectArguments);
+			const auto valid = ValidateIndirectArguments(arguments,offset,bytes);
+			if (!valid.Succeeded()) return valid;
+#if defined(_WIN32)
+			const auto native = arguments->GetNativeBufferHandle();
+			if (!m_recording || m_isChildCommandBuffer || !m_commandList || kind > 2 ||
+				native.backend != BackendType::DX12 || !native.handle ||
+				(kind < 2 && (m_bindingComputePipeline || m_commandListType != D3D12_COMMAND_LIST_TYPE_DIRECT || !IsBoundGraphicsPipelineNativeValid())) ||
+				(kind == 1 && !m_indexBufferBound) ||
+				(kind == 2 && (!m_bindingComputePipeline || !m_activeRenderPassTransitions.empty() || !IsBoundComputePipelineNativeValid())))
+				return {RHICommandRecordingStatusCode::InvalidArgument,"DX12 indirect command requires a recording primary list, matching pipeline and DX12 argument buffer"};
+			if (!FlushBoundDescriptorTablesIfDirty() || !ValidateDescriptorTableBindings("Indirect") || !HasInitializedRequiredRootDescriptorTables("Indirect"))
+				return {RHICommandRecordingStatusCode::BackendFailure,"DX12 indirect descriptor binding failed"};
+			if (!m_indirectSignatures[kind])
+			{
+				D3D12_INDIRECT_ARGUMENT_DESC argument{};
+				argument.Type = kind == 0 ? D3D12_INDIRECT_ARGUMENT_TYPE_DRAW : kind == 1 ? D3D12_INDIRECT_ARGUMENT_TYPE_DRAW_INDEXED : D3D12_INDIRECT_ARGUMENT_TYPE_DISPATCH;
+				D3D12_COMMAND_SIGNATURE_DESC signature{};
+				signature.ByteStride = bytes; signature.NumArgumentDescs = 1; signature.pArgumentDescs = &argument;
+				if (FAILED(m_device->CreateCommandSignature(&signature,nullptr,IID_PPV_ARGS(&m_indirectSignatures[kind]))))
+					return {RHICommandRecordingStatusCode::BackendFailure,"DX12 indirect command signature creation failed"};
+			}
+			m_recordedBufferKeepAlive.push_back(arguments);
+			m_commandList->ExecuteIndirect(m_indirectSignatures[kind].Get(),1,static_cast<ID3D12Resource*>(native.handle),offset,nullptr,0);
+			return {};
+#else
+			return {RHICommandRecordingStatusCode::BackendFailure,"DX12 indirect commands are only available on Windows"};
+#endif
+		}
+
+		void NativeDX12CommandBuffer::CopyBuffer(
 		const std::shared_ptr<NLS::Render::RHI::RHIBuffer>& source,
 		const std::shared_ptr<NLS::Render::RHI::RHIBuffer>& destination,
 		const NLS::Render::RHI::RHIBufferCopyRegion& region)
@@ -1630,7 +1691,35 @@ namespace NLS::Render::Backend
 #endif
 	}
 
-	void NativeDX12CommandBuffer::CopyBufferToTexture(const NLS::Render::RHI::RHIBufferToTextureCopyDesc& desc)
+    NLS::Render::RHI::RHICommandRecordingResult NativeDX12CommandBuffer::WriteTimestamp(
+        const std::shared_ptr<NLS::Render::RHI::RHITimestampQuery>& query, uint32_t index)
+    {
+#if defined(_WIN32)
+        using namespace NLS::Render::RHI;
+        if (!m_commandList || m_isChildCommandBuffer || m_commandListType != D3D12_COMMAND_LIST_TYPE_DIRECT || !query || index > 1)
+            return {RHICommandRecordingStatusCode::InvalidArgument, "Invalid DX12 timestamp request"};
+        const auto handle = query->GetNativeQueryHandle();
+        auto* heap = handle.backend == BackendType::DX12 ? static_cast<ID3D12QueryHeap*>(handle.handle) : nullptr;
+        if (!heap) return {RHICommandRecordingStatusCode::InvalidArgument, "Missing DX12 query heap"};
+        m_recordedQueryKeepAlive.push_back(query);
+        m_commandList->EndQuery(heap, D3D12_QUERY_TYPE_TIMESTAMP, index);
+        if (index == 1)
+        {
+            const auto output = query->Results();
+            const auto native = output ? output->GetNativeBufferHandle() : NativeHandle{};
+            if (!output || output->GetDesc().size < 16 || native.backend != BackendType::DX12 || !native.handle)
+                return {RHICommandRecordingStatusCode::InvalidArgument, "Missing timestamp result buffer"};
+            m_commandList->ResolveQueryData(heap, D3D12_QUERY_TYPE_TIMESTAMP, 0, 2,
+                static_cast<ID3D12Resource*>(native.handle), 0);
+            m_recordedBufferKeepAlive.push_back(output);
+        }
+        return {};
+#else
+        return {NLS::Render::RHI::RHICommandRecordingStatusCode::BackendFailure, "DX12 timestamps are unavailable"};
+#endif
+    }
+
+    void NativeDX12CommandBuffer::CopyBufferToTexture(const NLS::Render::RHI::RHIBufferToTextureCopyDesc& desc)
 	{
 #if defined(_WIN32)
 		if (m_isChildCommandBuffer)
@@ -1656,6 +1745,8 @@ namespace NLS::Render::Backend
 		const auto& destinationDesc = desc.destination->GetDesc();
 		if (!IsValidDX12BufferToTextureCopyDesc(desc, desc.source->GetDesc(), destinationDesc))
 			return;
+        m_recordedBufferKeepAlive.push_back(desc.source);
+        m_recordedTextureKeepAlive.push_back(desc.destination);
 
 		DXGI_FORMAT format = NLS::Render::RHI::DX12::ToDXGIFormat(destinationDesc.format, destinationDesc.colorSpace);
 		if (format == DXGI_FORMAT_UNKNOWN)
@@ -1714,7 +1805,15 @@ namespace NLS::Render::Backend
 		srcBox.bottom = desc.extent.height;
 		srcBox.back = 1;
 
-		m_commandList->CopyTextureRegion(&dstLocation, desc.textureOffset.x, desc.textureOffset.y, desc.textureOffset.z, &srcLocation, &srcBox);
+        const auto* formatDesc = NLS::Render::RHI::GetTextureFormatDescriptor(destinationDesc.format);
+        const uint64_t slicePitch = desc.slicePitch ? desc.slicePitch :
+            uint64_t(sourceRowPitch) * ((desc.extent.height + formatDesc->blockHeight - 1u) / formatDesc->blockHeight);
+        for (uint32_t z = 0; z < desc.extent.depth; ++z)
+        {
+            srcLocation.PlacedFootprint.Offset = desc.bufferOffset + uint64_t(z) * slicePitch;
+            m_commandList->CopyTextureRegion(&dstLocation, desc.textureOffset.x,
+                desc.textureOffset.y, desc.textureOffset.z + z, &srcLocation, &srcBox);
+        }
 #else
 		(void)desc;
 #endif
@@ -2178,6 +2277,8 @@ namespace NLS::Render::Backend
 			result |= D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER;
 		if (static_cast<uint32_t>(state) & static_cast<uint32_t>(NLS::Render::RHI::ResourceState::IndexBuffer))
 			result |= D3D12_RESOURCE_STATE_INDEX_BUFFER;
+			if (static_cast<uint32_t>(state) & static_cast<uint32_t>(NLS::Render::RHI::ResourceState::IndirectArgument))
+				result |= D3D12_RESOURCE_STATE_INDIRECT_ARGUMENT;
 		if (static_cast<uint32_t>(state) & static_cast<uint32_t>(NLS::Render::RHI::ResourceState::UniformBuffer))
 			result |= D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER;
 		if (static_cast<uint32_t>(state) & static_cast<uint32_t>(NLS::Render::RHI::ResourceState::ShaderRead))

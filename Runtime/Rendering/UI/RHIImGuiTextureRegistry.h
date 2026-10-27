@@ -50,11 +50,14 @@ namespace NLS::Render::UI
             uint64_t frameId) const;
         [[nodiscard]] std::vector<uint64_t> CollectReferencedTextureIdentities(
             const UiDrawDataSnapshot& snapshot) const;
+        // Pending snapshots may prepare bindings after the view was retired.
+        // Use the snapshot's frame id, as with ResolveForFrame.
         [[nodiscard]] bool EnsureBindingSet(
             RHI::RHIDevice& device,
             const std::shared_ptr<RHI::RHIBindingLayout>& bindingLayout,
             const std::shared_ptr<RHI::RHISampler>& sampler,
             UiTextureId id,
+            uint64_t frameId,
             std::string& errorMessage);
         void ReleaseTextureView(const std::shared_ptr<RHI::RHITextureView>& textureView, uint64_t frameId);
         void ReleaseRetiredTextureViewsUpTo(uint64_t completedFrameId);

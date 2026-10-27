@@ -159,6 +159,8 @@ private:
     uint64_t m_scriptFixedFrameIndex = 0;
     UI::Canvas			m_canvas;
     Context& m_context;
+    // Panels may cancel document edits during destruction.
+    Undo::EditorUndoService m_undoService;
     PanelsManager	m_panelsManager;
     struct JobSystemLifetime
     {
@@ -169,7 +171,6 @@ private:
         bool ownsJobSystem = false;
     };
 	JobSystemLifetime m_jobSystemLifetime;
-	Undo::EditorUndoService m_undoService;
 	EditorActions	m_editorActions;
 	Shortcuts::EditorShortcutService m_shortcutService;
 	// Presents the retained game UI of the edited scene inside the Game View.

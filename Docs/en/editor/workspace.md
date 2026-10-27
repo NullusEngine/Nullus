@@ -85,6 +85,10 @@ Collects build diagnostics, asset import errors, script logs, and runtime errors
 
 Live data requires the matching build switches. See [Profiling and Graphics Debugging](../quality/profiling.md) for enabling them and reading the numbers.
 
+### Icon Browser
+
+`Window > Icon Browser` is a development window: search by id/tag/alias, preview size tiers, interaction states and Dark/Light icon themes, filter Missing/Unused, inspect texture generation and load diagnostics, and hot reload with `Reload editor icons`. The manifest under `Tools/Icons` is build-time only.
+
 ## Panels and script extensions
 
 Project editor scripts can register custom Inspectors, tool windows, and menu items; the results appear under the `Window` and `Tools` menus. See [Editor Script Extensions](../architecture/editor-extensions.md).

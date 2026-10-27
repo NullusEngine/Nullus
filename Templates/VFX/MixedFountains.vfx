@@ -1,0 +1,489 @@
+{
+  "emitters": [
+    {
+      "attributes": [
+        {
+          "default": [
+            0.0,
+            0.0,
+            0.0,
+            0.0
+          ],
+          "name": "Particles.Position",
+          "type": 2
+        },
+        {
+          "default": [
+            -0.8,
+            3,
+            0,
+            0
+          ],
+          "name": "Particles.Velocity",
+          "type": 2
+        },
+        {
+          "default": [
+            1.0,
+            0.5,
+            0.10000000149011612,
+            1.0
+          ],
+          "name": "Particles.Color",
+          "type": 3
+        },
+        {
+          "default": [
+            0.05000000074505806,
+            0.0,
+            0.0,
+            0.0
+          ],
+          "name": "Particles.Size",
+          "type": 0
+        },
+        {
+          "default": [
+            0.0,
+            0.0,
+            0.0,
+            0.0
+          ],
+          "name": "Particles.Age",
+          "type": 0
+        },
+        {
+          "default": [
+            2.0,
+            0.0,
+            0.0,
+            0.0
+          ],
+          "name": "Particles.Lifetime",
+          "type": 0
+        }
+      ],
+      "bursts": [],
+      "capacity": 10000,
+      "collision": {
+        "enabled": false,
+        "friction": 0.0,
+        "layers": 4294967295,
+        "radius": 0.0,
+        "restitution": 0.5
+      },
+      "duration": 5.0,
+      "id": "5cdbd0cb-fc1f-47e3-8107-74495e0e87fa",
+      "interpolatedSpawning": true,
+      "looping": true,
+      "name": "CPU Orange",
+      "seed": 1,
+      "spawn": {
+        "id": "6e5a2ecc-222a-441c-9244-85ce2719a46b",
+        "nextNodeId": 3,
+        "nodes": [
+          {
+            "id": 1,
+            "inputs": [],
+            "name": "",
+            "operation": 5,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 2,
+            "value": [
+              0.5,
+              0.5,
+              0.5,
+              0.0
+            ]
+          },
+          {
+            "id": 2,
+            "inputs": [
+              1
+            ],
+            "name": "Particles.Position",
+            "operation": 22,
+            "position": [
+              280.0,
+              0.0
+            ],
+            "type": 2,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          }
+        ],
+        "stage": 0
+      },
+      "spawnRate": 100.0,
+      "target": 0,
+      "update": {
+        "id": "7f3d58ed-72ae-452e-86b8-11ba51a20cb9",
+        "nextNodeId": 7,
+        "nodes": [
+          {
+            "id": 1,
+            "inputs": [],
+            "name": "Particles.Position",
+            "operation": 1,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 2,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 2,
+            "inputs": [],
+            "name": "Particles.Velocity",
+            "operation": 1,
+            "position": [
+              0.0,
+              130.0
+            ],
+            "type": 2,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 3,
+            "inputs": [],
+            "name": "",
+            "operation": 3,
+            "position": [
+              0.0,
+              250.0
+            ],
+            "type": 0,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 4,
+            "inputs": [
+              2,
+              3
+            ],
+            "name": "",
+            "operation": 8,
+            "position": [
+              240.0,
+              130.0
+            ],
+            "type": 2,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 5,
+            "inputs": [
+              1,
+              4
+            ],
+            "name": "",
+            "operation": 6,
+            "position": [
+              480.0,
+              0.0
+            ],
+            "type": 2,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 6,
+            "inputs": [
+              5
+            ],
+            "name": "Particles.Position",
+            "operation": 22,
+            "position": [
+              720.0,
+              0.0
+            ],
+            "type": 2,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          }
+        ],
+        "stage": 1
+      }
+    },
+    {
+      "attributes": [
+        {
+          "default": [
+            0.0,
+            0.0,
+            0.0,
+            0.0
+          ],
+          "name": "Particles.Position",
+          "type": 2
+        },
+        {
+          "default": [
+            0.8,
+            3,
+            0,
+            0
+          ],
+          "name": "Particles.Velocity",
+          "type": 2
+        },
+        {
+          "default": [
+            0.15,
+            0.6,
+            1,
+            1
+          ],
+          "name": "Particles.Color",
+          "type": 3
+        },
+        {
+          "default": [
+            0.05000000074505806,
+            0.0,
+            0.0,
+            0.0
+          ],
+          "name": "Particles.Size",
+          "type": 0
+        },
+        {
+          "default": [
+            0.0,
+            0.0,
+            0.0,
+            0.0
+          ],
+          "name": "Particles.Age",
+          "type": 0
+        },
+        {
+          "default": [
+            2.0,
+            0.0,
+            0.0,
+            0.0
+          ],
+          "name": "Particles.Lifetime",
+          "type": 0
+        }
+      ],
+      "bursts": [],
+      "capacity": 10000,
+      "collision": {
+        "enabled": false,
+        "friction": 0.0,
+        "layers": 4294967295,
+        "radius": 0.0,
+        "restitution": 0.5
+      },
+      "duration": 5.0,
+      "id": "ae27dade-6e32-4a52-b656-aa9d9427e1a0",
+      "interpolatedSpawning": true,
+      "looping": true,
+      "name": "GPU Blue",
+      "seed": 1,
+      "spawn": {
+        "id": "4a0ed227-968c-4010-92eb-80e934a4bbe5",
+        "nextNodeId": 3,
+        "nodes": [
+          {
+            "id": 1,
+            "inputs": [],
+            "name": "",
+            "operation": 5,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 2,
+            "value": [
+              0.5,
+              0.5,
+              0.5,
+              0.0
+            ]
+          },
+          {
+            "id": 2,
+            "inputs": [
+              1
+            ],
+            "name": "Particles.Position",
+            "operation": 22,
+            "position": [
+              280.0,
+              0.0
+            ],
+            "type": 2,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          }
+        ],
+        "stage": 0
+      },
+      "spawnRate": 100.0,
+      "target": 1,
+      "update": {
+        "id": "31f0927f-31c5-45fc-9f2a-72ff58fbb10c",
+        "nextNodeId": 7,
+        "nodes": [
+          {
+            "id": 1,
+            "inputs": [],
+            "name": "Particles.Position",
+            "operation": 1,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 2,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 2,
+            "inputs": [],
+            "name": "Particles.Velocity",
+            "operation": 1,
+            "position": [
+              0.0,
+              130.0
+            ],
+            "type": 2,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 3,
+            "inputs": [],
+            "name": "",
+            "operation": 3,
+            "position": [
+              0.0,
+              250.0
+            ],
+            "type": 0,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 4,
+            "inputs": [
+              2,
+              3
+            ],
+            "name": "",
+            "operation": 8,
+            "position": [
+              240.0,
+              130.0
+            ],
+            "type": 2,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 5,
+            "inputs": [
+              1,
+              4
+            ],
+            "name": "",
+            "operation": 6,
+            "position": [
+              480.0,
+              0.0
+            ],
+            "type": 2,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 6,
+            "inputs": [
+              5
+            ],
+            "name": "Particles.Position",
+            "operation": 22,
+            "position": [
+              720.0,
+              0.0
+            ],
+            "type": 2,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          }
+        ],
+        "stage": 1
+      }
+    }
+  ],
+  "id": "dcc73893-b7e7-4594-b383-e8d4fff6d8d0",
+  "name": "CPU and GPU Fountains",
+  "version": 1
+}

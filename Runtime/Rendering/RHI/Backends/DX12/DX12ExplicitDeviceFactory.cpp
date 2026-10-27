@@ -43,7 +43,34 @@ namespace NLS::Render::Backend
 				return value != nullptr && value[0] != '\0' && std::string_view(value) != "0";
 			}
 
-		class NativeDX12Adapter final : public NLS::Render::RHI::RHIAdapter
+#if defined(_WIN32)
+        class NativeDX12TimestampQuery final : public NLS::Render::RHI::RHITimestampQuery
+        {
+        public:
+            NativeDX12TimestampQuery(ID3D12Device* device, ID3D12CommandQueue* queue,
+                std::shared_ptr<NLS::Render::RHI::RHIBuffer> results) : m_results(std::move(results))
+            {
+                D3D12_QUERY_HEAP_DESC desc{};
+                desc.Type = D3D12_QUERY_HEAP_TYPE_TIMESTAMP; desc.Count = 2;
+                if (device) device->CreateQueryHeap(&desc, IID_PPV_ARGS(&m_heap));
+                if (queue) queue->GetTimestampFrequency(&m_frequency);
+            }
+            std::string_view GetDebugName() const override { return "GpuTimestampQuery"; }
+            NLS::Render::RHI::NativeHandle GetNativeQueryHandle() const override
+            {
+                NLS::Render::RHI::NativeHandle result;
+                result.backend = NLS::Render::RHI::BackendType::DX12; result.handle = m_heap.Get();
+                return result;
+            }
+            uint64_t Frequency() const override { return m_frequency; }
+            const std::shared_ptr<NLS::Render::RHI::RHIBuffer>& Results() const override { return m_results; }
+        private:
+            ComPtr<ID3D12QueryHeap> m_heap;
+            UINT64 m_frequency = 0;
+            std::shared_ptr<NLS::Render::RHI::RHIBuffer> m_results;
+        };
+#endif
+        class NativeDX12Adapter final : public NLS::Render::RHI::RHIAdapter
 		{
 		public:
 			NativeDX12Adapter(const std::string& vendor, const std::string& hardware)
@@ -297,7 +324,29 @@ namespace NLS::Render::Backend
 #endif
 			}
 
-			// Readback support
+            std::shared_ptr<NLS::Render::RHI::RHITimestampQuery> CreateTimestampQuery() override
+            {
+#if defined(_WIN32)
+                NLS::Render::RHI::RHIBufferDesc desc;
+                desc.size = 16; desc.usage = NLS::Render::RHI::BufferUsageFlags::CopyDst | NLS::Render::RHI::BufferUsageFlags::CopySrc;
+                desc.debugName = "GpuTimestampResults";
+                auto buffer = CreateBuffer(desc, {});
+                if (!buffer) return {};
+                auto query = std::make_shared<NativeDX12TimestampQuery>(m_device.Get(), m_graphicsQueue.Get(), std::move(buffer));
+                return query->Frequency() && query->GetNativeQueryHandle().handle ? query : nullptr;
+#else
+                return {};
+#endif
+            }
+            // Readback support
+            std::shared_ptr<NLS::Render::RHI::UploadBackend> CreateUploadBackend() override
+            {
+#if defined(_WIN32)
+                return CreateDX12UploadBackend(m_device.Get());
+#else
+                return {};
+#endif
+            }
 			void ReadPixels(
 			    const std::shared_ptr<NLS::Render::RHI::RHITexture>& texture,
 			    uint32_t x,

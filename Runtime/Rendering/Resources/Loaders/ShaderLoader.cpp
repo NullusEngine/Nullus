@@ -6,6 +6,7 @@
 #include <optional>
 #include <unordered_map>
 #include <vector>
+#include <set>
 
 #include <Debug/Logger.h>
 
@@ -13,6 +14,7 @@
 #include "Rendering/Context/DriverAccess.h"
 #include "Rendering/Assets/ShaderArtifact.h"
 #include "Rendering/Resources/Loaders/ShaderLoader.h"
+#include "Rendering/Resources/SpirvShaderReflection.h"
 #include "Rendering/Resources/Material.h"
 #include "Rendering/Resources/ShaderReflectionMerge.h"
 #include "Rendering/RHI/RHITypes.h"
@@ -560,6 +562,24 @@ bool ShaderLoader::EnsureBuiltInHlslVariant(
 	}
 
 	auto snapshot = shader.GetRuntimeDataSnapshot();
+	if(snapshot.variantReflections.empty())
+	{
+		std::set<ShaderTargetPlatform> targets;
+		for(const auto& artifact:snapshot.compiledArtifacts)targets.insert(artifact.targetPlatform);
+		for(auto target:targets)snapshot.variantReflections.push_back({target,0,snapshot.reflection});
+	}
+	std::vector<ShaderReflectionInput> reflectionInputs;
+	for(size_t i=0;i<inputs.size();++i)reflectionInputs.push_back({inputs[i],outputs[i]});
+	ShaderReflection variantReflection;
+    if(targetPlatform==ShaderTargetPlatform::SPIRV)
+    {
+        for(size_t i=0;i<inputs.size();++i)
+        {ShaderReflection reflected;std::string error;if(!NLS::Render::Resources::ReflectSpirvShader(outputs[i].bytecode,inputs[i].stage,reflected,error)){NLS_LOG_ERROR(error);return false;}NLS::Render::Resources::MergeShaderReflection(variantReflection,reflected);}
+    }
+    else for(const auto& reflected:compiler.ReflectBatch(reflectionInputs))
+        NLS::Render::Resources::MergeShaderReflection(variantReflection,reflected);
+	std::erase_if(snapshot.variantReflections,[&](const auto& v){return v.targetPlatform==targetPlatform&&v.keywordHash==keywordHash;});
+	snapshot.variantReflections.push_back({targetPlatform,keywordHash,std::move(variantReflection)});
 	for (size_t index = 0u; index < outputs.size(); ++index)
 	{
 		ShaderCompiledArtifact artifact{
@@ -755,7 +775,9 @@ Shader* ShaderLoader::CreateImportedShaderArtifact(const std::string& p_filePath
 		artifact->shaderLabLightMode.empty()
 			? InferBuiltInHlslLightMode(artifact->sourcePath)
 			: artifact->shaderLabLightMode,
-		artifact->shaderLabPassState);
+			artifact->shaderLabPassState,
+            artifact->variantReflections,
+            artifact->parameterSchema,artifact->materialInterface,artifact->dependencySnapshotId);
 	return shader;
 }
 
@@ -869,7 +891,13 @@ Shader* ShaderLoader::CreateHLSLShaderAsset(
 
 	ShaderReflection reflection;
 	const auto dxilReflections = compiler.ReflectBatch(dxilReflectionInputs);
-	const auto spirvReflections = compiler.ReflectBatch(spirvReflectionInputs);
+        std::vector<ShaderReflection> spirvReflections;
+        for(const auto& input:spirvReflectionInputs)
+        {
+            ShaderReflection reflected;std::string error;
+            if(NLS::Render::Resources::ReflectSpirvShader(input.compiledOutput.bytecode,input.input.stage,reflected,error))spirvReflections.push_back(std::move(reflected));
+            else NLS_LOG_ERROR("[SPIR-V REFLECTION] "+error);
+        }
 	std::string reflectionDiagnostic;
 	if (!NLS::Render::Resources::TryMergePreferredShaderReflectionOrFallback(
 		dxilReflections,

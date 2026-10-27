@@ -421,6 +421,8 @@ namespace NLS::Engine::Rendering
 					NLS::Render::FrameGraph::FinalizePreparedForwardScenePackage(
 						package,
 						frozenFrame.descriptor);
+						AppendParticleScenePass(package,frozenFrame,drawables->particles);
+                        AppendDistanceFieldScenePass(package,frozenFrame,GetDistanceFieldDebugSettings(),packet.frameId);
 						NLS::Render::Context::DriverRendererAccess::PrepareSwapchainSceneOutput(m_driver, package);
 					return package;
 				});

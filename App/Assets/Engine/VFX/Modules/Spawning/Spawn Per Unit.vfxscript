@@ -1,0 +1,123 @@
+{
+  "category": "Spawning",
+  "deprecated": false,
+  "description": "Spawns particles in proportion to the distance the owning system travels.",
+  "exposedVersion": "7b030ce6-3218-71ef-7ec1-7e882bb6180e",
+  "id": "41d671f9-8e25-a2e7-810b-8f09aad7477a",
+  "kind": "Module",
+  "name": "Spawn Per Unit",
+  "suggested": false,
+  "version": 2,
+  "versions": [
+    {
+      "attributes": [],
+      "calls": [],
+      "capabilities": 128,
+      "description": "Spawns particles in proportion to the distance the owning system travels.",
+      "graph": {
+        "id": "1646b25a-4d85-40bb-b612-95fe19f26c8a",
+        "nextNodeId": 5,
+        "nodes": [
+          {
+            "id": 1,
+            "inputs": [],
+            "name": "Module.Spawn Per Unit",
+            "operation": 2,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 0,
+            "value": [
+              1.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 2,
+            "inputs": [],
+            "name": "Emitter.SpawnPerUnit",
+            "operation": 1,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 0,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 3,
+            "inputs": [
+              2,
+              1
+            ],
+            "name": "",
+            "operation": 6,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 0,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 4,
+            "inputs": [
+              3
+            ],
+            "name": "Emitter.SpawnPerUnit",
+            "operation": 22,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 0,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          }
+        ],
+        "stage": 4
+      },
+      "id": "7b030ce6-3218-71ef-7ec1-7e882bb6180e",
+      "inputs": [
+        {
+          "default": [
+            1.0,
+            0.0,
+            0.0,
+            0.0
+          ],
+          "id": "133cad38-87bf-bb6c-dfc3-889490eb44e3",
+          "name": "Spawn Per Unit",
+          "static": false,
+          "type": 0
+        }
+      ],
+      "major": 1,
+      "minor": 0,
+      "provides": [],
+      "requiresBefore": [],
+      "stages": [
+        3
+      ],
+      "switches": []
+    }
+  ],
+  "visible": true
+}

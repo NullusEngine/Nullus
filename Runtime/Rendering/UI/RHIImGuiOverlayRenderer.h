@@ -22,6 +22,7 @@ namespace NLS::Render::RHI
     class RHIPipelineLayout;
     class RHIShaderModule;
     class RHITextureView;
+    struct RHIRenderTargetLayoutDesc;
 }
 
 namespace NLS::Render::UI
@@ -63,7 +64,8 @@ namespace NLS::Render::UI
             RHI::RHIDevice& device,
             RHI::RHICommandBuffer& commandBuffer,
             const UiDrawDataSnapshot& snapshot,
-            size_t frameResourceSlot);
+            size_t frameResourceSlot,
+            const RHI::RHIRenderTargetLayoutDesc& renderTargetLayout);
         RHIImGuiOverlayRecordingResult RecordPrepared(
             RHI::RHICommandBuffer& commandBuffer,
             const UiDrawDataSnapshot& snapshot,
@@ -98,7 +100,10 @@ namespace NLS::Render::UI
             size_t vertexBytes,
             size_t indexBytes,
             std::string& errorMessage);
-        bool EnsureGraphicsPipeline(RHI::RHIDevice& device, std::string& errorMessage);
+        bool EnsureGraphicsPipeline(
+            RHI::RHIDevice& device,
+            const RHI::RHIRenderTargetLayoutDesc& renderTargetLayout,
+            std::string& errorMessage);
         bool EnsureRegisteredTextureBindingSets(
             RHI::RHIDevice& device,
             const UiDrawDataSnapshot& snapshot,
@@ -155,6 +160,7 @@ namespace NLS::Render::UI
             uint32_t preparedIndexCount = 0u;
             const UiDrawDataSnapshot* preparedSnapshotAddress = nullptr;
             bool hasPreparedSnapshot = false;
+            std::shared_ptr<RHI::RHIGraphicsPipeline> preparedGraphicsPipeline;
             bool fontAtlasUploadTransitionRequired = false;
             std::shared_ptr<RHI::RHITextureView> preparedFontAtlasTextureView;
             std::shared_ptr<RHI::RHIBindingSet> preparedFontAtlasBindingSet;

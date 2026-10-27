@@ -1,0 +1,4773 @@
+{
+  "attributes": [
+    {
+      "name": "Emitter.BurstPhase",
+      "type": 0
+    },
+    {
+      "name": "Emitter.CollisionEnabled",
+      "type": 0
+    },
+    {
+      "name": "Emitter.CollisionFriction",
+      "type": 0
+    },
+    {
+      "name": "Emitter.CollisionRadius",
+      "type": 0
+    },
+    {
+      "name": "Emitter.CollisionRestitution",
+      "type": 0
+    },
+    {
+      "name": "Emitter.Duration",
+      "type": 0
+    },
+    {
+      "name": "Emitter.GenerateCollision",
+      "type": 0
+    },
+    {
+      "name": "Emitter.GenerateDeath",
+      "type": 0
+    },
+    {
+      "name": "Emitter.GenerateSpawn",
+      "type": 0
+    },
+    {
+      "name": "Emitter.Loop",
+      "type": 0
+    },
+    {
+      "name": "Emitter.ReceiveExecutionMode",
+      "type": 0
+    },
+    {
+      "name": "Emitter.ReceiveKind",
+      "type": 0
+    },
+    {
+      "name": "Emitter.ReceiveMaxEvents",
+      "type": 0
+    },
+    {
+      "name": "Emitter.ReceiveNormal",
+      "type": 2
+    },
+    {
+      "name": "Emitter.ReceivePosition",
+      "type": 2
+    },
+    {
+      "name": "Emitter.ReceiveRandomAge",
+      "type": 0
+    },
+    {
+      "name": "Emitter.ReceiveSourceIndex",
+      "type": 0
+    },
+    {
+      "name": "Emitter.ReceiveSpawnCount",
+      "type": 0
+    },
+    {
+      "name": "Emitter.ReceiveVelocity",
+      "type": 2
+    },
+    {
+      "name": "Emitter.SpawnCount",
+      "type": 0
+    },
+    {
+      "name": "Emitter.SpawnPerFrame",
+      "type": 0
+    },
+    {
+      "name": "Emitter.SpawnPerUnit",
+      "type": 0
+    },
+    {
+      "name": "Emitter.SpawnRate",
+      "type": 0
+    },
+    {
+      "name": "Emitter.UnusedGracePeriod",
+      "type": 0
+    },
+    {
+      "name": "Particles.Age",
+      "type": 0
+    },
+    {
+      "name": "Particles.BeamEnd",
+      "type": 2
+    },
+    {
+      "name": "Particles.BeamEndTangent",
+      "type": 2
+    },
+    {
+      "name": "Particles.BeamStart",
+      "type": 2
+    },
+    {
+      "name": "Particles.BeamStartTangent",
+      "type": 2
+    },
+    {
+      "name": "Particles.BeamTangentWeight",
+      "type": 0
+    },
+    {
+      "name": "Particles.Color",
+      "type": 3
+    },
+    {
+      "name": "Particles.ConeMask",
+      "type": 0
+    },
+    {
+      "name": "Particles.DistanceTraveled",
+      "type": 0
+    },
+    {
+      "name": "Particles.DoOnce",
+      "type": 0
+    },
+    {
+      "name": "Particles.DynamicMaterialParameter",
+      "type": 3
+    },
+    {
+      "name": "Particles.DynamicMaterialParameter1",
+      "type": 3
+    },
+    {
+      "name": "Particles.DynamicMaterialParameter2",
+      "type": 3
+    },
+    {
+      "name": "Particles.DynamicMaterialParameter3",
+      "type": 3
+    },
+    {
+      "name": "Particles.EmitterFrameCounter",
+      "type": 0
+    },
+    {
+      "name": "Particles.FadeValue",
+      "type": 0
+    },
+    {
+      "name": "Particles.FirstFrame",
+      "type": 0
+    },
+    {
+      "name": "Particles.FrameCounter",
+      "type": 0
+    },
+    {
+      "name": "Particles.GridCellAge",
+      "type": 0
+    },
+    {
+      "name": "Particles.GridCellIndex",
+      "type": 0
+    },
+    {
+      "name": "Particles.IncrementCounter",
+      "type": 0
+    },
+    {
+      "name": "Particles.InsideView",
+      "type": 0
+    },
+    {
+      "name": "Particles.InterpolatedValue",
+      "type": 0
+    },
+    {
+      "name": "Particles.KineticEnergy",
+      "type": 0
+    },
+    {
+      "name": "Particles.Lifetime",
+      "type": 0
+    },
+    {
+      "name": "Particles.LineSegmentFraction",
+      "type": 0
+    },
+    {
+      "name": "Particles.Mass",
+      "type": 0
+    },
+    {
+      "name": "Particles.MeshOrientation",
+      "type": 3
+    },
+    {
+      "name": "Particles.NoiseValue",
+      "type": 2
+    },
+    {
+      "name": "Particles.NormalizedAge",
+      "type": 0
+    },
+    {
+      "name": "Particles.OnOffPercentage",
+      "type": 0
+    },
+    {
+      "name": "Particles.Partition",
+      "type": 0
+    },
+    {
+      "name": "Particles.PartitionNormalized",
+      "type": 0
+    },
+    {
+      "name": "Particles.PendulumLength",
+      "type": 0
+    },
+    {
+      "name": "Particles.PendulumPivot",
+      "type": 2
+    },
+    {
+      "name": "Particles.PendulumRestAxis",
+      "type": 2
+    },
+    {
+      "name": "Particles.PendulumSpring",
+      "type": 0
+    },
+    {
+      "name": "Particles.PendulumTightness",
+      "type": 0
+    },
+    {
+      "name": "Particles.PhysicsDrag",
+      "type": 0
+    },
+    {
+      "name": "Particles.PhysicsForce",
+      "type": 2
+    },
+    {
+      "name": "Particles.PhysicsRotationalForce",
+      "type": 2
+    },
+    {
+      "name": "Particles.Position",
+      "type": 2
+    },
+    {
+      "name": "Particles.PreviousPosition",
+      "type": 2
+    },
+    {
+      "name": "Particles.RegionMask",
+      "type": 0
+    },
+    {
+      "name": "Particles.RibbonLinkOrder",
+      "type": 0
+    },
+    {
+      "name": "Particles.RibbonWidth",
+      "type": 0
+    },
+    {
+      "name": "Particles.Rotation",
+      "type": 0
+    },
+    {
+      "name": "Particles.RotationalInertia",
+      "type": 0
+    },
+    {
+      "name": "Particles.RotationalVelocity",
+      "type": 2
+    },
+    {
+      "name": "Particles.Scale",
+      "type": 2
+    },
+    {
+      "name": "Particles.Size",
+      "type": 0
+    },
+    {
+      "name": "Particles.SpawnIndex",
+      "type": 0
+    },
+    {
+      "name": "Particles.SpringValue",
+      "type": 0
+    },
+    {
+      "name": "Particles.SpringVelocity",
+      "type": 0
+    },
+    {
+      "name": "Particles.SpriteAlignment",
+      "type": 2
+    },
+    {
+      "name": "Particles.SpriteFacing",
+      "type": 2
+    },
+    {
+      "name": "Particles.SubImageIndex",
+      "type": 0
+    },
+    {
+      "name": "Particles.SystemAge",
+      "type": 0
+    },
+    {
+      "name": "Particles.SystemNormalizedAge",
+      "type": 0
+    },
+    {
+      "name": "Particles.TimelineNormalized",
+      "type": 0
+    },
+    {
+      "name": "Particles.TimelinePlaying",
+      "type": 0
+    },
+    {
+      "name": "Particles.TimelinePosition",
+      "type": 0
+    },
+    {
+      "name": "Particles.TotalEnergy",
+      "type": 0
+    },
+    {
+      "name": "Particles.TriangleDistance",
+      "type": 0
+    },
+    {
+      "name": "Particles.Velocity",
+      "type": 2
+    },
+    {
+      "name": "Particles.ViewMask",
+      "type": 0
+    }
+  ],
+  "deltaTime": 0.10000000149011612,
+  "evidence": "Nullus pre-removal interpreter snapshot; not a live Unreal capture",
+  "modules": [
+    {
+      "id": "013b6914-c32a-7452-36cd-1928f628d88f",
+      "name": "Initial Mesh Orientation",
+      "parameters": [
+        "Module.Angle",
+        "Module.Axis"
+      ],
+      "sourceHash": 4273209772934437088,
+      "writes": [
+        "Particles.MeshOrientation"
+      ],
+      "values": {
+        "Particles.MeshOrientation": [
+          [
+            0,
+            0,
+            0,
+            1065353216
+          ],
+          [
+            0,
+            0,
+            0,
+            1065353216
+          ]
+        ]
+      }
+    },
+    {
+      "id": "01dc69fc-c066-236f-afc8-525f8e875cba",
+      "name": "Region Mask",
+      "parameters": [
+        "Module.Region Maximum",
+        "Module.Region Minimum"
+      ],
+      "sourceHash": 2563112035433150573,
+      "writes": [
+        "Particles.RegionMask"
+      ],
+      "values": {
+        "Particles.RegionMask": [
+          [
+            1065353216,
+            0,
+            0,
+            0
+          ],
+          [
+            0,
+            0,
+            0,
+            0
+          ]
+        ]
+      }
+    },
+    {
+      "id": "0492f6a3-250e-b103-db67-b63f06649974",
+      "name": "Box Location",
+      "parameters": [
+        "Module.Center",
+        "Module.Extent"
+      ],
+      "sourceHash": 14694622385877769576,
+      "writes": [
+        "Particles.Position"
+      ],
+      "values": {
+        "Particles.Position": [
+          [
+            3188676480,
+            1042634348,
+            1054897502,
+            0
+          ],
+          [
+            1052043082,
+            3192752648,
+            1047124280,
+            0
+          ]
+        ]
+      }
+    },
+    {
+      "id": "06d87b80-53f3-775a-e8f0-2e4dae6a0065",
+      "name": "Kill Particles",
+      "parameters": [
+        "Module.Kill"
+      ],
+      "sourceHash": 11031267836896607013,
+      "writes": [
+        "Particles.Lifetime"
+      ],
+      "values": {
+        "Particles.Lifetime": [
+          [
+            1073741824,
+            0,
+            0,
+            0
+          ],
+          [
+            1073741824,
+            0,
+            0,
+            0
+          ]
+        ]
+      }
+    },
+    {
+      "id": "07f42e21-c2dd-5355-7a6c-518b39d3df1e",
+      "name": "Constrain Vector to Cone",
+      "parameters": [
+        "Module.Cone Angle",
+        "Module.Cone Direction"
+      ],
+      "sourceHash": 814535645128365009,
+      "writes": [
+        "Particles.Velocity"
+      ],
+      "values": {
+        "Particles.Velocity": [
+          [
+            1041724319,
+            1062167098,
+            1055075694,
+            0
+          ],
+          [
+            1059661423,
+            1068160336,
+            1053489900,
+            0
+          ]
+        ]
+      }
+    },
+    {
+      "id": "08d96507-cf0f-489e-7232-c66ce1edb177",
+      "name": "Event Handler Properties",
+      "parameters": [
+        "Module.Execution Mode",
+        "Module.Max Events Per Frame",
+        "Module.Source Emitter Index"
+      ],
+      "sourceHash": 10076338919743276149,
+      "writes": [
+        "Emitter.ReceiveExecutionMode",
+        "Emitter.ReceiveMaxEvents",
+        "Emitter.ReceiveSourceIndex"
+      ],
+      "values": {
+        "Emitter.ReceiveExecutionMode": [
+          [
+            0,
+            0,
+            0,
+            0
+          ],
+          [
+            0,
+            0,
+            0,
+            0
+          ]
+        ],
+        "Emitter.ReceiveMaxEvents": [
+          [
+            0,
+            0,
+            0,
+            0
+          ],
+          [
+            0,
+            0,
+            0,
+            0
+          ]
+        ],
+        "Emitter.ReceiveSourceIndex": [
+          [
+            3212836864,
+            0,
+            0,
+            0
+          ],
+          [
+            3212836864,
+            0,
+            0,
+            0
+          ]
+        ]
+      }
+    },
+    {
+      "id": "094a97e6-7022-aab5-5cd2-790bbed801ae",
+      "name": "Find Closest Point on Line Segment",
+      "parameters": [
+        "Module.Segment End",
+        "Module.Segment Start"
+      ],
+      "sourceHash": 6896560249724103272,
+      "writes": [
+        "Particles.LineSegmentFraction"
+      ],
+      "values": {
+        "Particles.LineSegmentFraction": [
+          [
+            1061158912,
+            0,
+            0,
+            0
+          ],
+          [
+            1061158912,
+            0,
+            0,
+            0
+          ]
+        ]
+      }
+    },
+    {
+      "id": "0a3d5647-ea98-3377-b0b8-f2931fd61152",
+      "name": "Beam Emitter Setup",
+      "parameters": [
+        "Module.Beam End",
+        "Module.Beam End Tangent",
+        "Module.Beam Start",
+        "Module.Beam Start Tangent",
+        "Module.Use Beam Tangents",
+        "Module.Width"
+      ],
+      "sourceHash": 10645390318469028821,
+      "writes": [
+        "Particles.BeamEnd",
+        "Particles.BeamEndTangent",
+        "Particles.BeamStart",
+        "Particles.BeamStartTangent",
+        "Particles.BeamTangentWeight",
+        "Particles.Position",
+        "Particles.RibbonLinkOrder",
+        "Particles.RibbonWidth"
+      ],
+      "values": {
+        "Particles.BeamEnd": [
+          [
+            0,
+            0,
+            1120403456,
+            0
+          ],
+          [
+            0,
+            0,
+            1120403456,
+            0
+          ]
+        ],
+        "Particles.BeamEndTangent": [
+          [
+            0,
+            0,
+            3212836864,
+            0
+          ],
+          [
+            0,
+            0,
+            3212836864,
+            0
+          ]
+        ],
+        "Particles.BeamStart": [
+          [
+            0,
+            0,
+            0,
+            0
+          ],
+          [
+            0,
+            0,
+            0,
+            0
+          ]
+        ],
+        "Particles.BeamStartTangent": [
+          [
+            0,
+            0,
+            1065353216,
+            0
+          ],
+          [
+            0,
+            0,
+            1065353216,
+            0
+          ]
+        ],
+        "Particles.BeamTangentWeight": [
+          [
+            1061158912,
+            0,
+            0,
+            0
+          ],
+          [
+            0,
+            0,
+            0,
+            0
+          ]
+        ],
+        "Particles.Position": [
+          [
+            0,
+            0,
+            1103888384,
+            0
+          ],
+          [
+            0,
+            0,
+            1120272384,
+            0
+          ]
+        ],
+        "Particles.RibbonLinkOrder": [
+          [
+            1048576000,
+            0,
+            0,
+            0
+          ],
+          [
+            1065353216,
+            0,
+            0,
+            0
+          ]
+        ],
+        "Particles.RibbonWidth": [
+          [
+            1036831949,
+            0,
+            0,
+            0
+          ],
+          [
+            1036831949,
+            0,
+            0,
+            0
+          ]
+        ]
+      }
+    },
+    {
+      "id": "0aba8654-4525-1a66-72af-a56968362d1f",
+      "name": "Jitter Position",
+      "parameters": [
+        "Module.Jitter"
+      ],
+      "sourceHash": 9369681110351488372,
+      "writes": [
+        "Particles.Position"
+      ],
+      "values": {
+        "Particles.Position": [
+          [
+            1048576000,
+            1056964608,
+            1061158912,
+            0
+          ],
+          [
+            1067450368,
+            1056964608,
+            1061158912,
+            0
+          ]
+        ]
+      }
+    },
+    {
+      "id": "0cac87c2-a803-700c-0cd5-bfc6bb9f9c51",
+      "name": "First Frame",
+      "parameters": [
+        "Engine.FirstFrame"
+      ],
+      "sourceHash": 12225619044436655666,
+      "writes": [
+        "Particles.FirstFrame"
+      ],
+      "values": {
+        "Particles.FirstFrame": [
+          [
+            0,
+            0,
+            0,
+            0
+          ],
+          [
+            0,
+            0,
+            0,
+            0
+          ]
+        ]
+      }
+    },
+    {
+      "id": "138e3fcc-f14c-4bfe-ff58-bcefcad9f3c7",
+      "name": "Sprite Facing and Alignment",
+      "parameters": [
+        "Module.Alignment",
+        "Module.Facing"
+      ],
+      "sourceHash": 17476165318167951992,
+      "writes": [
+        "Particles.SpriteAlignment",
+        "Particles.SpriteFacing"
+      ],
+      "values": {
+        "Particles.SpriteAlignment": [
+          [
+            0,
+            0,
+            0,
+            0
+          ],
+          [
+            0,
+            0,
+            0,
+            0
+          ]
+        ],
+        "Particles.SpriteFacing": [
+          [
+            0,
+            1065353216,
+            0,
+            0
+          ],
+          [
+            0,
+            1065353216,
+            0,
+            0
+          ]
+        ]
+      }
+    },
+    {
+      "id": "14948641-f888-b6c5-7895-7fbdbeb37b0c",
+      "name": "Receive Location Event",
+      "parameters": [
+        "Emitter.EventNormal",
+        "Emitter.EventPosition",
+        "Emitter.EventVelocity",
+        "Module.Random Age",
+        "Module.Spawn Count"
+      ],
+      "sourceHash": 17656578578746892441,
+      "writes": [
+        "Emitter.ReceiveKind",
+        "Emitter.ReceiveNormal",
+        "Emitter.ReceivePosition",
+        "Emitter.ReceiveRandomAge",
+        "Emitter.ReceiveSpawnCount",
+        "Emitter.ReceiveVelocity"
+      ],
+      "values": {
+        "Emitter.ReceiveKind": [
+          [
+            1065353216,
+            0,
+            0,
+            0
+          ],
+          [
+            1065353216,
+            0,
+            0,
+            0
+          ]
+        ],
+        "Emitter.ReceiveNormal": [
+          [
+            0,
+            0,
+            0,
+            0
+          ],
+          [
+            0,
+            0,
+            0,
+            0
+          ]
+        ],
+        "Emitter.ReceivePosition": [
+          [
+            0,
+            0,
+            0,
+            0
+          ],
+          [
+            0,
+            0,
+            0,
+            0
+          ]
+        ],
+        "Emitter.ReceiveRandomAge": [
+          [
+            0,
+            0,
+            0,
+            0
+          ],
+          [
+            0,
+            0,
+            0,
+            0
+          ]
+        ],
+        "Emitter.ReceiveSpawnCount": [
+          [
+            1065353216,
+            0,
+            0,
+            0
+          ],
+          [
+            1065353216,
+            0,
+            0,
+            0
+          ]
+        ],
+        "Emitter.ReceiveVelocity": [
+          [
+            0,
+            0,
+            0,
+            0
+          ],
+          [
+            0,
+            0,
+            0,
+            0
+          ]
+        ]
+      }
+    },
+    {
+      "id": "1595564e-9d55-754c-063c-95ddc79bb2e1",
+      "name": "Generate Collision Event",
+      "parameters": [
+        "Module.Event Generation Enabled"
+      ],
+      "sourceHash": 8126409869824216324,
+      "writes": [
+        "Emitter.GenerateCollision"
+      ],
+      "values": {
+        "Emitter.GenerateCollision": [
+          [
+            1065353216,
+            0,
+            0,
+            0
+          ],
+          [
+            1065353216,
+            0,
+            0,
+            0
+          ]
+        ]
+      }
+    },
+    {
+      "id": "19352bfe-4ccd-a46b-5611-bb97bf3a2a1e",
+      "name": "Do Once",
+      "parameters": [
+        "Module.Trigger"
+      ],
+      "sourceHash": 2006127230410426767,
+      "writes": [
+        "Particles.DoOnce"
+      ],
+      "values": {
+        "Particles.DoOnce": [
+          [
+            1065353216,
+            0,
+            0,
+            0
+          ],
+          [
+            1065353216,
+            0,
+            0,
+            0
+          ]
+        ]
+      }
+    },
+    {
+      "id": "1b17b31d-c7e4-333c-8185-3a506ef4e3af",
+      "name": "Scale Velocity",
+      "parameters": [
+        "Module.Scale"
+      ],
+      "sourceHash": 7394422852150423420,
+      "writes": [
+        "Particles.Velocity"
+      ],
+      "values": {
+        "Particles.Velocity": [
+          [
+            1048576000,
+            1056964608,
+            1061158912,
+            0
+          ],
+          [
+            1067450368,
+            1056964608,
+            1061158912,
+            0
+          ]
+        ]
+      }
+    },
+    {
+      "id": "1bcaf72c-0925-65b1-2bd2-8e53fc0e732e",
+      "name": "Spring Force",
+      "parameters": [
+        "Module.Damping",
+        "Module.Rest Position",
+        "Module.Spring"
+      ],
+      "sourceHash": 14986357094752639445,
+      "writes": [
+        "Particles.PhysicsForce"
+      ],
+      "values": {
+        "Particles.PhysicsForce": [
+          [
+            3223322624,
+            3231711232,
+            3236954112,
+            0
+          ],
+          [
+            3242721280,
+            3231711232,
+            3236954112,
+            0
+          ]
+        ]
+      }
+    },
+    {
+      "id": "1e29da2e-e290-9e1e-37c8-2a661acba6f7",
+      "name": "Partition Particles",
+      "parameters": [
+        "Module.Number Of Partitions",
+        "Module.Particles Per Partition"
+      ],
+      "sourceHash": 3699042717486336668,
+      "writes": [
+        "Particles.Partition",
+        "Particles.PartitionNormalized"
+      ],
+      "values": {
+        "Particles.Partition": [
+          [
+            0,
+            0,
+            0,
+            0
+          ],
+          [
+            0,
+            0,
+            0,
+            0
+          ]
+        ],
+        "Particles.PartitionNormalized": [
+          [
+            0,
+            0,
+            0,
+            0
+          ],
+          [
+            1025758986,
+            0,
+            0,
+            0
+          ]
+        ]
+      }
+    },
+    {
+      "id": "20ffb137-f873-48c3-2cb5-42522c52d486",
+      "name": "View Recycler",
+      "parameters": [
+        "Camera.Forward",
+        "Camera.Position",
+        "Module.Recycle Margin"
+      ],
+      "sourceHash": 7040230087843390077,
+      "writes": [
+        "Particles.Position"
+      ],
+      "values": {
+        "Particles.Position": [
+          [
+            0,
+            0,
+            0,
+            0
+          ],
+          [
+            0,
+            0,
+            0,
+            0
+          ]
+        ]
+      }
+    },
+    {
+      "id": "2352446f-d412-5eb6-2ed0-27e53c3154a3",
+      "name": "Find Closest Point on Triangle",
+      "parameters": [
+        "Module.Vertex A",
+        "Module.Vertex B",
+        "Module.Vertex C"
+      ],
+      "sourceHash": 15126452873460110838,
+      "writes": [
+        "Particles.TriangleDistance"
+      ],
+      "values": {
+        "Particles.TriangleDistance": [
+          [
+            1061158912,
+            0,
+            0,
+            0
+          ],
+          [
+            1061158912,
+            0,
+            0,
+            0
+          ]
+        ]
+      }
+    },
+    {
+      "id": "26e460b7-d498-bf8d-5480-2872fe672da0",
+      "name": "Scale Mesh Size by Speed",
+      "parameters": [
+        "Module.Max Scale",
+        "Module.Min Scale",
+        "Module.Speed Threshold"
+      ],
+      "sourceHash": 6792193272297529315,
+      "writes": [
+        "Particles.Scale"
+      ],
+      "values": {
+        "Particles.Scale": [
+          [
+            1048576000,
+            1056964608,
+            1061158912,
+            0
+          ],
+          [
+            1067450368,
+            1056964608,
+            1061158912,
+            0
+          ]
+        ]
+      }
+    },
+    {
+      "id": "2758caad-ee12-57b4-da22-c7c5d5104bb7",
+      "name": "Track Distance Traveled",
+      "parameters": [
+        "Module.Scale"
+      ],
+      "sourceHash": 18181029878855673774,
+      "writes": [
+        "Particles.DistanceTraveled"
+      ],
+      "values": {
+        "Particles.DistanceTraveled": [
+          [
+            1051714730,
+            0,
+            0,
+            0
+          ],
+          [
+            1068743139,
+            0,
+            0,
+            0
+          ]
+        ]
+      }
+    },
+    {
+      "id": "29fb52e0-bcfa-5d45-4c5d-c8fdf2227a52",
+      "name": "Add Velocity",
+      "parameters": [
+        "Module.Velocity"
+      ],
+      "sourceHash": 14082009557588523462,
+      "writes": [
+        "Particles.Velocity"
+      ],
+      "values": {
+        "Particles.Velocity": [
+          [
+            1048576000,
+            1069547520,
+            1061158912,
+            0
+          ],
+          [
+            1067450368,
+            1069547520,
+            1061158912,
+            0
+          ]
+        ]
+      }
+    },
+    {
+      "id": "2bfc5277-422d-6378-9c6f-0d5b5d8f8cf3",
+      "name": "Beam Width",
+      "parameters": [
+        "Module.Scale",
+        "Module.Width"
+      ],
+      "sourceHash": 9283637566966825410,
+      "writes": [
+        "Particles.RibbonWidth"
+      ],
+      "values": {
+        "Particles.RibbonWidth": [
+          [
+            1036831949,
+            0,
+            0,
+            0
+          ],
+          [
+            1036831949,
+            0,
+            0,
+            0
+          ]
+        ]
+      }
+    },
+    {
+      "id": "2fd52e4e-7732-6043-8ae8-ce9871bffa68",
+      "name": "Sprite Based Line",
+      "parameters": [
+        "Module.Point B"
+      ],
+      "sourceHash": 8174165213084476420,
+      "writes": [
+        "Particles.Position",
+        "Particles.Size",
+        "Particles.Velocity"
+      ],
+      "values": {
+        "Particles.Position": [
+          [
+            1040187392,
+            1061158912,
+            1052770304,
+            0
+          ],
+          [
+            1059061760,
+            1061158912,
+            1052770304,
+            0
+          ]
+        ],
+        "Particles.Size": [
+          [
+            1064269649,
+            0,
+            0,
+            0
+          ],
+          [
+            1069892321,
+            0,
+            0,
+            0
+          ]
+        ],
+        "Particles.Velocity": [
+          [
+            3196059648,
+            1056964608,
+            3208642560,
+            0
+          ],
+          [
+            3214934016,
+            1056964608,
+            3208642560,
+            0
+          ]
+        ]
+      }
+    },
+    {
+      "id": "3267310e-ef46-339c-ac25-4ad044cc88ad",
+      "name": "Update Velocity on Mass Change",
+      "parameters": [
+        "Module.Previous Mass"
+      ],
+      "sourceHash": 7511704977762217315,
+      "writes": [
+        "Particles.Velocity"
+      ],
+      "values": {
+        "Particles.Velocity": [
+          [
+            1065353216,
+            1073741824,
+            1077936128,
+            0
+          ],
+          [
+            1065353216,
+            1053609165,
+            1058642330,
+            0
+          ]
+        ]
+      }
+    },
+    {
+      "id": "33e0c226-07f1-5691-67f9-d0a46cb6f5d0",
+      "name": "Drag",
+      "parameters": [
+        "Module.Drag"
+      ],
+      "sourceHash": 11195135305776989730,
+      "writes": [
+        "Particles.PhysicsDrag"
+      ],
+      "values": {
+        "Particles.PhysicsDrag": [
+          [
+            1051931443,
+            0,
+            0,
+            0
+          ],
+          [
+            1068289229,
+            0,
+            0,
+            0
+          ]
+        ]
+      }
+    },
+    {
+      "id": "345c82a2-3542-6cb6-d550-a43319c5abdf",
+      "name": "Gravity Force",
+      "parameters": [
+        "Module.Acceleration"
+      ],
+      "sourceHash": 12837650929510924907,
+      "writes": [
+        "Particles.PhysicsForce"
+      ],
+      "values": {
+        "Particles.PhysicsForce": [
+          [
+            1048576000,
+            3239376323,
+            1061158912,
+            0
+          ],
+          [
+            1067450368,
+            3239376323,
+            1061158912,
+            0
+          ]
+        ]
+      }
+    },
+    {
+      "id": "35555fd8-08b5-2b56-57f9-16175ef33485",
+      "name": "Calculate Mass and Rotational Inertia by Volume",
+      "parameters": [
+        "Module.Density"
+      ],
+      "sourceHash": 1037174813236885096,
+      "writes": [
+        "Particles.Mass",
+        "Particles.RotationalInertia"
+      ],
+      "values": {
+        "Particles.Mass": [
+          [
+            1098514432,
+            0,
+            0,
+            0
+          ],
+          [
+            1156850688,
+            0,
+            0,
+            0
+          ]
+        ],
+        "Particles.RotationalInertia": [
+          [
+            1042721451,
+            0,
+            0,
+            0
+          ],
+          [
+            1140740139,
+            0,
+            0,
+            0
+          ]
+        ]
+      }
+    },
+    {
+      "id": "4003814a-c941-5fd4-4198-0db253b0c905",
+      "name": "Vortex Velocity",
+      "parameters": [
+        "Module.Vortex Axis",
+        "Module.Vortex Origin",
+        "Module.Vortex Strength"
+      ],
+      "sourceHash": 16862558956892180978,
+      "writes": [
+        "Particles.Velocity"
+      ],
+      "values": {
+        "Particles.Velocity": [
+          [
+            1092340241,
+            1056964608,
+            3222954690,
+            0
+          ],
+          [
+            1087153023,
+            1056964608,
+            3237635540,
+            0
+          ]
+        ]
+      }
+    },
+    {
+      "id": "41d671f9-8e25-a2e7-810b-8f09aad7477a",
+      "name": "Spawn Per Unit",
+      "parameters": [
+        "Module.Spawn Per Unit"
+      ],
+      "sourceHash": 11845149246007740784,
+      "writes": [
+        "Emitter.SpawnPerUnit"
+      ],
+      "values": {
+        "Emitter.SpawnPerUnit": [
+          [
+            1067450368,
+            0,
+            0,
+            0
+          ],
+          [
+            1074790400,
+            0,
+            0,
+            0
+          ]
+        ]
+      }
+    },
+    {
+      "id": "43aadf35-c35a-e02e-57ff-5bc31b51167d",
+      "name": "Vortex Force",
+      "parameters": [
+        "Module.Vortex Axis",
+        "Module.Vortex Origin",
+        "Module.Vortex Strength"
+      ],
+      "sourceHash": 10399412719015200878,
+      "writes": [
+        "Particles.PhysicsForce"
+      ],
+      "values": {
+        "Particles.PhysicsForce": [
+          [
+            1092340241,
+            1056964608,
+            3222954690,
+            0
+          ],
+          [
+            1087153023,
+            1056964608,
+            3237635540,
+            0
+          ]
+        ]
+      }
+    },
+    {
+      "id": "43cbd963-d27b-6da6-163b-7adfd37ddb65",
+      "name": "Inherit Source Movement",
+      "parameters": [
+        "Module.Applied Force Scale",
+        "Module.Source Velocity"
+      ],
+      "sourceHash": 9284084134299372096,
+      "writes": [
+        "Particles.Velocity"
+      ],
+      "values": {
+        "Particles.Velocity": [
+          [
+            1048576000,
+            1056964608,
+            1061158912,
+            0
+          ],
+          [
+            1067450368,
+            1056964608,
+            1061158912,
+            0
+          ]
+        ]
+      }
+    },
+    {
+      "id": "484c6b3a-db35-c5d9-65c1-baa52b90f5aa",
+      "name": "Spawn Beam",
+      "parameters": [
+        "Module.Particles Per Unit",
+        "Module.Start"
+      ],
+      "sourceHash": 5031102555712882657,
+      "writes": [
+        "Particles.Position",
+        "Particles.RibbonLinkOrder",
+        "Particles.RibbonWidth"
+      ],
+      "values": {
+        "Particles.Position": [
+          [
+            0,
+            0,
+            0,
+            0
+          ],
+          [
+            0,
+            0,
+            0,
+            0
+          ]
+        ],
+        "Particles.RibbonLinkOrder": [
+          [
+            1048576000,
+            0,
+            0,
+            0
+          ],
+          [
+            1067450368,
+            0,
+            0,
+            0
+          ]
+        ],
+        "Particles.RibbonWidth": [
+          [
+            1036831949,
+            0,
+            0,
+            0
+          ],
+          [
+            1036831949,
+            0,
+            0,
+            0
+          ]
+        ]
+      }
+    },
+    {
+      "id": "4d10ddac-549c-ed9e-2509-cd17eff43d57",
+      "name": "SubUV Animation",
+      "parameters": [
+        "Module.First Frame",
+        "Module.Frame Count",
+        "Module.Random Start"
+      ],
+      "sourceHash": 12232027346728752397,
+      "writes": [
+        "Particles.SubImageIndex"
+      ],
+      "values": {
+        "Particles.SubImageIndex": [
+          [
+            1050253722,
+            0,
+            0,
+            0
+          ],
+          [
+            1050253722,
+            0,
+            0,
+            0
+          ]
+        ]
+      }
+    },
+    {
+      "id": "4e4044de-b503-c281-6536-a12d1b93f6e6",
+      "name": "Calculate Size and Rotational Inertia by Mass",
+      "parameters": [
+        "Module.Density",
+        "Module.Mass"
+      ],
+      "sourceHash": 2673543609752057229,
+      "writes": [
+        "Particles.RotationalInertia",
+        "Particles.Size"
+      ],
+      "values": {
+        "Particles.RotationalInertia": [
+          [
+            987395084,
+            0,
+            0,
+            0
+          ],
+          [
+            987395084,
+            0,
+            0,
+            0
+          ]
+        ],
+        "Particles.Size": [
+          [
+            1036831948,
+            0,
+            0,
+            0
+          ],
+          [
+            1036831948,
+            0,
+            0,
+            0
+          ]
+        ]
+      }
+    },
+    {
+      "id": "5148d9a1-636c-7c24-9359-66cc9f136875",
+      "name": "Scale Color by Velocity",
+      "parameters": [
+        "Module.Scale"
+      ],
+      "sourceHash": 1829124669513728313,
+      "writes": [
+        "Particles.Color"
+      ],
+      "values": {
+        "Particles.Color": [
+          [
+            1003277517,
+            1020054733,
+            1030121063,
+            1065353216
+          ],
+          [
+            1042284544,
+            1020054733,
+            1030121063,
+            1065353216
+          ]
+        ]
+      }
+    },
+    {
+      "id": "546e26dd-144e-8fb5-786a-4ee3c9c84354",
+      "name": "Limit Force",
+      "parameters": [
+        "Module.Force Limit"
+      ],
+      "sourceHash": 375191792049996667,
+      "writes": [
+        "Particles.PhysicsForce"
+      ],
+      "values": {
+        "Particles.PhysicsForce": [
+          [
+            1048576000,
+            1056964608,
+            1061158912,
+            0
+          ],
+          [
+            1067450368,
+            1056964608,
+            1061158912,
+            0
+          ]
+        ]
+      }
+    },
+    {
+      "id": "555d8ed9-d2e0-394c-5bc2-a6f8a9b270ab",
+      "name": "Calculate Accurate Velocity",
+      "parameters": [
+        "Module.Velocity Scale"
+      ],
+      "sourceHash": 17784607824857741210,
+      "writes": [
+        "Particles.PreviousPosition",
+        "Particles.Velocity"
+      ],
+      "values": {
+        "Particles.PreviousPosition": [
+          [
+            1048576000,
+            1056964608,
+            1061158912,
+            0
+          ],
+          [
+            1067450368,
+            1056964608,
+            1061158912,
+            0
+          ]
+        ],
+        "Particles.Velocity": [
+          [
+            0,
+            0,
+            0,
+            0
+          ],
+          [
+            0,
+            0,
+            0,
+            0
+          ]
+        ]
+      }
+    },
+    {
+      "id": "56eab32d-ae67-3cc5-d5bb-6b8884c0b118",
+      "name": "Update Beam",
+      "parameters": [
+        "Module.End",
+        "Module.Start"
+      ],
+      "sourceHash": 13990882525369844099,
+      "writes": [
+        "Particles.Position"
+      ],
+      "values": {
+        "Particles.Position": [
+          [
+            0,
+            0,
+            1103626240,
+            0
+          ],
+          [
+            0,
+            0,
+            1120403456,
+            0
+          ]
+        ]
+      }
+    },
+    {
+      "id": "570547a7-712d-1c7a-d29a-648e4f82268f",
+      "name": "Spawn Particles in Grid",
+      "parameters": [
+        "Module.Age"
+      ],
+      "sourceHash": 10963122819093165084,
+      "writes": [
+        "Particles.Age",
+        "Particles.GridCellAge",
+        "Particles.GridCellIndex",
+        "Particles.SpawnIndex"
+      ],
+      "values": {
+        "Particles.Age": [
+          [
+            0,
+            0,
+            0,
+            0
+          ],
+          [
+            0,
+            0,
+            0,
+            0
+          ]
+        ],
+        "Particles.GridCellAge": [
+          [
+            0,
+            0,
+            0,
+            0
+          ],
+          [
+            0,
+            0,
+            0,
+            0
+          ]
+        ],
+        "Particles.GridCellIndex": [
+          [
+            1073741824,
+            0,
+            0,
+            0
+          ],
+          [
+            1077936128,
+            0,
+            0,
+            0
+          ]
+        ],
+        "Particles.SpawnIndex": [
+          [
+            1073741824,
+            0,
+            0,
+            0
+          ],
+          [
+            1077936128,
+            0,
+            0,
+            0
+          ]
+        ]
+      }
+    },
+    {
+      "id": "5c839288-ccbb-0b49-2336-975848672940",
+      "name": "System Location",
+      "parameters": [
+        "Module.Offset",
+        "System.Position"
+      ],
+      "sourceHash": 7018246576849008531,
+      "writes": [
+        "Particles.Position"
+      ],
+      "values": {
+        "Particles.Position": [
+          [
+            1048576000,
+            1056964608,
+            1061158912,
+            0
+          ],
+          [
+            1067450368,
+            1056964608,
+            1061158912,
+            0
+          ]
+        ]
+      }
+    },
+    {
+      "id": "5cbd182d-2ff2-7f6d-8a86-68f2197fd4f8",
+      "name": "Complete If Unused",
+      "parameters": [
+        "Module.Unused Grace Period"
+      ],
+      "sourceHash": 17698887380482872642,
+      "writes": [
+        "Emitter.UnusedGracePeriod"
+      ],
+      "values": {
+        "Emitter.UnusedGracePeriod": [
+          [
+            1056964608,
+            0,
+            0,
+            0
+          ],
+          [
+            1056964608,
+            0,
+            0,
+            0
+          ]
+        ]
+      }
+    },
+    {
+      "id": "5fe73bcc-da3b-e035-455c-475d8d00357a",
+      "name": "Linear Force",
+      "parameters": [
+        "Module.Acceleration"
+      ],
+      "sourceHash": 2250173951113833555,
+      "writes": [
+        "Particles.PhysicsForce"
+      ],
+      "values": {
+        "Particles.PhysicsForce": [
+          [
+            1048576000,
+            3239376323,
+            1061158912,
+            0
+          ],
+          [
+            1067450368,
+            3239376323,
+            1061158912,
+            0
+          ]
+        ]
+      }
+    },
+    {
+      "id": "62a38484-bd22-05a8-0a4c-96481c57d68d",
+      "name": "Timeline",
+      "parameters": [
+        "Engine.SystemAge",
+        "Module.Play Rate",
+        "Module.Timeline Length"
+      ],
+      "sourceHash": 14431442625259964242,
+      "writes": [
+        "Particles.TimelineNormalized",
+        "Particles.TimelinePlaying",
+        "Particles.TimelinePosition"
+      ],
+      "values": {
+        "Particles.TimelineNormalized": [
+          [
+            0,
+            0,
+            0,
+            0
+          ],
+          [
+            0,
+            0,
+            0,
+            0
+          ]
+        ],
+        "Particles.TimelinePlaying": [
+          [
+            1065353216,
+            0,
+            0,
+            0
+          ],
+          [
+            1065353216,
+            0,
+            0,
+            0
+          ]
+        ],
+        "Particles.TimelinePosition": [
+          [
+            0,
+            0,
+            0,
+            0
+          ],
+          [
+            0,
+            0,
+            0,
+            0
+          ]
+        ]
+      }
+    },
+    {
+      "id": "62d39d37-8884-ce63-75be-217142777f6e",
+      "name": "Cone Location",
+      "parameters": [
+        "Module.Angle",
+        "Module.Direction",
+        "Module.Length",
+        "Module.Origin"
+      ],
+      "sourceHash": 7989265802030091313,
+      "writes": [
+        "Particles.Position"
+      ],
+      "values": {
+        "Particles.Position": [
+          [
+            0,
+            0,
+            0,
+            0
+          ],
+          [
+            0,
+            0,
+            0,
+            0
+          ]
+        ]
+      }
+    },
+    {
+      "id": "631f7b54-1bf7-32c5-aeb4-1aed774459c2",
+      "name": "Add Velocity in Cone",
+      "parameters": [
+        "Module.Angle",
+        "Module.Direction",
+        "Module.Speed"
+      ],
+      "sourceHash": 3003163147792753876,
+      "writes": [
+        "Particles.Velocity"
+      ],
+      "values": {
+        "Particles.Velocity": [
+          [
+            1052705056,
+            1069136242,
+            1055832394,
+            0
+          ],
+          [
+            1065425688,
+            1068317614,
+            1049849721,
+            0
+          ]
+        ]
+      }
+    },
+    {
+      "id": "6360183b-6e73-1a6b-fcb6-9838a7adc36e",
+      "name": "Initialize Particle",
+      "parameters": [
+        "Module.Color",
+        "Module.Lifetime",
+        "Module.Position",
+        "Module.Size",
+        "Module.Velocity"
+      ],
+      "sourceHash": 15762348683136693568,
+      "writes": [
+        "Particles.Color",
+        "Particles.Lifetime",
+        "Particles.Position",
+        "Particles.Size",
+        "Particles.Velocity"
+      ],
+      "values": {
+        "Particles.Color": [
+          [
+            1065353216,
+            1056964608,
+            1036831949,
+            1065353216
+          ],
+          [
+            1065353216,
+            1056964608,
+            1036831949,
+            1065353216
+          ]
+        ],
+        "Particles.Lifetime": [
+          [
+            1073741824,
+            0,
+            0,
+            0
+          ],
+          [
+            1073741824,
+            0,
+            0,
+            0
+          ]
+        ],
+        "Particles.Position": [
+          [
+            0,
+            0,
+            0,
+            0
+          ],
+          [
+            0,
+            0,
+            0,
+            0
+          ]
+        ],
+        "Particles.Size": [
+          [
+            1028443341,
+            0,
+            0,
+            0
+          ],
+          [
+            1028443341,
+            0,
+            0,
+            0
+          ]
+        ],
+        "Particles.Velocity": [
+          [
+            0,
+            1077936128,
+            0,
+            0
+          ],
+          [
+            0,
+            1077936128,
+            0,
+            0
+          ]
+        ]
+      }
+    },
+    {
+      "id": "644208b9-e7e5-9467-bebc-b046120d3d96",
+      "name": "Apply Initial Forces",
+      "parameters": [
+        "Module.Apply Force to Position",
+        "Module.Apply Force to Velocity",
+        "Module.Apply Rotational Force to Rotational Velocity",
+        "Module.Positional Force Warmup Time"
+      ],
+      "sourceHash": 1769081711964516132,
+      "writes": [
+        "Particles.PhysicsForce",
+        "Particles.PhysicsRotationalForce",
+        "Particles.Position",
+        "Particles.RotationalVelocity",
+        "Particles.Velocity"
+      ],
+      "values": {
+        "Particles.PhysicsForce": [
+          [
+            0,
+            0,
+            0,
+            0
+          ],
+          [
+            0,
+            0,
+            0,
+            0
+          ]
+        ],
+        "Particles.PhysicsRotationalForce": [
+          [
+            0,
+            0,
+            0,
+            0
+          ],
+          [
+            0,
+            0,
+            0,
+            0
+          ]
+        ],
+        "Particles.Position": [
+          [
+            1048576000,
+            1056964608,
+            1061158912,
+            0
+          ],
+          [
+            1067450368,
+            1056964608,
+            1061158912,
+            0
+          ]
+        ],
+        "Particles.RotationalVelocity": [
+          [
+            1067450368,
+            1075838976,
+            1081081856,
+            0
+          ],
+          [
+            1074790400,
+            1063675494,
+            1068289229,
+            0
+          ]
+        ],
+        "Particles.Velocity": [
+          [
+            1067450368,
+            1075838976,
+            1081081856,
+            0
+          ],
+          [
+            1074790400,
+            1063675494,
+            1068289229,
+            0
+          ]
+        ]
+      }
+    },
+    {
+      "id": "64a8dcdc-4e97-618f-59bb-62245ddad108",
+      "name": "Scale Mesh Size",
+      "parameters": [
+        "Module.Scale"
+      ],
+      "sourceHash": 9639582086640926258,
+      "writes": [
+        "Particles.Scale"
+      ],
+      "values": {
+        "Particles.Scale": [
+          [
+            1048576000,
+            1056964608,
+            1061158912,
+            0
+          ],
+          [
+            1067450368,
+            1056964608,
+            1061158912,
+            0
+          ]
+        ]
+      }
+    },
+    {
+      "id": "659c2050-a8e3-8e2b-7730-088d2aadeed6",
+      "name": "Vector Noise Value",
+      "parameters": [
+        "Module.Noise Offset",
+        "Module.Noise Strength"
+      ],
+      "sourceHash": 11223241894077941963,
+      "writes": [
+        "Particles.NoiseValue"
+      ],
+      "values": {
+        "Particles.NoiseValue": [
+          [
+            1054460344,
+            3209638484,
+            1059382132,
+            0
+          ],
+          [
+            3211944630,
+            3182183712,
+            1063128694,
+            0
+          ]
+        ]
+      }
+    },
+    {
+      "id": "65e46ae2-b0f5-e953-e49b-3ed96c91fd04",
+      "name": "Time Based State Machine",
+      "parameters": [
+        "Engine.SystemAge",
+        "Module.Off Duration",
+        "Module.On Duration",
+        "Module.Rate"
+      ],
+      "sourceHash": 13770628193667660119,
+      "writes": [
+        "Particles.OnOffPercentage"
+      ],
+      "values": {
+        "Particles.OnOffPercentage": [
+          [
+            1065353216,
+            0,
+            0,
+            0
+          ],
+          [
+            1065353216,
+            0,
+            0,
+            0
+          ]
+        ]
+      }
+    },
+    {
+      "id": "68502e25-9ab6-3274-c76b-fd811453d261",
+      "name": "Solve Forces and Velocity",
+      "parameters": [],
+      "sourceHash": 16659740468090809239,
+      "writes": [
+        "Particles.PhysicsDrag",
+        "Particles.PhysicsForce",
+        "Particles.Position",
+        "Particles.Velocity"
+      ],
+      "values": {
+        "Particles.PhysicsDrag": [
+          [
+            0,
+            0,
+            0,
+            0
+          ],
+          [
+            0,
+            0,
+            0,
+            0
+          ]
+        ],
+        "Particles.PhysicsForce": [
+          [
+            0,
+            0,
+            0,
+            0
+          ],
+          [
+            0,
+            0,
+            0,
+            0
+          ]
+        ],
+        "Particles.Position": [
+          [
+            1049476241,
+            1057864849,
+            1062509273,
+            0
+          ],
+          [
+            1068475642,
+            1057784827,
+            1062389241,
+            0
+          ]
+        ],
+        "Particles.Velocity": [
+          [
+            1049189801,
+            1057578409,
+            1062079613,
+            0
+          ],
+          [
+            1067217351,
+            1056591781,
+            1060879292,
+            0
+          ]
+        ]
+      }
+    },
+    {
+      "id": "6cbf5f40-9a53-5490-2c16-761b15a6aae5",
+      "name": "Grid Location",
+      "parameters": [
+        "Module.Grid Origin",
+        "Module.Grid X Count",
+        "Module.Grid Y Count",
+        "Module.Grid Z Count",
+        "Module.Jitter Inside Grid Cells",
+        "Module.XYZ Dimensions"
+      ],
+      "sourceHash": 9534944013720412625,
+      "writes": [
+        "Particles.Position"
+      ],
+      "values": {
+        "Particles.Position": [
+          [
+            1073741824,
+            0,
+            0,
+            0
+          ],
+          [
+            1077936128,
+            0,
+            0,
+            0
+          ]
+        ]
+      }
+    },
+    {
+      "id": "6e5f87ec-0fd9-48c6-cc76-2088eac56e43",
+      "name": "View Mask",
+      "parameters": [
+        "Camera.Forward",
+        "Camera.FovDegrees",
+        "Camera.Position",
+        "Camera.Right",
+        "Camera.Up",
+        "Camera.ViewportHeight",
+        "Camera.ViewportWidth",
+        "Module.Edge Width"
+      ],
+      "sourceHash": 3341548257641459981,
+      "writes": [
+        "Particles.InsideView",
+        "Particles.ViewMask"
+      ],
+      "values": {
+        "Particles.InsideView": [
+          [
+            1065353216,
+            0,
+            0,
+            0
+          ],
+          [
+            1065353216,
+            0,
+            0,
+            0
+          ]
+        ],
+        "Particles.ViewMask": [
+          [
+            1065353216,
+            0,
+            0,
+            0
+          ],
+          [
+            1065353216,
+            0,
+            0,
+            0
+          ]
+        ]
+      }
+    },
+    {
+      "id": "6f133e10-61ce-4c8a-fa55-7b3c7d20dcdb",
+      "name": "Generate Death Event",
+      "parameters": [
+        "Module.Event Generation Enabled"
+      ],
+      "sourceHash": 8559362284689588047,
+      "writes": [
+        "Emitter.GenerateDeath"
+      ],
+      "values": {
+        "Emitter.GenerateDeath": [
+          [
+            1065353216,
+            0,
+            0,
+            0
+          ],
+          [
+            1065353216,
+            0,
+            0,
+            0
+          ]
+        ]
+      }
+    },
+    {
+      "id": "72e7a9f5-fe31-e48b-c013-4f32f282e47c",
+      "name": "Increment Over Time",
+      "parameters": [
+        "Module.Increment"
+      ],
+      "sourceHash": 11248551344991048810,
+      "writes": [
+        "Particles.IncrementCounter"
+      ],
+      "values": {
+        "Particles.IncrementCounter": [
+          [
+            1051931443,
+            0,
+            0,
+            0
+          ],
+          [
+            1068289229,
+            0,
+            0,
+            0
+          ]
+        ]
+      }
+    },
+    {
+      "id": "73aee40d-764e-6b35-e9ef-f4862710b2e2",
+      "name": "Rotate Around Point",
+      "parameters": [
+        "Module.Angle",
+        "Module.Center",
+        "Module.Radius"
+      ],
+      "sourceHash": 4533355951201182029,
+      "writes": [
+        "Particles.Position"
+      ],
+      "values": {
+        "Particles.Position": [
+          [
+            1065353216,
+            0,
+            0,
+            0
+          ],
+          [
+            1065353216,
+            0,
+            0,
+            0
+          ]
+        ]
+      }
+    },
+    {
+      "id": "7586cb52-808f-80e3-4695-fc6ea053aa28",
+      "name": "Collision Query and Response",
+      "parameters": [
+        "Module.Collision Enabled"
+      ],
+      "sourceHash": 11739925083622768384,
+      "writes": [
+        "Emitter.CollisionEnabled"
+      ],
+      "values": {
+        "Emitter.CollisionEnabled": [
+          [
+            1065353216,
+            0,
+            0,
+            0
+          ],
+          [
+            1065353216,
+            0,
+            0,
+            0
+          ]
+        ]
+      }
+    },
+    {
+      "id": "7a70ccf0-48dd-f272-e5e9-21a843008619",
+      "name": "Pendulum Setup",
+      "parameters": [
+        "Module.Enable Spring Driver",
+        "Module.Pendulum Length",
+        "Module.Pendulum Pivot",
+        "Module.Pendulum Rest Axis",
+        "Module.Spring Tightness"
+      ],
+      "sourceHash": 182279264615155930,
+      "writes": [
+        "Particles.PendulumLength",
+        "Particles.PendulumPivot",
+        "Particles.PendulumRestAxis",
+        "Particles.PendulumSpring",
+        "Particles.PendulumTightness"
+      ],
+      "values": {
+        "Particles.PendulumLength": [
+          [
+            1065353216,
+            0,
+            0,
+            0
+          ],
+          [
+            1065353216,
+            0,
+            0,
+            0
+          ]
+        ],
+        "Particles.PendulumPivot": [
+          [
+            0,
+            0,
+            0,
+            0
+          ],
+          [
+            0,
+            0,
+            0,
+            0
+          ]
+        ],
+        "Particles.PendulumRestAxis": [
+          [
+            0,
+            3212836864,
+            0,
+            0
+          ],
+          [
+            0,
+            3212836864,
+            0,
+            0
+          ]
+        ],
+        "Particles.PendulumSpring": [
+          [
+            0,
+            0,
+            0,
+            0
+          ],
+          [
+            0,
+            0,
+            0,
+            0
+          ]
+        ],
+        "Particles.PendulumTightness": [
+          [
+            1101004800,
+            0,
+            0,
+            0
+          ],
+          [
+            1101004800,
+            0,
+            0,
+            0
+          ]
+        ]
+      }
+    },
+    {
+      "id": "7c675a9c-1c16-18a4-b3cf-823fd8284a69",
+      "name": "Emitter State",
+      "parameters": [
+        "Module.Duration",
+        "Module.Loop"
+      ],
+      "sourceHash": 2633661455833752377,
+      "writes": [
+        "Emitter.Duration",
+        "Emitter.Loop"
+      ],
+      "values": {
+        "Emitter.Duration": [
+          [
+            1084227584,
+            0,
+            0,
+            0
+          ],
+          [
+            1084227584,
+            0,
+            0,
+            0
+          ]
+        ],
+        "Emitter.Loop": [
+          [
+            1065353216,
+            0,
+            0,
+            0
+          ],
+          [
+            1065353216,
+            0,
+            0,
+            0
+          ]
+        ]
+      }
+    },
+    {
+      "id": "7c691e58-4899-c744-4870-716b07883201",
+      "name": "Cone Mask",
+      "parameters": [
+        "Module.Cone Angle",
+        "Module.Cone Direction",
+        "Module.Cone Origin"
+      ],
+      "sourceHash": 15945201187346933749,
+      "writes": [
+        "Particles.ConeMask"
+      ],
+      "values": {
+        "Particles.ConeMask": [
+          [
+            0,
+            0,
+            0,
+            0
+          ],
+          [
+            0,
+            0,
+            0,
+            0
+          ]
+        ]
+      }
+    },
+    {
+      "id": "7dbd4b44-1daf-94a1-8fac-980c97358d78",
+      "name": "Align Sprite to Mesh Orientation",
+      "parameters": [
+        "Module.Axis"
+      ],
+      "sourceHash": 6262794063792489151,
+      "writes": [
+        "Particles.SpriteFacing"
+      ],
+      "values": {
+        "Particles.SpriteFacing": [
+          [
+            1048576000,
+            1071644672,
+            3206545408,
+            0
+          ],
+          [
+            1071644672,
+            1076887552,
+            1063256064,
+            0
+          ]
+        ]
+      }
+    },
+    {
+      "id": "82d4d962-688b-e08f-953e-b52812bbe700",
+      "name": "Mesh Rotation Force",
+      "parameters": [
+        "Module.Lever Radius",
+        "Module.Rotation"
+      ],
+      "sourceHash": 13018052065634448749,
+      "writes": [
+        "Particles.PhysicsRotationalForce"
+      ],
+      "values": {
+        "Particles.PhysicsRotationalForce": [
+          [
+            1048576000,
+            1056964608,
+            1061158912,
+            0
+          ],
+          [
+            1067450368,
+            1056964608,
+            1061158912,
+            0
+          ]
+        ]
+      }
+    },
+    {
+      "id": "83189a1a-9719-3a4e-5944-0b677eac272d",
+      "name": "Particle State",
+      "parameters": [
+        "Module.Kill Particles When Lifetime Has Elapsed",
+        "Module.Loop Particles Lifetime"
+      ],
+      "sourceHash": 12565043780972672556,
+      "writes": [
+        "Particles.Age",
+        "Particles.Lifetime",
+        "Particles.NormalizedAge"
+      ],
+      "values": {
+        "Particles.Age": [
+          [
+            1045220557,
+            0,
+            0,
+            0
+          ],
+          [
+            1045220557,
+            0,
+            0,
+            0
+          ]
+        ],
+        "Particles.Lifetime": [
+          [
+            3209481421,
+            0,
+            0,
+            0
+          ],
+          [
+            3209481421,
+            0,
+            0,
+            0
+          ]
+        ],
+        "Particles.NormalizedAge": [
+          [
+            1036831949,
+            0,
+            0,
+            0
+          ],
+          [
+            1036831949,
+            0,
+            0,
+            0
+          ]
+        ]
+      }
+    },
+    {
+      "id": "850639d2-cfb1-7aea-491d-ceb74385056d",
+      "name": "Scale Sprite Size",
+      "parameters": [
+        "Module.Scale"
+      ],
+      "sourceHash": 7855909113813318033,
+      "writes": [
+        "Particles.Size"
+      ],
+      "values": {
+        "Particles.Size": [
+          [
+            1048576000,
+            0,
+            0,
+            0
+          ],
+          [
+            1067450368,
+            0,
+            0,
+            0
+          ]
+        ]
+      }
+    },
+    {
+      "id": "88425409-0b33-bc0a-5ccd-12d6a9214a55",
+      "name": "Wedge Location",
+      "parameters": [
+        "Module.Angle",
+        "Module.Axis",
+        "Module.Extent",
+        "Module.Origin"
+      ],
+      "sourceHash": 13791877611231427705,
+      "writes": [
+        "Particles.Position"
+      ],
+      "values": {
+        "Particles.Position": [
+          [
+            3189552196,
+            1043644443,
+            1056268784,
+            0
+          ],
+          [
+            1050669164,
+            3191191628,
+            1045348257,
+            0
+          ]
+        ]
+      }
+    },
+    {
+      "id": "88c598d4-189e-65de-3d09-f041f0fd887b",
+      "name": "Pendulum Constraint",
+      "parameters": [
+        "Module.Angle Constraint",
+        "Module.Use Angle Constraint"
+      ],
+      "sourceHash": 6105932083078629997,
+      "writes": [
+        "Particles.Position",
+        "Particles.Velocity"
+      ],
+      "values": {
+        "Particles.Position": [
+          [
+            1048576000,
+            1056964608,
+            1061158912,
+            0
+          ],
+          [
+            1067450368,
+            1056964608,
+            1061158912,
+            0
+          ]
+        ],
+        "Particles.Velocity": [
+          [
+            1048576000,
+            1056964608,
+            1061158912,
+            0
+          ],
+          [
+            1067450368,
+            1056964608,
+            1061158912,
+            0
+          ]
+        ]
+      }
+    },
+    {
+      "id": "89728a0f-0791-e1b5-fe00-800f71bd8794",
+      "name": "Lerp Particle Attributes",
+      "parameters": [
+        "Module.Color A",
+        "Module.Color B",
+        "Module.Lerp Alpha",
+        "Module.Position A",
+        "Module.Position B",
+        "Module.Velocity A",
+        "Module.Velocity B"
+      ],
+      "sourceHash": 5266293933568675542,
+      "writes": [
+        "Particles.Color",
+        "Particles.Position",
+        "Particles.Velocity"
+      ],
+      "values": {
+        "Particles.Color": [
+          [
+            1065353216,
+            1065353216,
+            1065353216,
+            1065353216
+          ],
+          [
+            1065353216,
+            1065353216,
+            1065353216,
+            1065353216
+          ]
+        ],
+        "Particles.Position": [
+          [
+            0,
+            0,
+            0,
+            0
+          ],
+          [
+            0,
+            0,
+            0,
+            0
+          ]
+        ],
+        "Particles.Velocity": [
+          [
+            0,
+            0,
+            0,
+            0
+          ],
+          [
+            0,
+            0,
+            0,
+            0
+          ]
+        ]
+      }
+    },
+    {
+      "id": "956612b6-c543-4ab4-09c6-421c2df64c57",
+      "name": "Spawn Rate",
+      "parameters": [
+        "Module.Rate"
+      ],
+      "sourceHash": 13029428905092883365,
+      "writes": [
+        "Emitter.SpawnRate"
+      ],
+      "values": {
+        "Emitter.SpawnRate": [
+          [
+            1120436224,
+            0,
+            0,
+            0
+          ],
+          [
+            1120567296,
+            0,
+            0,
+            0
+          ]
+        ]
+      }
+    },
+    {
+      "id": "959f26cd-aec7-689a-e3de-df157c956ded",
+      "name": "Acceleration Force",
+      "parameters": [
+        "Module.Acceleration"
+      ],
+      "sourceHash": 17534107500837438545,
+      "writes": [
+        "Particles.PhysicsForce"
+      ],
+      "values": {
+        "Particles.PhysicsForce": [
+          [
+            1048576000,
+            3239376323,
+            1061158912,
+            0
+          ],
+          [
+            1067450368,
+            3239376323,
+            1061158912,
+            0
+          ]
+        ]
+      }
+    },
+    {
+      "id": "96012569-7346-5389-d4f1-63bddffb9d88",
+      "name": "Vector Noise Force",
+      "parameters": [
+        "Module.Noise Strength"
+      ],
+      "sourceHash": 6314253378979043188,
+      "writes": [
+        "Particles.PhysicsForce"
+      ],
+      "values": {
+        "Particles.PhysicsForce": [
+          [
+            1083186707,
+            3237150440,
+            1088822353,
+            0
+          ],
+          [
+            3238231474,
+            3199118544,
+            1092012298,
+            0
+          ]
+        ]
+      }
+    },
+    {
+      "id": "9ab2da41-2ed4-caae-9427-9e067ee0cfb3",
+      "name": "Mesh Rotation Rate",
+      "parameters": [
+        "Module.Axis",
+        "Module.Rate"
+      ],
+      "sourceHash": 15850670698001086577,
+      "writes": [
+        "Particles.MeshOrientation"
+      ],
+      "values": {
+        "Particles.MeshOrientation": [
+          [
+            1050524628,
+            1058255074,
+            1060791042,
+            1064643334
+          ],
+          [
+            1067911666,
+            1058255074,
+            1059474716,
+            1064643334
+          ]
+        ]
+      }
+    },
+    {
+      "id": "9cd7ef9d-c159-8d21-e312-0679ce60910a",
+      "name": "Point Repulsion Force",
+      "parameters": [
+        "Module.Falloff Radius",
+        "Module.Repulsion Strength",
+        "Module.Repulsor Position"
+      ],
+      "sourceHash": 1608310294425109268,
+      "writes": [
+        "Particles.PhysicsForce"
+      ],
+      "values": {
+        "Particles.PhysicsForce": [
+          [
+            1054367909,
+            1062756517,
+            1067599996,
+            0
+          ],
+          [
+            1067450368,
+            1056964608,
+            1061158912,
+            0
+          ]
+        ]
+      }
+    },
+    {
+      "id": "9d1434a1-12dd-ab12-7a66-b9b7636a2179",
+      "name": "Color over Life",
+      "parameters": [
+        "Module.End",
+        "Module.Start"
+      ],
+      "sourceHash": 15973709670641689839,
+      "writes": [
+        "Particles.Color"
+      ],
+      "values": {
+        "Particles.Color": [
+          [
+            1065353216,
+            1055622431,
+            1035489772,
+            1063675494
+          ],
+          [
+            1065353216,
+            1055622431,
+            1035489772,
+            1063675494
+          ]
+        ]
+      }
+    },
+    {
+      "id": "a024c7d8-3cb6-c01f-cbc8-8a1f43d27d94",
+      "name": "Update Mesh Orientation",
+      "parameters": [
+        "Module.Angular Velocity"
+      ],
+      "sourceHash": 13717406287403721913,
+      "writes": [
+        "Particles.MeshOrientation"
+      ],
+      "values": {
+        "Particles.MeshOrientation": [
+          [
+            1050524628,
+            1058255074,
+            1060791042,
+            1064643334
+          ],
+          [
+            1067911666,
+            1058255074,
+            1059474716,
+            1064643334
+          ]
+        ]
+      }
+    },
+    {
+      "id": "a119c03d-ddcc-2100-d8da-df705a4ccd9b",
+      "name": "Align Velocity To Random Axis",
+      "parameters": [
+        "Module.Randomness"
+      ],
+      "sourceHash": 12705826622566137055,
+      "writes": [
+        "Particles.Velocity"
+      ],
+      "values": {
+        "Particles.Velocity": [
+          [
+            1060509017,
+            1056554156,
+            3199824393,
+            0
+          ],
+          [
+            3213394298,
+            1066167780,
+            1044181329,
+            0
+          ]
+        ]
+      }
+    },
+    {
+      "id": "a5e9381f-c59b-eb26-2f24-394e1a21509b",
+      "name": "Point Force",
+      "parameters": [
+        "Module.Falloff Distance",
+        "Module.Force Origin",
+        "Module.Force Strength",
+        "Module.Invert Falloff",
+        "Module.Use Falloff"
+      ],
+      "sourceHash": 11869367327882813435,
+      "writes": [
+        "Particles.PhysicsForce"
+      ],
+      "values": {
+        "Particles.PhysicsForce": [
+          [
+            1033796972,
+            1042185580,
+            1047378980,
+            0
+          ],
+          [
+            1067450368,
+            1056964608,
+            1061158912,
+            0
+          ]
+        ]
+      }
+    },
+    {
+      "id": "a7ca49a9-83e4-44f2-f3e8-f1e916b30039",
+      "name": "Color",
+      "parameters": [
+        "Module.Alpha",
+        "Module.Color",
+        "Module.Scale"
+      ],
+      "sourceHash": 10013173957957495579,
+      "writes": [
+        "Particles.Color"
+      ],
+      "values": {
+        "Particles.Color": [
+          [
+            1065353216,
+            1065353216,
+            1065353216,
+            1065353216
+          ],
+          [
+            1065353216,
+            1065353216,
+            1065353216,
+            1065353216
+          ]
+        ]
+      }
+    },
+    {
+      "id": "ab38ebbf-5b11-ce5d-a5b0-70dce9efa350",
+      "name": "Scale Sprite Size by Velocity",
+      "parameters": [
+        "Module.Scale"
+      ],
+      "sourceHash": 13013187830170848433,
+      "writes": [
+        "Particles.Size"
+      ],
+      "values": {
+        "Particles.Size": [
+          [
+            1019187879,
+            0,
+            0,
+            0
+          ],
+          [
+            1044726498,
+            0,
+            0,
+            0
+          ]
+        ]
+      }
+    },
+    {
+      "id": "ac0838c4-54ba-5c31-ef30-a54967a74a42",
+      "name": "Scale Sprite Size by Speed",
+      "parameters": [
+        "Module.Max Scale",
+        "Module.Min Scale",
+        "Module.Speed Threshold"
+      ],
+      "sourceHash": 6490619367807622885,
+      "writes": [
+        "Particles.Size"
+      ],
+      "values": {
+        "Particles.Size": [
+          [
+            1048576000,
+            0,
+            0,
+            0
+          ],
+          [
+            1067450368,
+            0,
+            0,
+            0
+          ]
+        ]
+      }
+    },
+    {
+      "id": "b05a5e4a-eabf-493c-81f1-e0c58a792e73",
+      "name": "Apply Rotation Vector",
+      "parameters": [
+        "Module.Rotational Velocity"
+      ],
+      "sourceHash": 9955106383513121207,
+      "writes": [
+        "Particles.MeshOrientation"
+      ],
+      "values": {
+        "Particles.MeshOrientation": [
+          [
+            1050524628,
+            1058255074,
+            1060791042,
+            1064643334
+          ],
+          [
+            1067911666,
+            1058255074,
+            1059474716,
+            1064643334
+          ]
+        ]
+      }
+    },
+    {
+      "id": "b2f830fa-5f81-c16d-2148-e9c459e68346",
+      "name": "Ribbon Width",
+      "parameters": [
+        "Module.Width",
+        "Module.Width Scale"
+      ],
+      "sourceHash": 17805686301340275636,
+      "writes": [
+        "Particles.RibbonWidth"
+      ],
+      "values": {
+        "Particles.RibbonWidth": [
+          [
+            1036831949,
+            0,
+            0,
+            0
+          ],
+          [
+            1036831949,
+            0,
+            0,
+            0
+          ]
+        ]
+      }
+    },
+    {
+      "id": "b565f2e3-a94b-5fc2-eaf6-a7052a1b64f9",
+      "name": "Maintain in Camera Particle Scale",
+      "parameters": [
+        "Camera.Forward",
+        "Camera.FovDegrees",
+        "Camera.Position",
+        "Module.Reference Distance",
+        "Module.Reference Fov"
+      ],
+      "sourceHash": 1991057187192714929,
+      "writes": [
+        "Particles.Size"
+      ],
+      "values": {
+        "Particles.Size": [
+          [
+            0,
+            0,
+            0,
+            0
+          ],
+          [
+            0,
+            0,
+            0,
+            0
+          ]
+        ]
+      }
+    },
+    {
+      "id": "ba2fb46a-7483-6c1e-a15a-4fe478d94bf5",
+      "name": "Apply Owner Scale to Attributes",
+      "parameters": [
+        "Module.Owner Scale"
+      ],
+      "sourceHash": 16294859877900938399,
+      "writes": [
+        "Particles.Position",
+        "Particles.Size"
+      ],
+      "values": {
+        "Particles.Position": [
+          [
+            1048576000,
+            1056964608,
+            1061158912,
+            0
+          ],
+          [
+            1067450368,
+            1056964608,
+            1061158912,
+            0
+          ]
+        ],
+        "Particles.Size": [
+          [
+            1048576000,
+            0,
+            0,
+            0
+          ],
+          [
+            1067450368,
+            0,
+            0,
+            0
+          ]
+        ]
+      }
+    },
+    {
+      "id": "bb4d267e-9bca-6264-36bb-9f25310c0a11",
+      "name": "Spawn Burst Instantaneous",
+      "parameters": [
+        "Emitter.Age",
+        "Module.Count",
+        "Module.Time"
+      ],
+      "sourceHash": 15070476484090053829,
+      "writes": [
+        "Emitter.BurstPhase",
+        "Emitter.SpawnCount"
+      ],
+      "values": {
+        "Emitter.BurstPhase": [
+          [
+            1065353216,
+            0,
+            0,
+            0
+          ],
+          [
+            1065353216,
+            0,
+            0,
+            0
+          ]
+        ],
+        "Emitter.SpawnCount": [
+          [
+            1101004800,
+            0,
+            0,
+            0
+          ],
+          [
+            0,
+            0,
+            0,
+            0
+          ]
+        ]
+      }
+    },
+    {
+      "id": "bcb50f51-ade6-d589-28fe-6e48838cbbae",
+      "name": "Generate Location Event",
+      "parameters": [
+        "Module.Event Generation Enabled"
+      ],
+      "sourceHash": 1512330646812082700,
+      "writes": [
+        "Emitter.GenerateSpawn"
+      ],
+      "values": {
+        "Emitter.GenerateSpawn": [
+          [
+            1065353216,
+            0,
+            0,
+            0
+          ],
+          [
+            1065353216,
+            0,
+            0,
+            0
+          ]
+        ]
+      }
+    },
+    {
+      "id": "c02421fd-80d4-b740-0f21-2840e2d11e9f",
+      "name": "Receive Collision Event",
+      "parameters": [
+        "Emitter.EventNormal",
+        "Emitter.EventPosition",
+        "Emitter.EventVelocity",
+        "Module.Random Age",
+        "Module.Spawn Count"
+      ],
+      "sourceHash": 9709945944996547750,
+      "writes": [
+        "Emitter.ReceiveKind",
+        "Emitter.ReceiveNormal",
+        "Emitter.ReceivePosition",
+        "Emitter.ReceiveRandomAge",
+        "Emitter.ReceiveSpawnCount",
+        "Emitter.ReceiveVelocity"
+      ],
+      "values": {
+        "Emitter.ReceiveKind": [
+          [
+            1077936128,
+            0,
+            0,
+            0
+          ],
+          [
+            1077936128,
+            0,
+            0,
+            0
+          ]
+        ],
+        "Emitter.ReceiveNormal": [
+          [
+            0,
+            0,
+            0,
+            0
+          ],
+          [
+            0,
+            0,
+            0,
+            0
+          ]
+        ],
+        "Emitter.ReceivePosition": [
+          [
+            0,
+            0,
+            0,
+            0
+          ],
+          [
+            0,
+            0,
+            0,
+            0
+          ]
+        ],
+        "Emitter.ReceiveRandomAge": [
+          [
+            0,
+            0,
+            0,
+            0
+          ],
+          [
+            0,
+            0,
+            0,
+            0
+          ]
+        ],
+        "Emitter.ReceiveSpawnCount": [
+          [
+            1065353216,
+            0,
+            0,
+            0
+          ],
+          [
+            1065353216,
+            0,
+            0,
+            0
+          ]
+        ],
+        "Emitter.ReceiveVelocity": [
+          [
+            0,
+            0,
+            0,
+            0
+          ],
+          [
+            0,
+            0,
+            0,
+            0
+          ]
+        ]
+      }
+    },
+    {
+      "id": "c0d46a90-1913-318c-5986-2d55d025dd9f",
+      "name": "Emitter Frame Counter",
+      "parameters": [
+        "Module.Increment Counter"
+      ],
+      "sourceHash": 10152126393448905411,
+      "writes": [
+        "Particles.EmitterFrameCounter"
+      ],
+      "values": {
+        "Particles.EmitterFrameCounter": [
+          [
+            1067450368,
+            0,
+            0,
+            0
+          ],
+          [
+            1074790400,
+            0,
+            0,
+            0
+          ]
+        ]
+      }
+    },
+    {
+      "id": "c338a701-88a3-e3c4-0ae8-e8bf4dfed92d",
+      "name": "Scale Velocity by Speed",
+      "parameters": [
+        "Module.Max Scale",
+        "Module.Min Scale",
+        "Module.Speed Threshold"
+      ],
+      "sourceHash": 15998927672560382012,
+      "writes": [
+        "Particles.Velocity"
+      ],
+      "values": {
+        "Particles.Velocity": [
+          [
+            1048576000,
+            1056964608,
+            1061158912,
+            0
+          ],
+          [
+            1067450368,
+            1056964608,
+            1061158912,
+            0
+          ]
+        ]
+      }
+    },
+    {
+      "id": "c37edc9d-391f-18c1-3cc5-b779ea86b688",
+      "name": "Add Velocity from Point",
+      "parameters": [
+        "Module.Position",
+        "Module.Velocity Scale"
+      ],
+      "sourceHash": 4919834563934539992,
+      "writes": [
+        "Particles.Velocity"
+      ],
+      "values": {
+        "Particles.Velocity": [
+          [
+            1056964608,
+            1065353216,
+            1069547520,
+            0
+          ],
+          [
+            1075838976,
+            1065353216,
+            1069547520,
+            0
+          ]
+        ]
+      }
+    },
+    {
+      "id": "c55180f3-78a5-abd8-490b-566fe40df9dd",
+      "name": "Maintain A: Set Distance Between Points",
+      "parameters": [
+        "Module.Ideal Distance",
+        "Module.Influence",
+        "Module.Target Position"
+      ],
+      "sourceHash": 10465061752186035099,
+      "writes": [
+        "Particles.Position"
+      ],
+      "values": {
+        "Particles.Position": [
+          [
+            1049155191,
+            1057543799,
+            1062027698,
+            0
+          ],
+          [
+            1062184119,
+            1051073887,
+            1056517135,
+            0
+          ]
+        ]
+      }
+    },
+    {
+      "id": "c70fee90-868b-40a5-7b38-8df2b1c6d404",
+      "name": "Sphere Location",
+      "parameters": [
+        "Module.Center",
+        "Module.Radius",
+        "Module.Surface Only"
+      ],
+      "sourceHash": 6206764418574066874,
+      "writes": [
+        "Particles.Position"
+      ],
+      "values": {
+        "Particles.Position": [
+          [
+            3188913312,
+            1042907522,
+            1055268357,
+            0
+          ],
+          [
+            1052904427,
+            3193731292,
+            1048237714,
+            0
+          ]
+        ]
+      }
+    },
+    {
+      "id": "c7113c1d-5396-3b8c-e4b6-772c87d8c1e9",
+      "name": "Frame Counter",
+      "parameters": [
+        "Module.Increment Counter"
+      ],
+      "sourceHash": 10524888362005931528,
+      "writes": [
+        "Particles.FrameCounter"
+      ],
+      "values": {
+        "Particles.FrameCounter": [
+          [
+            1067450368,
+            0,
+            0,
+            0
+          ],
+          [
+            1074790400,
+            0,
+            0,
+            0
+          ]
+        ]
+      }
+    },
+    {
+      "id": "c8b9f50c-6e29-b8f9-ef5e-55bdaa7c8d3a",
+      "name": "Inherit Velocity",
+      "parameters": [
+        "Module.Inherit Scale",
+        "Module.Source Velocity"
+      ],
+      "sourceHash": 2593800451664516864,
+      "writes": [
+        "Particles.Velocity"
+      ],
+      "values": {
+        "Particles.Velocity": [
+          [
+            1048576000,
+            1056964608,
+            1061158912,
+            0
+          ],
+          [
+            1067450368,
+            1056964608,
+            1061158912,
+            0
+          ]
+        ]
+      }
+    },
+    {
+      "id": "c8be7674-22e2-a9c4-9f02-bd484e53927f",
+      "name": "Wind Force",
+      "parameters": [
+        "Module.Wind Scale",
+        "Module.Wind Velocity"
+      ],
+      "sourceHash": 932140678014042682,
+      "writes": [
+        "Particles.Velocity"
+      ],
+      "values": {
+        "Particles.Velocity": [
+          [
+            1051092582,
+            1055286886,
+            1059900621,
+            0
+          ],
+          [
+            1067240653,
+            1055286886,
+            1059900621,
+            0
+          ]
+        ]
+      }
+    },
+    {
+      "id": "d209018e-e9a3-dd8f-cf38-054e5bcb4418",
+      "name": "System State",
+      "parameters": [
+        "Engine.SystemAge",
+        "Module.System Duration"
+      ],
+      "sourceHash": 5243265437013856390,
+      "writes": [
+        "Particles.SystemAge",
+        "Particles.SystemNormalizedAge"
+      ],
+      "values": {
+        "Particles.SystemAge": [
+          [
+            0,
+            0,
+            0,
+            0
+          ],
+          [
+            0,
+            0,
+            0,
+            0
+          ]
+        ],
+        "Particles.SystemNormalizedAge": [
+          [
+            0,
+            0,
+            0,
+            0
+          ],
+          [
+            0,
+            0,
+            0,
+            0
+          ]
+        ]
+      }
+    },
+    {
+      "id": "d2b1b169-80e5-42a2-952e-c15012b23a27",
+      "name": "Cylinder Location",
+      "parameters": [
+        "Module.Center",
+        "Module.Height",
+        "Module.Radius",
+        "Module.Surface Only"
+      ],
+      "sourceHash": 13003553318739647316,
+      "writes": [
+        "Particles.Position"
+      ],
+      "values": {
+        "Particles.Position": [
+          [
+            1054205604,
+            3192712674,
+            1049405022,
+            0
+          ],
+          [
+            3201901413,
+            3196059648,
+            3196557628,
+            0
+          ]
+        ]
+      }
+    },
+    {
+      "id": "d5b1e1fc-3c56-a5a6-51ac-41f8c31609cb",
+      "name": "Fade Over Time",
+      "parameters": [
+        "Module.Fade Rate",
+        "Module.Minimum Value",
+        "Module.Target Value"
+      ],
+      "sourceHash": 3874531378139595238,
+      "writes": [
+        "Particles.FadeValue"
+      ],
+      "values": {
+        "Particles.FadeValue": [
+          [
+            1046898278,
+            0,
+            0,
+            0
+          ],
+          [
+            1066401792,
+            0,
+            0,
+            0
+          ]
+        ]
+      }
+    },
+    {
+      "id": "d64133d2-a2f7-280f-4793-6dbac05ac2a0",
+      "name": "Kill Particles in Volume",
+      "parameters": [
+        "Module.Invert",
+        "Module.Volume Center",
+        "Module.Volume Radius"
+      ],
+      "sourceHash": 10652956356040498217,
+      "writes": [
+        "Particles.Lifetime"
+      ],
+      "values": {
+        "Particles.Lifetime": [
+          [
+            3209481421,
+            0,
+            0,
+            0
+          ],
+          [
+            1073741824,
+            0,
+            0,
+            0
+          ]
+        ]
+      }
+    },
+    {
+      "id": "d75de0d3-9789-73ac-2729-6b290c37297f",
+      "name": "Inherit System Velocity",
+      "parameters": [
+        "Module.Inherit Scale",
+        "System.Velocity"
+      ],
+      "sourceHash": 3310199263633172895,
+      "writes": [
+        "Particles.Velocity"
+      ],
+      "values": {
+        "Particles.Velocity": [
+          [
+            1048576000,
+            1056964608,
+            1061158912,
+            0
+          ],
+          [
+            1067450368,
+            1056964608,
+            1061158912,
+            0
+          ]
+        ]
+      }
+    },
+    {
+      "id": "d878b488-144c-d8a3-3060-accac94afd16",
+      "name": "Offset Position",
+      "parameters": [
+        "Module.Offset"
+      ],
+      "sourceHash": 9125430573641907869,
+      "writes": [
+        "Particles.Position"
+      ],
+      "values": {
+        "Particles.Position": [
+          [
+            1048576000,
+            1056964608,
+            1061158912,
+            0
+          ],
+          [
+            1067450368,
+            1056964608,
+            1061158912,
+            0
+          ]
+        ]
+      }
+    },
+    {
+      "id": "da816d94-1add-3c5e-5140-e242825d6f95",
+      "name": "Receive Death Event",
+      "parameters": [
+        "Emitter.EventNormal",
+        "Emitter.EventPosition",
+        "Emitter.EventVelocity",
+        "Module.Random Age",
+        "Module.Spawn Count"
+      ],
+      "sourceHash": 15363858403535429475,
+      "writes": [
+        "Emitter.ReceiveKind",
+        "Emitter.ReceiveNormal",
+        "Emitter.ReceivePosition",
+        "Emitter.ReceiveRandomAge",
+        "Emitter.ReceiveSpawnCount",
+        "Emitter.ReceiveVelocity"
+      ],
+      "values": {
+        "Emitter.ReceiveKind": [
+          [
+            1073741824,
+            0,
+            0,
+            0
+          ],
+          [
+            1073741824,
+            0,
+            0,
+            0
+          ]
+        ],
+        "Emitter.ReceiveNormal": [
+          [
+            0,
+            0,
+            0,
+            0
+          ],
+          [
+            0,
+            0,
+            0,
+            0
+          ]
+        ],
+        "Emitter.ReceivePosition": [
+          [
+            0,
+            0,
+            0,
+            0
+          ],
+          [
+            0,
+            0,
+            0,
+            0
+          ]
+        ],
+        "Emitter.ReceiveRandomAge": [
+          [
+            0,
+            0,
+            0,
+            0
+          ],
+          [
+            0,
+            0,
+            0,
+            0
+          ]
+        ],
+        "Emitter.ReceiveSpawnCount": [
+          [
+            1065353216,
+            0,
+            0,
+            0
+          ],
+          [
+            1065353216,
+            0,
+            0,
+            0
+          ]
+        ],
+        "Emitter.ReceiveVelocity": [
+          [
+            0,
+            0,
+            0,
+            0
+          ],
+          [
+            0,
+            0,
+            0,
+            0
+          ]
+        ]
+      }
+    },
+    {
+      "id": "dd5372b5-d5cd-79a5-4a45-70bf723953f8",
+      "name": "Scale Ribbon Width",
+      "parameters": [
+        "Module.Scale"
+      ],
+      "sourceHash": 10299912606244780273,
+      "writes": [
+        "Particles.RibbonWidth"
+      ],
+      "values": {
+        "Particles.RibbonWidth": [
+          [
+            1048576000,
+            0,
+            0,
+            0
+          ],
+          [
+            1067450368,
+            0,
+            0,
+            0
+          ]
+        ]
+      }
+    },
+    {
+      "id": "e14af7f2-a9da-b88f-8306-706f9d835e7a",
+      "name": "Camera Offset",
+      "parameters": [
+        "Camera.Position",
+        "Module.Offset Scale"
+      ],
+      "sourceHash": 10095174674327901624,
+      "writes": [
+        "Particles.Position"
+      ],
+      "values": {
+        "Particles.Position": [
+          [
+            1056964608,
+            1065353216,
+            1069547520,
+            0
+          ],
+          [
+            1075838976,
+            1065353216,
+            1069547520,
+            0
+          ]
+        ]
+      }
+    },
+    {
+      "id": "e431df4f-faa4-a795-f8f0-f69aff24c2d6",
+      "name": "Collision",
+      "parameters": [
+        "Module.Collision Enabled",
+        "Module.Friction",
+        "Module.Particle Radius",
+        "Module.Restitution"
+      ],
+      "sourceHash": 4784376102636416332,
+      "writes": [
+        "Emitter.CollisionEnabled",
+        "Emitter.CollisionFriction",
+        "Emitter.CollisionRadius",
+        "Emitter.CollisionRestitution"
+      ],
+      "values": {
+        "Emitter.CollisionEnabled": [
+          [
+            1065353216,
+            0,
+            0,
+            0
+          ],
+          [
+            1065353216,
+            0,
+            0,
+            0
+          ]
+        ],
+        "Emitter.CollisionFriction": [
+          [
+            0,
+            0,
+            0,
+            0
+          ],
+          [
+            0,
+            0,
+            0,
+            0
+          ]
+        ],
+        "Emitter.CollisionRadius": [
+          [
+            1028443341,
+            0,
+            0,
+            0
+          ],
+          [
+            1028443341,
+            0,
+            0,
+            0
+          ]
+        ],
+        "Emitter.CollisionRestitution": [
+          [
+            1056964608,
+            0,
+            0,
+            0
+          ],
+          [
+            1056964608,
+            0,
+            0,
+            0
+          ]
+        ]
+      }
+    },
+    {
+      "id": "e64e71f2-4090-fbae-4189-f4f899880999",
+      "name": "Scale Color by Speed",
+      "parameters": [
+        "Module.Max Scale",
+        "Module.Min Scale",
+        "Module.Speed Threshold"
+      ],
+      "sourceHash": 2373644600535864071,
+      "writes": [
+        "Particles.Color"
+      ],
+      "values": {
+        "Particles.Color": [
+          [
+            1048576000,
+            1056964608,
+            1061158912,
+            1065353216
+          ],
+          [
+            1067450368,
+            1056964608,
+            1061158912,
+            1065353216
+          ]
+        ]
+      }
+    },
+    {
+      "id": "e8e72d0f-2fd5-5766-c406-4367f42d1e91",
+      "name": "Spawn Per Frame",
+      "parameters": [
+        "Module.Count"
+      ],
+      "sourceHash": 5214066724443943816,
+      "writes": [
+        "Emitter.SpawnPerFrame"
+      ],
+      "values": {
+        "Emitter.SpawnPerFrame": [
+          [
+            1067450368,
+            0,
+            0,
+            0
+          ],
+          [
+            1074790400,
+            0,
+            0,
+            0
+          ]
+        ]
+      }
+    },
+    {
+      "id": "ee309a4f-5f94-2de6-cc59-adc99376de69",
+      "name": "Add Rotational Velocity",
+      "parameters": [
+        "Module.Rotational Velocity"
+      ],
+      "sourceHash": 12529937019113095869,
+      "writes": [
+        "Particles.RotationalVelocity"
+      ],
+      "values": {
+        "Particles.RotationalVelocity": [
+          [
+            1048576000,
+            1074038766,
+            1061158912,
+            0
+          ],
+          [
+            1067450368,
+            1074038766,
+            1061158912,
+            0
+          ]
+        ]
+      }
+    },
+    {
+      "id": "f06c3db7-5c46-6e77-bf20-d2fde7950e5c",
+      "name": "Torus Location",
+      "parameters": [
+        "Module.Axis",
+        "Module.Center",
+        "Module.Major Radius",
+        "Module.Minor Radius"
+      ],
+      "sourceHash": 15065417928885459861,
+      "writes": [
+        "Particles.Position"
+      ],
+      "values": {
+        "Particles.Position": [
+          [
+            1057297732,
+            1028966472,
+            3196705792,
+            0
+          ],
+          [
+            1058463417,
+            0,
+            3186009342,
+            0
+          ]
+        ]
+      }
+    },
+    {
+      "id": "f0faa60b-9962-c4f5-65fc-7b2cdb13003a",
+      "name": "Dynamic Material Parameters",
+      "parameters": [
+        "Module.Index 0",
+        "Module.Index 1",
+        "Module.Index 2",
+        "Module.Index 3"
+      ],
+      "sourceHash": 5283394188278050944,
+      "writes": [
+        "Particles.DynamicMaterialParameter",
+        "Particles.DynamicMaterialParameter1",
+        "Particles.DynamicMaterialParameter2",
+        "Particles.DynamicMaterialParameter3"
+      ],
+      "values": {
+        "Particles.DynamicMaterialParameter": [
+          [
+            1065353216,
+            1065353216,
+            1065353216,
+            1065353216
+          ],
+          [
+            1065353216,
+            1065353216,
+            1065353216,
+            1065353216
+          ]
+        ],
+        "Particles.DynamicMaterialParameter1": [
+          [
+            1065353216,
+            1065353216,
+            1065353216,
+            1065353216
+          ],
+          [
+            1065353216,
+            1065353216,
+            1065353216,
+            1065353216
+          ]
+        ],
+        "Particles.DynamicMaterialParameter2": [
+          [
+            1065353216,
+            1065353216,
+            1065353216,
+            1065353216
+          ],
+          [
+            1065353216,
+            1065353216,
+            1065353216,
+            1065353216
+          ]
+        ],
+        "Particles.DynamicMaterialParameter3": [
+          [
+            1065353216,
+            1065353216,
+            1065353216,
+            1065353216
+          ],
+          [
+            1065353216,
+            1065353216,
+            1065353216,
+            1065353216
+          ]
+        ]
+      }
+    },
+    {
+      "id": "f5587911-3170-0bd0-28fc-506633139085",
+      "name": "Scale Beam Width",
+      "parameters": [
+        "Module.Scale"
+      ],
+      "sourceHash": 366299176047878023,
+      "writes": [
+        "Particles.RibbonWidth"
+      ],
+      "values": {
+        "Particles.RibbonWidth": [
+          [
+            1048576000,
+            0,
+            0,
+            0
+          ],
+          [
+            1067450368,
+            0,
+            0,
+            0
+          ]
+        ]
+      }
+    },
+    {
+      "id": "f62bcb26-e330-019d-2971-b9c1e101fec8",
+      "name": "Point Attraction Force",
+      "parameters": [
+        "Module.Attraction Strength",
+        "Module.Attractor Position"
+      ],
+      "sourceHash": 13374306175281066666,
+      "writes": [
+        "Particles.PhysicsForce"
+      ],
+      "values": {
+        "Particles.PhysicsForce": [
+          [
+            3223772014,
+            3232160622,
+            3237628196,
+            0
+          ],
+          [
+            3229641674,
+            3217914178,
+            3222936306,
+            0
+          ]
+        ]
+      }
+    },
+    {
+      "id": "f89b3b72-a1ef-b93d-b877-3c481317e85e",
+      "name": "Interpolate Over Time",
+      "parameters": [
+        "Module.Rate Of Change",
+        "Module.Target Value"
+      ],
+      "sourceHash": 14571035764505967891,
+      "writes": [
+        "Particles.InterpolatedValue"
+      ],
+      "values": {
+        "Particles.InterpolatedValue": [
+          [
+            1041865114,
+            0,
+            0,
+            0
+          ],
+          [
+            1066611507,
+            0,
+            0,
+            0
+          ]
+        ]
+      }
+    },
+    {
+      "id": "f8d0887d-8bf5-b95a-aaeb-e70ab333af7b",
+      "name": "Sprite Rotation Rate",
+      "parameters": [
+        "Module.Rotation Rate"
+      ],
+      "sourceHash": 9736614959359048274,
+      "writes": [
+        "Particles.Rotation"
+      ],
+      "values": {
+        "Particles.Rotation": [
+          [
+            1053846718,
+            0,
+            0,
+            0
+          ],
+          [
+            1068768048,
+            0,
+            0,
+            0
+          ]
+        ]
+      }
+    },
+    {
+      "id": "fa67d4eb-3edf-69aa-3102-66e9d66696fb",
+      "name": "Scale Color",
+      "parameters": [
+        "Module.Scale"
+      ],
+      "sourceHash": 1770110793221509667,
+      "writes": [
+        "Particles.Color"
+      ],
+      "values": {
+        "Particles.Color": [
+          [
+            1048576000,
+            1056964608,
+            1061158912,
+            1065353216
+          ],
+          [
+            1067450368,
+            1056964608,
+            1061158912,
+            1065353216
+          ]
+        ]
+      }
+    },
+    {
+      "id": "fd17b5ba-0d94-bdce-5366-2417f91cd21f",
+      "name": "Solve Float Spring Constraint",
+      "parameters": [
+        "Module.Damping",
+        "Module.Rest Value",
+        "Module.Spring"
+      ],
+      "sourceHash": 5511221486615511076,
+      "writes": [
+        "Particles.SpringValue",
+        "Particles.SpringVelocity"
+      ],
+      "values": {
+        "Particles.SpringValue": [
+          [
+            1048408228,
+            0,
+            0,
+            0
+          ],
+          [
+            1067345510,
+            0,
+            0,
+            0
+          ]
+        ],
+        "Particles.SpringVelocity": [
+          [
+            3167538384,
+            0,
+            0,
+            0
+          ],
+          [
+            3187671040,
+            0,
+            0,
+            0
+          ]
+        ]
+      }
+    },
+    {
+      "id": "fe09d072-80ad-da26-2adf-c71b1a3b0651",
+      "name": "Find Kinetic and Potential Energy",
+      "parameters": [
+        "Module.Mass",
+        "Module.Potential Energy"
+      ],
+      "sourceHash": 6056319349597395544,
+      "writes": [
+        "Particles.KineticEnergy",
+        "Particles.TotalEnergy"
+      ],
+      "values": {
+        "Particles.KineticEnergy": [
+          [
+            1054867456,
+            0,
+            0,
+            0
+          ],
+          [
+            1066926080,
+            0,
+            0,
+            0
+          ]
+        ],
+        "Particles.TotalEnergy": [
+          [
+            1054867456,
+            0,
+            0,
+            0
+          ],
+          [
+            1066926080,
+            0,
+            0,
+            0
+          ]
+        ]
+      }
+    },
+    {
+      "id": "fe4b02fe-63d8-9b2f-1d95-9f2b9424c674",
+      "name": "Line Attraction Force",
+      "parameters": [
+        "Module.Attraction Strength",
+        "Module.Line End",
+        "Module.Line Start"
+      ],
+      "sourceHash": 2525536989644980263,
+      "writes": [
+        "Particles.PhysicsForce"
+      ],
+      "values": {
+        "Particles.PhysicsForce": [
+          [
+            3222274048,
+            3230662656,
+            1061158912,
+            0
+          ],
+          [
+            3241410560,
+            3230662656,
+            1061158912,
+            0
+          ]
+        ]
+      }
+    }
+  ],
+  "seed": 73,
+  "spawnIndex": 2,
+  "tick": 11
+}

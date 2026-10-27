@@ -84,6 +84,7 @@ std::string NLS::Utils::PathParser::FileTypeToString(EFileType p_fileType)
 	case NLS::Utils::PathParser::EFileType::UI_DOCUMENT:	return "UI Document";
 	case NLS::Utils::PathParser::EFileType::UI_STYLE:		return "UI Style";
 	case NLS::Utils::PathParser::EFileType::LOCALIZATION:	return "Localization";
+	case NLS::Utils::PathParser::EFileType::VFX: return "Particle System";
 	case NLS::Utils::PathParser::EFileType::UNKNOWN:
 	case NLS::Utils::PathParser::EFileType::COUNT:
 		break;
@@ -98,11 +99,12 @@ NLS::Utils::PathParser::EFileType NLS::Utils::PathParser::GetFileType(const std:
 	if (EndsWith(loweredPath, ".objectgraph.json"))							return EFileType::SCENE;
 
 	std::string ext = ToLower(GetExtension(p_path));
+	if (ext == "vfx") return EFileType::VFX;
 
 	if (ext == "fbx" || ext == "obj" || ext == "gltf" || ext == "glb")			return EFileType::MODEL;
 	else if (ext == "png" || ext == "jpeg" || ext == "jpg" || ext == "tga" ||
 		ext == "bmp" || ext == "dds")											return EFileType::TEXTURE;
-	else if (ext == "shader")													return EFileType::SHADER;
+	else if (ext == "shader" || ext == "shadergraph" || ext == "shaderfunc") return EFileType::SHADER;
 	else if (ext == "mat")														return EFileType::MATERIAL;
 	else if (ext == "wav" || ext == "mp3" || ext == "ogg")						return EFileType::SOUND;
 	else if (ext == "scene")													return EFileType::SCENE;

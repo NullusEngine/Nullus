@@ -1,6 +1,7 @@
 #pragma once
 
 
+#include <memory>
 #include <unordered_set>
 #include <Eventing/Event.h>
 
@@ -10,11 +11,20 @@
 #include "Components/SkyBoxComponent.h"
 #include "Components/MeshRenderer.h"
 #include "Components/UICanvasComponent.h"
+#include "Components/ParticleSystemComponent.h"
+#include "Components/PhysicsColliderComponent.h"
+#include "Components/AnimatorComponent.h"
+#include "Components/SkinnedMeshRenderer.h"
 
 #include "EngineDef.h"
 #include "Reflection/Macros.h"
 #include "Reflection/Object.h"
 #include "SceneSystem/Scene.generated.h"
+
+namespace NLS::Physics
+{
+	class PhysicsWorld;
+}
 
 namespace NLS::Engine::SceneSystem
 {
@@ -42,10 +52,14 @@ namespace NLS::Engine::SceneSystem
 		struct FastAccessComponents
 		{
 			std::vector<Components::MeshRenderer*>		modelRenderers;
+            std::vector<Components::AnimatorComponent*> animators;
+            std::vector<Components::SkinnedMeshRenderer*> skinnedMeshes;
 			std::vector<Components::CameraComponent*>			cameras;
 			std::vector<Components::LightComponent*>			lights;
 			std::vector<Components::SkyBoxComponent*>			skyboxs;
 			std::vector<Components::UICanvasComponent*>			uiCanvases;
+                std::vector<Components::ParticleSystemComponent*> particleSystems;
+			std::vector<Components::PhysicsColliderComponent*>	physicsColliders;
 		};
 
 		/**
@@ -79,6 +93,10 @@ namespace NLS::Engine::SceneSystem
 		* @param p_deltaTime
 		*/
 		void Update(float p_deltaTime);
+            // Script hosts flush scheduled gameplay callbacks between these
+            // stages. Preview hosts can continue to use Update for both.
+            void UpdateGameplay(float p_deltaTime);
+            void UpdateAnimations(float p_deltaTime);
 
 		/**
 		* Update every GameObjects 60 frames per seconds
@@ -181,6 +199,20 @@ namespace NLS::Engine::SceneSystem
 		uint64_t GetRenderContentRevision() const;
 		void MarkRenderContentChanged();
 
+		/**
+		* Returns the PhysX query world owned by this scene, creating it on first
+		* use. Colliders publish into it through the update synchronization point,
+		* so a read view observes a consistent set of bodies.
+		*/
+		const std::shared_ptr<NLS::Physics::PhysicsWorld>& GetPhysicsWorld();
+
+		/** Returns the query world without creating one. */
+		const std::shared_ptr<NLS::Physics::PhysicsWorld>& PeekPhysicsWorld() const { return m_physicsWorld; }
+
+		/** Bumped whenever collider geometry or poses are committed. */
+		void NotifyPhysicsChanged();
+		[[nodiscard]] uint64_t GetPhysicsRevision() const { return m_physicsRevision; }
+
 		void RebuildRuntimeCachesAfterLoad()
 		{
 			if (!m_fastAccessComponentsValid)
@@ -197,10 +229,14 @@ namespace NLS::Engine::SceneSystem
         void DestroyGameObjectSubtree(GameObject& p_GameObject);
         void DestroyCollectedGameObjects(std::vector<GameObject*>& p_GameObjects);
 		void RebuildFastAccessComponents();
+		void SynchronizePhysics();
 		void RequestFastAccessComponentsRebuild();
 		void BeginFastAccessRebuildDeferral();
 		void EndFastAccessRebuildDeferral();
 		bool m_isPlaying = false;
+		std::shared_ptr<NLS::Physics::PhysicsWorld> m_physicsWorld;
+		uint64_t m_physicsRevision = 0;
+		bool m_physicsWorldUnavailable = false;
 		std::vector<GameObject*> m_gameobject;
 
 		FastAccessComponents m_fastAccessComponents;

@@ -25,6 +25,12 @@ SamplerState u_LinearWrapSampler : register(s0, space2);
 
 VSOutput VSMain(VSInput input)
 {
+#if defined(NLS_SKINNED)
+    input.Position=NLSSkinPosition(input.Position,input.skinJoints,input.skinWeights);
+    input.Normal=NLSSkinNormal(input.Normal,input.skinJoints,input.skinWeights);
+    input.Tangent=NLSSkinDirection(input.Tangent,input.skinJoints,input.skinWeights);
+    input.Bitangent=NLSSkinDirection(input.Bitangent,input.skinJoints,input.skinWeights);
+#endif
     VSOutput output;
 
     const float4 worldPosition = mul(u_Model, float4(input.Position, 1.0f));

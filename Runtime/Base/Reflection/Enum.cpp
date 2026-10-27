@@ -75,3 +75,9 @@ namespace NLS::meta
         return m_base ? m_base->GetValue( key ) : Variant( );
     }
 }
+
+namespace NLS::meta
+{
+Variant Enum::FromBits(uint64_t bits) const { return m_base ? m_base->FromBits(bits) : Variant{}; }
+uint64_t Enum::GetBits(const Argument& value) const { return m_base ? m_base->GetBits(value) : 0; }
+}

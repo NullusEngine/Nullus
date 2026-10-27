@@ -1,6 +1,7 @@
 #include "ImGui/imgui.h"
 
 #include "Rendering/DebugSceneRenderer.h"
+#include "Rendering/Assets/DistanceFieldArtifact.h"
 #include "Rendering/PickingRenderPass.h"
 #include "Rendering/SceneRendererFactory.h"
 #include "Core/EditorActions.h"
@@ -790,6 +791,10 @@ void Editor::Panels::SceneView::HandleViewportAssetDragDrop()
         UpdateActivePrefabDragInstance(payload);
         if (payloadView.delivered)
         {
+            m_activeDraggedPrefabDropSceneToken = CaptureActivePrefabDragSceneToken();
+            m_activeDraggedPrefabDropPlacement = ResolveActivePrefabDragPlacement(
+                EDITOR_CONTEXT(inputManager)->GetMousePosition());
+            m_activeDraggedPrefabCommitPending = true;
             if (m_activeDraggedPrefabRootSceneToken.has_value() &&
                 !IsActivePrefabDragSceneTokenCurrent(*m_activeDraggedPrefabRootSceneToken))
             {
@@ -800,13 +805,6 @@ void Editor::Panels::SceneView::HandleViewportAssetDragDrop()
                 m_activeDraggedPrefabRoot->GetTransform() != nullptr)
             {
                 (void)CommitActivePrefabDragInstance();
-            }
-            else
-            {
-                m_activeDraggedPrefabDropSceneToken = CaptureActivePrefabDragSceneToken();
-                m_activeDraggedPrefabDropPlacement = ResolveActivePrefabDragPlacement(
-                    EDITOR_CONTEXT(inputManager)->GetMousePosition());
-                m_activeDraggedPrefabCommitPending = true;
             }
         }
         UI::EndDragDropTarget();
@@ -1029,6 +1027,9 @@ void Editor::Panels::SceneView::TryRefreshActivePrefabDragHotCacheKey()
     }
 
     NLS::Editor::Assets::EditorAssetDragDropBridge bridge(EDITOR_CONTEXT(projectAssetsPath));
+#if defined(NLS_ENABLE_TEST_HOOKS)
+    if (!m_forceGraphOnlyPrefabDragForTesting)
+#endif
     m_activeDraggedPrefabHotCacheKey = bridge.TryFindImportedPrefabHotCacheKey(
         m_activeDraggedPrefabAssetPath,
         m_activeDraggedPrefabSubAssetKey,
@@ -1116,22 +1117,41 @@ bool Editor::Panels::SceneView::CommitActivePrefabDragInstance()
         ClearActivePrefabDragState();
         return false;
     }
+    if (m_activeDraggedPrefabRootAwaitingRendererResources)
+        return false;
     if (m_activeDraggedPrefabHotCacheKey.has_value())
     {
         NLS::Editor::Assets::EditorAssetDragDropBridge bridge(EDITOR_CONTEXT(projectAssetsPath));
         if (!m_activeDraggedPrefabHotCacheKey->rendererArtifactReadinessRequired)
         {
-            m_activeDraggedPrefabHotCacheKey = bridge.TryFindImportedPrefabHotCacheKey(
+            const auto rendererReadyKey =
+#if defined(NLS_ENABLE_TEST_HOOKS)
+                m_forceGraphOnlyPrefabDragForTesting ? std::optional<NLS::Editor::Assets::UnifiedPrefabLoadKey> {} :
+#endif
+                bridge.TryFindImportedPrefabHotCacheKey(
                 m_activeDraggedPrefabAssetPath,
                 m_activeDraggedPrefabSubAssetKey,
                 m_activeDraggedPrefabAssetId,
                 m_activeDraggedPrefabAssetType,
                 NLS::Editor::Assets::UnifiedPrefabReadiness::MeshMaterialTextureReady);
-            if (!m_activeDraggedPrefabHotCacheKey.has_value())
+            if (!rendererReadyKey.has_value())
+            {
+                // The visible graph preview can already use resources owned by
+                // another scene instance while the stricter disk cache is
+                // still being prepared. Delivery must keep that preview alive.
+                return false;
+            }
+            if (!bridge.IsImportedPrefabHotCacheKeyCurrent(
+                    m_activeDraggedPrefabAssetPath,
+                    m_activeDraggedPrefabSubAssetKey,
+                    m_activeDraggedPrefabAssetId,
+                    m_activeDraggedPrefabAssetType,
+                    *m_activeDraggedPrefabHotCacheKey))
             {
                 CancelActivePrefabDragInstance();
                 return false;
             }
+            m_activeDraggedPrefabHotCacheKey = rendererReadyKey;
         }
         if (!bridge.IsImportedPrefabHotCacheKeyCurrent(
                 m_activeDraggedPrefabAssetPath,
@@ -1294,6 +1314,61 @@ Editor::Panels::SceneView::ValidatePrefabDragProxySceneViewLoopForTesting(
     m_disableActivePrefabDragPreloadForTesting = previousPreloadDisabled;
     return validation;
 }
+Editor::Panels::SceneView::PrefabDragDeliveryValidation
+Editor::Panels::SceneView::ValidatePrefabDragDeliveryForTesting(
+    const NLS::Editor::Assets::EditorAssetDragPayload& payload,
+    const Maths::Vector3& placement)
+{
+    PrefabDragDeliveryValidation validation;
+    CancelActivePrefabDragInstance();
+    const auto previousPlacement = m_activePrefabDragPlacementOverrideForTesting;
+    m_activePrefabDragPlacementOverrideForTesting = placement;
+    m_disableActivePrefabDragPreloadForTesting = true;
+    m_forceGraphOnlyPrefabDragForTesting = true;
+    NLS::Editor::Assets::EditorAssetDragDropBridge bridge(EDITOR_CONTEXT(projectAssetsPath));
+    auto request = NLS::Editor::Assets::MakeSceneRestoreUnifiedPrefabLoadRequest(
+        NLS::Editor::Assets::NormalizePrefabSourceIdentity(
+            EDITOR_CONTEXT(projectPath),
+            NLS::Editor::Assets::GetEditorAssetDragPayloadPath(payload),
+            NLS::Editor::Assets::GetEditorAssetDragPayloadSubAssetKey(payload),
+            NLS::Editor::Assets::GetEditorAssetDragPayloadAssetId(payload)),
+        "prefab-drag-delivery-validation");
+    request.requiredReadiness = NLS::Editor::Assets::UnifiedPrefabReadiness::PrefabGraphOnly;
+    (void)bridge.PreloadPreparedPrefabHotCache(request);
+
+    UI::DragDropTargetPayloadForTesting targetPayload;
+    targetPayload.type = NLS::Editor::Assets::kEditorAssetDragPayloadType;
+    targetPayload.bytes.resize(sizeof(payload));
+    std::memcpy(targetPayload.bytes.data(), &payload, sizeof(payload));
+    targetPayload.targetActive = true;
+    UI::SetDragDropTargetPayloadForTesting(targetPayload);
+    HandleViewportAssetDragDrop();
+    auto* previewRoot = m_activeDraggedPrefabRoot;
+    targetPayload.delivered = true;
+    UI::SetDragDropTargetPayloadForTesting(targetPayload);
+    HandleViewportAssetDragDrop();
+    validation.previewRetainedAfterDelivery = previewRoot != nullptr &&
+        m_activeDraggedPrefabRoot == previewRoot && m_activeDraggedPrefabCommitPending;
+    targetPayload.targetActive = false;
+    UI::SetDragDropTargetPayloadForTesting(targetPayload);
+    HandleViewportAssetDragDrop();
+    validation.previewRetainedOutsideTarget = validation.previewRetainedAfterDelivery &&
+        m_activeDraggedPrefabRoot == previewRoot && m_activeDraggedPrefabCommitPending;
+
+    m_forceGraphOnlyPrefabDragForTesting = false;
+    request.requiredReadiness = NLS::Editor::Assets::UnifiedPrefabReadiness::MeshMaterialTextureReady;
+    (void)bridge.PreloadPreparedPrefabHotCache(request);
+    if (m_activeDraggedPrefabPayload.has_value())
+    {
+        UpdateActivePrefabDragInstance(payload);
+        validation.committed = CommitActivePrefabDragInstance();
+    }
+    UI::ClearDragDropTargetPayloadForTesting();
+    CancelActivePrefabDragInstance();
+    m_disableActivePrefabDragPreloadForTesting = false;
+    m_activePrefabDragPlacementOverrideForTesting = previousPlacement;
+    return validation;
+}
 #endif
 
 void Editor::Panels::SceneView::EnsureRenderer()
@@ -1332,9 +1407,7 @@ void Editor::Panels::SceneView::Update(float p_deltaTime)
     const Maths::Vector2 mousePosition = EDITOR_CONTEXT(inputManager)->GetMousePosition();
     const bool shortcutsWindowOpen = Editor::Core::DoesShortcutSettingsWindowBlockSceneInput();
     const bool viewportInputAvailable = HasViewportImageInputBounds();
-    const bool mouseOverSceneView = viewportInputAvailable &&
-        (IsMouseWithinView(mousePosition) ||
-            (m_image != nullptr && m_image->WasHoveredLastDraw()));
+    const bool mouseOverSceneView = viewportInputAvailable && IsMouseHoveringView(mousePosition);
     const bool sceneViewActive = !shortcutsWindowOpen && (IsFocused() || IsHovered() || mouseOverSceneView);
     const bool isAnyItemActive = NLS_SERVICE(UI::UIManager).IsAnyItemActive();
     const bool blockCameraInput = ShouldSceneViewBlockCameraInput(
@@ -1523,7 +1596,9 @@ bool Editor::Panels::SceneView::ShouldUseStaticFrameCache() const
 {
     // Scene render revisions are part of the cache key and are raised by
     // render-affecting component changes, including runtime script updates.
-    return Settings::EditorSettings::GetRenderingSettingsObject().enableSceneViewStaticFrameCache;
+    return m_distanceFieldDebug.visualization == Render::DistanceField::DistanceFieldVisualization::Off &&
+        !Render::DistanceField::DistanceFieldSystem::HasPendingWork() &&
+        Settings::EditorSettings::GetRenderingSettingsObject().enableSceneViewStaticFrameCache;
 }
 
 uint64_t Editor::Panels::SceneView::BuildStaticFrameCacheKey(
@@ -1593,6 +1668,9 @@ uint64_t Editor::Panels::SceneView::BuildStaticFrameCacheKey(
     HashSceneViewCacheValue(seed, focusKey);
     HashSceneViewCacheValue(seed, selectionKey);
     HashSceneViewCacheValue(seed, sceneDrawableKey);
+    HashSceneViewCacheValue(seed, Render::DistanceField::DistanceFieldSystem::RuntimeRevision());
+    HashSceneViewCacheValue(seed, Render::DistanceField::GetDistanceFieldSourceRevision());
+    HashSceneViewCacheValue(seed, m_distanceFieldDebugRevision);
     return seed;
 }
 
@@ -1707,6 +1785,66 @@ void Editor::Panels::SceneView::DrawPreRenderViewportOverlay()
 {
     if (ShouldApplySceneMutationFromViewportOverlay(ViewportOverlayLifecyclePhase::BeforeViewRender))
         DrawViewportOverlay();
+    DrawDistanceFieldControls();
+}
+
+void Editor::Panels::SceneView::DrawDistanceFieldControls()
+{
+    namespace df = Render::DistanceField;
+    auto* renderer = dynamic_cast<Engine::Rendering::BaseSceneRenderer*>(m_renderer.get());
+    if (!renderer) return;
+    const auto imageMin = HasViewportImageBounds() ? GetViewportImageMin() : GetCurrentViewportImageMin();
+    const auto cursor = ImGui::GetCursorScreenPos();
+    ImGui::SetCursorScreenPos(ImVec2(imageMin.x + 8, imageMin.y + 8));
+    ImGui::BeginChild("##DistanceFieldToolbar", ImVec2(145, 28), ImGuiChildFlags_None,
+        ImGuiWindowFlags_NoBackground | ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
+    if (ImGui::Button("Distance Fields")) ImGui::OpenPopup("Distance Fields Settings");
+    m_gizmoInteraction.isHovered = m_gizmoInteraction.isHovered || ImGui::IsWindowHovered() || ImGui::IsPopupOpen("Distance Fields Settings");
+    bool changed = false;
+    m_distanceFieldDebug.forceRebuild = false;
+    if (ImGui::BeginPopup("Distance Fields Settings"))
+    {
+        int visualization = static_cast<int>(m_distanceFieldDebug.visualization);
+        int channel = static_cast<int>(m_distanceFieldDebug.channel);
+        if (ImGui::Combo("View", &visualization, "Scene\0Mesh Distance Field\0Global Distance Field\0"))
+        { m_distanceFieldDebug.visualization = static_cast<df::DistanceFieldVisualization>(visualization); changed = true; }
+        if (ImGui::Combo("Display", &channel, "Surface\0Trace Steps\0Signed Slice\0Normals\0Clipmaps\0Pages\0Residency\0"))
+        { m_distanceFieldDebug.channel = static_cast<df::DistanceFieldDebugChannel>(channel); changed = true; }
+        if (m_distanceFieldDebug.channel == df::DistanceFieldDebugChannel::SignedSlice ||
+            (m_distanceFieldDebug.channel == df::DistanceFieldDebugChannel::Residency &&
+             m_distanceFieldDebug.visualization == df::DistanceFieldVisualization::Global))
+            changed = ImGui::DragFloat("Slice Height", &m_distanceFieldDebug.slicePosition, .05f) || changed;
+        changed = ImGui::Checkbox("Mostly Static Cache", &m_distanceFieldDebug.mostlyStaticOnly) || changed;
+        if (ImGui::Button("Rebuild Distance Fields"))
+        { m_distanceFieldDebug.forceRebuild = true; changed = true; }
+        auto& project = EDITOR_CONTEXT(projectSettings);
+        bool generation = project.GetOrDefault<bool>("generate_mesh_distance_fields", false);
+        if (ImGui::Checkbox("Generate Mesh Distance Fields", &generation))
+        {
+            if (project.IsKeyExisting("generate_mesh_distance_fields")) project.Set<bool>("generate_mesh_distance_fields", generation);
+            else project.Add<bool>("generate_mesh_distance_fields", generation);
+            project.Rewrite();
+        }
+        ImGui::TextDisabled("Reimport models after changing generation settings.");
+        const auto stats = renderer->GetDistanceFieldStats();
+        ImGui::Separator();
+        ImGui::Text("Objects: %llu  Bricks: %llu", static_cast<unsigned long long>(stats.objects), static_cast<unsigned long long>(stats.residentBricks));
+        ImGui::Text("Pages: %llu  Dirty: %llu", static_cast<unsigned long long>(stats.residentPages), static_cast<unsigned long long>(stats.dirtyPages));
+        ImGui::Text("Mesh / Pages: %.1f / %.1f MiB", stats.meshBytes / 1048576.0, stats.pageBytes / 1048576.0);
+        ImGui::Text("Upload: %.2f MiB  Metadata: %.2f MiB", stats.uploadedBytes / 1048576.0, stats.metadataBytes / 1048576.0);
+        ImGui::Text("Pending: %llu  Failed Loads: %llu  Allocation Failures: %llu", static_cast<unsigned long long>(stats.pendingLoads),
+            static_cast<unsigned long long>(stats.failedLoads), static_cast<unsigned long long>(stats.allocationFailures));
+        ImGui::Text("Allocation Retries: %llu", static_cast<unsigned long long>(stats.allocationRetries));
+        ImGui::Text("Prepare: %.2f ms", stats.updateCpuMs);
+        if (stats.gpuUpdateMs) ImGui::Text("GPU (last update): %.3f ms", *stats.gpuUpdateMs);
+        else ImGui::TextDisabled("GPU (last update): --");
+        if (!stats.diagnostic.empty()) ImGui::TextWrapped("%s", stats.diagnostic.c_str());
+        ImGui::EndPopup();
+    }
+    ImGui::EndChild();
+    ImGui::SetCursorScreenPos(cursor);
+    if (changed) ++m_distanceFieldDebugRevision;
+    renderer->SetDistanceFieldDebugSettings(m_distanceFieldDebug);
 }
 
 void Editor::Panels::SceneView::OnAfterDrawWidgets()
@@ -2222,7 +2360,7 @@ bool Editor::Panels::SceneView::ShouldRequestPickingFrame() const
 
     auto& inputManager = *EDITOR_CONTEXT(inputManager);
     const Maths::Vector2 screenMousePos = inputManager.GetMousePosition();
-    const bool mouseOverView = IsMouseWithinView(screenMousePos);
+    const bool mouseOverView = IsMouseHoveringView(screenMousePos);
     if (!mouseOverView || IsResizing())
     {
         if (inputManager.IsMouseButtonPressed(EMouseButton::MOUSE_BUTTON_LEFT) ||
@@ -2352,7 +2490,7 @@ void Editor::Panels::SceneView::HandleGameObjectPicking()
 
     auto& inputManager = *EDITOR_CONTEXT(inputManager);
     const Maths::Vector2 screenMousePos = inputManager.GetMousePosition();
-    const bool mouseOverView = IsMouseWithinView(screenMousePos);
+    const bool mouseOverView = IsMouseHoveringView(screenMousePos);
 
     if (inputManager.IsMouseButtonReleased(EMouseButton::MOUSE_BUTTON_LEFT))
     {

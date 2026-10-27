@@ -31,6 +31,8 @@ namespace NLS::meta
 
         std::string GetKey(const Argument &value) const;
         Variant GetValue(const std::string &key) const;
+        Variant FromBits(uint64_t bits) const;
+        uint64_t GetBits(const Argument& value) const;
 
     private:
         friend struct TypeData;

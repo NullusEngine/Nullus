@@ -700,7 +700,7 @@ namespace
             Render::RHI::RHIRenderPassDepthStencilAttachmentDesc depthAttachment;
             depthAttachment.depthLoadOp = input.clearDepth ? Render::RHI::LoadOp::Clear : Render::RHI::LoadOp::Load;
             depthAttachment.depthStoreOp = Render::RHI::StoreOp::Store;
-            depthAttachment.stencilLoadOp = input.clearStencil ? Render::RHI::LoadOp::Clear : Render::RHI::LoadOp::DontCare;
+            depthAttachment.stencilLoadOp = input.clearStencil ? Render::RHI::LoadOp::Clear : Render::RHI::LoadOp::Load;
             depthAttachment.stencilStoreOp = Render::RHI::StoreOp::Store;
             depthAttachment.clearValue.depth = 1.0f;
             depthAttachment.clearValue.stencil = 0u;
@@ -737,20 +737,30 @@ namespace
                 renderPassDesc.depthStencilAttachment->view != nullptr &&
                 renderPassDesc.depthStencilAttachment->view->GetTexture() != nullptr)
             {
-                const auto depthStencilState = input.writesDepthStencilAttachment
+                auto depthStencilState = input.writesDepthStencilAttachment
                     ? Render::RHI::ResourceState::DepthWrite
                     : Render::RHI::ResourceState::DepthRead;
-                const auto depthStencilDestinationAccess = input.writesDepthStencilAttachment
+                auto depthStencilDestinationAccess = input.writesDepthStencilAttachment
                     ? (Render::RHI::AccessMask::DepthStencilRead |
                         Render::RHI::AccessMask::DepthStencilWrite)
                     : Render::RHI::AccessMask::DepthStencilRead;
+                auto depthStencilStages = Render::RHI::PipelineStageMask::DepthStencil;
+                if (!input.writesDepthStencilAttachment)
+                    for (const auto& access : input.textureResourceAccesses)
+                        if (access.texture == renderPassDesc.depthStencilAttachment->view->GetTexture() &&
+                            (static_cast<uint32_t>(access.state) & static_cast<uint32_t>(Render::RHI::ResourceState::ShaderRead)) != 0)
+                        {
+                            depthStencilState = depthStencilState | Render::RHI::ResourceState::ShaderRead;
+                            depthStencilDestinationAccess = depthStencilDestinationAccess | access.access;
+                            depthStencilStages = depthStencilStages | access.stages;
+                        }
                 attachmentBarriers.textureBarriers.push_back({
                     renderPassDesc.depthStencilAttachment->view->GetTexture(),
                     Render::RHI::ResourceState::Unknown,
                     depthStencilState,
                     renderPassDesc.depthStencilAttachment->view->GetDesc().subresourceRange,
                     Render::RHI::PipelineStageMask::AllCommands,
-                    Render::RHI::PipelineStageMask::DepthStencil,
+                    depthStencilStages,
                     Render::RHI::AccessMask::MemoryRead | Render::RHI::AccessMask::MemoryWrite,
                     depthStencilDestinationAccess
                 });
@@ -1262,14 +1272,17 @@ namespace
         const RenderPassCommandInput& passInput,
         const RecordedDrawCommandInput& drawCommand)
     {
+        const bool proceduralIndirect = drawCommand.indirectArguments != nullptr && drawCommand.mesh == nullptr;
+        const bool indexedIndirect = drawCommand.indirectArguments != nullptr && drawCommand.mesh != nullptr;
         if (drawCommand.pipeline == nullptr ||
-            drawCommand.materialBindingSet == nullptr ||
-            drawCommand.mesh == nullptr)
+            (!proceduralIndirect && !indexedIndirect && (drawCommand.materialBindingSet == nullptr || drawCommand.mesh == nullptr)))
         {
             return false;
         }
 
         const auto& pipelineDesc = drawCommand.pipeline->GetDesc();
+        if ((proceduralIndirect || indexedIndirect) && PipelineRequiresBindingSet(pipelineDesc,::NLS::Render::RHI::BindingPointMap::kMaterialDescriptorSet) &&
+            !drawCommand.materialBindingSet) return false;
         const bool requiresObjectBindingSet = PipelineRequiresBindingSet(
             pipelineDesc,
             ::NLS::Render::RHI::BindingPointMap::kObjectDescriptorSet);
@@ -1304,7 +1317,24 @@ namespace
             commandBuffer.BindBindingSet(::NLS::Render::RHI::BindingPointMap::kObjectDescriptorSet, drawCommand.objectBindingSet);
         if (drawCommand.passBindingSet != nullptr)
             commandBuffer.BindBindingSet(::NLS::Render::RHI::BindingPointMap::kPassDescriptorSet, drawCommand.passBindingSet);
-        commandBuffer.BindBindingSet(::NLS::Render::RHI::BindingPointMap::kMaterialDescriptorSet, drawCommand.materialBindingSet);
+        if (drawCommand.materialBindingSet)
+            commandBuffer.BindBindingSet(::NLS::Render::RHI::BindingPointMap::kMaterialDescriptorSet, drawCommand.materialBindingSet);
+        if (proceduralIndirect)
+        {
+            const auto result = commandBuffer.DrawIndirect(drawCommand.indirectArguments,drawCommand.indirectArgumentOffset);
+            if (!result.Succeeded()) NLS_LOG_ERROR(result.message);
+            return result.Succeeded();
+        }
+        if (indexedIndirect)
+        {
+            const auto vertex = drawCommand.mesh->GetVertexBuffer(), indices = drawCommand.mesh->GetIndexBuffer();
+            if (!vertex || !indices || !drawCommand.mesh->GetIndexCount()) return false;
+            commandBuffer.BindVertexBuffer(0,{vertex,0,drawCommand.mesh->GetVertexStride()});
+            commandBuffer.BindIndexBuffer({indices,0,drawCommand.mesh->GetIndexType()});
+            const auto result = commandBuffer.DrawIndexedIndirect(drawCommand.indirectArguments,drawCommand.indirectArgumentOffset);
+            if (!result.Succeeded()) NLS_LOG_ERROR(result.message);
+            return result.Succeeded();
+        }
         commandBuffer.PushConstants(
             ::NLS::Render::Resources::kIndexedObjectDataPushConstantStageMask,
             0u,
@@ -1676,7 +1706,7 @@ namespace
 
             barriers.textureBarriers.push_back({
                 transition.texture,
-                transition.before,
+                transition.useTrackedBeforeState ? transition.texture->GetState() : transition.before,
                 transition.after,
                 transition.subresourceRange,
                 transition.sourceStages,
@@ -1702,6 +1732,13 @@ namespace
         {
             if (dispatchInput.pipeline == nullptr)
                 continue;
+            if (dispatchInput.timestampBegin && !commandBuffer.WriteTimestamp(dispatchInput.timestampBegin, 0).Succeeded())
+                throw std::runtime_error("Cannot record GPU timestamp begin");
+
+            if (dispatchInput.uploadContext != nullptr)
+                for (const auto& upload : dispatchInput.textureUploadsBefore)
+                    if (!dispatchInput.uploadContext->SubmitUploadTexture(commandBuffer, upload).accepted)
+                        throw std::runtime_error("Recorded compute texture upload failed: " + dispatchInput.debugName);
 
             if (recordShaderReadBarriers)
                 RecordShaderReadBarriersForBuffers(commandBuffer, dispatchInput.shaderReadBuffersBefore);
@@ -1715,10 +1752,37 @@ namespace
                     commandBuffer.BindBindingSet(bindingSet.setIndex, bindingSet.bindingSet);
             }
 
-            commandBuffer.Dispatch(dispatchInput.groupCountX, dispatchInput.groupCountY, dispatchInput.groupCountZ);
+            if (dispatchInput.indirectArguments)
+            {
+                const auto indirect = commandBuffer.DispatchIndirect(dispatchInput.indirectArguments, dispatchInput.indirectArgumentOffset);
+                if (!indirect.Succeeded()) throw std::runtime_error(indirect.message);
+            }
+            else
+                commandBuffer.Dispatch(dispatchInput.groupCountX, dispatchInput.groupCountY, dispatchInput.groupCountZ);
             RecordUavBarriersForBuffers(commandBuffer, dispatchInput.uavBarrierBuffersAfter);
             RecordShaderReadAfterWriteBarriersForBuffers(commandBuffer, dispatchInput.shaderReadBuffersAfter);
+            if (!dispatchInput.exportedBufferVisibilityTransitions.empty())
+            {
+                Render::RHI::RHIBarrierDesc barriers;
+                for (const auto& transition : dispatchInput.exportedBufferVisibilityTransitions)
+                    barriers.bufferBarriers.push_back({transition.buffer,transition.before,transition.after,
+                        transition.sourceStages,transition.destinationStages,transition.sourceAccess,transition.destinationAccess});
+                commandBuffer.Barrier(barriers);
+            }
+            RecordTextureVisibilityTransitions(commandBuffer, dispatchInput.textureCopyTransitionsBefore);
+            for (const auto& copy : dispatchInput.textureCopiesAfter)
+                commandBuffer.CopyTexture(copy);
             RecordTextureVisibilityTransitions(commandBuffer, dispatchInput.exportedTextureVisibilityTransitions);
+            if (dispatchInput.timestampEnd)
+            {
+                Render::RHI::RHIBarrierDesc barrier;
+                barrier.bufferBarriers.push_back({dispatchInput.timestampEnd->Results(), Render::RHI::ResourceState::Unknown,
+                    Render::RHI::ResourceState::CopyDst, Render::RHI::PipelineStageMask::AllCommands,
+                    Render::RHI::PipelineStageMask::Copy, Render::RHI::AccessMask::MemoryWrite, Render::RHI::AccessMask::CopyWrite});
+                commandBuffer.Barrier(barrier);
+                if (!commandBuffer.WriteTimestamp(dispatchInput.timestampEnd, 1).Succeeded())
+                    throw std::runtime_error("Cannot resolve GPU timestamps");
+            }
             ++recordedDispatchCount;
         }
 
@@ -2294,6 +2358,14 @@ uint64_t Detail::RecordComputeDispatches(
         commandBuffer,
         dispatchInputs,
         recordShaderReadBarriers);
+}
+
+uint64_t RecordComputeDispatchInputs(
+    Render::RHI::RHICommandBuffer& commandBuffer,
+    const std::vector<RecordedComputeDispatchInput>& dispatchInputs,
+    const bool recordShaderReadBarriers)
+{
+    return Detail::RecordComputeDispatches(commandBuffer,dispatchInputs,recordShaderReadBarriers);
 }
 
 bool Detail::SupportsThreadedFoundationExecution(const DriverImpl& impl)
@@ -4966,6 +5038,8 @@ void Driver::StartThreadedRenderingWorkers()
         0u,
         reserveDedicatedRhiLane);
     taskGraphConfig.workerCount = threadBudget.taskGraphWorkerCount;
+    m_impl->jobsForegroundWorkerCount = threadBudget.jobsForegroundWorkerCount;
+    m_impl->jobsBackgroundWorkerCount = threadBudget.jobsBackgroundWorkerCount;
     taskGraphConfig.enableDiagnostics = true;
     if (!NLS::Base::TaskGraph::InitializeGlobalTaskGraph(taskGraphConfig))
     {
@@ -5138,6 +5212,16 @@ bool Driver::IsThreadedRenderingEnabled() const
 std::string Driver::GetRhiThreadModeSummary() const
 {
     return m_impl != nullptr ? m_impl->rhiThreadModeSummary : std::string {};
+}
+
+uint32_t Driver::GetBudgetedJobsForegroundWorkerCount() const
+{
+    return m_impl != nullptr ? m_impl->jobsForegroundWorkerCount : 0u;
+}
+
+uint32_t Driver::GetBudgetedJobsBackgroundWorkerCount() const
+{
+    return m_impl != nullptr ? m_impl->jobsBackgroundWorkerCount : 0u;
 }
 
 }

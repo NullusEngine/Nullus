@@ -22,6 +22,8 @@ namespace NLS::Editor::Core
         Brand,
         Font,
         Icon,
+        Texture,
+        SceneTexture,
         HelperModel,
         Shader,
         Layout,

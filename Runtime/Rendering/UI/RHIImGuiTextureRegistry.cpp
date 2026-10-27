@@ -168,6 +168,7 @@ namespace NLS::Render::UI
         const std::shared_ptr<RHI::RHIBindingLayout>& bindingLayout,
         const std::shared_ptr<RHI::RHISampler>& sampler,
         const UiTextureId id,
+        const uint64_t frameId,
         std::string& errorMessage)
     {
         if (!id.IsValid())
@@ -188,13 +189,14 @@ namespace NLS::Render::UI
         std::lock_guard lock(m_mutex);
         const auto found = m_entries.find(id.value);
         if (found == m_entries.end() ||
-            found->second.id.generation != id.generation ||
-            found->second.textureView == nullptr ||
-            found->second.releaseRequested)
+            !IsEntrySampledForFrame(found->second, id, frameId))
         {
             return true;
         }
 
+        // Transient preview images can be retired before the render thread
+        // first prepares their UI snapshot. They still need a binding for
+        // every pending frame allowed by ResolveForFrame's retirement boundary.
         auto& entry = found->second;
         const uint64_t deviceCacheIdentity = device.GetCacheIdentity();
         if (entry.bindingSet != nullptr &&

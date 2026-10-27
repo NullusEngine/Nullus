@@ -12,6 +12,7 @@
 #include "Vector3.h"
 #include "Vector3Int.h"
 #include "Vector4.h"
+#include "Matrix4.h"
 
 namespace NLS::Maths
 {
@@ -26,6 +27,7 @@ NLS_META_EXTERNAL_TYPE_NAME(NLS::Maths::Vector3Int)
 NLS_META_EXTERNAL_TYPE_NAME(NLS::Maths::RectInt)
 NLS_META_EXTERNAL_TYPE_NAME(NLS::Maths::Bounds)
 NLS_META_EXTERNAL_TYPE_NAME(NLS::Maths::BoundsInt)
+NLS_META_EXTERNAL_TYPE_NAME(NLS::Maths::Matrix4)
 
 inline void RegisterMathExternalReflection(
     NLS::meta::ReflectionDatabase& db,
@@ -111,6 +113,13 @@ inline void RegisterMathExternalReflection(
     NLS_META_EXTERNAL_BEGIN(NLS::Maths::Bounds)
         NLS_META_EXTERNAL_FIELD(NLS::Maths::Vector3, center);
         NLS_META_EXTERNAL_FIELD(NLS::Maths::Vector3, size);
+    NLS_META_EXTERNAL_END();
+
+    NLS_META_EXTERNAL_BEGIN(NLS::Maths::Matrix4)
+        NLS_META_EXTERNAL_FIELD_NAMED(NLS::Maths::Vector4,"row0",&MetaExternalType::GetRow0,&MetaExternalType::SetRow0);
+        NLS_META_EXTERNAL_FIELD_NAMED(NLS::Maths::Vector4,"row1",&MetaExternalType::GetRow1,&MetaExternalType::SetRow1);
+        NLS_META_EXTERNAL_FIELD_NAMED(NLS::Maths::Vector4,"row2",&MetaExternalType::GetRow2,&MetaExternalType::SetRow2);
+        NLS_META_EXTERNAL_FIELD_NAMED(NLS::Maths::Vector4,"row3",&MetaExternalType::GetRow3,&MetaExternalType::SetRow3);
     NLS_META_EXTERNAL_END();
 
     NLS_META_EXTERNAL_BEGIN(NLS::Maths::BoundsInt)

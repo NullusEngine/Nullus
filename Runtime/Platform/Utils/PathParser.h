@@ -25,6 +25,7 @@ namespace NLS::Utils
 			UI_DOCUMENT,
 			UI_STYLE,
 			LOCALIZATION,
+			VFX,
 			COUNT
 		};
 

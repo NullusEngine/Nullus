@@ -1,0 +1,155 @@
+{
+  "category": "Orientation",
+  "deprecated": false,
+  "description": "Sets the per-particle sprite facing and alignment vectors.",
+  "exposedVersion": "20978871-c5bb-931e-ee28-abf7d513a973",
+  "id": "138e3fcc-f14c-4bfe-ff58-bcefcad9f3c7",
+  "kind": "Module",
+  "name": "Sprite Facing and Alignment",
+  "suggested": false,
+  "version": 2,
+  "versions": [
+    {
+      "attributes": [
+        {
+          "default": [
+            0.0,
+            1.0,
+            0.0,
+            0.0
+          ],
+          "name": "Particles.SpriteFacing",
+          "type": 2
+        },
+        {
+          "default": [
+            0.0,
+            0.0,
+            0.0,
+            0.0
+          ],
+          "name": "Particles.SpriteAlignment",
+          "type": 2
+        }
+      ],
+      "calls": [],
+      "capabilities": 0,
+      "description": "Sets the per-particle sprite facing and alignment vectors.",
+      "graph": {
+        "id": "2b59c1f3-b4d4-4874-a2a7-4fdf1954a0b6",
+        "nextNodeId": 5,
+        "nodes": [
+          {
+            "id": 1,
+            "inputs": [],
+            "name": "Module.Facing",
+            "operation": 2,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 2,
+            "value": [
+              0.0,
+              1.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 2,
+            "inputs": [],
+            "name": "Module.Alignment",
+            "operation": 2,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 2,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 3,
+            "inputs": [
+              2
+            ],
+            "name": "Particles.SpriteAlignment",
+            "operation": 22,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 2,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": 4,
+            "inputs": [
+              1
+            ],
+            "name": "Particles.SpriteFacing",
+            "operation": 22,
+            "position": [
+              0.0,
+              0.0
+            ],
+            "type": 2,
+            "value": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          }
+        ],
+        "stage": 1
+      },
+      "id": "20978871-c5bb-931e-ee28-abf7d513a973",
+      "inputs": [
+        {
+          "default": [
+            0.0,
+            1.0,
+            0.0,
+            0.0
+          ],
+          "id": "23a033c7-21e5-629f-2097-f77e4a6d8970",
+          "name": "Facing",
+          "static": false,
+          "type": 2
+        },
+        {
+          "default": [
+            0.0,
+            0.0,
+            0.0,
+            0.0
+          ],
+          "id": "43e12730-8767-fece-5a2f-7916057da6c3",
+          "name": "Alignment",
+          "static": false,
+          "type": 2
+        }
+      ],
+      "major": 1,
+      "minor": 0,
+      "provides": [],
+      "requiresBefore": [],
+      "stages": [
+        5
+      ],
+      "switches": []
+    }
+  ],
+  "visible": true
+}

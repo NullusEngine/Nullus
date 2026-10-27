@@ -139,7 +139,10 @@ enum class InspectorPropertyKind : uint8_t
     Struct,
     Array,
     ObjectReference,
-    ScriptValue
+    ScriptValue,
+    AnimationCurve,
+    Gradient,
+    Matrix
 };
 
 enum class PropertyValueState : uint8_t
@@ -167,6 +170,7 @@ struct EditorPropertyMetadata
     std::optional<float> rangeMax;
     std::optional<float> min;
     std::optional<float> max;
+    std::optional<float> step;
     bool multiline = false;
     bool readOnly = false;
     bool hideInInspector = false;
@@ -176,6 +180,11 @@ struct EditorPropertyMetadata
     // Optional explicit PropertyDrawer key. This is the engine-style escape
     // hatch for a field whose storage type needs a domain-specific editor.
     std::string customDrawer;
+    // Typed decimal limits avoid binary32 rounding for int64/uint64 fields.
+    std::optional<std::string> numericMinimum, numericMaximum;
+    std::string visibleIf, enabledIf;
+    std::string codeLanguage;
+    bool operator==(const EditorPropertyMetadata&) const = default;
 };
 
 struct InspectorPropertyChoice
@@ -216,6 +225,7 @@ struct PropertyNode
     uint64_t structuralVersion = 0u;
 
     std::vector<PropertyNode> children;
+    std::string ownerTypeName;
 };
 
 // Disposable Inspector chrome and UI projection. This is deliberately not a

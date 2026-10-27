@@ -1,0 +1,351 @@
+{
+  "format": "Nullus.ObjectGraph.Scene",
+  "version": 2,
+  "documentId": "e417ba17-c47c-5f8a-91ae-6e524d616d6c",
+  "root": "61b072cd-b771-5570-8b82-72f36421ad50",
+  "objects": [
+    {
+      "id": "e266b142-4948-564d-bf7c-c040dd60b216",
+      "fileID": 11,
+      "type": "NLS::Engine::Components::TransformComponent",
+      "debugName": "Character Transform",
+      "state": "Alive",
+      "properties": {
+        "enabled": true,
+        "localPosition": {
+          "x": 0,
+          "y": 0,
+          "z": 0
+        },
+        "localRotation": {
+          "x": 0,
+          "y": 0,
+          "z": 0,
+          "w": 1
+        },
+        "localScale": {
+          "x": 1,
+          "y": 1,
+          "z": 1
+        }
+      }
+    },
+    {
+      "id": "a3891916-40a8-5095-97f0-0f3b7020e7ad",
+      "fileID": 12,
+      "type": "NLS::Engine::Components::AnimatorComponent",
+      "debugName": "Character Animator",
+      "state": "Alive",
+      "properties": {
+        "enabled": true,
+        "animation": {
+          "fileID": 1447315818300937752,
+          "guid": "700d33f8-f9a6-5e0d-bdee-e88264ab6095",
+          "type": 2,
+          "filePath": "animation:parser/animation/Move"
+        },
+        "playOnAwake": true,
+        "playbackSpeed": 1,
+        "looping": true
+      }
+    },
+    {
+      "id": "9ca37112-df28-5b4c-b87a-1b4c303f3b62",
+      "fileID": 10,
+      "type": "NLS::Engine::GameObject",
+      "debugName": "Character",
+      "state": "Alive",
+      "properties": {
+        "name": "Character",
+        "active": true,
+        "tag": "Untagged",
+        "layer": 0,
+        "parent": null,
+        "components": [
+          {
+            "$owned": "e266b142-4948-564d-bf7c-c040dd60b216"
+          },
+          {
+            "$owned": "a3891916-40a8-5095-97f0-0f3b7020e7ad"
+          }
+        ]
+      }
+    },
+    {
+      "id": "347f7513-443b-5a86-93f9-e96335ae906e",
+      "fileID": 21,
+      "type": "NLS::Engine::Components::TransformComponent",
+      "debugName": "Body Transform",
+      "state": "Alive",
+      "properties": {
+        "enabled": true,
+        "localPosition": {
+          "x": 0,
+          "y": 0,
+          "z": 0
+        },
+        "localRotation": {
+          "x": 0,
+          "y": 0,
+          "z": 0,
+          "w": 1
+        },
+        "localScale": {
+          "x": 1,
+          "y": 1,
+          "z": 1
+        }
+      }
+    },
+    {
+      "id": "1477b66c-6781-5ab8-af5b-2935dd6684b0",
+      "fileID": 22,
+      "type": "NLS::Engine::Components::MeshFilter",
+      "debugName": "Body MeshFilter",
+      "state": "Alive",
+      "properties": {
+        "enabled": true,
+        "mesh": {
+          "fileID": 0,
+          "guid": "",
+          "type": 0
+        }
+      }
+    },
+    {
+      "id": "111319b2-eda9-5cf1-a010-91849f4cc391",
+      "fileID": 23,
+      "type": "NLS::Engine::Components::MeshRenderer",
+      "debugName": "Body Materials",
+      "state": "Alive",
+      "properties": {
+        "enabled": true,
+        "materials": [
+          {
+            "fileID": 6410553193099157166,
+            "guid": "70078927-e8d3-58ce-be94-00e6a5171559",
+            "type": 2,
+            "filePath": "material:material/0"
+          }
+        ],
+        "affectDistanceField": false
+      }
+    },
+    {
+      "id": "1f23d23c-6d6f-599a-abdf-6c2bd272a3c0",
+      "fileID": 24,
+      "type": "NLS::Engine::Components::SkinnedMeshRenderer",
+      "debugName": "Body Skin",
+      "state": "Alive",
+      "properties": {
+        "enabled": true,
+        "mesh": {
+          "fileID": 7056276139105193872,
+          "guid": "700d33f8-f9a6-5e0d-bdee-e88264ab6095",
+          "type": 2,
+          "filePath": "skinned-mesh:parser/mesh/0/node/2"
+        },
+        "animator": {
+          "fileID": 12,
+          "guid": "",
+          "type": 0
+        }
+      }
+    },
+    {
+      "id": "91373bce-61ba-53ea-8eee-da69182d0137",
+      "fileID": 20,
+      "type": "NLS::Engine::GameObject",
+      "debugName": "Skinned Body",
+      "state": "Alive",
+      "properties": {
+        "name": "Skinned Body",
+        "active": true,
+        "tag": "Untagged",
+        "layer": 0,
+        "parent": {
+          "fileID": 10,
+          "guid": "",
+          "type": 0
+        },
+        "components": [
+          {
+            "$owned": "347f7513-443b-5a86-93f9-e96335ae906e"
+          },
+          {
+            "$owned": "1477b66c-6781-5ab8-af5b-2935dd6684b0"
+          },
+          {
+            "$owned": "111319b2-eda9-5cf1-a010-91849f4cc391"
+          },
+          {
+            "$owned": "1f23d23c-6d6f-599a-abdf-6c2bd272a3c0"
+          }
+        ]
+      }
+    },
+    {
+      "id": "851879f2-f702-5a8e-a94f-91b6fd8195a4",
+      "fileID": 31,
+      "type": "NLS::Engine::Components::TransformComponent",
+      "debugName": "Camera Transform",
+      "state": "Alive",
+      "properties": {
+        "enabled": true,
+        "localPosition": {
+          "x": 0,
+          "y": 0.5,
+          "z": 3
+        },
+        "localRotation": {
+          "x": 0,
+          "y": 1,
+          "z": 0,
+          "w": 0
+        },
+        "localScale": {
+          "x": 1,
+          "y": 1,
+          "z": 1
+        }
+      }
+    },
+    {
+      "id": "2221bb05-a1b4-5b05-a120-9e27da48dc30",
+      "fileID": 32,
+      "type": "NLS::Engine::Components::CameraComponent",
+      "debugName": "Camera Lens",
+      "state": "Alive",
+      "properties": {
+        "enabled": true,
+        "fov": 42,
+        "nearClip": 0.1,
+        "farClip": 100,
+        "projectionMode": "PERSPECTIVE",
+        "clearColor": {
+          "x": 0.04,
+          "y": 0.045,
+          "z": 0.055
+        },
+        "frustumGeometryCulling": true,
+        "frustumLightCulling": false
+      }
+    },
+    {
+      "id": "051093d7-f5b5-54bc-aa71-0d86261c1e0a",
+      "fileID": 30,
+      "type": "NLS::Engine::GameObject",
+      "debugName": "Camera",
+      "state": "Alive",
+      "properties": {
+        "name": "Camera",
+        "active": true,
+        "tag": "MainCamera",
+        "layer": 0,
+        "parent": null,
+        "components": [
+          {
+            "$owned": "851879f2-f702-5a8e-a94f-91b6fd8195a4"
+          },
+          {
+            "$owned": "2221bb05-a1b4-5b05-a120-9e27da48dc30"
+          }
+        ]
+      }
+    },
+    {
+      "id": "af4e0b80-df57-5956-8ec0-373dc68ac500",
+      "fileID": 41,
+      "type": "NLS::Engine::Components::TransformComponent",
+      "debugName": "Light Transform",
+      "state": "Alive",
+      "properties": {
+        "enabled": true,
+        "localPosition": {
+          "x": 0,
+          "y": 0,
+          "z": 0
+        },
+        "localRotation": {
+          "x": 0,
+          "y": 0,
+          "z": 0,
+          "w": 1
+        },
+        "localScale": {
+          "x": 1,
+          "y": 1,
+          "z": 1
+        }
+      }
+    },
+    {
+      "id": "ea0f3de4-56fb-5c5d-966e-f0e4a48958bb",
+      "fileID": 42,
+      "type": "NLS::Engine::Components::LightComponent",
+      "debugName": "Ambient Light Settings",
+      "state": "Alive",
+      "properties": {
+        "enabled": true,
+        "color": {
+          "x": 1,
+          "y": 1,
+          "z": 1
+        },
+        "intensity": 1,
+        "range": 1000,
+        "lightType": "AMBIENT_SPHERE",
+        "size": {
+          "x": 1000,
+          "y": 1000,
+          "z": 1000
+        }
+      }
+    },
+    {
+      "id": "8654e6f7-9484-5297-9dcd-6cea474d6506",
+      "fileID": 40,
+      "type": "NLS::Engine::GameObject",
+      "debugName": "Ambient Light",
+      "state": "Alive",
+      "properties": {
+        "name": "Ambient Light",
+        "active": true,
+        "tag": "Untagged",
+        "layer": 0,
+        "parent": null,
+        "components": [
+          {
+            "$owned": "af4e0b80-df57-5956-8ec0-373dc68ac500"
+          },
+          {
+            "$owned": "ea0f3de4-56fb-5c5d-966e-f0e4a48958bb"
+          }
+        ]
+      }
+    },
+    {
+      "id": "61b072cd-b771-5570-8b82-72f36421ad50",
+      "fileID": 1,
+      "type": "NLS::Engine::SceneSystem::Scene",
+      "debugName": "Animation Sample",
+      "state": "Alive",
+      "properties": {
+        "gameObjects": [
+          {
+            "$owned": "9ca37112-df28-5b4c-b87a-1b4c303f3b62"
+          },
+          {
+            "$owned": "91373bce-61ba-53ea-8eee-da69182d0137"
+          },
+          {
+            "$owned": "051093d7-f5b5-54bc-aa71-0d86261c1e0a"
+          },
+          {
+            "$owned": "8654e6f7-9484-5297-9dcd-6cea474d6506"
+          }
+        ]
+      }
+    }
+  ]
+}

@@ -1,4 +1,5 @@
 #include "Rendering/Assets/ShaderArtifact.h"
+#include "Assets/ContentSource.h"
 
 #include <algorithm>
 #include <cctype>
@@ -342,6 +343,7 @@ const char* ToString(const Resources::ShaderResourceKind kind)
     case Resources::ShaderResourceKind::UniformBuffer: return "UniformBuffer";
     case Resources::ShaderResourceKind::StructuredBuffer: return "StructuredBuffer";
     case Resources::ShaderResourceKind::StorageBuffer: return "StorageBuffer";
+    case Resources::ShaderResourceKind::StorageTexture: return "StorageTexture";
     default: return "Value";
     }
 }
@@ -361,6 +363,8 @@ std::optional<Resources::ShaderResourceKind> ParseResourceKind(const std::string
         return Resources::ShaderResourceKind::StructuredBuffer;
     if (lowered == "storagebuffer" || lowered == "storage-buffer")
         return Resources::ShaderResourceKind::StorageBuffer;
+    if (lowered == "storagetexture" || lowered == "storage-texture")
+        return Resources::ShaderResourceKind::StorageTexture;
     return std::nullopt;
 }
 
@@ -657,6 +661,7 @@ void SerializeReflection(std::string& text, const Resources::ShaderReflection& r
         AppendLine(text, "BYTE_OFFSET", std::to_string(property.byteOffset));
         AppendLine(text, "BYTE_SIZE", std::to_string(property.byteSize));
         AppendLine(text, "PARENT_CBUFFER", property.parentConstantBuffer);
+        AppendLine(text, "TEXTURE_DIMENSION", std::to_string(static_cast<uint32_t>(property.textureDimension)));
         text += "PROPERTY_END\n";
     }
 }
@@ -913,6 +918,13 @@ bool ApplyPropertyField(Resources::ShaderPropertyDesc& property, const std::stri
     }
     else if (key == "PARENT_CBUFFER")
         property.parentConstantBuffer = value;
+    else if (key == "TEXTURE_DIMENSION")
+    {
+        const auto parsed = ParseNumber<uint32_t>(value);
+        if (!parsed || *parsed > static_cast<uint32_t>(RHI::TextureDimension::TextureCubeArray))
+            return false;
+        property.textureDimension = static_cast<RHI::TextureDimension>(*parsed);
+    }
     return true;
 }
 
@@ -1017,15 +1029,27 @@ bool ApplyBlendTargetField(RHI::RHIRenderTargetBlendStateDesc& target, const std
 std::vector<uint8_t> SerializeShaderArtifact(const ShaderArtifact& artifact)
 {
     std::string text;
-    text += "NULLUS_IMPORTED_SHADER_ARTIFACT=1\n";
+    text += "NULLUS_IMPORTED_SHADER_ARTIFACT=2\n";
     AppendLine(text, "SOURCE", artifact.sourcePath);
     AppendLine(text, "SUB_ASSET", artifact.subAssetKey);
     AppendLine(text, "TARGET_PLATFORM", artifact.targetPlatform);
+    AppendLine(text,"MATERIAL_INTERFACE",Resources::SerializeMaterialShaderInterface(artifact.materialInterface));
+    if (!artifact.dependencySnapshotId.empty()) AppendLine(text,"DEPENDENCY_SNAPSHOT",artifact.dependencySnapshotId);
     if (!artifact.shaderLabLightMode.empty())
         AppendLine(text, "SHADERLAB_LIGHT_MODE", artifact.shaderLabLightMode);
     if (artifact.shaderLabPassState.has_value())
         SerializeShaderLabPassState(text, *artifact.shaderLabPassState);
     SerializeReflection(text, artifact.reflection);
+    if (!artifact.parameterSchema.parameters.empty())
+        AppendLine(text, "MATERIAL_PARAMETER_SCHEMA", Resources::SerializeMaterialParameterSchema(artifact.parameterSchema));
+    for (const auto& variant : artifact.variantReflections)
+    {
+        text += "VARIANT_LAYOUT_BEGIN\n";
+        AppendLine(text, "VARIANT_TARGET", ToString(variant.targetPlatform));
+        AppendLine(text, "VARIANT_KEYWORD_HASH", std::to_string(variant.keywordHash));
+        SerializeReflection(text, variant.reflection);
+        text += "VARIANT_LAYOUT_END\n";
+    }
 
     for (const auto& stage : artifact.stages)
     {
@@ -1069,6 +1093,8 @@ std::optional<ShaderArtifact> DeserializeShaderArtifact(std::string_view text)
     bool inProperty = false;
     bool inShaderLabPassState = false;
     bool inBlendTarget = false;
+    bool inVariantLayout = false;
+    Resources::ShaderVariantReflection currentVariant;
     ShaderArtifactStage currentStage;
     Resources::ShaderConstantBufferDesc currentConstantBuffer;
     Resources::ShaderCBufferMemberDesc currentConstantBufferMember;
@@ -1085,6 +1111,28 @@ std::optional<ShaderArtifact> DeserializeShaderArtifact(std::string_view text)
         line = Trim(std::move(line));
         if (line.empty())
             continue;
+
+        if (line == "VARIANT_LAYOUT_BEGIN")
+        {
+            if (inVariantLayout || inStage || inConstantBuffer || inProperty || inShaderLabPassState)
+                return std::nullopt;
+            inVariantLayout = true;
+            currentVariant = {};
+            continue;
+        }
+        if (line == "VARIANT_LAYOUT_END")
+        {
+            if (!inVariantLayout || inConstantBuffer || inProperty ||
+                currentVariant.targetPlatform == ShaderCompiler::ShaderTargetPlatform::Unknown)
+                return std::nullopt;
+            if (std::any_of(artifact.variantReflections.begin(), artifact.variantReflections.end(),
+                [&currentVariant](const auto& existing) { return existing.targetPlatform == currentVariant.targetPlatform &&
+                    existing.keywordHash == currentVariant.keywordHash; }))
+                return std::nullopt;
+            artifact.variantReflections.push_back(std::move(currentVariant));
+            inVariantLayout = false;
+            continue;
+        }
 
         if (line == "STAGE_BEGIN")
         {
@@ -1118,7 +1166,8 @@ std::optional<ShaderArtifact> DeserializeShaderArtifact(std::string_view text)
         {
             if (!inConstantBuffer || inConstantBufferMember)
                 return std::nullopt;
-            artifact.reflection.constantBuffers.push_back(std::move(currentConstantBuffer));
+            auto& reflection = inVariantLayout ? currentVariant.reflection : artifact.reflection;
+            reflection.constantBuffers.push_back(std::move(currentConstantBuffer));
             currentConstantBuffer = {};
             inConstantBuffer = false;
             continue;
@@ -1156,7 +1205,8 @@ std::optional<ShaderArtifact> DeserializeShaderArtifact(std::string_view text)
         {
             if (!inProperty)
                 return std::nullopt;
-            artifact.reflection.properties.push_back(std::move(currentProperty));
+            auto& reflection = inVariantLayout ? currentVariant.reflection : artifact.reflection;
+            reflection.properties.push_back(std::move(currentProperty));
             currentProperty = {};
             inProperty = false;
             continue;
@@ -1208,7 +1258,7 @@ std::optional<ShaderArtifact> DeserializeShaderArtifact(std::string_view text)
         const auto value = UnescapeValue(line.substr(equals + 1u));
         if (key == "NULLUS_IMPORTED_SHADER_ARTIFACT")
         {
-            sawHeader = value == "1";
+            sawHeader = value == "1" || value == "2";
             continue;
         }
 
@@ -1254,18 +1304,46 @@ std::optional<ShaderArtifact> DeserializeShaderArtifact(std::string_view text)
             continue;
         }
 
+        if (inVariantLayout)
+        {
+            if (key == "VARIANT_TARGET")
+            {
+                const auto target = ParseTarget(value);
+                if (!target) return std::nullopt;
+                currentVariant.targetPlatform = *target;
+            }
+            else if (key == "VARIANT_KEYWORD_HASH")
+            {
+                const auto hash = ParseNumber<uint64_t>(value);
+                if (!hash) return std::nullopt;
+                currentVariant.keywordHash = *hash;
+            }
+            else return std::nullopt;
+            continue;
+        }
+
         if (key == "SOURCE")
             artifact.sourcePath = value;
         else if (key == "SUB_ASSET")
             artifact.subAssetKey = value;
         else if (key == "TARGET_PLATFORM")
             artifact.targetPlatform = value;
+        else if (key == "DEPENDENCY_SNAPSHOT")
+            artifact.dependencySnapshotId = value;
+        else if(key=="MATERIAL_INTERFACE")
+        {auto interface=Resources::DeserializeMaterialShaderInterface(value);if(!interface)return std::nullopt;artifact.materialInterface=std::move(*interface);}
         else if (key == "SHADERLAB_LIGHT_MODE")
             artifact.shaderLabLightMode = value;
+        else if (key == "MATERIAL_PARAMETER_SCHEMA")
+        {
+            auto schema = Resources::DeserializeMaterialParameterSchema(value);
+            if (!schema) return std::nullopt;
+            artifact.parameterSchema = std::move(*schema);
+        }
     }
 
     if (!sawHeader ||
-        inStage ||
+        inStage || inVariantLayout ||
         inConstantBuffer ||
         inConstantBufferMember ||
         inProperty ||
@@ -1303,6 +1381,15 @@ std::optional<ShaderArtifact> LoadShaderArtifact(const std::filesystem::path& pa
         return std::nullopt;
     }
 
+    if (NLS::Core::Assets::HasContentMounts() &&
+        NLS::Core::Assets::ContentSourceTable::Get().ResolveContentPath(path).has_value())
+    {
+        std::vector<uint8_t> bytes;
+        if (!NLS::Core::Assets::ContentSourceTable::Get().ReadAll(path, bytes, nullptr))
+            return std::nullopt;
+        return DeserializeShaderArtifact(bytes);
+    }
+
     std::ifstream input(path, std::ios::binary);
     if (!input)
         return std::nullopt;
@@ -1315,6 +1402,14 @@ std::optional<ShaderArtifact> LoadShaderArtifact(const std::filesystem::path& pa
 
 void AppendGlslShaderArtifactStages(ShaderArtifact& artifact)
 {
+    std::vector<Resources::ShaderVariantReflection> glslLayouts;
+    for (const auto& variant : artifact.variantReflections)
+        if (variant.targetPlatform == ShaderCompiler::ShaderTargetPlatform::SPIRV &&
+            std::none_of(artifact.variantReflections.begin(), artifact.variantReflections.end(),
+                [&variant](const auto& existing) { return existing.targetPlatform == ShaderCompiler::ShaderTargetPlatform::GLSL &&
+                    existing.keywordHash == variant.keywordHash; }))
+            glslLayouts.push_back({ShaderCompiler::ShaderTargetPlatform::GLSL, variant.keywordHash, variant.reflection});
+    artifact.variantReflections.insert(artifact.variantReflections.end(), glslLayouts.begin(), glslLayouts.end());
     std::vector<ShaderArtifactStage> glslStages;
     for (const auto& stage : artifact.stages)
     {

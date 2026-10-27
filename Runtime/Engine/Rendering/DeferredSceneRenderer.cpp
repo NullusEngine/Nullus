@@ -738,11 +738,34 @@ DeferredSceneRenderer::EstimateThreadedDeferredDrawCounts(const AllDrawables& dr
 			};
 
 		const auto gbufferPso = CreateSceneDefaultPipelineState(*this);
+            const auto isForwardOpaque=[](const NLS::Render::Resources::Material& material)
+            {const auto* shader=material.GetShader();return shader && shader->GetMaterialInterface()->forwardOpaque && !material.IsBlendable();};
+            const bool hasForwardOpaque=std::any_of(drawables.opaques.begin(),drawables.opaques.end(),
+                [&](const auto& entry){return entry.second.material && isForwardOpaque(*entry.second.material);});
 		for (const auto& entry : drawables.opaques)
 		{
 			const auto& drawable = entry.second;
 			if (!drawable.material)
 				continue;
+                if(isForwardOpaque(*drawable.material))
+                {
+                    using namespace NLS::Render;
+                    if(!drawable.material->ResolveShaderForLightMode("DepthOnly"))
+                        throw std::runtime_error("ForwardOpaque material requires a matching DepthOnly pass");
+                    Resources::MaterialPipelineStateOverrides overrides;
+                    overrides.SetColorFormats(std::span<const RHI::TextureFormat>{});
+                    overrides.SetColorSpaces(std::span<const RHI::TextureColorSpace>{});
+                    overrides.colorWrite=false;overrides.blending=false;overrides.depthTest=true;overrides.depthWrite=true;
+                    overrides.hasDepthAttachment=true;overrides.depthFormat=FrameGraph::kDeferredGBufferDepthFormat;
+                    overrides.stencilTest=true;overrides.stencilWriteMask=FrameGraph::kForwardOpaqueStencilBit;
+                    overrides.stencilReadMask=FrameGraph::kForwardOpaqueStencilBit;overrides.stencilReference=FrameGraph::kForwardOpaqueStencilBit;
+                    overrides.stencilCompare=Settings::EComparaisonAlgorithm::ALWAYS;overrides.stencilPassOp=Settings::EOperation::REPLACE;
+                    PreparedRecordedDraw depth;
+                    if(!CaptureThreadedPreparedDraw(drawable,overrides,gbufferPso.depthFunc,"DepthOnly",depth) ||
+                        !QueueThreadedRecordedDraw(std::move(depth),result.forwardOpaqueDepth))
+                        throw std::runtime_error("Cannot capture ForwardOpaque DepthOnly pass");
+                    continue;
+                }
 
 			CaptureDrawPhaseTimings phaseTimings;
 			CaptureDrawPhaseTimings* phaseTimingsOut = logPreparedDrawResults ? &phaseTimings : nullptr;
@@ -815,7 +838,10 @@ DeferredSceneRenderer::EstimateThreadedDeferredDrawCounts(const AllDrawables& dr
 				continue;
 			}
 
-			const auto materialOverrides = BuildDeferredDecalMaterialOverrides(*drawable.material);
+				auto materialOverrides = BuildDeferredDecalMaterialOverrides(*drawable.material);
+                if(hasForwardOpaque){materialOverrides.stencilTest=true;materialOverrides.stencilWriteMask=0;
+                    materialOverrides.stencilReadMask=NLS::Render::FrameGraph::kForwardOpaqueStencilBit;materialOverrides.stencilReference=0;
+                    materialOverrides.stencilCompare=NLS::Render::Settings::EComparaisonAlgorithm::EQUAL;}
 			PreparedRecordedDraw preparedDraw;
 			const bool captured = CaptureThreadedPreparedDraw(
 				drawable,
@@ -866,9 +892,16 @@ DeferredSceneRenderer::EstimateThreadedDeferredDrawCounts(const AllDrawables& dr
 		lightingDrawable.primitiveMode = NLS::Render::Settings::EPrimitiveMode::TRIANGLES;
 
 		NLS::Render::Resources::MaterialPipelineStateOverrides compositeOverrides;
+		// Fullscreen lighting must cover the output even when scene geometry is wireframe.
+		compositeOverrides.wireframe = false;
 		compositeOverrides.depthTest = false;
 		compositeOverrides.depthWrite = false;
 		compositeOverrides.hasDepthAttachment = false;
+            if(hasForwardOpaque)
+            {compositeOverrides.hasDepthAttachment=true;compositeOverrides.depthFormat=NLS::Render::FrameGraph::kDeferredGBufferDepthFormat;
+                compositeOverrides.stencilTest=true;compositeOverrides.stencilWriteMask=0;
+                compositeOverrides.stencilReadMask=NLS::Render::FrameGraph::kForwardOpaqueStencilBit;compositeOverrides.stencilReference=0;
+                compositeOverrides.stencilCompare=NLS::Render::Settings::EComparaisonAlgorithm::EQUAL;}
 		compositeOverrides.culling = false;
 		compositeOverrides.colorWrite = true;
 
@@ -889,7 +922,19 @@ DeferredSceneRenderer::EstimateThreadedDeferredDrawCounts(const AllDrawables& dr
 		if (logPreparedDrawResults)
 			NLS_LOG_INFO("[DeferredSceneRenderer] CaptureThreadedDeferredDraws lighting complete queued=" + std::to_string(result.drawCounts.lightingDrawCount));
 
-		NLS::Render::Resources::MaterialPipelineStateOverrides transparentOverrides;
+            for(const auto& entry:drawables.opaques)
+            {
+                const auto& drawable=entry.second;if(!drawable.material || !isForwardOpaque(*drawable.material))continue;
+                NLS::Render::Resources::MaterialPipelineStateOverrides overrides;
+                overrides.depthWrite=false;overrides.depthTest=true;overrides.blending=false;
+                overrides.depthCompare=NLS::Render::Settings::EComparaisonAlgorithm::EQUAL;
+                overrides.hasDepthAttachment=true;overrides.depthFormat=NLS::Render::FrameGraph::kDeferredGBufferDepthFormat;
+                PreparedRecordedDraw color;
+                if(!CaptureThreadedPreparedDraw(drawable,overrides,NLS::Render::Settings::EComparaisonAlgorithm::EQUAL,"Forward",color) ||
+                    !QueueThreadedRecordedDraw(std::move(color),result.forwardOpaqueColor))
+                    throw std::runtime_error("Cannot capture ForwardOpaque color pass");
+            }
+			NLS::Render::Resources::MaterialPipelineStateOverrides transparentOverrides;
 		transparentOverrides.depthWrite = false;
 		const auto transparentPso = CreateSceneDefaultPipelineState(*this);
 		for (const auto& entry : drawables.transparents)
@@ -968,6 +1013,7 @@ NLS::Render::Context::RenderSceneBuildCommand DeferredSceneRenderer::BuildDeferr
             NLS::Render::FrameGraph::FreezeFrameDescriptor(GetFrameDescriptor()));
     return [this, packet = std::move(packet), helperDrawCommands = std::move(helperDrawCommands),
         helperPassCount, frozenFrame = std::move(frozenFrame),
+        distanceFieldDebug = GetDistanceFieldDebugSettings(),
         basePipelineState = CreatePipelineState(),
         bindCaptureFrame = GetFrameObjectBindingProvider()->FreezeCaptureFrame(),
         captureInput = std::move(captureInput), hasSkyboxTexture, includeDeferredSceneExecution,
@@ -995,6 +1041,7 @@ NLS::Render::Context::RenderSceneBuildCommand DeferredSceneRenderer::BuildDeferr
                 NLS::Render::FrameGraph::RegisterPreferredReadbackTexture(
                     package, preferredReadbackTexture, preferredReadbackTextureGeneration);
             package.renderTargetUseCount += additionalRenderTargetUseCount;
+            AppendDistanceFieldScenePass(package, *frozenFrame, distanceFieldDebug, packet.frameId);
             NLS::Render::FrameGraph::FinalizePreparedDeferredScenePackage(package, frameDescriptorForBuilder);
             return package;
         };
@@ -1048,6 +1095,7 @@ NLS::Render::Context::RenderSceneBuildCommand DeferredSceneRenderer::BuildDeferr
                     {
                         return std::move(appendedPassInputs);
                     });
+                if (captureInput.drawables) AppendParticleScenePass(package,*frozenFrame,captureInput.drawables->particles);
                 return finishPackage(std::move(package));
             }
 
@@ -1072,19 +1120,20 @@ NLS::Render::Context::RenderSceneBuildCommand DeferredSceneRenderer::BuildDeferr
                 captureInput.suppressLightGridCompute);
 
             NLS::Render::FrameGraph::DeferredPreparedQueuedDrawCounts queuedDrawCounts;
+            std::vector<NLS::Render::Context::RecordedDrawCommandInput> forwardOpaqueDepth,forwardOpaqueColor;
             if (captureInput.drawables != nullptr && captureInput.recordedDrawCommands != nullptr)
             {
                 auto helperDrawCommands = std::move(snapshot.recordedDrawCommands);
                 snapshot.recordedDrawCommands = std::move(*captureInput.recordedDrawCommands);
                 captureInput.recordedDrawCommands.reset();
                 snapshot.recordedDrawCommands.clear();
-                const auto captureResult = CaptureThreadedDeferredDraws(
+				auto captureResult = CaptureThreadedDeferredDraws(
                     *captureInput.drawables, captureInput.skyboxTexture, captureInput.skyboxMaterial,
                     captureInput.logPreparedDrawResults, snapshot.recordedDrawCommands);
                 snapshot.visibleDecalDrawCount -= (std::min)(
                     snapshot.visibleDecalDrawCount, captureResult.unresolvedDecalDrawCount);
                 if (ShouldSkipThreadedDeferredFramePublish(snapshot,
-                    captureResult.drawCounts.gBufferDrawCount, captureResult.drawCounts.decalDrawCount,
+                    captureResult.drawCounts.gBufferDrawCount+captureResult.forwardOpaqueDepth.size(), captureResult.drawCounts.decalDrawCount,
                     captureResult.drawCounts.lightingDrawCount, captureResult.drawCounts.transparentDrawCount))
                     throw std::runtime_error("Deferred Render Command captured an incomplete scene draw queue");
                 queuedDrawCounts.lightingDrawCount = captureResult.drawCounts.lightingDrawCount;
@@ -1093,6 +1142,7 @@ NLS::Render::Context::RenderSceneBuildCommand DeferredSceneRenderer::BuildDeferr
                 SynchronizeThreadedDeferredSnapshot(snapshot, captureResult.drawCounts.gBufferDrawCount,
                     captureResult.drawCounts.decalDrawCount, captureResult.drawCounts.lightingDrawCount,
                     captureResult.drawCounts.transparentDrawCount);
+                forwardOpaqueDepth=std::move(captureResult.forwardOpaqueDepth);forwardOpaqueColor=std::move(captureResult.forwardOpaqueColor);
                 for (auto& command : helperDrawCommands)
                     snapshot.recordedDrawCommands.push_back(std::move(command));
             }
@@ -1113,6 +1163,15 @@ NLS::Render::Context::RenderSceneBuildCommand DeferredSceneRenderer::BuildDeferr
             RecordDrawCommandMove(static_cast<uint64_t>(snapshot.recordedDrawCommands.size()));
             auto package = NLS::Render::Context::BuildRenderScenePackage(
                 packet, std::move(snapshot), NLS::Render::Context::RenderScenePackageBuildMode::SkipDefaultPassInputs);
+            if(!forwardOpaqueDepth.empty())
+            {
+                NLS::Render::Context::RenderPassCommandInput depth,color;
+                depth.kind=NLS::Render::Context::RenderPassCommandKind::ForwardOpaqueDepth;
+                depth.recordedDrawCommands=std::move(forwardOpaqueDepth);depth.drawCount=depth.recordedDrawCommands.size();
+                color.kind=NLS::Render::Context::RenderPassCommandKind::ForwardOpaqueColor;
+                color.recordedDrawCommands=std::move(forwardOpaqueColor);color.drawCount=color.recordedDrawCommands.size();
+                package.passCommandInputs.push_back(std::move(depth));package.passCommandInputs.push_back(std::move(color));
+            }
             if (!package.targetsSwapchain)
                 NLS::Render::FrameGraph::ApplyExternalSceneOutputAttachments(
                     appendedPassInputs, externalSceneOutputAttachments,
@@ -1120,6 +1179,7 @@ NLS::Render::Context::RenderSceneBuildCommand DeferredSceneRenderer::BuildDeferr
             NLS::Render::FrameGraph::CompileAndApplyPreparedDeferredLightGridSceneExecution(
                 package, lightGridContext, deferredResources, std::move(appendedPassInputs),
                 appendedPassMetadata, queuedDrawCounts, hzbSource, &externalSceneOutputAttachments);
+            if (captureInput.drawables) AppendParticleScenePass(package,*frozenFrame,captureInput.drawables->particles);
             if (hzbPostSubmitReadback.has_value())
                 package.postSubmitBufferReadbacks.push_back(hzbPostSubmitReadback.value());
             return finishPackage(std::move(package));
@@ -2799,6 +2859,7 @@ void DeferredSceneRenderer::DrawFrame()
 		lightingDrawable.primitiveMode = NLS::Render::Settings::EPrimitiveMode::TRIANGLES;
 
 		NLS::Render::Resources::MaterialPipelineStateOverrides compositeOverrides;
+		compositeOverrides.wireframe = false;
 		compositeOverrides.depthTest = false;
 		compositeOverrides.depthWrite = false;
 		compositeOverrides.hasDepthAttachment = false;

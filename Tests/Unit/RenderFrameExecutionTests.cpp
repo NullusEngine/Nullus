@@ -7470,6 +7470,81 @@ TEST(RenderFrameExecutionTests, RecordedDrawCommandSlicingRejectsSwapchainPasses
     EXPECT_EQ(workUnits[0].sliceCount, 1u);
 }
 
+TEST(RenderFrameExecutionTests, GraphicsPassRunsComputeAndBufferExportsBeforeDrawOnSerialAndParallelPaths)
+{
+    namespace context = NLS::Render::Context;
+    namespace rhi = NLS::Render::RHI;
+    ScopedThreadedRenderingJobSystem jobs(2u);
+    ASSERT_TRUE(jobs.IsInitialized());
+    for (uint32_t mode = 0; mode < 3; ++mode)
+    {
+        SCOPED_TRACE("recording mode="+std::to_string(mode));
+        NLS::Render::Settings::DriverSettings settings;
+        settings.graphicsBackend = NLS::Render::Settings::EGraphicsBackend::NONE;
+        settings.enableExplicitRHI = false; settings.framesInFlight = 1;
+        context::Driver driver(settings);
+        context::DriverTestAccess::PauseThreadedRenderingWorkers(driver);
+        auto device = std::make_shared<TestExplicitDevice>();
+        device->MutableCapabilities().supportsParallelCommandRecording = mode == 2;
+        device->MutableCapabilities().supportsParallelCommandTranslation = mode == 2;
+        device->MutableCapabilities().supportsInRenderPassChildCommandBuffers = true;
+        context::DriverTestAccess::SetExplicitDevice(driver,device);
+        auto& frame = context::DriverTestAccess::EnsureFrameContext(driver,0);
+        auto commands = std::make_shared<TestCommandBuffer>();
+        auto pool = std::make_shared<TestCommandPool>(); pool->commandBuffer = commands;
+        frame.commandBuffer = commands; frame.commandPool = pool; frame.frameFence = std::make_shared<TestFence>();
+        frame.resourceStateTracker = rhi::CreateDefaultResourceStateTracker();
+        auto buffer = std::make_shared<TestBuffer>(64);
+        context::RecordedComputeDispatchInput dispatch;
+        dispatch.pipeline = std::make_shared<TestComputePipeline>("ParticleSort");
+        dispatch.shaderWriteBuffersBefore = {buffer};
+        dispatch.exportedBufferVisibilityTransitions.push_back({buffer,rhi::ResourceState::ShaderWrite,rhi::ResourceState::ShaderRead,
+            rhi::PipelineStageMask::ComputeShader,rhi::PipelineStageMask::VertexShader,rhi::AccessMask::ShaderWrite,rhi::AccessMask::ShaderRead});
+        context::RenderPassCommandInput pass;
+        pass.kind = context::RenderPassCommandKind::Transparent; pass.debugName = "SortedSprites";
+        pass.renderWidth = pass.renderHeight = 64; pass.drawCount = 1;
+        pass.computeDispatchInputs = {dispatch};
+        pass.recordedDrawCommands.push_back({std::make_shared<TestGraphicsPipeline>("Sprites"),nullptr,nullptr,nullptr,
+            std::make_shared<TestBindingSet>("SpriteAttributes"),std::make_shared<TestMesh>(),1u});
+        context::RenderFramePacket packet; packet.frameId = 700+mode; packet.targetsSwapchain = false;
+        context::RenderScenePackage package;
+        package.frameId = packet.frameId; package.targetsSwapchain = false;
+        package.renderWidth = package.renderHeight = 64; package.visibleDrawCount = package.drawCommandCount = 1;
+        package.hasVisibleDraws = package.frameDataReady = package.objectDataReady = package.containsCommandInputs = true;
+        package.passCommandInputs = {pass};
+        if (mode)
+        {
+            package.parallelCommandWorkUnits = context::BuildRecordedDrawCommandWorkUnitsForPass(pass,0,0);
+            ASSERT_EQ(package.parallelCommandWorkUnits.size(),1u);
+            package.parallelCommandWorkUnits[0].eligibleForParallelRecording = mode == 2;
+            package.containsParallelCommandWorkUnits = true; package.parallelCommandWorkUnitCount = 1;
+        }
+        auto result = NLS::Tests::ObserveNextRhiFrameForTest(driver);
+        ASSERT_TRUE(context::DriverRendererAccess::TryEnqueueRenderFrame(driver,packet,[package](size_t) { return package; }));
+        context::DriverTestAccess::DrainThreadedRendering(driver);
+        ASSERT_EQ(result.wait_for(std::chrono::seconds(2)),std::future_status::ready);
+        const auto submission = result.get();
+        ASSERT_TRUE(submission.submittedSuccessfully) << submission.lastCommandRecordingFailure;
+        uint32_t dispatches = 0;
+        for (const auto& submitted : device->GetTestQueue()->lastSubmitDesc.commandBuffers)
+        {
+            auto recorded = std::dynamic_pointer_cast<TestCommandBuffer>(submitted); ASSERT_TRUE(recorded);
+            if (!recorded->dispatchCalls) continue;
+            dispatches += recorded->dispatchCalls;
+            const auto dispatchEvent = std::find(recorded->events.begin(),recorded->events.end(),"Dispatch");
+            const auto passEvent = std::find(recorded->events.begin(),recorded->events.end(),"BeginRenderPass");
+            const auto drawEvent = std::find(recorded->events.begin(),recorded->events.end(),"DrawIndexed");
+            ASSERT_NE(drawEvent,recorded->events.end());
+            EXPECT_LT(dispatchEvent,passEvent); EXPECT_LT(passEvent,drawEvent);
+            EXPECT_EQ(recorded->executeChildCommandBufferCalls,0u);
+            ASSERT_GE(recorded->barrierHistory.size(),2u);
+            EXPECT_EQ(recorded->barrierHistory[1].bufferBarriers[0].buffer,buffer);
+            EXPECT_EQ(recorded->barrierHistory[1].bufferBarriers[0].after,rhi::ResourceState::ShaderRead);
+        }
+        EXPECT_EQ(dispatches,1u);
+    }
+}
+
 TEST(RenderFrameExecutionTests, BaseSceneRendererPublishesPacketWithoutCopyingGameSceneSummary)
 {
     NLS::Render::Settings::DriverSettings settings;

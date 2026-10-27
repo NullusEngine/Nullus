@@ -1695,7 +1695,7 @@ TEST(AssetDatabaseFacadeTests, ImportShaderSourceWritesShaderArtifactManifestAnd
 
     const auto artifactPayload = ReadTextFile(mainAsset->artifactPath);
     ASSERT_FALSE(artifactPayload.empty());
-    EXPECT_NE(artifactPayload.find("NULLUS_IMPORTED_SHADER_ARTIFACT=1"), std::string::npos);
+    EXPECT_NE(artifactPayload.find("NULLUS_IMPORTED_SHADER_ARTIFACT=2"), std::string::npos);
     EXPECT_NE(artifactPayload.find("SOURCE=Assets/Shaders/HeroSurface.shader"), std::string::npos);
     EXPECT_NE(artifactPayload.find("SUB_ASSET=shader:HeroSurface"), std::string::npos);
     EXPECT_NE(artifactPayload.find("ENTRY=VSMain"), std::string::npos);
@@ -1959,24 +1959,27 @@ TEST(AssetDatabaseFacadeTests, ShaderLabImportReflectionIncludesVariantOnlyResou
     ASSERT_TRUE(artifact.has_value());
 
     const auto hasTexture =
-        [&artifact](const std::string& name)
+        [](const NLS::Render::Resources::ShaderReflection& reflection,const std::string& name)
     {
         return std::any_of(
-            artifact->reflection.properties.begin(),
-            artifact->reflection.properties.end(),
+            reflection.properties.begin(),
+            reflection.properties.end(),
             [&name](const NLS::Render::Resources::ShaderPropertyDesc& property)
             {
                 return property.name == name;
             });
     };
 
-    EXPECT_TRUE(hasTexture("_BaseMap"));
-    EXPECT_TRUE(hasTexture("_ShadowMap"))
-        << "A shared pipeline layout must include resources referenced only by non-default variants.";
+    EXPECT_TRUE(hasTexture(artifact->reflection,"_BaseMap"));
+    EXPECT_FALSE(hasTexture(artifact->reflection,"_ShadowMap"));
 
     NLS::Render::ShaderLab::ShaderLabKeywordSet shadows;
     shadows.Enable("MAIN_LIGHT_SHADOWS");
     const auto shadowKeywordHash = shadows.Hash();
+    const auto variant=std::find_if(artifact->variantReflections.begin(),artifact->variantReflections.end(),[&](const auto& layout)
+        {return layout.keywordHash==shadowKeywordHash && layout.targetPlatform==NLS::Render::ShaderCompiler::ShaderTargetPlatform::DXIL;});
+    ASSERT_NE(variant,artifact->variantReflections.end());
+    EXPECT_TRUE(hasTexture(variant->reflection,"_ShadowMap"));
     EXPECT_TRUE(std::any_of(
         artifact->stages.begin(),
         artifact->stages.end(),
@@ -2141,12 +2144,11 @@ TEST(AssetDatabaseFacadeTests, ShaderLabImportGeneratedSourcePathIncludesAssetPa
 
     const auto shaderCacheRoot = root / "Library" / "ShaderCache" / "ImportedShaderLab";
     std::vector<std::filesystem::path> generatedFooSources;
-    for (const auto& entry : std::filesystem::directory_iterator(shaderCacheRoot))
+    for (const auto& entry : std::filesystem::recursive_directory_iterator(shaderCacheRoot/"FrozenMaterialSources"))
     {
         if (!entry.is_regular_file())
             continue;
-        const auto fileName = entry.path().filename().generic_string();
-        if (fileName.rfind("Foo_", 0u) == 0u && entry.path().extension() == ".hlsl")
+        if (entry.path().extension() == ".hlsl")
             generatedFooSources.push_back(entry.path());
     }
 
@@ -2156,7 +2158,7 @@ TEST(AssetDatabaseFacadeTests, ShaderLabImportGeneratedSourcePathIncludesAssetPa
     bool foundB = false;
     for (const auto& generatedPath : generatedFooSources)
     {
-        generatedNames.insert(generatedPath.filename().generic_string());
+        generatedNames.insert(generatedPath.generic_string());
         const auto generatedText = ReadTextFile(generatedPath);
         foundA = foundA || generatedText.find("Assets/Shaders/A/Foo.shader") != std::string::npos;
         foundB = foundB || generatedText.find("Assets/Shaders/B/Foo.shader") != std::string::npos;

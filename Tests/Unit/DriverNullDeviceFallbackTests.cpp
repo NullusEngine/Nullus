@@ -11,6 +11,7 @@
 #include "Rendering/Settings/EGraphicsBackend.h"
 #include "Rendering/Settings/GraphicsBackendUtils.h"
 #include "Tests/RenderingThreadTestHelpers.h"
+#include "Threading/ExecutionThreadBudget.h"
 
 TEST(DriverNullDeviceReadinessTests, DestructionUnregistersTheLocatedDriverBeforeBackendFailureNotifications)
 {
@@ -187,4 +188,34 @@ TEST(DriverNullDeviceReadinessTests, NonDx12RequestedBackendDoesNotCreatePhase1R
     NLS::Render::Context::Driver driver(settings);
 
     EXPECT_EQ(driver.GetActiveGraphicsBackend(), NLS::Render::Settings::EGraphicsBackend::NONE);
+}
+
+/**
+ * The host reuses the driver's budget instead of resolving hardware concurrency
+ * a second time, so the published Jobs split must match the same formula the
+ * rendering TaskGraph was sized from.
+ */
+TEST(DriverNullDeviceReadinessTests, PublishesTheJobsSplitOfTheRenderingBudget)
+{
+    NLS::Render::Settings::DriverSettings settings;
+    settings.graphicsBackend = NLS::Render::Settings::EGraphicsBackend::NONE;
+    settings.framesInFlight = 1;
+    settings.enableExplicitRHI = false;
+    // Pin the RHI lane mode so the expected split is unambiguous instead of
+    // depending on the backend default for a null device.
+    settings.rhiThreadMode = NLS::Render::Settings::RhiThreadModePreference::ForceDedicatedThread;
+
+    NLS::Render::Context::Driver driver(settings);
+
+    const auto hardware = std::thread::hardware_concurrency();
+    const auto expected = NLS::Base::Threading::ResolveExecutionPoolBudget(
+        hardware,
+        0u,
+        true);
+
+    EXPECT_EQ(driver.GetBudgetedJobsForegroundWorkerCount(), expected.jobsForegroundWorkerCount)
+        << "The published foreground split must come from the rendering budget.";
+    EXPECT_EQ(driver.GetBudgetedJobsBackgroundWorkerCount(), expected.jobsBackgroundWorkerCount)
+        << "The published background split must come from the rendering budget.";
+    EXPECT_GE(driver.GetBudgetedJobsForegroundWorkerCount(), 1u);
 }

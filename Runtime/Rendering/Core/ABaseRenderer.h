@@ -301,6 +301,7 @@ protected:
         Data::ObjectDrawConstants objectConstants;
         bool usesObjectIndex = false;
         bool objectBindingImmutable = false;
+        std::shared_ptr<const void> materialResourceOwner;
     };
 
     virtual bool PrepareRecordedDraw(
@@ -502,6 +503,7 @@ private:
         std::shared_ptr<RHI::RHIBindingSet> materialBindingSet;
         std::shared_ptr<RHI::RHIBindingSet> passBindingSet;
         std::shared_ptr<RHI::RHIMesh> mesh;
+        std::shared_ptr<const void> materialResourceOwner;
         int gpuInstances = 0;
         uint64_t lastUsedFrame = 0u;
         uint64_t observedUseFrame = 0u;

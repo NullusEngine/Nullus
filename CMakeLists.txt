@@ -18,6 +18,11 @@ set(CMAKE_SUPPRESS_REGENERATION ON)
 # ##############################################################################
 project(Nullus VERSION 1.0.0 LANGUAGES C CXX)
 
+# Engine identity shared by the editor, runtime, and packaging tools. This is
+# deliberately a compile definition rather than a generated header so tools
+# that do not run MetaParser still see the same version.
+add_compile_definitions(NLS_ENGINE_VERSION_STRING="${PROJECT_VERSION}")
+
 if(APPLE)
     enable_language(OBJC)
     enable_language(OBJCXX)

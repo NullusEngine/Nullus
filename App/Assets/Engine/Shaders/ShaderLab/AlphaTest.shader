@@ -26,16 +26,19 @@ Shader "Nullus/ShaderLab/AlphaTest"
             Blend Off
 
             HLSLPROGRAM
-            #pragma vertex VSMain
+            #pragma multi_compile _ NLS_SKINNED
+#pragma vertex VSMain
             #pragma fragment PSMain
             #pragma shader_feature _ALPHATEST_ON
             #include "NullusShaderLibrary/Core.hlsl"
+#include "NullusShaderLibrary/Skinning.hlsl"
 
             struct Attributes
             {
                 float3 positionOS : POSITION;
                 float2 uv : TEXCOORD0;
-            };
+    NLS_SKIN_ATTRIBUTES
+};
 
             struct Varyings
             {
@@ -55,7 +58,7 @@ Shader "Nullus/ShaderLab/AlphaTest"
             Varyings VSMain(Attributes input)
             {
                 Varyings output;
-                output.positionCS = TransformObjectToHClip(input.positionOS);
+                output.positionCS = TransformObjectToHClip(NLS_SKIN_POSITION(input));
                 output.uv = input.uv;
                 return output;
             }

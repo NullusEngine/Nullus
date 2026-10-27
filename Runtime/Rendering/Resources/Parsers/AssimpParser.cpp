@@ -22,6 +22,7 @@
 
 #include "Debug/Logger.h"
 #include "Rendering/Resources/Parsers/AssimpParser.h"
+#include "Rendering/Resources/Parsers/AssimpAnimation.h"
 
 namespace NLS::Render::Resources::Parsers
 {
@@ -119,7 +120,8 @@ SceneModelSourceFormat SourceFormatForPath(const std::filesystem::path& path)
 
 void ConfigureAssimpImporterForEditorCache(
 	Assimp::Importer& importer,
-	const std::filesystem::path& sourcePath)
+	const std::filesystem::path& sourcePath,
+	const NLS::Animation::ImportSettings* animation = nullptr)
 {
 	const auto extension = LowerExtension(sourcePath);
 	if (extension != ".fbx")
@@ -127,8 +129,8 @@ void ConfigureAssimpImporterForEditorCache(
 
 	importer.SetPropertyBool(AI_CONFIG_IMPORT_FBX_READ_CAMERAS, false);
 	importer.SetPropertyBool(AI_CONFIG_IMPORT_FBX_READ_LIGHTS, false);
-	importer.SetPropertyBool(AI_CONFIG_IMPORT_FBX_READ_ANIMATIONS, false);
-	importer.SetPropertyBool(AI_CONFIG_IMPORT_FBX_READ_WEIGHTS, false);
+	importer.SetPropertyBool(AI_CONFIG_IMPORT_FBX_READ_ANIMATIONS, animation && animation->importAnimations);
+	importer.SetPropertyBool(AI_CONFIG_IMPORT_FBX_READ_WEIGHTS, animation && animation->importSkeleton);
 	importer.SetPropertyBool(AI_CONFIG_IMPORT_NO_SKELETON_MESHES, true);
 	importer.SetPropertyInteger(AI_CONFIG_FAVOUR_SPEED, 1);
 }
@@ -1205,6 +1207,10 @@ std::string RegisterTexture(
 	texture.sourceKey = key;
 	texture.name = std::filesystem::path(uri).filename().generic_string();
 	texture.uri = uri;
+	texture.embedded = uri.rfind("data:", 0u) == 0u ||
+		(!uri.empty() && uri.front() == '*');
+	if (texture.embedded && texture.name.empty())
+		texture.name = "embedded_texture";
 	scene.textures.push_back(std::move(texture));
 	return key;
 }
@@ -1646,7 +1652,8 @@ bool AssimpParser::LoadModelData(
 	std::vector<std::string>& p_materials,
 	EModelParserFlags p_parserFlags,
 	std::vector<std::string>* p_externalDependencies,
-	bool p_bakeNodeTransforms)
+	bool p_bakeNodeTransforms,
+	const NLS::Animation::ImportSettings& p_animationSettings)
 {
 	p_meshes.clear();
 	p_materials.clear();
@@ -1656,12 +1663,12 @@ bool AssimpParser::LoadModelData(
 		p_externalDependencies->clear();
 
 	Assimp::Importer import;
-	ConfigureAssimpImporterForEditorCache(import, p_fileName);
+	ConfigureAssimpImporterForEditorCache(import, p_fileName, &p_animationSettings);
 	const auto readStart = std::chrono::steady_clock::now();
 	const aiScene* scene = import.ReadFile(p_fileName, static_cast<unsigned int>(p_parserFlags));
 	const auto readElapsed = MillisecondsSince(readStart);
 
-	if (!scene || scene->mFlags & AI_SCENE_FLAGS_INCOMPLETE || !scene->mRootNode)
+	if (!scene || !scene->mRootNode || ((scene->mFlags & AI_SCENE_FLAGS_INCOMPLETE) && !scene->HasAnimations()))
 	{
 		NLS_LOG_ERROR("[AssetImport][Assimp] Failed to read " + p_fileName + ": " + import.GetErrorString());
 		return false;
@@ -1697,6 +1704,26 @@ bool AssimpParser::LoadModelData(
 
 	const auto sceneDataStart = std::chrono::steady_clock::now();
 	BuildImportedSceneData(scene, sourceFormat, m_lastImportedScene);
+	std::string animationError;
+	m_lastImportedScene.animationData = BuildAssimpAnimation(*scene, p_meshes, p_animationSettings, animationError);
+        if(sourceFormat==SceneModelSourceFormat::Fbx&&m_lastImportedScene.animationData)
+        {
+            const auto& bones=m_lastImportedScene.animationData->skeleton.bones;
+            for(size_t i=0;i<bones.size();++i)
+            {
+                const auto key="parser/node/"+std::to_string(i);
+                auto node=std::find_if(m_lastImportedScene.nodes.begin(),m_lastImportedScene.nodes.end(),[&](const auto& n){return n.sourceKey==key;});
+                if(node==m_lastImportedScene.nodes.end())continue;
+                const auto& ref=bones[i].reference;const auto inverseScale=1./p_animationSettings.globalScale;
+                node->translation={ref.translation.x*inverseScale,ref.translation.y*inverseScale,ref.translation.z*inverseScale};
+                node->rotation={ref.rotation.x,ref.rotation.y,ref.rotation.z,ref.rotation.w};node->scale={ref.scale.x,ref.scale.y,ref.scale.z};
+            }
+        }
+	if (!animationError.empty())
+	{
+		NLS_LOG_ERROR(animationError);
+		return false;
+	}
 	if (sourceFormat == SceneModelSourceFormat::Fbx)
 		RecoverFbxBump2dTextureChains(p_fileName, m_lastImportedScene, p_externalDependencies);
 	m_hasImportedSceneData = true;
@@ -1777,6 +1804,64 @@ bool AssimpParser::CanReadFbxMaterialGraphForTesting(const std::filesystem::path
 }
 #endif
 
+void PopulateEmbeddedTextureBytes(
+	const aiScene* source,
+	NLS::Render::Assets::ImportedScene& scene)
+{
+	if (source == nullptr)
+		return;
+
+	for (auto& texture : scene.textures)
+	{
+		if (!texture.embedded || texture.uri.empty() || texture.uri.front() != '*')
+			continue;
+
+		uint32_t textureIndex = 0u;
+		try
+		{
+			textureIndex = static_cast<uint32_t>(std::stoul(texture.uri.substr(1u)));
+		}
+		catch (const std::exception&)
+		{
+			continue;
+		}
+		if (textureIndex >= source->mNumTextures)
+			continue;
+
+		const aiTexture* embedded = source->mTextures[textureIndex];
+		if (embedded == nullptr || embedded->pcData == nullptr)
+			continue;
+
+		if (embedded->mHeight == 0u)
+		{
+			const auto* bytes = reinterpret_cast<const uint8_t*>(embedded->pcData);
+			texture.embeddedBytes.assign(bytes, bytes + embedded->mWidth);
+			texture.embeddedFormat = embedded->achFormatHint;
+			texture.embeddedCompressed = true;
+			continue;
+		}
+
+		texture.embeddedWidth = embedded->mWidth;
+		texture.embeddedHeight = embedded->mHeight;
+		texture.embeddedFormat = "rgba8";
+		texture.embeddedCompressed = false;
+		texture.embeddedBytes.resize(
+			static_cast<size_t>(embedded->mWidth) *
+			static_cast<size_t>(embedded->mHeight) * 4u);
+		for (size_t texel = 0u;
+			texel < static_cast<size_t>(embedded->mWidth) * embedded->mHeight;
+			++texel)
+		{
+			const auto& sourceTexel = embedded->pcData[texel];
+			auto* destination = texture.embeddedBytes.data() + texel * 4u;
+			destination[0] = sourceTexel.r;
+			destination[1] = sourceTexel.g;
+			destination[2] = sourceTexel.b;
+			destination[3] = sourceTexel.a;
+		}
+	}
+}
+
 void AssimpParser::BuildImportedSceneData(
 	const aiScene* p_scene,
 	NLS::Render::Assets::SceneModelSourceFormat p_sourceFormat,
@@ -1784,6 +1869,7 @@ void AssimpParser::BuildImportedSceneData(
 {
 	std::vector<std::string> unusedMaterialNames;
 	BuildMaterials(p_scene, p_sourceFormat, p_outScene, unusedMaterialNames, nullptr);
+	PopulateEmbeddedTextureBytes(p_scene, p_outScene);
 
 	uint32_t nextNodeIndex = 0u;
 	BuildNodeRecords(p_scene->mRootNode, p_scene, {}, p_outScene, nextNodeIndex, p_sourceFormat);

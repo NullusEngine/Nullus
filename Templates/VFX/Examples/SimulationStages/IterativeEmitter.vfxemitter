@@ -1,0 +1,465 @@
+{
+  "version": 2,
+  "kind": "Emitter",
+  "id": "66b73e5d-a8e8-4a31-b9c5-e8905221b35e",
+  "name": "Iterative GPU Emitter",
+  "exposedVersion": "b3ba8cfb-3dcb-483a-be87-3e5a057558d2",
+  "versions": [
+    {
+      "id": "b3ba8cfb-3dcb-483a-be87-3e5a057558d2",
+      "major": 1,
+      "minor": 0,
+      "description": "",
+      "body": {
+        "emitters": [
+          {
+            "enabled": true,
+            "id": "6733c9e2-8d62-4425-941b-39f9879f4724",
+            "position": [
+              0.0,
+              0.0
+            ],
+            "stacks": [
+              {
+                "enabled": true,
+                "id": "adb2de4c-2918-481b-b0db-8a995c2212d4",
+                "iterations": 1,
+                "modules": [],
+                "name": "Emitter Spawn",
+                "stage": 2
+              },
+              {
+                "enabled": true,
+                "id": "e9108fa1-5fd9-4ae9-975f-77776d53ca16",
+                "iterations": 1,
+                "modules": [
+                  {
+                    "enabled": true,
+                    "id": "c67c2138-c9a6-409c-b3fe-85aab2b32f55",
+                    "inputs": {
+                      "Duration": {
+                        "mode": 0,
+                        "parameter": "",
+                        "value": [
+                          5.0,
+                          0.0,
+                          0.0,
+                          0.0
+                        ]
+                      },
+                      "Loop": {
+                        "mode": 0,
+                        "parameter": "",
+                        "value": [
+                          1.0,
+                          0.0,
+                          0.0,
+                          0.0
+                        ]
+                      }
+                    },
+                    "script": "EmitterState"
+                  },
+                  {
+                    "enabled": true,
+                    "id": "bf09010d-6424-4832-919c-9029056dd258",
+                    "inputs": {
+                      "Rate": {
+                        "mode": 0,
+                        "parameter": "",
+                        "value": [
+                          100.0,
+                          0.0,
+                          0.0,
+                          0.0
+                        ]
+                      }
+                    },
+                    "script": "SpawnRate"
+                  }
+                ],
+                "name": "Emitter Update",
+                "stage": 3
+              },
+              {
+                "enabled": true,
+                "id": "ffee65b4-5b45-46ee-bca3-fe2126dc0d97",
+                "iterations": 1,
+                "modules": [
+                  {
+                    "enabled": true,
+                    "id": "080cc1b4-e2ae-4b53-a1a6-40a8c173c375",
+                    "inputs": {
+                      "Color": {
+                        "mode": 0,
+                        "parameter": "",
+                        "value": [
+                          0.1,
+                          1,
+                          0.2,
+                          1
+                        ]
+                      },
+                      "Lifetime": {
+                        "mode": 0,
+                        "parameter": "",
+                        "value": [
+                          2.0,
+                          0.0,
+                          0.0,
+                          0.0
+                        ]
+                      },
+                      "Position": {
+                        "mode": 0,
+                        "parameter": "",
+                        "value": [
+                          0.0,
+                          0.0,
+                          0.0,
+                          0.0
+                        ]
+                      },
+                      "Size": {
+                        "mode": 0,
+                        "parameter": "",
+                        "value": [
+                          0.06,
+                          0,
+                          0,
+                          0
+                        ]
+                      },
+                      "Velocity": {
+                        "mode": 0,
+                        "parameter": "",
+                        "value": [
+                          0,
+                          0.5,
+                          0,
+                          0
+                        ]
+                      }
+                    },
+                    "script": "InitializeParticle"
+                  },
+                  {
+                    "enabled": true,
+                    "id": "d9c2e57f-0971-45ce-9dc0-fc671c025e19",
+                    "inputs": {
+                      "Center": {
+                        "mode": 0,
+                        "parameter": "",
+                        "value": [
+                          0.0,
+                          0.0,
+                          0.0,
+                          0.0
+                        ]
+                      },
+                      "Extent": {
+                        "mode": 0,
+                        "parameter": "",
+                        "value": [
+                          0.5,
+                          0.5,
+                          0.5,
+                          0.0
+                        ]
+                      }
+                    },
+                    "script": "BoxLocation"
+                  }
+                ],
+                "name": "Particle Spawn",
+                "stage": 4
+              },
+              {
+                "enabled": true,
+                "id": "5d00ab0c-7f15-4e92-bbe8-fc4f24ade54d",
+                "iterations": 1,
+                "modules": [
+                  {
+                    "enabled": true,
+                    "id": "bcdebbf8-6d15-44c1-853e-58ffcfef477e",
+                    "inputs": {},
+                    "script": "SolveForcesAndVelocity"
+                  }
+                ],
+                "name": "Particle Update",
+                "stage": 5
+              },
+              {
+                "id": "da141951-8541-4624-a62e-d44745037b30",
+                "stage": 7,
+                "name": "Iterated Offset",
+                "enabled": true,
+                "iterations": 2,
+                "modules": [
+                  {
+                    "id": "f36d392f-e6e0-4c50-bbc0-98ba6fccf716",
+                    "script": "Stage Offset",
+                    "scriptAsset": {
+                      "asset": "79bc37f1-2168-4017-9f0f-fffec2b4a2aa",
+                      "version": "933318bd-4e66-4339-80ea-14fc2e41bd2c"
+                    },
+                    "enabled": true,
+                    "inputs": {
+                      "Value": {
+                        "mode": 1,
+                        "parameter": "User.Offset",
+                        "value": [
+                          0,
+                          0,
+                          0,
+                          0
+                        ]
+                      }
+                    }
+                  }
+                ]
+              },
+              {
+                "id": "069447f9-201b-4d6c-b181-dae5e5cd5d53",
+                "stage": 7,
+                "name": "Disabled Stage",
+                "enabled": false,
+                "iterations": 1,
+                "modules": []
+              },
+              {
+                "id": "2543a789-d34f-45c4-b6e9-3c1f06e42987",
+                "stage": 7,
+                "name": "Final Offset",
+                "enabled": true,
+                "iterations": 1,
+                "modules": [
+                  {
+                    "id": "9d18f061-a2de-4e9b-9790-995f9bdba041",
+                    "script": "Stage Offset",
+                    "scriptAsset": {
+                      "asset": "79bc37f1-2168-4017-9f0f-fffec2b4a2aa",
+                      "version": "933318bd-4e66-4339-80ea-14fc2e41bd2c"
+                    },
+                    "enabled": true,
+                    "inputs": {
+                      "Value": {
+                        "mode": 1,
+                        "parameter": "User.Offset",
+                        "value": [
+                          0,
+                          0,
+                          0,
+                          0
+                        ]
+                      }
+                    }
+                  }
+                ]
+              }
+            ]
+          }
+        ],
+        "id": "66b73e5d-a8e8-4a31-b9c5-e8905221b35e",
+        "kind": "System",
+        "name": "Iterative GPU Emitter",
+        "parameters": [],
+        "runtime": {
+          "emitters": [
+            {
+              "attributes": [
+                {
+                  "default": [
+                    0.0,
+                    0.0,
+                    0.0,
+                    0.0
+                  ],
+                  "name": "Particles.Position",
+                  "type": 2
+                },
+                {
+                  "default": [
+                    0.0,
+                    3.0,
+                    0.0,
+                    0.0
+                  ],
+                  "name": "Particles.Velocity",
+                  "type": 2
+                },
+                {
+                  "default": [
+                    1.0,
+                    0.5,
+                    0.10000000149011612,
+                    1.0
+                  ],
+                  "name": "Particles.Color",
+                  "type": 3
+                },
+                {
+                  "default": [
+                    0.05000000074505806,
+                    0.0,
+                    0.0,
+                    0.0
+                  ],
+                  "name": "Particles.Size",
+                  "type": 0
+                },
+                {
+                  "default": [
+                    0.0,
+                    0.0,
+                    0.0,
+                    0.0
+                  ],
+                  "name": "Particles.Age",
+                  "type": 0
+                },
+                {
+                  "default": [
+                    2.0,
+                    0.0,
+                    0.0,
+                    0.0
+                  ],
+                  "name": "Particles.Lifetime",
+                  "type": 0
+                }
+              ],
+              "bursts": [],
+              "capacity": 256,
+              "collision": {
+                "enabled": false,
+                "friction": 0.0,
+                "layers": 4294967295,
+                "radius": 0.0,
+                "restitution": 0.5
+              },
+              "duration": 5.0,
+              "frustumCulling": true,
+              "id": "6733c9e2-8d62-4425-941b-39f9879f4724",
+              "initialCapacity": 16,
+              "interpolatedSpawning": true,
+              "looping": true,
+              "mesh": {
+                "defaultOrientation": [
+                  0.0,
+                  0.0,
+                  0.0,
+                  1.0
+                ],
+                "defaultScale": [
+                  1.0,
+                  1.0,
+                  1.0,
+                  0.0
+                ],
+                "lodIndex": -1,
+                "materials": [],
+                "meshIndexAttribute": "Particles.MeshIndex",
+                "meshes": [],
+                "orientationAttribute": "Particles.MeshOrientation",
+                "scaleAttribute": "Particles.Scale"
+              },
+              "name": "Iterative GPU Emitter",
+              "renderer": 0,
+              "seed": 1,
+              "simulationStages": [],
+              "sortByViewDepth": false,
+              "spawn": {
+                "id": "74042d70-b487-4a90-b746-bc6385c7360c",
+                "nextNodeId": 3,
+                "nodes": [],
+                "stage": 0
+              },
+              "spawnRate": 100.0,
+              "sprite": {
+                "alignment": 0,
+                "alphaCutoff": 0.3330000042915344,
+                "blend": 0,
+                "blendSubImages": false,
+                "circularMask": true,
+                "dynamicParameters": [
+                  {
+                    "attribute": "Particles.DynamicMaterialParameter",
+                    "default": [
+                      1.0,
+                      1.0,
+                      1.0,
+                      1.0
+                    ],
+                    "fallbackParameter": ""
+                  },
+                  {
+                    "attribute": "Particles.DynamicMaterialParameter1",
+                    "default": [
+                      1.0,
+                      1.0,
+                      1.0,
+                      1.0
+                    ],
+                    "fallbackParameter": ""
+                  },
+                  {
+                    "attribute": "Particles.DynamicMaterialParameter2",
+                    "default": [
+                      1.0,
+                      1.0,
+                      1.0,
+                      1.0
+                    ],
+                    "fallbackParameter": ""
+                  },
+                  {
+                    "attribute": "Particles.DynamicMaterialParameter3",
+                    "default": [
+                      1.0,
+                      1.0,
+                      1.0,
+                      1.0
+                    ],
+                    "fallbackParameter": ""
+                  }
+                ],
+                "emissive": 1.0,
+                "material": {
+                  "guid": "",
+                  "localId": 0
+                },
+                "materialParameters": [],
+                "softDistance": 0.0,
+                "subImagesX": 1,
+                "subImagesY": 1,
+                "texture": {
+                  "guid": "",
+                  "localId": 0
+                },
+                "tint": [
+                  1.0,
+                  1.0,
+                  1.0,
+                  1.0
+                ],
+                "useMaterialShader": false
+              },
+              "target": 1,
+              "update": {
+                "id": "2c6e537f-59f7-48e7-ac6e-1b2f9daf8c5d",
+                "nextNodeId": 7,
+                "nodes": [],
+                "stage": 1
+              }
+            }
+          ],
+          "id": "66b73e5d-a8e8-4a31-b9c5-e8905221b35e",
+          "name": "Iterative GPU Emitter",
+          "version": 1
+        },
+        "version": 2
+      }
+    }
+  ]
+}

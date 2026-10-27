@@ -12,6 +12,7 @@ namespace NLS::Render::FrameGraph
 {
 	struct NLS_RENDER_API FrameGraphBuffer
 	{
+			static constexpr uint32_t kIndirectRead = 1u;
 		// FrameGraph internal buffer descriptor - kept separate from Formal RHI types
 		// because FrameGraph needs 'type' and 'usage' fields that map to RHI concepts
 		struct Desc
@@ -20,6 +21,7 @@ namespace NLS::Render::FrameGraph
 			NLS::Render::RHI::BufferType type = NLS::Render::RHI::BufferType::ShaderStorage;
 			NLS::Render::RHI::BufferUsage usage = NLS::Render::RHI::BufferUsage::DynamicDraw;
 			std::string debugName;
+				NLS::Render::RHI::BufferUsageFlags additionalUsage = NLS::Render::RHI::BufferUsageFlags::None;
 		};
 
 		bool ownsResource = false;

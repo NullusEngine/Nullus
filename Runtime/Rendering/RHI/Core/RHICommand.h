@@ -1,10 +1,12 @@
 #pragma once
+#include "Rendering/RHI/Core/RHITimestampQuery.h"
 
 #include <algorithm>
 #include <string>
 #include <utility>
 
 #include "Rendering/RHI/Core/RHIPipeline.h"
+#include "Rendering/RHI/Core/RHIResource.h"
 #include "Rendering/RHI/Core/RHISync.h"
 
 namespace NLS::Render::RHI
@@ -274,6 +276,31 @@ namespace NLS::Render::RHI
         bool Succeeded() const { return code == RHICommandRecordingStatusCode::Success; }
     };
 
+    // Layouts match D3D12, Vulkan and Metal indirect argument buffers.
+    struct RHIDrawIndirectArguments
+    {
+        uint32_t vertexCount, instanceCount, firstVertex, firstInstance;
+    };
+    struct RHIDrawIndexedIndirectArguments
+    {
+        uint32_t indexCount, instanceCount, firstIndex;
+        int32_t vertexOffset;
+        uint32_t firstInstance;
+    };
+    struct RHIDispatchIndirectArguments { uint32_t groupCountX, groupCountY, groupCountZ; };
+    static_assert(sizeof(RHIDrawIndirectArguments) == 16);
+    static_assert(sizeof(RHIDrawIndexedIndirectArguments) == 20);
+    static_assert(sizeof(RHIDispatchIndirectArguments) == 12);
+
+    inline RHICommandRecordingResult ValidateIndirectArguments(
+        const std::shared_ptr<RHIBuffer>& buffer, uint64_t offset, uint32_t argumentBytes)
+    {
+        if (!buffer || !HasBufferUsage(buffer->GetDesc().usage,BufferUsageFlags::Indirect) || offset%4 != 0 ||
+            offset > buffer->GetDesc().size || argumentBytes > buffer->GetDesc().size-offset)
+            return {RHICommandRecordingStatusCode::InvalidArgument,"Indirect arguments require Indirect usage, four-byte alignment and a complete argument range"};
+        return {};
+    }
+
     class NLS_RENDER_API RHICommandBuffer : public RHIObject
     {
     public:
@@ -318,6 +345,22 @@ namespace NLS::Render::RHI
             return {};
         }
         virtual void Dispatch(uint32_t groupCountX, uint32_t groupCountY, uint32_t groupCountZ) = 0;
+        virtual RHICommandRecordingResult WriteTimestamp(const std::shared_ptr<RHITimestampQuery>& query, uint32_t index)
+        { return {RHICommandRecordingStatusCode::BackendFailure, "GPU timestamps are unavailable on this command buffer"}; }
+        // One GPU-authored command; callers transition arguments to IndirectArgument first.
+        // Nonzero firstInstance requires the IndirectFirstInstance device feature.
+        virtual RHICommandRecordingResult DrawIndirect(const std::shared_ptr<RHIBuffer>& arguments, uint64_t offset = 0)
+        {
+            return {RHICommandRecordingStatusCode::BackendFailure,"Indirect draws are unavailable on this command buffer"};
+        }
+        virtual RHICommandRecordingResult DrawIndexedIndirect(const std::shared_ptr<RHIBuffer>& arguments, uint64_t offset = 0)
+        {
+            return {RHICommandRecordingStatusCode::BackendFailure,"Indexed indirect draws are unavailable on this command buffer"};
+        }
+        virtual RHICommandRecordingResult DispatchIndirect(const std::shared_ptr<RHIBuffer>& arguments, uint64_t offset = 0)
+        {
+            return {RHICommandRecordingStatusCode::BackendFailure,"Indirect dispatch is unavailable on this command buffer"};
+        }
         virtual void CopyBuffer(const std::shared_ptr<RHIBuffer>& source, const std::shared_ptr<RHIBuffer>& destination, const RHIBufferCopyRegion& region) = 0;
         virtual void CopyBufferToTexture(const RHIBufferToTextureCopyDesc& desc) = 0;
         virtual void CopyTexture(const RHITextureCopyDesc& desc) = 0;

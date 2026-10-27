@@ -2,15 +2,18 @@
 #define NLS_ENGINE_COMMON_TYPES_HLSLI
 
 #include "NullusShaderLibrary/Common.hlsl"
+#include "NullusShaderLibrary/Skinning.hlsl"
 
 #if !defined(NLS_COMMON_TYPES_SHADER_LIBRARY_INTEROP)
 struct VSInput
 {
+
     float3 Position : POSITION;
     float2 TexCoord : TEXCOORD0;
     float3 Normal : NORMAL;
     float3 Tangent : TEXCOORD1;
     float3 Bitangent : TEXCOORD2;
+    NLS_SKIN_ATTRIBUTES
 };
 
 struct VSOutput

@@ -1,6 +1,7 @@
 
 #include "UI/Widgets/Selection/ColorEdit.h"
 #include "ImGui/imgui.h"
+#include "UI/Controls/VectorControl.h"
 
 namespace NLS::UI::Widgets
 {
@@ -14,10 +15,7 @@ void ColorEdit::_Draw_Impl()
     int flags = !enableAlpha ? ImGuiColorEditFlags_NoAlpha : 0;
     bool valueChanged = false;
 
-    if (enableAlpha)
-        valueChanged = ImGui::ColorEdit4(m_widgetID.c_str(), &color.r, flags);
-    else
-        valueChanged = ImGui::ColorEdit3(m_widgetID.c_str(), &color.r, flags);
+    valueChanged=Controls::Color(m_widgetID.c_str(),&color.r,false,{},flags).changed;
 
     if (valueChanged)
     {

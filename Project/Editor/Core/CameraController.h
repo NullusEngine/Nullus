@@ -67,6 +67,11 @@ public:
     CameraController(
         NLS::Editor::Panels::AView& p_view,
         Render::Entities::Camera& p_camera);
+    CameraController(Render::Entities::Camera& camera,
+        Windowing::Inputs::InputManager& input, Windowing::Window& window);
+    ~CameraController();
+    void SetViewportInputBounds(const Maths::Vector2& minimum, const Maths::Vector2& maximum, bool available = true);
+    void ClearViewportInputBounds();
 
     /**
      * Handle mouse and keyboard inputs
@@ -79,6 +84,7 @@ public:
      * @param p_target
      */
     void MoveToTarget(Engine::GameObject& p_target);
+    void MoveToPoint(const Maths::Vector3& point, float distance);
 
     /**
      * Defines the speed of the camera
@@ -146,7 +152,7 @@ private:
     void SuppressMouseDeltaAfterCursorCapture();
     bool ConsumeSuppressedMouseDelta(const Maths::Vector2& p_mousePosition);
     void HandleCameraPanning(const Maths::Vector2& p_mouseOffset, bool p_firstMouse);
-    void HandleCameraOrbit(Engine::GameObject& p_target, const Maths::Vector2& p_mouseOffset, bool p_firstMouse);
+    void HandleCameraOrbit(const Maths::Vector3& target, const Maths::Vector2& p_mouseOffset, bool p_firstMouse);
     void HandleCameraFPSMouse(const Maths::Vector2& p_mouseOffset, bool p_firstMouse);
 
     void HandleCameraZoom();
@@ -156,7 +162,9 @@ private:
 private:
     Windowing::Inputs::InputManager& m_inputManager;
     Windowing::Window& m_window;
-    NLS::Editor::Panels::AView& m_view;
+    NLS::Editor::Panels::AView* m_view = nullptr;
+    Maths::Vector2 m_viewportMin{}, m_viewportMax{};
+    bool m_hasViewportBounds = false;
     Render::Entities::Camera& m_camera;
     SceneCameraFocusState* m_focusState = nullptr;
 
@@ -167,7 +175,6 @@ private:
     Maths::Vector3 m_targetSpeed;
     Maths::Vector3 m_currentMovementSpeed;
 
-    Maths::Transform* m_orbitTarget = nullptr;
     Maths::Vector3 m_orbitStartOffset;
     bool m_firstMouse = true;
     double m_lastMousePosX = 0.0;
@@ -181,7 +188,7 @@ private:
     float m_focusDistance = 15.0f;
     float m_focusLerpCoefficient = 8.0f;
     float m_viewportHeight = 1.0f;
-    bool m_inputActive = false;
+    bool m_inputActive = true;
     bool m_inputBlocked = false;
     bool m_forcedNoMouseCursorChange = false;
     SceneViewCameraCursorShapeLease m_cursorShapeLease;

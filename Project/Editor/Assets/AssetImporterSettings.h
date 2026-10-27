@@ -15,12 +15,7 @@ namespace NLS::Editor::Assets
 inline constexpr const char* kModelFbxIgnoreTexturedNeutralDiffuseTintSetting =
     "MODEL_FBX_IGNORE_TEXTURED_NEUTRAL_DIFFUSE_TINT";
 
-enum class FbxReaderSelection
-{
-    Autodesk,
-    Assimp,
-    AutodeskWithAssimpFallback
-};
+using FbxReaderSelection = NLS::Animation::FbxReaderSelection;
 
 struct ModelImporterSettings
 {
@@ -43,6 +38,9 @@ struct ModelImporterSettings
     bool importMeshLODs = false;
     uint32_t minLOD = 0u;
     bool autoComputeLODScreenSize = true;
+    double animationSampleRate = 0;
+    std::vector<std::string> animationTakes;
+    std::string animationTargetSkeleton;
 };
 
 struct TexturePlatformOverride

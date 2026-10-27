@@ -49,6 +49,16 @@ function(nls_add_physx_sdk)
         if(NOT EXISTS "${_mac_platform}/CMakeLists.txt")
             file(COPY "${PHYSX_ROOT_DIR}/source/compiler/cmake/linux/" DESTINATION "${_mac_platform}")
         endif()
+        # Darwin size_t is unsigned long while uint64_t is unsigned long long.
+        # Select the 64-bit overload explicitly without truncating the promoted sum.
+        set(_temp_allocator_file "${PHYSX_ROOT_DIR}/source/foundation/FdTempAllocator.cpp")
+        file(READ "${_temp_allocator_file}" _temp_allocator_source)
+        string(REPLACE "PxHighestSetBit(PxU32(size) + sizeof(Chunk) - 1)"
+            "PxHighestSetBit(static_cast<uint64_t>(PxU32(size) + sizeof(Chunk) - 1))"
+            _temp_allocator_patched "${_temp_allocator_source}")
+        if(NOT _temp_allocator_source STREQUAL _temp_allocator_patched)
+            file(WRITE "${_temp_allocator_file}" "${_temp_allocator_patched}")
+        endif()
         set(_thread_file "${PHYSX_ROOT_DIR}/source/foundation/unix/FdUnixThread.cpp")
         file(READ "${_thread_file}" _thread_source)
         string(REPLACE "threadImpl.tid = syscall(SYS_gettid);"

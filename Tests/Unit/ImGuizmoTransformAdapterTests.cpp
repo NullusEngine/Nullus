@@ -116,12 +116,12 @@ TEST(ImGuizmoTransformAdapterTests, TogglesPivotAndSpaceModes)
 
 TEST(ImGuizmoTransformAdapterTests, MapsPivotModesToToolbarIcons)
 {
-    EXPECT_STREQ(
+    EXPECT_EQ(
         Editor::Panels::GetToolbarPivotIconId(Editor::Core::SceneViewGizmoPivot::Pivot),
-        "editor.icon.toolbar.pivot");
-    EXPECT_STREQ(
+        Editor::Icons::EditorIcons::ToolbarPivot);
+    EXPECT_EQ(
         Editor::Panels::GetToolbarPivotIconId(Editor::Core::SceneViewGizmoPivot::Center),
-        "editor.icon.toolbar.center");
+        Editor::Icons::EditorIcons::ToolbarCenter);
 }
 
 TEST(ImGuizmoTransformAdapterTests, SelectsSnapValueForCurrentOperation)

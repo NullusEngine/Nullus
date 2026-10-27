@@ -13,6 +13,7 @@ The SDK is copied into a private build directory before local patches are applie
 
 Local integration changes:
 
+- Resolve the macOS `size_t` ambiguity in temporary-allocation bit scans with an explicit 64-bit argument.
 - Disable the sample FreeGLUT DLL copy for the CPU SDK.
 - Compile the SDK as C++14 with the same dynamic CRT as the engine.
 - Isolate SDK build flags and preserve Nullus configurations.

@@ -9,6 +9,8 @@
 #include <vector>
 
 #if defined(__APPLE__)
+#include <Guid.h>
+#include "Rendering/ShaderCompiler/ShaderCompiler.h"
 #include <array>
 #include <cstdint>
 #include <memory>
@@ -279,6 +281,147 @@ kernel void PushConstantOffsetTest(
         firstValues[0], firstValues[1], secondValues[0], secondValues[1]
     };
     EXPECT_EQ(readback, expected);
+}
+
+TEST(MetalRhiParityTests, MetalExecutesDxcShiftedBindingsAndIndexedObjectConstants)
+{
+    using namespace NLS::Render::RHI;
+    namespace shader = NLS::Render::ShaderCompiler;
+    auto device = CreateTestMetalDevice();
+    if (device == nullptr)
+        GTEST_SKIP() << "No Metal device is available.";
+    ScopedMetalSubmitLane submitLane;
+
+    const auto root = std::filesystem::temp_directory_path() / ("NullusMetalHlsl_" + NLS::Guid::New().ToString());
+    std::filesystem::create_directories(root);
+    struct Cleanup
+    {
+        std::filesystem::path root;
+        ~Cleanup() { std::error_code error; std::filesystem::remove_all(root, error); }
+    } cleanup{root};
+    const auto source = root / "bindings.hlsl";
+    {
+        std::ofstream file(source);
+        file << R"(
+cbuffer Constants : register(b0, space3) { uint Value; };
+StructuredBuffer<uint4> Input : register(t0, space1);
+RWStructuredBuffer<uint4> Output : register(u1, space1);
+struct NLSObjectDrawConstants { uint objectIndex; uint3 padding; };
+[[vk::push_constant]] ConstantBuffer<NLSObjectDrawConstants> g_NLSObjectDrawConstants;
+Texture2D<float4> SampledImage : register(t0, space2);
+SamplerState ImageSampler : register(s0, space2);
+RWTexture2D<float4> StorageImage : register(u0, space0);
+[numthreads(1, 1, 1)] void Main()
+{
+    Output[0] = Input[0] + Value + g_NLSObjectDrawConstants.objectIndex;
+}
+[numthreads(1, 1, 1)] void Sampling()
+{
+    StorageImage[uint2(0, 0)] = SampledImage.SampleLevel(ImageSampler, float2(0.5, 0.5), 0);
+}
+)";
+    }
+    shader::ShaderCompiler compiler;
+    shader::ShaderCompilationInput input;
+    input.assetPath = source.string();
+    input.stage = shader::ShaderStage::Compute;
+    input.options.targetPlatform = shader::ShaderTargetPlatform::SPIRV;
+    input.options.targetProfile = "cs_6_0";
+    input.options.entryPoint = "Main";
+    input.options.artifactDirectory = (root / "cache").string();
+    const auto compiled = compiler.Compile(input);
+    ASSERT_EQ(compiled.status, shader::ShaderCompilationStatus::Succeeded) << compiled.diagnostics;
+    RHIShaderModuleDesc moduleDesc;
+    moduleDesc.stage = ShaderStage::Compute;
+    moduleDesc.targetBackend = NativeBackendType::Metal;
+    moduleDesc.entryPoint = "Main";
+    moduleDesc.bytecode = compiled.bytecode;
+    auto module = device->CreateShaderModule(moduleDesc);
+    ASSERT_NE(module, nullptr);
+    input.options.entryPoint = "Sampling";
+    const auto sampled = compiler.Compile(input);
+    ASSERT_EQ(sampled.status, shader::ShaderCompilationStatus::Succeeded) << sampled.diagnostics;
+    moduleDesc.entryPoint = "Sampling";
+    moduleDesc.bytecode = sampled.bytecode;
+    ASSERT_NE(device->CreateShaderModule(moduleDesc), nullptr)
+        << "Texture, sampler and storage-image registers must use the same logical binding map.";
+
+    RHIBindingLayoutDesc layoutDesc;
+    layoutDesc.entries = {
+        {"Constants", BindingType::UniformBuffer, 0u, 0u, 1u, ShaderStageMask::Compute, 3u, 0u},
+        {"Input", BindingType::StructuredBuffer, 0u, 0u, 1u, ShaderStageMask::Compute, 1u, 16u},
+        {"Output", BindingType::StorageBuffer, 0u, 1u, 1u, ShaderStageMask::Compute, 1u, 16u}
+    };
+    auto layout = device->CreateBindingLayout(layoutDesc);
+    ASSERT_NE(layout, nullptr);
+    RHIPipelineLayoutDesc pipelineLayoutDesc;
+    pipelineLayoutDesc.bindingLayouts = {layout};
+    pipelineLayoutDesc.pushConstants.push_back({ShaderStageMask::Compute, 0u, 16u, 1u, 3u});
+    auto pipelineLayout = device->CreatePipelineLayout(pipelineLayoutDesc);
+    ASSERT_NE(pipelineLayout, nullptr);
+    RHIComputePipelineDesc pipelineDesc;
+    pipelineDesc.pipelineLayout = pipelineLayout;
+    pipelineDesc.computeShader = module;
+    auto pipeline = device->CreateComputePipeline(pipelineDesc);
+    ASSERT_NE(pipeline, nullptr);
+
+    const std::array<uint32_t, 4> values{10u, 0u, 0u, 0u}, inputs{1u, 2u, 3u, 4u};
+    RHIBufferDesc bufferDesc;
+    bufferDesc.size = sizeof(values);
+    bufferDesc.usage = BufferUsageFlags::Uniform;
+    bufferDesc.memoryUsage = MemoryUsage::CPUToGPU;
+    RHIBufferUploadDesc upload;
+    upload.data = values.data();
+    upload.dataSize = sizeof(values);
+    auto constants = device->CreateBuffer(bufferDesc, upload);
+    bufferDesc.usage = BufferUsageFlags::Storage;
+    upload.data = inputs.data();
+    auto sourceBuffer = device->CreateBuffer(bufferDesc, upload);
+    bufferDesc.usage = BufferUsageFlags::Storage | BufferUsageFlags::CopySrc;
+    bufferDesc.memoryUsage = MemoryUsage::GPUOnly;
+    auto output = device->CreateBuffer(bufferDesc);
+    ASSERT_TRUE(constants && sourceBuffer && output);
+    RHIBindingSetDesc setDesc;
+    setDesc.layout = layout;
+    setDesc.entries = {
+        {0u, BindingType::UniformBuffer, constants, 0u, 16u, 0u},
+        {0u, BindingType::StructuredBuffer, sourceBuffer, 0u, 16u, 16u},
+        {1u, BindingType::StorageBuffer, output, 0u, 16u, 16u}
+    };
+    auto set = device->CreateBindingSet(setDesc);
+    ASSERT_NE(set, nullptr);
+    auto queue = device->GetQueue(QueueType::Compute);
+    auto pool = device->CreateCommandPool(QueueType::Compute, "DxcBindings");
+    ASSERT_TRUE(queue && pool);
+    auto commands = pool->CreateCommandBuffer("DxcBindings");
+    ASSERT_NE(commands, nullptr);
+    commands->Begin();
+    commands->BindComputePipeline(pipeline);
+    commands->BindBindingSet(0u, set);
+    const std::array<uint32_t, 4> objectConstants{7u, 0u, 0u, 0u};
+    commands->PushConstants(ShaderStageMask::Compute, 0u, 16u, objectConstants.data());
+    commands->Dispatch(1u, 1u, 1u);
+    commands->End();
+    auto fence = device->CreateFence("DxcBindings");
+    ASSERT_NE(fence, nullptr);
+    RHISubmitDesc submit;
+    submit.commandBuffers = {commands};
+    submit.signalFence = fence;
+    const auto submitted = queue->SubmitChecked(submit);
+    ASSERT_TRUE(submitted.Succeeded()) << submitted.message;
+    ASSERT_TRUE(fence->Wait(5'000'000'000ull));
+    std::array<uint32_t, 4> result{};
+    RHIBufferReadbackDesc readback;
+    readback.source = output;
+    readback.sourceState = ResourceState::ShaderWrite;
+    readback.size = sizeof(result);
+    readback.data = result.data();
+    const auto read = device->BeginReadBuffer(readback);
+    ASSERT_TRUE(read.Succeeded()) << read.message;
+    ASSERT_NE(read.completion, nullptr);
+    ASSERT_TRUE(read.completion->Wait(5'000'000'000ull).Succeeded());
+    const std::array<uint32_t, 4> expected{18u, 19u, 20u, 21u};
+    EXPECT_EQ(result, expected);
 }
 
 TEST(MetalRhiParityTests, MetalEnforcesDx12EquivalentResourceMemoryUsage)

@@ -319,7 +319,8 @@ TEST(DistanceFieldGpuTests, Dx12SparsePagesMatchCpuAndDeletionLeavesNoSurface)
     NLS::Render::Settings::DriverSettings settings;
     settings.debugMode=true; settings.graphicsBackend=NLS::Render::Settings::EGraphicsBackend::DX12;
     auto device=NLS::Render::Backend::CreateRhiDevice(settings);
-    ASSERT_TRUE(device && device->IsBackendReady());
+    if (!device || !device->IsBackendReady())
+        GTEST_SKIP() << "No DX12 device is available for distance field validation.";
     executor.SetTargets(context::RhiCommandListExecutor::CreateDeviceTargets(device));
     Microsoft::WRL::ComPtr<ID3D12InfoQueue> messages;
     auto* native=static_cast<ID3D12Device*>(device->GetNativeDeviceInfo().device);
@@ -557,7 +558,8 @@ TEST(DistanceFieldGpuTests, VolumeMipRegionAndStorageImageReflectionRoundTrip)
     NLS::Render::Settings::DriverSettings settings; settings.debugMode=true;
     settings.graphicsBackend=NLS::Render::Settings::EGraphicsBackend::DX12;
     auto device=NLS::Render::Backend::CreateRhiDevice(settings);
-    ASSERT_TRUE(device && device->IsBackendReady());
+    if (!device || !device->IsBackendReady())
+        GTEST_SKIP() << "No DX12 device is available for distance field validation.";
     executor.SetTargets(context::RhiCommandListExecutor::CreateDeviceTargets(device));
     Microsoft::WRL::ComPtr<ID3D12InfoQueue> messages;
     auto* native=static_cast<ID3D12Device*>(device->GetNativeDeviceInfo().device);

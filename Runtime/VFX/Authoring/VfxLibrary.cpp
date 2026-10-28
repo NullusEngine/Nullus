@@ -474,7 +474,10 @@ bool SourceLibrary::Refresh(std::span<const std::filesystem::path> roots,std::st
             for (const auto& entry : std::filesystem::recursive_directory_iterator(root,std::filesystem::directory_options::skip_permission_denied))
             {
                 if (!entry.is_regular_file()) continue;
-                const auto path = std::filesystem::weakly_canonical(entry.path()); if (!visited.insert(path).second) continue;
+                // Keep the source root spelling for project-relative dependency tracking.
+                // Canonical paths are only used to deduplicate overlapping roots and aliases.
+                const auto path = std::filesystem::absolute(entry.path()).lexically_normal();
+                if (!visited.insert(std::filesystem::weakly_canonical(path)).second) continue;
                 auto extension = path.extension().string(); std::transform(extension.begin(),extension.end(),extension.begin(),[](unsigned char c) { return static_cast<char>(std::tolower(c)); });
                 if (extension == ".vfxscript") { ScriptAsset asset; if (!LoadScript(path,asset,error) || !candidate.Add(std::move(asset),path,error)) throw std::runtime_error(path.string()+": "+error); }
                 if (extension == ".vfxemitter") { EmitterSource asset; if (!LoadEmitterSource(path,asset,error) || !candidate.Add(std::move(asset),path,error)) throw std::runtime_error(path.string()+": "+error); }

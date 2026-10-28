@@ -4407,20 +4407,46 @@ namespace NLS::Render::Backend
                                 compiler.get_execution_mode_argument(spv::ExecutionModeLocalSize, 1u),
                                 compiler.get_execution_mode_argument(spv::ExecutionModeLocalSize, 2u));
                         }
+                        // DXC's Vulkan register shifts are already present in HLSL SPIR-V.
+                        // Restore logical registers before applying the native Metal binding map.
+                        const auto& sources = compiler.get_ir().sources;
+                        const bool hlsl = std::any_of(sources.begin(), sources.end(),
+                            [](const auto& source) { return source.hlsl; });
+                        const auto logicalBinding = [&](const auto& resource, const NLS::Render::RHI::BindingType type)
+                        {
+                            using NLS::Render::RHI::BindingType;
+                            const uint32_t space = compiler.get_decoration(resource.id, spv::DecorationDescriptorSet);
+                            const uint32_t binding = compiler.get_decoration(resource.id, spv::DecorationBinding);
+                            if (!hlsl || space > 3u)
+                                return binding;
+                            uint32_t shift = space * 16u;
+                            if (type == BindingType::UniformBuffer) shift = 8u + space * 4u;
+                            if (type == BindingType::Sampler) shift = space == 0u ? 0u : 64u + space * 16u;
+                            if (type == BindingType::StorageBuffer || type == BindingType::RWTexture) shift = 128u + space * 16u;
+                            if (binding < shift)
+                                throw std::runtime_error("Invalid HLSL SPIR-V register shift.");
+                            return binding - shift;
+                        };
                         const auto addBufferBindings = [&](const auto& resources, const bool storageBuffer)
                         {
                             for (const auto& resource : resources)
                             {
                                 const uint32_t bindingSpace = compiler.get_decoration(resource.id, spv::DecorationDescriptorSet);
                                 const uint32_t sourceBinding = compiler.get_decoration(resource.id, spv::DecorationBinding);
-                                const uint32_t binding = storageBuffer
+                                const bool readOnly = storageBuffer &&
+                                    compiler.get_buffer_block_flags(resource.id).get(spv::DecorationNonWritable);
+                                const auto logical = logicalBinding(resource, !storageBuffer
+                                    ? NLS::Render::RHI::BindingType::UniformBuffer
+                                    : readOnly ? NLS::Render::RHI::BindingType::StructuredBuffer
+                                               : NLS::Render::RHI::BindingType::StorageBuffer);
+                                const uint32_t binding = !hlsl && storageBuffer
                                     ? sourceBinding + kMetalSpirvStorageBindingOffset
                                     : sourceBinding;
-                                if (storageBuffer)
+                                if (!hlsl && storageBuffer)
                                     compiler.set_decoration(resource.id, spv::DecorationBinding, binding);
                                 const auto index = storageBuffer
-                                    ? ToMetalStorageBufferBindingIndex(bindingSpace, sourceBinding)
-                                    : ToMetalBufferBindingIndex(bindingSpace, sourceBinding);
+                                    ? ToMetalStorageBufferBindingIndex(bindingSpace, logical)
+                                    : ToMetalBufferBindingIndex(bindingSpace, logical);
                                 if (!index.has_value())
                                     throw std::runtime_error("Metal buffer binding exceeds the supported binding map.");
                                 spirv_cross::MSLResourceBinding remap{};
@@ -4431,19 +4457,22 @@ namespace NLS::Render::Backend
                                 compiler.add_msl_resource_binding(remap);
                             }
                         };
-                        const auto addTextureBindings = [&](const auto& resources, const bool includeSampler)
+                        const auto addTextureBindings = [&](const auto& resources, const bool includeSampler, const bool writable = false)
                         {
                             for (const auto& resource : resources)
                             {
                                 const uint32_t bindingSpace = compiler.get_decoration(resource.id, spv::DecorationDescriptorSet);
                                 const uint32_t sourceBinding = compiler.get_decoration(resource.id, spv::DecorationBinding);
-                                const uint32_t binding = sourceBinding + kMetalSpirvTextureBindingOffset;
-                                compiler.set_decoration(resource.id, spv::DecorationBinding, binding);
-                                const auto index = ToMetalTextureBindingIndex(bindingSpace, sourceBinding);
+                                const auto logical = logicalBinding(resource, writable
+                                    ? NLS::Render::RHI::BindingType::RWTexture : NLS::Render::RHI::BindingType::Texture);
+                                const uint32_t binding = hlsl ? sourceBinding : sourceBinding + kMetalSpirvTextureBindingOffset;
+                                if (!hlsl)
+                                    compiler.set_decoration(resource.id, spv::DecorationBinding, binding);
+                                const auto index = ToMetalTextureBindingIndex(bindingSpace, logical);
                                 if (!index.has_value())
                                     throw std::runtime_error("Metal texture binding exceeds the supported binding map.");
                                 const auto samplerIndex = includeSampler
-                                    ? ToMetalSamplerBindingIndex(bindingSpace, sourceBinding)
+                                    ? ToMetalSamplerBindingIndex(bindingSpace, logical)
                                     : std::optional<uint32_t>{};
                                 if (includeSampler && !samplerIndex.has_value())
                                     throw std::runtime_error("Metal sampler binding exceeds the supported binding map.");
@@ -4462,9 +4491,11 @@ namespace NLS::Render::Backend
                             {
                                 const uint32_t bindingSpace = compiler.get_decoration(resource.id, spv::DecorationDescriptorSet);
                                 const uint32_t sourceBinding = compiler.get_decoration(resource.id, spv::DecorationBinding);
-                                const uint32_t binding = sourceBinding + kMetalSpirvSamplerBindingOffset;
-                                compiler.set_decoration(resource.id, spv::DecorationBinding, binding);
-                                const auto index = ToMetalSamplerBindingIndex(bindingSpace, sourceBinding);
+                                const auto logical = logicalBinding(resource, NLS::Render::RHI::BindingType::Sampler);
+                                const uint32_t binding = hlsl ? sourceBinding : sourceBinding + kMetalSpirvSamplerBindingOffset;
+                                if (!hlsl)
+                                    compiler.set_decoration(resource.id, spv::DecorationBinding, binding);
+                                const auto index = ToMetalSamplerBindingIndex(bindingSpace, logical);
                                 if (!index.has_value())
                                     throw std::runtime_error("Metal sampler binding exceeds the supported binding map.");
                                 spirv_cross::MSLResourceBinding remap{};
@@ -4481,8 +4512,21 @@ namespace NLS::Render::Backend
                         addBufferBindings(resources.storage_buffers, true);
                         addTextureBindings(resources.sampled_images, true);
                         addTextureBindings(resources.separate_images, false);
-                        addTextureBindings(resources.storage_images, false);
+                        addTextureBindings(resources.storage_images, false, true);
                         addSamplerBindings(resources.separate_samplers);
+                        for (const auto& resource : resources.push_constant_buffers)
+                        {
+                            if (compiler.get_name(resource.id) != "g_NLSObjectDrawConstants" &&
+                                resource.name != "g_NLSObjectDrawConstants")
+                                continue;
+                            // Indexed object draws publish b1, space3 through PushConstants().
+                            spirv_cross::MSLResourceBinding remap{};
+                            remap.stage = executionModel;
+                            remap.desc_set = spirv_cross::kPushConstDescSet;
+                            remap.binding = spirv_cross::kPushConstBinding;
+                            remap.msl_buffer = *ToMetalBufferBindingIndex(3u, 1u);
+                            compiler.add_msl_resource_binding(remap);
+                        }
                         source = compiler.compile();
                         metalEntryPoint = compiler.get_cleansed_entry_point_name(desc.entryPoint, executionModel);
                     }

@@ -6517,6 +6517,7 @@ TEST(AssetThumbnailCacheTests, SuccessfulPrefabResourcePumpUsesPreparedSubmissio
     EXPECT_EQ(renderer.ordinarySubmitCount, 0u);
     EXPECT_EQ(renderer.renderCount, 0u);
 
+    service.Shutdown();
     std::filesystem::remove_all(root);
 }
 

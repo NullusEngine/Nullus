@@ -1,5 +1,6 @@
 #include "VfxTestExecution.h"
 #include <gtest/gtest.h>
+#include <array>
 #include <Guid.h>
 #include <VFX/Authoring/VfxLibrary.h>
 #include <VFXCompiler/VfxStackCompiler.h>
@@ -212,4 +213,25 @@ TEST(VfxLibrary, NormalizedAgeReadsLifetimeWrittenByAnEarlierModule)
     std::vector<Value> registers;
     ASSERT_TRUE(RunParticleProgram(compiled.emitters[0].update, data, 0, 1, {}, registers));
     EXPECT_FLOAT_EQ(data.Read(data.FindAttribute("Particles.Color"),0)[0],0.75f); EXPECT_FLOAT_EQ(data.Read(data.FindAttribute("Particles.Lifetime"),0)[0],4);
+}
+
+TEST(VfxLibrary, RefreshPreservesAliasPathsAndDeduplicatesPhysicalSources)
+{
+    LibraryDirectory directory;
+    const auto real = directory.root / "Real";
+    const auto alias = directory.root / "Alias";
+    std::filesystem::create_directories(real);
+    std::error_code linkError;
+    std::filesystem::create_directory_symlink(real.filename(), alias, linkError);
+    if (linkError)
+        GTEST_SKIP() << "Directory symlinks are unavailable: " << linkError.message();
+    const auto script = author::CreateScript(author::AssetKind::Module, "Alias Size");
+    std::string error;
+    ASSERT_TRUE(author::SaveScript(real / "Size.vfxscript", script, error)) << error;
+    author::SourceLibrary library;
+    const std::array roots{alias, real};
+    ASSERT_TRUE(library.Refresh(roots, error)) << error;
+    const auto dependency = library.Dependency(script.id);
+    ASSERT_TRUE(dependency.has_value());
+    EXPECT_EQ(dependency->path, alias / "Size.vfxscript");
 }

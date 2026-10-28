@@ -61,7 +61,7 @@ jobs:
           ThirdParty/DirectXShaderCompiler/bin/dxc --version
 
       - name: Build
-        timeout-minutes: 60
+        timeout-minutes: 90
         run: NLS_CMAKE_OPTIONS="-DNLS_BUILD_TESTS=ON" NLS_BUILD_TARGETS="NullusUnitTests ReflectionTest" NLS_BUILD_JOBS=1 ./build_linux.sh debug
 
       - name: Run unit tests

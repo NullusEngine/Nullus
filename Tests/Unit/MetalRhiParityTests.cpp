@@ -305,6 +305,7 @@ TEST(MetalRhiParityTests, MetalExecutesDxcShiftedBindingsAndIndexedObjectConstan
         file << R"(
 cbuffer Constants : register(b0, space3) { uint Value; };
 StructuredBuffer<uint4> Input : register(t0, space1);
+StructuredBuffer<uint> InstanceObjectIndices : register(t1, space3);
 RWStructuredBuffer<uint4> Output : register(u1, space1);
 struct NLSObjectDrawConstants { uint objectIndex; uint3 padding; };
 [[vk::push_constant]] ConstantBuffer<NLSObjectDrawConstants> g_NLSObjectDrawConstants;
@@ -313,7 +314,7 @@ SamplerState ImageSampler : register(s0, space2);
 RWTexture2D<float4> StorageImage : register(u0, space0);
 [numthreads(1, 1, 1)] void Main()
 {
-    Output[0] = Input[0] + Value + g_NLSObjectDrawConstants.objectIndex;
+    Output[0] = Input[0] + Value + g_NLSObjectDrawConstants.objectIndex + InstanceObjectIndices[0];
 }
 [numthreads(1, 1, 1)] void Sampling()
 {
@@ -350,6 +351,7 @@ RWTexture2D<float4> StorageImage : register(u0, space0);
     layoutDesc.entries = {
         {"Constants", BindingType::UniformBuffer, 0u, 0u, 1u, ShaderStageMask::Compute, 3u, 0u},
         {"Input", BindingType::StructuredBuffer, 0u, 0u, 1u, ShaderStageMask::Compute, 1u, 16u},
+        {"InstanceObjectIndices", BindingType::StructuredBuffer, 0u, 1u, 1u, ShaderStageMask::Compute, 3u, 4u},
         {"Output", BindingType::StorageBuffer, 0u, 1u, 1u, ShaderStageMask::Compute, 1u, 16u}
     };
     auto layout = device->CreateBindingLayout(layoutDesc);
@@ -374,7 +376,8 @@ RWTexture2D<float4> StorageImage : register(u0, space0);
     upload.data = values.data();
     upload.dataSize = sizeof(values);
     auto constants = device->CreateBuffer(bufferDesc, upload);
-    bufferDesc.usage = BufferUsageFlags::Storage;
+    bufferDesc.usage = BufferUsageFlags::Storage | BufferUsageFlags::CopyDst;
+    bufferDesc.memoryUsage = MemoryUsage::GPUOnly;
     upload.data = inputs.data();
     auto sourceBuffer = device->CreateBuffer(bufferDesc, upload);
     bufferDesc.usage = BufferUsageFlags::Storage | BufferUsageFlags::CopySrc;
@@ -386,6 +389,7 @@ RWTexture2D<float4> StorageImage : register(u0, space0);
     setDesc.entries = {
         {0u, BindingType::UniformBuffer, constants, 0u, 16u, 0u},
         {0u, BindingType::StructuredBuffer, sourceBuffer, 0u, 16u, 16u},
+        {1u, BindingType::StructuredBuffer, sourceBuffer, 0u, 16u, 4u},
         {1u, BindingType::StorageBuffer, output, 0u, 16u, 16u}
     };
     auto set = device->CreateBindingSet(setDesc);
@@ -420,7 +424,7 @@ RWTexture2D<float4> StorageImage : register(u0, space0);
     ASSERT_TRUE(read.Succeeded()) << read.message;
     ASSERT_NE(read.completion, nullptr);
     ASSERT_TRUE(read.completion->Wait(5'000'000'000ull).Succeeded());
-    const std::array<uint32_t, 4> expected{18u, 19u, 20u, 21u};
+    const std::array<uint32_t, 4> expected{19u, 20u, 21u, 22u};
     EXPECT_EQ(result, expected);
 }
 

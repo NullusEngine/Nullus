@@ -132,6 +132,15 @@ namespace NLS::Render::Backend
             return index < kMetalPushConstantBufferIndex ? std::optional<uint32_t>(index) : std::nullopt;
         }
 
+        std::optional<uint32_t> ToMetalPushConstantBindingIndex(const uint32_t bindingSpace, const uint32_t binding)
+        {
+            // Indexed draws use t1, space3 for InstanceObjectIndices, which maps to buffer 21.
+            // Keep their b1, space3 push constants in the reserved slot instead of aliasing it.
+            if (bindingSpace == NLS::Render::RHI::BindingPointMap::kObjectBindingSpace && binding == 1u)
+                return kMetalPushConstantBufferIndex;
+            return ToMetalBufferBindingIndex(bindingSpace, binding);
+        }
+
         std::optional<uint32_t> ToMetalStorageBufferBindingIndex(const uint32_t bindingSpace, const uint32_t binding)
         {
             // Pass parameters intentionally use both b0 and t0 in the same register space.
@@ -2419,7 +2428,7 @@ namespace NLS::Render::Backend
                 if (rangeIt == m_boundPushConstantRanges.end())
                     return;
 
-                const auto bufferIndex = ToMetalBufferBindingIndex(
+                const auto bufferIndex = ToMetalPushConstantBindingIndex(
                     rangeIt->registerSpace,
                     rangeIt->shaderRegister);
                 if (!bufferIndex.has_value())
@@ -4524,7 +4533,7 @@ namespace NLS::Render::Backend
                             remap.stage = executionModel;
                             remap.desc_set = spirv_cross::kPushConstDescSet;
                             remap.binding = spirv_cross::kPushConstBinding;
-                            remap.msl_buffer = *ToMetalBufferBindingIndex(3u, 1u);
+                            remap.msl_buffer = *ToMetalPushConstantBindingIndex(3u, 1u);
                             compiler.add_msl_resource_binding(remap);
                         }
                         source = compiler.compile();

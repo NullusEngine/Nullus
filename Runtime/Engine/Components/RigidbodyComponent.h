@@ -5,6 +5,7 @@
 #include <string>
 #include <Physics/PhysicsPoseHistory.h>
 #include "Components/RigidbodyComponent.generated.h"
+#include <memory>
 
 namespace NLS::Engine::Components
 {

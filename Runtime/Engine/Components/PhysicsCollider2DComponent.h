@@ -7,6 +7,7 @@
 #include <Reflection/Array.h>
 #include <string>
 #include "Components/PhysicsCollider2DComponent.generated.h"
+#include <memory>
 
 namespace NLS::Engine::Components
 {

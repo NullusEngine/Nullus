@@ -7,6 +7,7 @@
 #include <Physics/PhysicsCommandBuffer.h>
 #include <filesystem>
 #include "Assets/PhysicsShapeAsset.generated.h"
+#include <memory>
 
 namespace NLS::Engine::Assets
 {

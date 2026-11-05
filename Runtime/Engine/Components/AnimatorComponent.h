@@ -4,6 +4,7 @@
 #include <Animation/Graph.h>
 #include <Eventing/Event.h>
 #include "Components/AnimatorComponent.generated.h"
+#include <memory>
 
 namespace NLS::Engine::Components
 {

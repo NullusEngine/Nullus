@@ -2,6 +2,7 @@
 #include "Components/Component.h"
 #include "Assets/AudioClip.h"
 #include "Components/AudioSourceComponent.generated.h"
+#include <memory>
 namespace NLS::Engine::Components
 {
 CLASS(NLS_ENGINE_API AudioSourceComponent, Scriptable, ComponentMenu("Audio/Audio Source"), DisallowMultipleComponent) : public Component

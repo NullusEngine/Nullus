@@ -9,6 +9,7 @@
 #include "Reflection/Macros.h"
 #include "Rendering/Settings/EProjectionMode.h"
 #include "Components/CameraComponent.generated.h"
+#include <memory>
 
 namespace NLS::Render::Entities
 {

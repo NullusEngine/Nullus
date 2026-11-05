@@ -6,6 +6,7 @@
 #include <VFX/SystemRenderProxy.h>
 #include <Math/Vector4.h>
 #include "Components/ParticleSystemComponent.generated.h"
+#include <memory>
 
 namespace NLS::Engine::Components
 {

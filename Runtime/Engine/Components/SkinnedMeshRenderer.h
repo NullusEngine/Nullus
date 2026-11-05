@@ -3,6 +3,7 @@
 #include "Components/AnimatorComponent.h"
 #include <Rendering/Animation/SkinnedMeshRenderProxy.h>
 #include "Components/SkinnedMeshRenderer.generated.h"
+#include <memory>
 
 namespace NLS::Engine::Components
 {

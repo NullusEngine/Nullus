@@ -13,6 +13,7 @@
 #include "Assets/CollisionMeshAsset.h"
 #include "Assets/PhysicsShapeAsset.h"
 #include "Components/PhysicsColliderComponent.generated.h"
+#include <memory>
 
 namespace NLS::Engine::Components
 {

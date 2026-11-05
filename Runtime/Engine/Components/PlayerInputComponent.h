@@ -3,6 +3,7 @@
 #include "Assets/InputActionsAsset.h"
 #include <Input/InputDomain.h>
 #include "Components/PlayerInputComponent.generated.h"
+#include <memory>
 
 namespace NLS::Engine::Components
 {

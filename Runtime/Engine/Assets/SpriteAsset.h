@@ -6,6 +6,7 @@
 #include "Reflection/Macros.h"
 #include "Serialize/PPtr.h"
 #include "Assets/SpriteAsset.generated.h"
+#include <memory>
 
 namespace NLS::Engine::Assets
 {

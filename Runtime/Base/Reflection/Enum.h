@@ -7,6 +7,7 @@
 
 #include "BaseDef.h"
 #include "EnumBase.h"
+#include <memory>
 
 namespace NLS::meta
 {

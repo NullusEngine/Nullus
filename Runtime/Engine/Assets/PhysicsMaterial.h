@@ -7,6 +7,7 @@
 #include <Physics/PhysicsWorld.h>
 #include <filesystem>
 #include "Assets/PhysicsMaterial.generated.h"
+#include <memory>
 
 namespace NLS::Engine::Assets
 {

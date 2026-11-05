@@ -7,6 +7,7 @@
 #include <Math/Vector2.h>
 #include <unordered_map>
 #include "Components/SpriteRendererComponent.generated.h"
+#include <memory>
 
 namespace NLS::Engine::Components
 {

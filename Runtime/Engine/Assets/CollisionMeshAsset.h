@@ -7,6 +7,7 @@
 #include <Physics/CollisionMesh.h>
 #include <filesystem>
 #include "Assets/CollisionMeshAsset.generated.h"
+#include <memory>
 
 namespace NLS::Engine::Assets
 {

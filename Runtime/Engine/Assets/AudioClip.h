@@ -6,6 +6,7 @@
 #include "Audio/AudioDevice.h"
 #include "Assets/AudioClip.generated.h"
 #include <filesystem>
+#include <memory>
 
 namespace NLS::Engine::Assets
 {

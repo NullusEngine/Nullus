@@ -1,0 +1,17 @@
+# Sprite Editor
+
+In an existing project, right-click an image in the Asset Browser and choose **Open Sprite Editor**. You can also open the window with **Window > Sprite Editor**, then enter `Assets/Textures/Image.png` and click **Open**. The image must live in the current project's Assets directory and must already be imported.
+
+The list on the left selects the logical sprite; the right side shows the source image and the slice borders. **Select / Move** drags the selected rectangle, and dragging the bottom-right handle resizes it. **Create** draws a new rectangle on the source image. Coordinates and sizes are in source-image pixels with the origin at the top-left; the pivot uses normalized coordinates measured from the bottom-left. The property area covers name, rectangle, pivot, and Pixels Per Unit. Ordinary assets default to a PPU of 100.
+
+**Grid Slice** cuts the image by Cell Width/Height, Offset, and Padding, with an option to keep incomplete edge cells. **Auto Slice** produces one rectangle per four-connected opaque region, with configurable alpha threshold and a minimum opaque pixel count. When slices are regenerated, rectangles that are exactly identical keep their original UUID, name, and properties. Converting a single sprite into multiple slices lets the first new slice inherit the original single-sprite reference, and deleting a slice removes its logical reference target.
+
+While dragging, only a preview is shown; releasing records one global Undo. A click at zero distance does not modify data. Escape cancels a drag that has not been committed. **Undo / Redo** shares its history with the Inspector, and closing and reopening the panel does not create a second draft.
+
+Click **Apply & Reimport** to store the draft and reimport. Editing pauses during the import, and the new asset revision is used afterwards. Apply itself can be undone or redone, and the operation performs the import again. **Revert** discards the current draft and restores the import settings on disk. When the source image changes, resolve the draft first and then click **Reload Source**; conflicting external metadata blocks Apply so that other modifications are not overwritten.
+
+The border property area uses four pixel widths: Left, Bottom, Right, and Top, and the preview draws green guide lines. SpriteRenderer's Sliced mode uses Size for the world size, keeps the corner PPU sizes, and stretches the middle region; a target that is too small compresses the borders proportionally. Tiled mode repeats the middle region and the border strips at the original PPU size, crops the UVs of a trailing partial cell, and produces at most 65,536 quads per sprite. Simple keeps using the source image dimensions.
+
+C++ uses `GetDrawMode / SetDrawMode` and `ESpriteDrawMode`; C# and Lua use `GetDrawModeValue / SetDrawModeValue` (0 Simple, 1 Sliced, 2 Tiled) together with `GetSize / SetSize`. Invalid modes or sizes are rejected. Resources, serialization, GPU behavior, and the standalone Player have been verified on Windows/DX12; the real mouse operation of every control and the other platforms are still verified separately.
+
+Trim, tight mesh, physics outlines, and Atlas editing are still being implemented, and the full Phase 2 acceptance is not complete. The status of automated tests, real desktop mouse acceptance, and per-platform GPU acceptance is recorded in `Docs/Plans/2D/Progress.md`.

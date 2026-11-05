@@ -213,6 +213,10 @@ namespace NLS::Base::Jobs
         /** Shared engine consumers retain the one foreground scheduler. The
          * first configuration wins until the last owner releases it. */
         NLS_BASE_API bool AcquireJobSystem(const JobSystemConfig& config);
+        /** Number of live scheduler leases. A consumer that believes it holds a
+         * lease can use this to detect a scheduler that was released or reset
+         * underneath it. */
+        NLS_BASE_API uint32_t GetSchedulerLeaseCount();
         /** Dispatches an independently tracked owner's ready callback through
          * the same scheduler without a second JobHandle/dependency record.
          * Dependencies must be empty. On rejection the caller keeps payload

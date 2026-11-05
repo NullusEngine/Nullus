@@ -1,6 +1,6 @@
 # Jobs and Threading
 
-Nullus retains two logical layers sharing one compute scheduler: **JobSystem** executes jobs and owns the worker pool; **TaskGraph** manages dependencies and named execution queues. Blocking background I/O has a separately budgeted pool. See the [unification audit, contracts and examples](../../TaskSystemUnification.md).
+Nullus retains two logical layers sharing one compute scheduler: **JobSystem** executes jobs and owns the worker pool; **TaskGraph** manages dependencies and named execution queues. Blocking background I/O has a separately budgeted pool. The unification audit, contracts, and examples are recorded in `Docs/TaskSystemUnification.md`.
 
 ## JobSystem
 

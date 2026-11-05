@@ -61,6 +61,13 @@
             "zh-CN": "第一个项目",
             "en": "Your First Project"
           }
+        },
+        {
+          "id": "2d-core",
+          "title": {
+            "zh-CN": "2D Core 制作入口",
+            "en": "2D Core Authoring Entry Point"
+          }
         }
       ]
     },
@@ -90,6 +97,13 @@
           "title": {
             "zh-CN": "编辑器与项目设置",
             "en": "Editor and Project Settings"
+          }
+        },
+        {
+          "id": "sprite-editor",
+          "title": {
+            "zh-CN": "Sprite Editor",
+            "en": "Sprite Editor"
           }
         }
       ]
@@ -438,6 +452,13 @@
           "title": {
             "zh-CN": "编辑器脚本扩展",
             "en": "Editor Script Extensions"
+          }
+        },
+        {
+          "id": "plugins",
+          "title": {
+            "zh-CN": "开发、安装和发布 Nullus 插件",
+            "en": "Developing, Installing, and Publishing Nullus Plugins"
           }
         }
       ]

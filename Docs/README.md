@@ -9,8 +9,8 @@ This is the source of the Nullus handbook. The published GitHub Wiki is generate
 | 章节 | 内容 |
 | --- | --- |
 | [认识 Nullus](zh-CN/start/overview.md) | 引擎定位、能力边界与平台支持 |
-| [安装与快速入门](zh-CN/getting-started/build.md) | 环境准备、构建与创建第一个项目 |
-| [使用编辑器](zh-CN/editor/workspace.md) | 工作区、面板、视口操作与设置 |
+| [安装与快速入门](zh-CN/getting-started/build.md) | 环境准备、构建、创建第一个项目与 2D Core 制作入口 |
+| [使用编辑器](zh-CN/editor/workspace.md) | 工作区、面板、视口操作、设置与 Sprite Editor |
 | [场景与对象](zh-CN/scene/objects.md) | GameObject、组件与生命周期 |
 | [Prefab 工作流](zh-CN/prefab/workflow.md) | 创建、实例化、Stage、Override 与 Variant/Unpack 边界 |
 | [资产与内容管线](zh-CN/assets/pipeline.md) | Asset Browser、导入、模型、纹理与工件 |
@@ -23,7 +23,7 @@ This is the source of the Nullus handbook. The published GitHub Wiki is generate
 | [音频、特效与媒体](zh-CN/audio-vfx/particles.md) | 粒子制作、CPU/GPU 播放与媒体状态 |
 | [AI 与联网](zh-CN/ai-networking/roadmap.md) | AI 与联网现状及规划 |
 | [平台、构建与发布](zh-CN/platform-build/packaging.md) | 平台矩阵、Build Profile、Cook 与 Player 打包 |
-| [扩展与引擎架构](zh-CN/architecture/modules.md) | 模块、反射、序列化、任务系统与编辑器扩展 |
+| [扩展与引擎架构](zh-CN/architecture/modules.md) | 模块、反射、序列化、任务系统、编辑器扩展与插件 |
 | [调试、性能与质量](zh-CN/quality/debugging.md) | 调试、测试、性能分析与抓帧 |
 | [参考手册](zh-CN/reference/layout-cli.md) | 目录结构、命令行与构建选项 |
 | [示例与发展路线](zh-CN/roadmap/minimal-example.md) | 最小完整示例、功能状态矩阵与阶段依赖 |
@@ -33,8 +33,8 @@ This is the source of the Nullus handbook. The published GitHub Wiki is generate
 | Chapter | Content |
 | --- | --- |
 | [Getting to Know Nullus](en/start/overview.md) | Positioning, capability boundaries, platform support |
-| [Install and Quick Start](en/getting-started/build.md) | Environment, build, and your first project |
-| [Using the Editor](en/editor/workspace.md) | Workspace, panels, viewport controls, and settings |
+| [Install and Quick Start](en/getting-started/build.md) | Environment, build, your first project, and the 2D Core entry point |
+| [Using the Editor](en/editor/workspace.md) | Workspace, panels, viewport controls, settings, and the Sprite Editor |
 | [Scenes and Objects](en/scene/objects.md) | GameObjects, components, and lifecycle |
 | [Prefab Workflow](en/prefab/workflow.md) | Creation, instantiation, Stage, overrides, and Variant/Unpack boundaries |
 | [Assets and Content Pipeline](en/assets/pipeline.md) | Asset Browser, import, models, textures, and artifacts |
@@ -47,7 +47,7 @@ This is the source of the Nullus handbook. The published GitHub Wiki is generate
 | [Audio, Visual Effects, and Media](en/audio-vfx/particles.md) | Particle authoring, CPU/GPU playback, and media status |
 | [AI and Networking](en/ai-networking/roadmap.md) | AI and networking status and plans |
 | [Platforms, Builds, and Releases](en/platform-build/packaging.md) | Platform matrix, Build Profiles, cooking, and Player packaging |
-| [Extending the Engine](en/architecture/modules.md) | Modules, reflection, serialization, jobs, editor extensions |
+| [Extending the Engine](en/architecture/modules.md) | Modules, reflection, serialization, jobs, editor extensions, and plugins |
 | [Debugging, Performance, and Quality](en/quality/debugging.md) | Debugging, testing, profiling, and captures |
 | [Reference](en/reference/layout-cli.md) | Layout, command line, and build options |
 | [Examples and Roadmap](en/roadmap/minimal-example.md) | Minimal complete example, feature matrix, and dependencies |

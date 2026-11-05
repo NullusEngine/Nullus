@@ -1,6 +1,6 @@
 # 2D Core 制作入口
 
-本文对应 Phase 1 的已实现入口。构建、自动测试、可见编辑器操作与独立发布的实际验收状态分别记录在 [进度文档](../Plans/2D/Progress.md)；后续制作工具仍按功能矩阵推进。
+本文对应 Phase 1 的已实现入口。构建、自动测试、可见编辑器操作与独立发布的实际验收状态分别记录在 `Docs/Plans/2D/Progress.md`；后续制作工具仍按功能矩阵推进。
 
 ## 创建项目与场景
 
@@ -77,4 +77,4 @@ Tools\2D\ValidateSpriteBenchmark.ps1 -ProductDirectory "<成品目录>" -Benchma
 
 此脚本在临时目录复制成品并替换副本的启动场景，检查 10,000 Sprite、一个批次、一次 Draw 和实际 GPU 回读。它保留原始成品和工程。记录的总时间包含启动、加载、绘制、回读及退出，不代表稳定帧时间或性能分位数。
 
-Sprite Editor、Atlas、Pixel Perfect、Physics2D、Tilemap、逐帧动画、2D 光照和高级制作能力的入口与验收按后续阶段补齐，参见[完整功能矩阵](../Plans/2D/FeatureMatrix.md)。
+Sprite Editor、Atlas、Pixel Perfect、Physics2D、Tilemap、逐帧动画、2D 光照和高级制作能力的入口与验收按后续阶段补齐，完整功能矩阵见 `Docs/Plans/2D/FeatureMatrix.md`。

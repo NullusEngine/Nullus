@@ -1,6 +1,6 @@
 # 任务系统与线程模型
 
-Nullus 保留两个逻辑层，共享一个计算调度器：**JobSystem** 执行任务并管理 Worker Pool，**TaskGraph** 管理依赖与命名执行队列。阻塞后台 I/O 使用单独计入预算的隔离池。详见[统一架构审查、语义与示例](../../TaskSystemUnification.md)。
+Nullus 保留两个逻辑层，共享一个计算调度器：**JobSystem** 执行任务并管理 Worker Pool，**TaskGraph** 管理依赖与命名执行队列。阻塞后台 I/O 使用单独计入预算的隔离池。统一架构审查、语义与示例见 `Docs/TaskSystemUnification.md`。
 
 ## JobSystem
 

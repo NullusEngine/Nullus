@@ -1,5 +1,6 @@
 #include <gtest/gtest.h>
 
+#include "Jobs/JobSystem.h"
 #include "TaskGraph/TaskGraph.h"
 #include "Threading/ExecutionThreadBudget.h"
 
@@ -601,6 +602,29 @@ TEST(TaskGraphTests, RequestCancelCancelsQueuedTaskAndItsDependents)
     releaseWorker.store(true, std::memory_order_release);
     EXPECT_EQ(graph.Wait(blocker), NLS::Base::TaskGraph::TaskStatus::Succeeded);
     EXPECT_FALSE(cancelledBodyRan.load(std::memory_order_acquire));
+
+    graph.Shutdown();
+}
+
+TEST(TaskGraphTests, StartedGraphTakesANewLeaseAfterASchedulerReset)
+{
+    NLS::Base::TaskGraph::TaskGraph graph({1u, false, true});
+    ASSERT_TRUE(graph.Start());
+
+    // A scheduler reset tears the shared pool down while the graph stays
+    // started. The graph has to take a new lease, otherwise its tasks would
+    // never run and every wait on them would time out.
+    NLS::Base::Jobs::ResetJobSystemForTesting();
+    EXPECT_FALSE(NLS::Base::Jobs::IsJobSystemInitialized());
+
+    std::atomic_int executed {0};
+    const auto handle = graph.Submit([&executed] { executed.fetch_add(1, std::memory_order_release); });
+    ASSERT_TRUE(handle.IsValid());
+    auto completion = graph.GetCompletion(handle);
+    ASSERT_TRUE(completion.IsValid());
+    EXPECT_TRUE(completion.WaitFor(5s));
+    EXPECT_EQ(completion.GetStatus(), NLS::Base::TaskGraph::TaskStatus::Succeeded);
+    EXPECT_EQ(executed.load(std::memory_order_acquire), 1);
 
     graph.Shutdown();
 }

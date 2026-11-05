@@ -1,6 +1,8 @@
 #!/bin/bash
 
-if test \( $# -gt 2 \);
+# Use portable "[ ... ]" tests: "test \( ... \) -a \( ... \)" relies on the
+# grouping that bash < 5.3 accepts and newer bash rejects.
+if [ "$#" -gt 2 ];
 then
     echo "Usage: ./build_linux.sh config [build-tool]"
     echo ""
@@ -15,27 +17,27 @@ then
     exit 1
 fi
 
-if test \( $# -eq 1 \) ;then
+if [ "$#" -eq 1 ] ;then
     if command -v ninja &> /dev/null; then
         CMAKE_ARG_BUILD_TOOL_TYPE_CONFIG="-G Ninja"
     else
         CMAKE_ARG_BUILD_TOOL_TYPE_CONFIG="-G Unix Makefiles"
     fi
-elif test \( \( -n "$2" \) -a \( "$2" = "make" \) \);then
+elif [ "${2:-}" = "make" ];then
     CMAKE_ARG_BUILD_TOOL_TYPE_CONFIG="-G Unix Makefiles"
-elif test \( \( -n "$2" \) -a \( "$2" = "ninja" \) \);then
+elif [ "${2:-}" = "ninja" ];then
     CMAKE_ARG_BUILD_TOOL_TYPE_CONFIG="-G Ninja"
 else
-    echo "The build-tool \"$2\" is not supported!"
+    echo "The build-tool \"${2:-}\" is not supported!"
     exit 1
 fi
 
-if test \( \( -n "$1" \) -a \( "$1" = "debug" \) \);then
+if [ "${1:-}" = "debug" ];then
     CMAKE_ARG_BUILD_TYPE_CONFIG="-DCMAKE_BUILD_TYPE=Debug"
-elif test \( \( -n "$1" \) -a \( "$1" = "release" \) \);then
+elif [ "${1:-}" = "release" ];then
     CMAKE_ARG_BUILD_TYPE_CONFIG="-DCMAKE_BUILD_TYPE=Release"
 else
-    echo "The config \"$1\" is not supported!"
+    echo "The config \"${1:-}\" is not supported!"
     echo ""
     echo "Configs:"
     echo "  debug   -   build with the debug configuration"

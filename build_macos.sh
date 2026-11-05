@@ -1,7 +1,9 @@
 #!/bin/bash
 set -e
 
-if test \( $# -ne 1 \);
+# Use portable "[ ... ]" tests: "test \( ... \) -a \( ... \)" relies on the
+# grouping that bash < 5.3 accepts and newer bash rejects.
+if [ "$#" -ne 1 ];
 then
     echo "Usage: ./build_macos.sh config"
     echo ""
@@ -12,12 +14,12 @@ then
     exit 1
 fi
 
-if test \( \( -n "$1" \) -a \( "$1" = "debug" \) \); then
+if [ "${1:-}" = "debug" ]; then
     CONFIG="Debug"
-elif test \( \( -n "$1" \) -a \( "$1" = "release" \) \); then
+elif [ "${1:-}" = "release" ]; then
     CONFIG="Release"
 else
-    echo "The config \"$1\" is not supported!"
+    echo "The config \"${1:-}\" is not supported!"
     echo ""
     echo "Configs:"
     echo "  debug   -   build with the debug configuration"

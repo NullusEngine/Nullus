@@ -39,6 +39,9 @@ App/Linux_*/
 # Runtime generated reflection code
 Runtime/*/Gen/
 Project/*/Gen/
+# MetaParser generation lock next to the generated sources
+Runtime/*/Gen.metaparser.lock
+Project/*/Gen.metaparser.lock
 
 # C# build artifacts
 Managed/**/bin/

@@ -65,9 +65,43 @@ namespace
     thread_local std::vector<JobHandle> g_workerJobHandleStack;
 
     constexpr uint32_t kMaxResolvedWorkerCount = 64u;
+
+    /**
+     * Owns one thread and joins it on destruction.
+     *
+     * std::jthread provides the same guarantee, but libc++ only ships it from
+     * LLVM 19, so the macOS toolchain cannot compile it. The wrapper keeps the
+     * join-at-scope-exit contract that the shutdown owner relies on.
+     */
+    class JoinableThread final
+    {
+    public:
+        JoinableThread() = default;
+        ~JoinableThread() { Join(); }
+
+        JoinableThread(const JoinableThread&) = delete;
+        JoinableThread& operator=(const JoinableThread&) = delete;
+
+        template <typename Callable>
+        void Start(Callable&& callable)
+        {
+            Join();
+            m_thread = std::thread(std::forward<Callable>(callable));
+        }
+
+        void Join()
+        {
+            if (m_thread.joinable())
+                m_thread.join();
+        }
+
+    private:
+        std::thread m_thread;
+    };
+
     // Declared after all scheduler state: destruction joins the final shutdown
     // before the mutexes, terminal records, and queue owners are destroyed.
-    std::jthread g_shutdownReaper;
+    JoinableThread g_shutdownReaper;
 
     uint32_t ResolveHardwareConcurrency()
     {
@@ -782,6 +816,12 @@ namespace Internal
         return true;
     }
 
+    uint32_t GetSchedulerLeaseCount()
+    {
+        std::lock_guard lock(g_jobSystemMutex);
+        return g_schedulerLeaseCount;
+    }
+
     void ReleaseJobSystem()
     {
         std::shared_ptr<JobQueue> queue;
@@ -803,10 +843,10 @@ namespace Internal
                 // Only the final lease released inside a callback needs a
                 // join owner. This temporary thread drains ordinary compute
                 // work and joins the pool; it never pumps main continuations.
-                // jthread ownership guarantees it is joined at process exit.
+                // The owner joins the thread at process exit.
                 try
                 {
-                    g_shutdownReaper = std::jthread([queue, mode, diagnosticsWereEnabled]
+                    g_shutdownReaper.Start([queue, mode, diagnosticsWereEnabled]
                     {
                         FinishJobSystemShutdown(queue, mode, diagnosticsWereEnabled);
                     });

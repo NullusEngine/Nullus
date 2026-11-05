@@ -95,6 +95,9 @@ namespace NLS::Base::TaskGraph
         std::atomic_bool schedulerAcquired {false};
         mutable std::mutex mutex;
         std::mutex lifecycleMutex;
+        // Guards the scheduler lease acquisition only. It is never held while
+        // the graph waits for tasks, so a task body can restore the lease.
+        std::mutex schedulerMutex;
         std::condition_variable changed;
         size_t inFlightDispatchCount = 0u;
         size_t finalizingTaskCount = 0u;
@@ -119,6 +122,39 @@ namespace NLS::Base::TaskGraph
         static bool IsTerminal(const TaskStatus status)
         {
             return status != TaskStatus::Pending;
+        }
+
+        /**
+         * Makes sure this graph owns a scheduler lease on a running pool.
+         *
+         * The shared pool can be released or reset while a graph stays started,
+         * for example when a test resets the scheduler. A graph without a live
+         * lease has no executor, so its tasks would never run. The lease is
+         * acquired at most once: a graph that already holds one keeps it.
+         */
+        bool EnsureSchedulerLease()
+        {
+            if (Jobs::Internal::GetSchedulerLeaseCount() != 0u)
+                return true;
+            std::lock_guard leaseLock(schedulerMutex);
+            if (Jobs::Internal::GetSchedulerLeaseCount() != 0u)
+                return true;
+            return AcquireSchedulerLease();
+        }
+
+        /** Takes a new lease on the shared pool for this graph. */
+        bool AcquireSchedulerLease()
+        {
+            Jobs::JobSystemConfig jobs;
+            jobs.workerCount = (std::max)(1u, config.workerCount);
+            // Job diagnostics are an application-level Jobs setting. The legacy
+            // graph flag must not silently enable global per-job tracing.
+            jobs.enableDiagnostics = false;
+            if (!Jobs::Internal::AcquireJobSystem(jobs))
+                return false;
+            schedulerAcquired.store(true, std::memory_order_release);
+            workerCount.store(Jobs::GetJobWorkerCount(), std::memory_order_release);
+            return true;
         }
 
         /**
@@ -239,6 +275,11 @@ namespace NLS::Base::TaskGraph
                 Finalize(node, TaskStatus::Failed);
                 return;
             }
+            // A rejected dispatch means the shared pool is gone. The graph can
+            // still be started, so restore the pool and retry before the task
+            // is cancelled.
+            if (EnsureSchedulerLease() && Jobs::Internal::DispatchJob(job, tailContinuation))
+                return;
             // A saturated or stopped scheduler never takes ownership on rejection.
             DispatchScope dispatch(node.get());
             Finalize(node, TaskStatus::Cancelled);
@@ -780,16 +821,18 @@ namespace NLS::Base::TaskGraph
         if (!explicitStart && !m_impl->acceptingWork)
             return false;
         if (m_impl->started)
-            return true;
-        Jobs::JobSystemConfig jobs;
-        jobs.workerCount = (std::max)(1u, m_impl->config.workerCount);
-        // Job diagnostics are an application-level Jobs setting. The legacy
-        // graph flag must not silently enable global per-job tracing.
-        jobs.enableDiagnostics = false;
-        if (!Jobs::Internal::AcquireJobSystem(jobs))
-            return false;
-        m_impl->schedulerAcquired = true;
-        m_impl->workerCount = Jobs::GetJobWorkerCount();
+        {
+            // The shared pool can be released or reset while this graph stays
+            // started. Without a live lease the graph has no executor and its
+            // tasks would never run, so the pool has to come back before the
+            // caller is told that the graph is ready.
+            return m_impl->EnsureSchedulerLease();
+        }
+        {
+            std::lock_guard leaseLock(m_impl->schedulerMutex);
+            if (!m_impl->AcquireSchedulerLease())
+                return false;
+        }
         m_impl->initialLocalCount = Jobs::Internal::GetJobWorkerLocalExecutionCount();
         m_impl->initialStealCount = Jobs::Internal::GetJobWorkerStealCount();
         m_impl->initialInjectionCount = Jobs::Internal::GetJobWorkerInjectionExecutionCount();

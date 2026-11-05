@@ -52,6 +52,19 @@ namespace NLS::Editor::Rendering
         return baseState;
     }
 
+    inline NLS::Render::Data::PipelineState CreateEditorCameraIconPipelineState(
+        NLS::Render::Data::PipelineState baseState)
+    {
+        baseState = CreateEditorOverlayPipelineState(baseState);
+        baseState.depthTest = true;
+        baseState.depthWriting = true;
+        baseState.depthFunc = NLS::Render::Settings::EComparaisonAlgorithm::LESS;
+        baseState.blending = false;
+        baseState.culling = true;
+        baseState.cullFace = NLS::Render::Settings::ECullFace::BACK;
+        return baseState;
+    }
+
     template<PipelineStateProvider T>
     inline NLS::Render::Data::PipelineState CreateEditorTransparentOverlayPipelineState(
         const T& renderer)

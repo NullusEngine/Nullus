@@ -58,6 +58,7 @@ namespace NLS::meta
             unsigned GetGeneration(TypeID id) const;
             bool IsAlive(TypeID id, unsigned generation) const;
             void UnloadModule(TypeKey moduleKey);
+            bool TryUnloadModule(TypeKey moduleKey);
             bool CanUnloadModule(TypeKey moduleKey) const;
             void AddDependency(TypeKey ownerModuleKey, TypeKey referencedTypeKey);
             Type ResolveRegisteredType(

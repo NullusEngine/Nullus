@@ -1,4 +1,5 @@
 #include <filesystem>
+#include <algorithm>
 #include <sstream>
 #include <utility>
 #include <vector>
@@ -21,6 +22,10 @@
 #include <Scripting/ScriptComponent.h>
 #include <Scripting/ScriptRuntimeSetup.h>
 #include <Jobs/JobSystem.h>
+#include <TaskGraph/TaskGraphSystem.h>
+#include <Threading/ExecutionThreadBudget.h>
+#include <Rendering/Context/RenderingThreadSystem.h>
+#include <thread>
 using namespace NLS;
 using namespace NLS::Core;
 using namespace NLS::Core::ResourceManagement;
@@ -233,6 +238,9 @@ Game::Context::Context(
 	// a development project discovered by walking parent directories.
 	const auto packagedRuntime = RuntimeAssets::DetectPackagedRuntime(
 		NLS::Platform::Process::ResolveInstallResourceRoots().installRoot);
+		packagedContent = packagedRuntime.has_value();
+		runtimeContentRoot = packagedRuntime ? packagedRuntime->contentRoot :
+			RuntimeAssets::ResolveRuntimeArtifactDatabasePathForProjectSettings(resolvedProjectPaths.settingsPath).parent_path().parent_path();
 	if (packagedRuntime.has_value())
 	{
 		std::string compatibilityError;
@@ -377,16 +385,14 @@ Game::Context::Context(
 	/* Window creation */
 	device = std::make_unique<NLS::Context::Device>(deviceSettings);
 	window = std::make_unique<NLS::Windowing::Window>(*device, windowSettings);
-	window->SetIcon(engineAssetsPath + "Brand" + Utils::PathParser::Separator() + "NullusLogoMark.png");
+	window->SetIcon(engineAssetsPath + "Brand" + Utils::PathParser::Separator() + "NullusLogoMark.svg");
 	inputManager = std::make_unique<NLS::Windowing::Inputs::InputManager>(*window);
 	driverSettings.platformWindow = window->GetGlfwWindow();
 
-	/* Graphics context creation */
-	driver = std::make_unique<NLS::Render::Context::Driver>(driverSettings);
-
-	// The Driver owns the single hardware-derived pool budget; the general Jobs
-	// pool reuses its split instead of resolving hardware concurrency again.
+		// Establish the application's shared scheduler before Driver acquires it.
 	StartJobSystemFromRenderingBudget();
+		/* Graphics context creation */
+		driver = std::make_unique<NLS::Render::Context::Driver>(driverSettings);
 
 	const auto runtimeReadiness = driver->EvaluateGameMainRuntimeReadiness(graphicsBackend);
 	if (runtimeReadiness.primaryWarning.has_value())
@@ -434,6 +440,7 @@ Game::Context::Context(
 	ServiceLocator::Provide<TextureManager>(textureManager);
 	ServiceLocator::Provide<ShaderManager>(shaderManager);
 	ServiceLocator::Provide<MaterialManager>(materialManager);
+		ServiceLocator::Provide<ResourceLifetimeRegistry>(resourceLifetimeRegistry);
 	NLS::Engine::Rendering::BaseSceneRenderer::PreloadSceneFallbackShader(shaderManager);
 	if (runtimeAssetDatabase.has_value())
 	{
@@ -446,12 +453,20 @@ Game::Context::Context(
 
 	NLS::Scripting::ScriptRuntimeSetupOptions scriptingOptions;
 	scriptingOptions.projectRoot = std::filesystem::path(resolvedProjectPaths.assetsPath).parent_path();
+    const auto deployedScriptApi = NLS::Platform::Process::ResolveInstallResourceRoots().installRoot / "Scripts" / "Api";
+    if (std::filesystem::is_regular_file(deployedScriptApi / "ScriptApi.bin"))
+        scriptingOptions.scriptApiDirectory = deployedScriptApi;
 	if (packagedRuntime.has_value())
 	{
 		// Packaged scripts and the self-contained .NET runtime live under the
 		// install root; never resolve them from the build tree.
 		const auto& scripts = packagedRuntime->descriptor.scripts;
 		const auto installRoot = packagedRuntime->installRoot;
+        if (scripts.scriptApiDirectory.empty())
+            throw std::runtime_error("Packaged Player is missing its Script API contract directory.");
+			const auto& backends = packagedRuntime->descriptor.scriptBackends;
+			scriptingOptions.enableCSharp = std::find(backends.begin(), backends.end(), "csharp") != backends.end();
+			scriptingOptions.enableLua = std::find(backends.begin(), backends.end(), "lua") != backends.end();
 		if (!scripts.dotnetRoot.empty())
 			scriptingOptions.dotnetRoot = installRoot / std::filesystem::path(scripts.dotnetRoot);
 		if (!scripts.managedRuntimeConfig.empty())
@@ -510,8 +525,15 @@ Game::Context::~Context()
 	}
 	// Drain the job pool before the rendering threads unregister so no
 	// background continuation can outlive the thread it submits to.
-	ShutdownJobSystemIfOwned();
+	if (m_jobSystemLifetime.ownsJobSystem)
+		NLS::Base::Jobs::DrainAcceptedJobs([]
+		{
+			(void)NLS::Render::Context::RenderingThreadSystem::PumpGameThreadTasks(64u);
+		});
 	ShutdownThreadedRendering();
+		if (!NLS::Render::Context::RenderingThreadSystem::HasRenderingThreadOwners())
+		NLS::Base::TaskGraph::ShutdownGlobalTaskGraph();
+	ShutdownJobSystemIfOwned();
 	// Release UI texture registrations while the driver/services are still
 	// alive; the resolver's texture views must not outlive them.
 	NLS::Engine::UI::ClearUIDocumentResourceResolver();
@@ -520,6 +542,7 @@ Game::Context::~Context()
 	textureManager.UnloadResources();
 	shaderManager.UnloadResources();
 	materialManager.UnloadResources();
+		ServiceLocator::Remove<ResourceLifetimeRegistry>();
 }
 
 void Game::Context::ShutdownThreadedRendering()
@@ -533,12 +556,13 @@ void Game::Context::ShutdownThreadedRendering()
 
 void Game::Context::StartJobSystemFromRenderingBudget()
 {
-	if (driver == nullptr)
+	if (m_jobSystemLifetime.ownsJobSystem)
 		return;
 
+	const auto budget = NLS::Base::Threading::ResolveExecutionPoolBudget(std::thread::hardware_concurrency());
 	NLS::Base::Jobs::JobSystemConfig config;
-	config.workerCount = driver->GetBudgetedJobsForegroundWorkerCount();
-	config.backgroundWorkerCount = driver->GetBudgetedJobsBackgroundWorkerCount();
+	config.workerCount = driver != nullptr ? driver->GetBudgetedJobsForegroundWorkerCount() : budget.jobsForegroundWorkerCount;
+	config.backgroundWorkerCount = driver != nullptr ? driver->GetBudgetedJobsBackgroundWorkerCount() : budget.jobsBackgroundWorkerCount;
 	if (config.workerCount == 0u)
 	{
 		NLS_LOG_WARNING(
@@ -547,7 +571,7 @@ void Game::Context::StartJobSystemFromRenderingBudget()
 		return;
 	}
 
-	m_ownsJobSystem = NLS::Base::Jobs::TryInitializeJobSystem(config);
+	m_jobSystemLifetime.ownsJobSystem = NLS::Base::Jobs::TryInitializeJobSystem(config);
 	NLS_LOG_INFO(
 		"Game jobs: foregroundWorkers=" +
 		std::to_string(NLS::Base::Jobs::GetJobWorkerCount()) +
@@ -558,14 +582,26 @@ void Game::Context::StartJobSystemFromRenderingBudget()
 		" requestedBackgroundWorkers=" +
 		std::to_string(config.backgroundWorkerCount) +
 		" ownsJobSystem=" +
-		(m_ownsJobSystem ? "true" : "false"));
+		(m_jobSystemLifetime.ownsJobSystem ? "true" : "false"));
 }
 
 void Game::Context::ShutdownJobSystemIfOwned()
 {
-	if (!m_ownsJobSystem)
+	m_jobSystemLifetime.Shutdown();
+}
+
+Game::Context::JobSystemLifetime::~JobSystemLifetime()
+{
+	Shutdown();
+}
+
+void Game::Context::JobSystemLifetime::Shutdown()
+{
+	if (!ownsJobSystem)
 		return;
 
-	m_ownsJobSystem = false;
+		if (!NLS::Render::Context::RenderingThreadSystem::HasRenderingThreadOwners())
+		NLS::Base::TaskGraph::ShutdownGlobalTaskGraph();
+	ownsJobSystem = false;
 	NLS::Base::Jobs::ShutdownJobSystem(NLS::Base::Jobs::JobSystemShutdownMode::DrainAcceptedWork);
 }

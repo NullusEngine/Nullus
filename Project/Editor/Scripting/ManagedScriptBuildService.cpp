@@ -2,7 +2,9 @@
 #include "ManagedScriptProjectPaths.h"
 #include "Profiling/Profiler.h"
 
+#include <Scripting/ScriptApiManifest.h>
 #include <Scripting/ScriptTypes.h>
+#include <Json/json.hpp>
 
 #include <algorithm>
 #include <cstdlib>
@@ -14,9 +16,12 @@
 #include <thread>
 #include <vector>
 #include <string_view>
+#include <unordered_set>
 
 #if defined(_WIN32)
 #include <windows.h>
+#else
+#include <sys/wait.h>
 #endif
 
 namespace NLS::Editor::Scripting
@@ -47,7 +52,8 @@ std::string ReadText(const std::filesystem::path& path)
 
 std::string BuildSourceDigest(
     const std::filesystem::path& projectRoot,
-    const std::filesystem::path& managedProjectRoot)
+    const std::filesystem::path& managedProjectRoot,
+    const std::filesystem::path& staging)
 {
     std::vector<std::filesystem::path> sources;
     std::error_code error;
@@ -73,6 +79,16 @@ std::string BuildSourceDigest(
         combined += source.lexically_relative(projectRoot).generic_string();
         combined.push_back('\n');
         combined += ReadText(source);
+        combined.push_back('\n');
+    }
+    // A revision also owns its compiler output and SDK contract. Source-only
+    // keys can reuse a loaded name after an SDK or generated API change.
+    for (const auto* artifact : {"GameScripts.dll", "GameScripts.pdb", "GameScripts.deps.json",
+        "GameScripts.runtimeconfig.json", "Nullus.Managed.dll", "EngineScripts.dll", "Nullus.ScriptGenerator.dll"})
+    {
+        combined += artifact;
+        combined.push_back('\n');
+        combined += ReadText(staging / artifact);
         combined.push_back('\n');
     }
     const auto hash = NLS::Scripting::MakeScriptContentHash(combined);
@@ -221,7 +237,11 @@ int RunBuildCommand(const std::string& command, std::string& error)
 #else
 int RunBuildCommand(const std::string& command, std::string&)
 {
-    return std::system(command.c_str());
+    const int status = std::system(command.c_str());
+    if (status == -1) return -1;
+    if (WIFEXITED(status)) return WEXITSTATUS(status);
+    if (WIFSIGNALED(status)) return 128 + WTERMSIG(status);
+    return status;
 }
 #endif
 }
@@ -306,6 +326,9 @@ std::string ManagedScriptBuildService::BuildCommand(const ManagedScriptBuildRequ
         ? ResolveRepositoryDotnet(request.projectRoot)
         : request.dotnetPath;
     const auto cliHome = outputRoot / ".dotnet-home";
+    const auto schemaArgument = request.scriptApiManifest.empty()
+        ? std::string{}
+        : " -p:NullusScriptApiManifest=" + Quote(request.scriptApiManifest);
 #if defined(_WIN32)
     const auto environmentPrefix =
         "set \"DOTNET_CLI_HOME=" + cliHome.string() + "\" && "
@@ -321,24 +344,30 @@ std::string ManagedScriptBuildService::BuildCommand(const ManagedScriptBuildRequ
 #endif
     const auto generatorBuild = environmentPrefix + Quote(dotnet) + " build " + Quote(generatorProject) +
         " --configuration " + request.configuration +
-        " --no-restore --no-incremental --nologo --output " + Quote(staging);
+        " --no-restore --no-incremental --nologo --output " + Quote(staging) +
+        " -p:ErrorLog=" + Quote(outputRoot / "generator.sarif");
     const auto engineBuild = Quote(dotnet) + " build " + Quote(engineProject) +
         " --configuration " + request.configuration +
         " --no-restore --no-incremental --nologo --output " + Quote(staging) +
         " -p:NullusUsePrebuiltScriptGenerator=true" +
+        " -p:NullusForceScriptGenerator=true" + schemaArgument +
         " -p:NullusScriptGeneratorPath=" + Quote(staging / "Nullus.ScriptGenerator.dll") +
-        " -p:NullusUseScriptAnalysis=false";
+        " -p:NullusUseScriptAnalysis=false" +
+        " -p:ErrorLog=" + Quote(outputRoot / "engine.sarif");
     const auto managedBuild = Quote(dotnet) + " build " + Quote(managedProject) +
         " --configuration " + request.configuration +
         " --no-restore --no-incremental --nologo --output " + Quote(staging) +
         " -p:NullusUsePrebuiltScriptGenerator=true" +
+        " -p:NullusForceScriptGenerator=true" + schemaArgument +
         " -p:NullusScriptGeneratorPath=" + Quote(staging / "Nullus.ScriptGenerator.dll") +
-        " -p:NullusUseScriptAnalysis=false";
+        " -p:NullusUseScriptAnalysis=false" +
+        " -p:ErrorLog=" + Quote(outputRoot / "managed.sarif");
     const auto gameBuild = Quote(dotnet) + " build " + Quote(project) +
         " --configuration " + request.configuration +
         " --no-restore --no-incremental --nologo" +
         " -p:NullusProjectAssets=" + Quote(request.projectRoot / "Assets") +
         " -p:NullusUsePrebuiltScriptGenerator=true" +
+        " -p:NullusForceScriptGenerator=true" + schemaArgument +
         " -p:NullusScriptGeneratorPath=" + Quote(staging / "Nullus.ScriptGenerator.dll") +
         " -p:NullusEngineScriptsPath=" + Quote(staging / "EngineScripts.dll") +
         " -p:NullusUseScriptAnalysis=false" +
@@ -347,14 +376,16 @@ std::string ManagedScriptBuildService::BuildCommand(const ManagedScriptBuildRequ
         " -p:ErrorLog=" + Quote(diagnostics);
     const auto editorScriptsBuild = Quote(dotnet) + " build " + Quote(editorScriptsProject) +
         " --configuration " + request.configuration +
-        " --no-restore --no-incremental --nologo" +
+        " --no-restore --no-incremental --nologo -m:1" +
         " -p:NullusProjectAssets=" + Quote(request.projectRoot / "Assets") +
         " -p:NullusGameScriptsPath=" + Quote(staging / "GameScripts.dll") +
         " -p:NullusUsePrebuiltScriptGenerator=true" +
+        " -p:NullusForceScriptGenerator=true" + schemaArgument +
         " -p:NullusScriptGeneratorPath=" + Quote(staging / "Nullus.ScriptGenerator.dll") +
         " -p:NullusUseScriptAnalysis=false" +
         " -p:DebugType=portable -p:DebugSymbols=true -p:Optimize=false" +
-        " -p:Deterministic=true -p:OutputPath=" + Quote(staging);
+        " -p:Deterministic=true -p:OutputPath=" + Quote(staging) +
+        " -p:ErrorLog=" + Quote(outputRoot / "editor-scripts.sarif");
     return generatorBuild + " && " + environmentPrefix + managedBuild +
         " && " + environmentPrefix + engineBuild +
         " && " + environmentPrefix + gameBuild +
@@ -364,10 +395,26 @@ std::string ManagedScriptBuildService::BuildCommand(const ManagedScriptBuildRequ
 ManagedScriptBuildResult ManagedScriptBuildService::Build(const ManagedScriptBuildRequest& request)
 {
     ManagedScriptBuildResult result;
+    result.projectRoot = request.projectRoot;
     if (request.projectRoot.empty())
     {
         result.output = "Managed script build requires a project root.";
         return result;
+    }
+
+    std::string schemaContents;
+    if (!request.scriptApiManifest.empty())
+    {
+        schemaContents = ReadText(request.scriptApiManifest);
+        NLS::Scripting::ScriptApiDatabase schema;
+        const auto status = NLS::Scripting::ScriptApiManifest::FromJson(schemaContents, schema);
+        if (!status.Succeeded() || (!request.expectedSchemaHash.empty() &&
+            schema.GetSchemaHashHex() != request.expectedSchemaHash))
+        {
+            result.output = "The C# build Script API manifest does not match the Editor runtime: " +
+                request.scriptApiManifest.string() + (status.Succeeded() ? std::string{} : " (" + status.message + ")");
+            return result;
+        }
     }
 
     const auto outputRoot = request.outputRoot.empty()
@@ -375,6 +422,9 @@ ManagedScriptBuildResult ManagedScriptBuildService::Build(const ManagedScriptBui
         : request.outputRoot;
     const auto staging = outputRoot / ".staging";
     const auto logPath = outputRoot / "last-build.log";
+    result.sarifDiagnostics = outputRoot / "last-failure.sarif";
+    result.sarifDiagnosticFiles = { outputRoot / "generator.sarif", outputRoot / "managed.sarif",
+        outputRoot / "engine.sarif", result.sarifDiagnostics, outputRoot / "editor-scripts.sarif" };
     std::error_code error;
     std::filesystem::create_directories(staging, error);
     if (error)
@@ -394,6 +444,9 @@ ManagedScriptBuildResult ManagedScriptBuildService::Build(const ManagedScriptBui
         "GameScriptsEditor.dll",
         "GameScriptsEditor.pdb",
         "GameScriptsEditor.deps.json",
+        "Nullus.Editor.dll",
+        "Nullus.Editor.pdb",
+        "Nullus.Editor.deps.json",
         "EngineScripts.dll",
         "EngineScripts.pdb",
         "EngineScripts.deps.json",
@@ -405,8 +458,11 @@ ManagedScriptBuildResult ManagedScriptBuildService::Build(const ManagedScriptBui
         std::filesystem::remove(staging / artifact, error);
         error.clear();
     }
-    std::filesystem::remove(outputRoot / "last-failure.sarif", error);
-    error.clear();
+    for (const auto& diagnosticFile : result.sarifDiagnosticFiles)
+    {
+        std::filesystem::remove(diagnosticFile, error);
+        error.clear();
+    }
 
     const auto dotnet = request.dotnetPath.empty()
         ? ResolveRepositoryDotnet(request.projectRoot)
@@ -417,8 +473,19 @@ ManagedScriptBuildResult ManagedScriptBuildService::Build(const ManagedScriptBui
         return result;
     }
 
+    // A failed early step must not leave the previous transaction's output in
+    // place. Redirection belongs to the whole command group, not just the last
+    // build in the chain.
+    {
+        std::ofstream log(logPath, std::ios::binary | std::ios::trunc);
+        if (!log)
+        {
+            result.output = "Unable to create managed build log: " + logPath.string();
+            return result;
+        }
+    }
     const auto diagnostics = outputRoot / "last-failure.sarif";
-    const auto command = BuildCommand(request) + " > " + Quote(logPath) + " 2>&1";
+    const auto command = "(" + BuildCommand(request) + ") > " + Quote(logPath) + " 2>&1";
     std::string launchError;
     result.exitCode = RunBuildCommand(command, launchError);
     result.output = ReadText(logPath);
@@ -427,35 +494,18 @@ ManagedScriptBuildResult ManagedScriptBuildService::Build(const ManagedScriptBui
     result.sarifDiagnostics = diagnostics;
     if (result.exitCode != 0)
         return result;
-
-    const auto projectPaths = ResolveManagedScriptProject(request.projectRoot);
-    const auto digest = BuildSourceDigest(
-        request.projectRoot,
-        projectPaths.has_value() ? projectPaths->managedProjectRoot : request.projectRoot);
-    const auto copyArtifact = [&](std::string_view extension, std::filesystem::path& destination)
+    if (!request.scriptApiManifest.empty() && ReadText(request.scriptApiManifest) != schemaContents)
     {
-        const auto source = staging / ("GameScripts" + std::string(extension));
-        if (!std::filesystem::exists(source))
-            return false;
-        destination = outputRoot / ("GameScripts." + digest + std::string(extension));
-        return std::filesystem::copy_file(source, destination,
-            std::filesystem::copy_options::overwrite_existing, error);
-    };
-    if (!copyArtifact(".dll", result.assembly) ||
-        !copyArtifact(".pdb", result.symbols) ||
-        !copyArtifact(".deps.json", result.deps) ||
-        !copyArtifact(".runtimeconfig.json", result.runtimeConfig))
-    {
-        result.output += "\nManaged build completed but one or more GameScripts artifacts were missing.";
+        result.output += "\nThe Script API manifest changed during C# compilation; rebuild the scripts.";
         result.exitCode = -1;
         return result;
     }
 
-    // The content-addressed GameScripts artifact is loaded directly by
-    // hostfxr. Keep its portable runtime dependency beside it; otherwise the
-    // deps.json probe succeeds but type resolution fails with a misleading
-    // COR_E_TYPEINITIALIZATION error. Nullus.Managed is shared by all project
-    // versions, so it is intentionally copied with the current artifact.
+    const auto projectPaths = ResolveManagedScriptProject(request.projectRoot);
+    const auto digest = BuildSourceDigest(
+        request.projectRoot,
+        projectPaths.has_value() ? projectPaths->managedProjectRoot : request.projectRoot,
+        staging);
     const auto filesEqual = [](const std::filesystem::path& left, const std::filesystem::path& right)
     {
         std::error_code leftError;
@@ -477,7 +527,36 @@ ManagedScriptBuildResult ManagedScriptBuildService::Build(const ManagedScriptBui
                 std::istreambuf_iterator<char>(),
                 std::istreambuf_iterator<char>(rightStream));
     };
+    const auto copyArtifact = [&](std::string_view extension, std::filesystem::path& destination)
+    {
+        const auto source = staging / ("GameScripts" + std::string(extension));
+        if (!std::filesystem::exists(source))
+        {
+            error = std::make_error_code(std::errc::no_such_file_or_directory);
+            return false;
+        }
+        destination = outputRoot / ("GameScripts." + digest + std::string(extension));
+        // CoreCLR may keep an identical published revision mapped. It does
+        // not need a write, and Windows correctly refuses to replace it.
+        if (filesEqual(source, destination)) { error.clear(); return true; }
+        return std::filesystem::copy_file(source, destination,
+            std::filesystem::copy_options::overwrite_existing, error);
+    };
+    if (!copyArtifact(".dll", result.assembly) ||
+        !copyArtifact(".pdb", result.symbols) ||
+        !copyArtifact(".deps.json", result.deps) ||
+        !copyArtifact(".runtimeconfig.json", result.runtimeConfig))
+    {
+        result.output += "\nManaged build could not publish a GameScripts artifact: " + error.message();
+        result.exitCode = -1;
+        return result;
+    }
 
+    // The content-addressed GameScripts artifact is loaded directly by
+    // hostfxr. Keep its portable runtime dependency beside it; otherwise the
+    // deps.json probe succeeds but type resolution fails with a misleading
+    // COR_E_TYPEINITIALIZATION error. Nullus.Managed is shared by all project
+    // versions, so it is intentionally copied with the current artifact.
     // Roslyn records the unversioned `GameScripts.pdb` file name in the PE
     // CodeView entry before Nullus gives the artifacts their content-addressed
     // names. Keep a current-symbol alias beside the loaded assembly so VS can
@@ -549,11 +628,12 @@ ManagedScriptBuildResult ManagedScriptBuildService::Build(const ManagedScriptBui
         // identical to the build output.
         return filesEqual(source, destination);
     };
-    for (const auto* artifact : {"Nullus.Managed.dll", "Nullus.Managed.pdb", "Nullus.Managed.deps.json"})
+    for (const auto* artifact : {"Nullus.Managed.dll", "Nullus.Managed.pdb", "Nullus.Managed.deps.json",
+        "Nullus.Editor.dll", "Nullus.Editor.pdb", "Nullus.Editor.deps.json"})
     {
         if (!copyRuntimeDependency(artifact))
         {
-            result.output += "\nManaged build completed but the Nullus.Managed runtime dependency was missing.";
+            result.output += "\nManaged build could not publish dependency '" + std::string(artifact) + "'.";
             result.exitCode = -1;
             return result;
         }
@@ -579,5 +659,122 @@ ManagedScriptBuildResult ManagedScriptBuildService::Build(const ManagedScriptBui
     }
     result.succeeded = true;
     return result;
+}
+
+std::vector<ManagedBuildDiagnostic> ManagedScriptBuildService::ReadDiagnostics(const ManagedScriptBuildResult& result)
+{
+    using Json = nlohmann::json;
+    std::vector<ManagedBuildDiagnostic> diagnostics;
+    std::unordered_set<std::string> seen;
+    auto files = result.sarifDiagnosticFiles;
+    if (files.empty() && !result.sarifDiagnostics.empty()) files.push_back(result.sarifDiagnostics);
+    const auto decodeUri = [](std::string uri)
+    {
+        if (uri.rfind("file://", 0) == 0) uri.erase(0, 7);
+#if defined(_WIN32)
+        if (uri.size() >= 3 && uri[0] == '/' && uri[2] == ':') uri.erase(0, 1);
+#endif
+        const auto digit = [](char c) -> int
+        {
+            if (c >= '0' && c <= '9') return c - '0';
+            if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+            if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+            return -1;
+        };
+        std::string decoded;
+        for (size_t i = 0; i < uri.size(); ++i)
+        {
+            if (uri[i] == '%' && i + 2 < uri.size())
+            {
+                const int high = digit(uri[i + 1]);
+                const int low = digit(uri[i + 2]);
+                if (high >= 0 && low >= 0)
+                {
+                    decoded.push_back(static_cast<char>((high << 4) | low));
+                    i += 2;
+                    continue;
+                }
+            }
+            decoded.push_back(uri[i]);
+        }
+        return decoded;
+    };
+    for (const auto& file : files)
+    {
+        const auto content = ReadText(file);
+        if (content.empty()) continue;
+        const auto document = Json::parse(content, nullptr, false);
+        if (document.is_discarded() || !document.is_object()) continue;
+        try
+        {
+            const auto runs = document.value("runs", Json::array());
+            if (!runs.is_array()) continue;
+            for (const auto& run : runs)
+            {
+                const auto results = run.value("results", Json::array());
+                if (!results.is_array()) continue;
+                for (const auto& item : results)
+                {
+                    if (!item.is_object()) continue;
+                    ManagedBuildDiagnostic diagnostic;
+                    const auto level = item.value("level", std::string("warning"));
+                    diagnostic.severity = level == "error" ? ManagedBuildDiagnostic::Severity::Error :
+                        level == "warning" ? ManagedBuildDiagnostic::Severity::Warning : ManagedBuildDiagnostic::Severity::Info;
+                    if (item.contains("message"))
+                    {
+                        const auto& message = item["message"];
+                        if (message.is_string()) diagnostic.message = message.get<std::string>();
+                        else if (message.is_object()) diagnostic.message = message.value("text", std::string{});
+                    }
+                    const auto code = item.value("ruleId", std::string{});
+                    if (!code.empty()) diagnostic.message = code + ": " + diagnostic.message;
+                    const auto locations = item.value("locations", Json::array());
+                    if (locations.is_array() && !locations.empty() && locations[0].is_object())
+                    {
+                        const auto& location = locations[0];
+                        const Json* physical = &location;
+                        if (location.contains("physicalLocation") && location["physicalLocation"].is_object()) physical = &location["physicalLocation"];
+                        else if (location.contains("resultFile") && location["resultFile"].is_object()) physical = &location["resultFile"];
+                        std::string uri;
+                        if (physical->contains("artifactLocation") && (*physical)["artifactLocation"].is_object())
+                            uri = (*physical)["artifactLocation"].value("uri", std::string{});
+                        else uri = physical->value("uri", std::string{});
+                        if (!uri.empty())
+                        {
+                            auto path = std::filesystem::u8path(decodeUri(uri));
+                            if (path.is_relative() && !result.projectRoot.empty()) path = result.projectRoot / path;
+                            const auto utf8 = path.lexically_normal().generic_u8string();
+                            diagnostic.sourcePath.assign(reinterpret_cast<const char*>(utf8.data()), utf8.size());
+                        }
+                        if (physical->contains("region") && (*physical)["region"].is_object())
+                        {
+                            diagnostic.line = (*physical)["region"].value("startLine", 0);
+                            diagnostic.column = (*physical)["region"].value("startColumn", 0);
+                        }
+                    }
+                    if (diagnostic.message.empty()) continue;
+                    const auto key = std::to_string(static_cast<int>(diagnostic.severity)) + "\n" +
+                        diagnostic.message + "\n" + diagnostic.sourcePath + "\n" +
+                        std::to_string(diagnostic.line) + ":" + std::to_string(diagnostic.column);
+                    if (seen.insert(key).second) diagnostics.push_back(std::move(diagnostic));
+                }
+            }
+        }
+        catch (const std::exception&)
+        {
+            // A malformed or partial diagnostics file must not hide a build failure.
+        }
+    }
+    const bool hasError = std::any_of(diagnostics.begin(), diagnostics.end(), [](const auto& diagnostic)
+        { return diagnostic.severity == ManagedBuildDiagnostic::Severity::Error; });
+    if (!result.succeeded && !hasError)
+    {
+        ManagedBuildDiagnostic diagnostic;
+        diagnostic.message = result.output.empty()
+            ? "Managed script compilation failed (exit code " + std::to_string(result.exitCode) + ")."
+            : result.output;
+        diagnostics.push_back(std::move(diagnostic));
+    }
+    return diagnostics;
 }
 }

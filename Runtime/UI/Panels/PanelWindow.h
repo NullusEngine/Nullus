@@ -62,6 +62,7 @@ namespace NLS::UI
 		* Returns true if the panel is focused
 		*/
 		bool IsFocused() const;
+        bool HasCurrentKeyboardFocus() const;
 
 		/**
 		* Returns true if the panel is appearing
@@ -109,6 +110,7 @@ namespace NLS::UI
 		bool m_opened = false;
 		bool m_hovered = false;
 		bool m_focused = false;
+        uint32_t m_inputWindowId = 0;
         bool m_mustScrollToBottom = false;
         bool m_mustScrollToTop = false;
         bool m_scrolledToBottom = false;

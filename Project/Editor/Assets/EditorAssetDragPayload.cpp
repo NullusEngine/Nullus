@@ -2,8 +2,12 @@
 
 #include "Assets/ScriptAssetUtility.h"
 #include "Guid.h"
+#include <Assets/AssetMeta.h>
+#include <Core/ServiceLocator.h>
+#include <Engine/Assets/RuntimeAssetDatabase.h>
 
 #include <algorithm>
+#include <cctype>
 #include <cstring>
 
 namespace NLS::Editor::Assets
@@ -123,6 +127,7 @@ NLS::Core::Assets::ArtifactType GetEditorAssetDragPayloadArtifactType(const Edit
     case ArtifactType::Mesh:
     case ArtifactType::Material:
     case ArtifactType::Texture:
+    case ArtifactType::Sprite:
     case ArtifactType::Skeleton:
     case ArtifactType::Skin:
     case ArtifactType::AnimationClip:
@@ -158,5 +163,48 @@ bool IsEditorAssetDragPayloadScript(const EditorAssetDragPayload& payload)
 bool CanMoveEditorAssetDragPayloadAsPhysicalProjectFile(const EditorAssetDragPayload& payload)
 {
     return !IsEditorAssetDragPayloadGeneratedBrowserSubAsset(payload);
+}
+std::optional<EditorAssetDragPayload> ResolveSpriteDragPayload(const EditorAssetDragPayload& payload)
+{
+    using Type=NLS::Core::Assets::ArtifactType;
+    const auto type=GetEditorAssetDragPayloadArtifactType(payload);
+    if(type==Type::Sprite)return payload;
+    if(type!=Type::Texture||!NLS::Core::ServiceLocator::Contains<Engine::Assets::RuntimeAssetDatabase>())return {};
+    const auto id=GetEditorAssetDragPayloadAssetId(payload);
+    const Engine::Assets::RuntimeAssetManifestEntry* single=nullptr;
+    for(const auto& entry:NLS_SERVICE(Engine::Assets::RuntimeAssetDatabase).GetManifest().entries)
+        if(entry.assetId==id&&entry.artifactType==Type::Sprite){if(single)return {};single=&entry;}
+    if(!single)return {};
+    return MakeEditorAssetDragPayload(GetEditorAssetDragPayloadPath(payload),id,single->subAssetKey,Type::Sprite,false,true,true);
+}
+
+std::optional<EditorAssetDragPayload> ResolveSpriteDragPayload(
+    const std::string& resourcePath, const std::string& projectAssetsPath)
+{
+    if (resourcePath.empty() || resourcePath.front() == ':') return {};
+    const auto fragment = resourcePath.find('#');
+    const auto key = fragment == std::string::npos ? std::string{} : resourcePath.substr(fragment + 1);
+    if (!key.empty() && !key.starts_with("sprite:")) return {};
+    auto assetsRoot = std::filesystem::path(projectAssetsPath).lexically_normal();
+    while (!assetsRoot.empty() && !assetsRoot.has_filename()) assetsRoot = assetsRoot.parent_path();
+    if (assetsRoot.empty()) return {};
+    auto source = std::filesystem::path(resourcePath.substr(0, fragment)).lexically_normal();
+    if (source.empty()) return {};
+    if (source.is_relative())
+    {
+        auto first = source.begin()->string();
+        std::transform(first.begin(), first.end(), first.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+        source = ((first == "assets" ? assetsRoot.parent_path() : assetsRoot) / source).lexically_normal();
+    }
+    const auto withinAssets = source.lexically_relative(assetsRoot);
+    if (withinAssets.empty() || withinAssets.is_absolute()) return {};
+    for (const auto& part : withinAssets) if (part == "..") return {};
+    const auto meta = NLS::Core::Assets::AssetMeta::Load(NLS::Core::Assets::GetAssetMetaPath(source));
+    if (!meta || meta->assetType != NLS::Core::Assets::AssetType::Texture) return {};
+    const auto editorPath = (std::filesystem::path("Assets") / withinAssets).generic_string();
+    if (!CanStoreEditorAssetDragPayload(editorPath, meta->id, key)) return {};
+    return ResolveSpriteDragPayload(MakeEditorAssetDragPayload(editorPath, meta->id, key,
+        key.empty() ? NLS::Core::Assets::ArtifactType::Texture : NLS::Core::Assets::ArtifactType::Sprite,
+        false, true, !key.empty()));
 }
 }

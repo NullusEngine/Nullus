@@ -9,6 +9,7 @@ nls_add_runtime_target(
   NO_REFLECTION
   LIBS
     NLS_Core
+    NLS_Plugins
     NLS_Engine
     NLS_Cook
     zstd
@@ -32,3 +33,4 @@ if(WIN32)
 endif()
 
 set_target_properties(NLS_Build PROPERTIES FOLDER Runtime)
+target_sources(NLS_Build PRIVATE PluginBuildInputs.cpp PluginBuildInputs.h)

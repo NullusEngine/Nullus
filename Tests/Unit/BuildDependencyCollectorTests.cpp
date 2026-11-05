@@ -2,6 +2,7 @@
 
 #include "Build/BuildDependencyCollector.h"
 #include "Build/BuildReport.h"
+#include "Cook/CookTypes.h"
 
 #include "Assets/ArtifactDatabase.h"
 #include "Assets/ArtifactManifest.h"
@@ -240,6 +241,58 @@ BuildProfile MakeProfile(const SyntheticProject& project)
     return profile;
 }
 } // namespace
+
+TEST(BuildDependencyCollectorTests, SpriteContentRequiresAndRetainsItsImplicitShader)
+{
+    const auto project = BuildSyntheticProject("sprite-shader");
+    const auto profile = MakeProfile(project);
+    ArtifactDatabase database;
+    ASSERT_TRUE(database.Load(project.artifactDatabase));
+    auto spriteManifest = database.BuildManifestForSource(project.materialId, "win64");
+    ASSERT_TRUE(spriteManifest.has_value());
+    ASSERT_EQ(spriteManifest->subAssets.size(), 1u);
+    spriteManifest->subAssets.front().artifactType = ArtifactType::Sprite;
+    spriteManifest->subAssets.front().loaderId = "sprite";
+    database.UpsertManifest(*spriteManifest, "Assets/Materials/Paint.mat",
+        NLS::Core::Assets::ArtifactRecordStatus::UpToDate);
+    ASSERT_TRUE(database.Save(project.artifactDatabase));
+
+    BuildReport missingReport;
+    NLS::Build::DependencyCollectionResult missingResult;
+    EXPECT_FALSE(BuildDependencyCollector::Collect(project.root, project.assets, profile,
+        project.artifactDatabase, missingResult, missingReport));
+    EXPECT_NE(missingReport.FormatSummary().find("build-sprite-shader-not-cooked"), std::string::npos);
+
+    const AssetId shaderId(NLS::Cook::MakeEngineAssetGuid("Assets/Engine/Shaders/ShaderLab/SpriteUnlit.shader"));
+    ArtifactManifest shaderManifest;
+    shaderManifest.sourceAssetId = shaderId;
+    shaderManifest.importerId = "shader";
+    shaderManifest.targetPlatform = "win64";
+    shaderManifest.primarySubAssetKey = "shader:SpriteUnlit";
+    ImportedArtifact shader;
+    shader.sourceAssetId = shaderId;
+    shader.subAssetKey = shaderManifest.primarySubAssetKey;
+    shader.artifactType = ArtifactType::Shader;
+    shader.loaderId = "shader";
+    shader.targetPlatform = "win64";
+    shader.artifactPath = ArtifactRelativePath(shaderId);
+    shader.contentHash = "sha256:" + std::filesystem::path(shader.artifactPath).filename().string();
+    shaderManifest.subAssets.push_back(shader);
+    database.UpsertManifest(shaderManifest, "Assets/Engine/Shaders/ShaderLab/SpriteUnlit.shader",
+        NLS::Core::Assets::ArtifactRecordStatus::UpToDate);
+    ASSERT_TRUE(database.Save(project.artifactDatabase));
+    CreateArtifactFile(project, shader.artifactPath, "cooked-sprite-shader");
+
+    BuildReport report;
+    NLS::Build::DependencyCollectionResult result;
+    ASSERT_TRUE(BuildDependencyCollector::Collect(project.root, project.assets, profile,
+        project.artifactDatabase, result, report)) << report.FormatSummary();
+    const auto found = std::find_if(result.artifacts.begin(), result.artifacts.end(),
+        [&shader](const auto& artifact) { return artifact.artifactPath == shader.artifactPath; });
+    ASSERT_NE(found, result.artifacts.end());
+    EXPECT_EQ(found->reason, "Sprite renderer default shader");
+    EXPECT_EQ(result.manifest.entries.size(), 4u);
+}
 
 TEST(BuildDependencyCollectorTests, CollectsNestedDependenciesAndRawAssets)
 {

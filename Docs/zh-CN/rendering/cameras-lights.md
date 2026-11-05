@@ -69,6 +69,25 @@
 
 编辑器的 `Debugging > Debug Draw` 可以叠加显示相机与光源的可视化辅助图形，用于检查朝向、范围与锥角。这些绘制只存在于编辑器视口。
 
+## Scene View 绘制模式
+
+Scene 工具栏的 Draw Mode 提供 13 种绘制模式，以及两种距离场视图。模式保存于项目的用户设置，距离场选择和诊断阈值保留在当前编辑器会话中。
+
+| 分组 | 模式与用途 |
+| --- | --- |
+| Shading Mode | Shaded 显示材质；Wireframe 显示网格边；Shaded Wireframe 叠加经过深度测试的线框。 |
+| Miscellaneous | Render Paths 用蓝色表示延迟、黄色表示前向；Alpha Channel 显示几何覆盖的 alpha；Overdraw 显示覆盖层数；Mipmaps 检查主色纹理的屏幕密度。 |
+| Deferred | Albedo、Specular（PBR F0）、Smoothness（1−roughness）和世界空间 Normal，读取实际 GBuffer。前向物体和粒子为中性灰。 |
+| Material Validator | Validate Albedo 和 Validate Metal Specular 在线性空间、色调映射之前检查 PBR 数据；红色低于范围、蓝色高于范围，中性灰表示不适用。 |
+
+Overdraw 会禁用遮挡剔除和深度测试，累计通过面剔除及 alpha 裁剪的网格、Sprite、Ribbon 和 Mesh 粒子片元；默认热力图上限为 16 层。它表示覆盖层数，不表示 GPU 耗时。Alpha Channel 的背景为零，不计天空和编辑器辅助图形，透明网格与粒子按其混合方式累积。
+
+Mipmaps 根据实际采样 UV 的屏幕导数计算：红色表示纹理过大、蓝色表示分辨率不足、绿色表示偏差在一个 mip 内。无可识别主色纹理时显示中性灰。
+
+材质校验的默认范围使用 8 位 sRGB 数值，在比较之前转换为线性值：Albedo 的非金属范围为 50–243、金属为 186–255；Specular 的非金属范围为 40–75、金属为 155–255。中间 metalness 在线性空间插值两组阈值，可在菜单中调整并重置。
+
+内置材质和 ShaderGraph 自动提供 `SceneDebug` Pass，保留蒙皮、实例化、顶点位移及裁剪。手写 ShaderLab 材质可添加同名 LightMode，并调用 `NullusShaderLibrary/SceneDebug.hlsl` 中的 `NLSSceneDebug`；该 Pass 的 `b1, space2` 由视图诊断常量使用。缺少支持的数据会显示中性灰。级联阴影、纹理流送、Sprite Mask、GI 和烘焙光照仍在 Pipeline Capabilities 中说明当前缺失的底层能力。
+
 ## 下一步
 
 - [材质与 ShaderLab](materials.md)：给网格配上表现。

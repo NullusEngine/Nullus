@@ -10,6 +10,7 @@
 #include "Reflection/Type.h"
 #include "Reflection/TypeCreator.h"
 #include "Serialize/ObjectGraphInstantiator.h"
+#include "Serialize/ObjectGraphPPtr.h"
 #include "Serialize/ObjectReferenceResolver.h"
 #include "Serialize/ObjectGraphSerializer.h"
 #include "Serialize/ObjectGraphWriter.h"
@@ -1215,6 +1216,27 @@ bool RevertLiveStructuralPatch(
     }
 }
 
+bool ApplyLiveComponentProperty(
+    NLS::Engine::Components::Component& component,
+    const std::string& property,
+    const PropertyValue& value)
+{
+    const auto field = component.GetType().GetField(property);
+    if (!field.IsValid() || field.IsReadOnly())
+        return false;
+
+    auto componentInstance = NLS::meta::Variant(&component, NLS::meta::variant_policy::WrapObject {});
+    const auto fieldType = field.GetType();
+    namespace References = NLS::Engine::Serialize::Internal;
+    if (fieldType.IsArray() && References::IsPPtrTypeName(fieldType.GetArrayType()))
+        return References::ApplyPPtrArrayOrThrow(componentInstance, field, value) == References::PPtrApplyResult::Applied;
+    if (References::IsPPtrTypeName(fieldType))
+        return References::ApplyPPtrValueOrThrow(componentInstance, field, value) == References::PPtrApplyResult::Applied;
+
+    auto converted = fieldType.DeserializeJson(NLS::Json(ConvertPropertyValueToJson(value)));
+    return converted.IsValid() && field.SetValue(componentInstance, converted);
+}
+
 bool RevertLivePropertyToPrefabValue(
     const PrefabArtifact& prefab,
     const PrefabInstanceRecord& instance,
@@ -1231,6 +1253,15 @@ bool RevertLivePropertyToPrefabValue(
     const auto* sourceRecord = FindObjectRecord(sourceGraph, sourceId);
     if (!sourceRecord)
         return false;
+
+    const auto baseValue = ReadPropertyValue(*sourceRecord, patch.property);
+    if (!baseValue.has_value())
+        return false;
+    if (!IsGameObjectRecord(*sourceRecord))
+    {
+        auto* component = FindLiveComponentForSource(instance, sourceId);
+        return component && ApplyLiveComponentProperty(*component, patch.property, *baseValue);
+    }
 
     auto* liveObject = instance.instanceRoot;
     if (sourceId != sourceGraph.root)
@@ -1249,10 +1280,6 @@ bool RevertLivePropertyToPrefabValue(
     if (!liveObject)
         return false;
 
-    const auto baseValue = ReadPropertyValue(*sourceRecord, patch.property);
-    if (!baseValue.has_value())
-        return false;
-
     if (patch.property == "name" && baseValue->GetKind() == PropertyValue::Kind::String)
     {
         liveObject->SetName(baseValue->GetString());
@@ -1266,6 +1293,11 @@ bool RevertLivePropertyToPrefabValue(
     if (patch.property == "active" && baseValue->GetKind() == PropertyValue::Kind::Bool)
     {
         liveObject->SetActive(baseValue->GetBool());
+        return true;
+    }
+    if (patch.property == "layer" && baseValue->GetKind() == PropertyValue::Kind::Integer)
+    {
+        liveObject->SetLayer(static_cast<int>(baseValue->GetInteger()));
         return true;
     }
 
@@ -1288,18 +1320,7 @@ bool RebuildExistingInstanceFromPrefab(
 bool ApplyLiveComponentLocalPatch(PrefabInstanceRecord& instance, const PatchOperation& patch)
 {
     auto* component = FindLiveComponentForSource(instance, patch.target);
-    if (!component)
-        return false;
-
-    const auto field = component->GetType().GetField(patch.property);
-    if (!field.IsValid() || field.IsReadOnly())
-        return false;
-
-    auto componentInstance = NLS::meta::Variant(component, NLS::meta::variant_policy::WrapObject {});
-    const auto json = ConvertPropertyValueToJson(patch.value);
-    auto value = field.GetType().DeserializeJson(NLS::Json(json));
-    field.SetValue(componentInstance, value);
-    return true;
+    return component && ApplyLiveComponentProperty(*component, patch.property, patch.value);
 }
 
 bool ApplyLiveLocalPatch(PrefabInstanceRecord& instance, const PatchOperation& patch)
@@ -1324,6 +1345,11 @@ bool ApplyLiveLocalPatch(PrefabInstanceRecord& instance, const PatchOperation& p
     if (patch.property == "active" && patch.value.GetKind() == PropertyValue::Kind::Bool)
     {
         liveObject->SetActive(patch.value.GetBool());
+        return true;
+    }
+    if (patch.property == "layer" && patch.value.GetKind() == PropertyValue::Kind::Integer)
+    {
+        liveObject->SetLayer(static_cast<int>(patch.value.GetInteger()));
         return true;
     }
 
@@ -1568,6 +1594,19 @@ void DiscoverOverridesRecursive(
                 "name",
                 PropertyValue::String(liveOwner.GetName()))));
     }
+
+    const auto baseTag = ReadStringProperty(&sourceOwner, "tag");
+    if (baseTag && *baseTag != liveOwner.GetTag())
+        overrides.push_back(MakeOverrideRecord(instance, sourceOwner.id, "tag",
+            PatchOperation::ReplaceProperty(sourceOwner.id, "tag", PropertyValue::String(liveOwner.GetTag()))));
+    const auto baseActive = ReadPropertyValue(sourceOwner, "active");
+    if (baseActive && baseActive->GetKind() == PropertyValue::Kind::Bool && baseActive->GetBool() != liveOwner.IsSelfActive())
+        overrides.push_back(MakeOverrideRecord(instance, sourceOwner.id, "active",
+            PatchOperation::ReplaceProperty(sourceOwner.id, "active", PropertyValue::Bool(liveOwner.IsSelfActive()))));
+    const auto baseLayer = ReadPropertyValue(sourceOwner, "layer");
+    if (baseLayer && baseLayer->GetKind() == PropertyValue::Kind::Integer && baseLayer->GetInteger() != liveOwner.GetLayer())
+        overrides.push_back(MakeOverrideRecord(instance, sourceOwner.id, "layer",
+            PatchOperation::ReplaceProperty(sourceOwner.id, "layer", PropertyValue::Integer(liveOwner.GetLayer()))));
 
     DiscoverComponentOverrides(prefab, instance, sourceOwner, liveOwner, overrides);
     DiscoverChildOverrides(prefab, instance, sourceOwner, liveOwner, overrides);

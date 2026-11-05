@@ -1,6 +1,7 @@
 #pragma once
 
 #include "ManagedScriptBuildService.h"
+#include "Core/EditorTaskProgressService.h"
 
 #include <Scripting/ScriptRuntime.h>
 
@@ -8,6 +9,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <future>
+#include <functional>
 #include <optional>
 #include <string>
 
@@ -44,7 +46,8 @@ class ManagedScriptDebugSession final
 public:
     ManagedScriptDebugSession(
         NLS::Scripting::ScriptRuntime& runtime,
-        std::filesystem::path projectRoot);
+        std::filesystem::path projectRoot,
+        std::filesystem::path scriptApiManifest = {});
     ~ManagedScriptDebugSession() = default;
 
     ManagedScriptDebugSession(const ManagedScriptDebugSession&) = delete;
@@ -64,6 +67,11 @@ public:
     bool RequestBuild();
     void Poll();
     bool IsBuildInProgress() const;
+    bool HasPendingBuild() const { return m_rebuildRequested || m_buildFuture.valid(); }
+    // The Editor uses this boundary to restore Edit before compilation or ALC replacement.
+    void SetBuildBoundary(std::function<bool()> boundary) { m_buildBoundary = std::move(boundary); }
+    void SetBuildCallbacks(std::function<void()> started,
+        std::function<void(const ManagedScriptBuildResult&)> completed);
 
     const ManagedScriptBuildResult& GetLastBuild() const { return m_lastBuild; }
     const NLS::Scripting::ScriptStatus& GetLastStatus() const { return m_lastStatus; }
@@ -79,6 +87,7 @@ private:
 
     NLS::Scripting::ScriptRuntime* m_runtime = nullptr;
     std::filesystem::path m_projectRoot;
+    Core::EditorTaskHandle m_buildTask;
     ManagedScriptBuildService m_buildService;
     std::future<ManagedScriptBuildResult> m_buildFuture;
     ManagedScriptBuildResult m_lastBuild;
@@ -86,6 +95,11 @@ private:
     bool m_enabled = false;
     bool m_rebuildRequested = false;
     bool m_prepareRequested = false;
+    std::function<bool()> m_buildBoundary;
+    std::function<void()> m_buildStarted;
+    std::function<void(const ManagedScriptBuildResult&)> m_buildCompleted;
+    bool m_buildStartNotified = false;
     ManagedDebugPreparationResult m_preparation;
+    std::filesystem::path m_scriptApiManifest;
 };
 }

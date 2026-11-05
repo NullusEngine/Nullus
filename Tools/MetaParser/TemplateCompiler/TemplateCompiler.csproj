@@ -1,0 +1,17 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <AssemblyName>Nullus.MetaTemplateCompiler</AssemblyName>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <UseAppHost>false</UseAppHost>
+    <IsPublishable>false</IsPublishable>
+    <RestoreSources>$(MSBuildThisFileDirectory)../ThirdParty/LocalNuget;https://api.nuget.org/v3/index.json</RestoreSources>
+    <RestorePackagesPath>$(MSBuildThisFileDirectory)../ThirdParty/.nuget/packages</RestorePackagesPath>
+    <RestoreIgnoreFailedSources>true</RestoreIgnoreFailedSources>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="Mono.TextTemplating" Version="3.0.0" />
+  </ItemGroup>
+</Project>

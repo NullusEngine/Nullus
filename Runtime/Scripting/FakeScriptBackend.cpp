@@ -12,6 +12,11 @@ ScriptStatus FakeScriptBackend::Initialize(const ScriptApiDatabase& api)
 {
     if (m_initialized)
         return ScriptStatus::Ok();
+    if (m_failNextInitialize)
+    {
+        m_failNextInitialize = false;
+        return ScriptStatus::Error(ScriptStatusCode::Exception, "Injected script host initialization failure.");
+    }
     m_api = api;
     m_initialized = true;
     return ScriptStatus::Ok();

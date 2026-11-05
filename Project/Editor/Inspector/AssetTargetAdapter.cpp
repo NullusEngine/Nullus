@@ -1,9 +1,11 @@
 #include "Inspector/AssetTargetAdapter.h"
+#include "Inspector/AssetImporterEditing.h"
 
 #include <algorithm>
 #include <any>
 #include <charconv>
 #include <cctype>
+#include <cmath>
 #include <cstdint>
 #include <cstring>
 #include <cstdlib>
@@ -26,6 +28,8 @@
 #include <Assets/AssetImporterFacade.h>
 #include <Assets/AssetImporterSettings.h>
 #include <Assets/AssetMeta.h>
+#include "Project/Editor/Assets/DistanceFieldBuildService.h"
+#include "Panels/AssetBrowser.h"
 #include <Components/Component.h>
 #include <Math/Vector2.h>
 #include <Math/Vector3.h>
@@ -35,6 +39,7 @@
 #include <Rendering/Resources/Shader.h>
 #include <Rendering/Resources/Texture2D.h>
 #include <ServiceLocator.h>
+#include <Reflection/Enum.h>
 #include "Debug/Logger.h"
 
 #include "Core/Context.h"
@@ -49,18 +54,22 @@
 #include "Undo/EditorUndoService.h"
 #include "Materials/MaterialEditingService.h"
 
+namespace
+{
+std::string LowerAscii(std::string value)
+{
+    std::transform(value.begin(), value.end(), value.begin(), [](const unsigned char character)
+    {
+        return static_cast<char>(std::tolower(character));
+    });
+    return value;
+}
+}
+
 namespace NLS::Editor::Inspector
 {
 namespace
 {
-enum class DraftValueKind : uint8_t
-{
-    Boolean,
-    SignedInteger,
-    FloatingPoint,
-    String
-};
-
 struct ImporterDraft
 {
     std::map<std::string, std::string> settings;
@@ -186,6 +195,7 @@ void EnsureModelImporterDraftDefaults(
         {"FORCE_GEN_NORMALS", "false"},
         {"DROP_NORMALS", "false"},
         {"GEN_BOUNDING_BOXES", "false"},
+        {"MODEL_FBX_READER", "autodesk-with-assimp-fallback"},
         {"DISTANCE_FIELD_GENERATION", "inherit"},
         {"DISTANCE_FIELD_RESOLUTION_SCALE", "1.0"},
         {"DISTANCE_FIELD_TWO_SIDED", "false"}
@@ -215,6 +225,15 @@ ImporterDraft& EnsureImporterDraftLocked(const InspectorTargetHandle& handle)
     {
         draft.settings = meta->settings;
         EnsureModelImporterDraftDefaults(draft, *meta);
+        if (meta->assetType == NLS::Core::Assets::AssetType::Texture)
+        {
+            draft.settings.try_emplace("TEXTURE_TYPE", "default");
+            draft.settings.try_emplace("SPRITE_MODE", "single");
+            draft.settings.try_emplace("SPRITE_PIXELS_PER_UNIT", "100.0");
+            draft.settings.try_emplace("SPRITE_PIVOT_X", "0.5");
+            draft.settings.try_emplace("SPRITE_PIVOT_Y", "0.5");
+            draft.settings.try_emplace("SPRITE_ID", NLS::Guid::NewDeterministic(meta->id.ToString()+":sprite:single").ToString());
+        }
         draft.available = true;
     }
     return draft;
@@ -230,34 +249,65 @@ bool IsImporterTargetAlive(const InspectorTargetHandle& handle)
     return std::filesystem::is_regular_file(ResolveAssetSourcePath(handle), error) && !error;
 }
 
-std::string LowerAscii(std::string value)
+meta::Type ImporterSettingType(const std::string& name, const std::string& value)
 {
-    std::transform(value.begin(), value.end(), value.begin(), [](const unsigned char character)
-    {
-        return static_cast<char>(std::tolower(character));
-    });
-    return value;
-}
-
-DraftValueKind ClassifyDraftValue(const std::string& value)
-{
+    if (name == "DISTANCE_FIELD_RESOLUTION_SCALE") return NLS_TYPEOF(double);
+    if (name == "DISTANCE_FIELD_TWO_SIDED") return NLS_TYPEOF(bool);
+    const auto declared = Assets::GetImporterSettingType(name);
+    if (declared.IsValid()) return declared;
     const auto lowercase = LowerAscii(value);
     if (lowercase == "true" || lowercase == "false")
-        return DraftValueKind::Boolean;
+        return NLS_TYPEOF(bool);
 
     int64_t integer = 0;
     const auto [integerEnd, integerError] = std::from_chars(value.data(), value.data() + value.size(), integer);
     if (integerError == std::errc {} && integerEnd == value.data() + value.size())
-        return DraftValueKind::SignedInteger;
+        return NLS_TYPEOF(int64_t);
 
     if (!value.empty())
     {
         char* end = nullptr;
         (void)std::strtod(value.c_str(), &end);
         if (end != value.c_str() && *end == '\0')
-            return DraftValueKind::FloatingPoint;
+            return NLS_TYPEOF(double);
     }
-    return DraftValueKind::String;
+    return NLS_TYPEOF(std::string);
+}
+
+NLS::Core::Assets::AssetMeta BuildImporterMetaForApply(
+    const NLS::Core::Assets::AssetMeta& original,
+    const std::map<std::string, std::string>& settings)
+{
+    auto updated = original;
+    updated.settings = settings;
+    if (!IsModelImporterMeta(original)) return updated;
+
+    ImporterDraft baseline;
+    baseline.settings = original.settings;
+    EnsureModelImporterDraftDefaults(baseline, original);
+    for (const auto& [key, value] : settings)
+    {
+        const auto found = baseline.settings.find(key);
+        if (found == baseline.settings.end()) continue;
+        bool same = value == found->second;
+        // Native stream edits canonicalize numbers, e.g. 1.0 becomes 1.
+        // Preserve unchanged source spelling as well as absent UI defaults.
+        if (!same && ImporterSettingType(key, found->second) == NLS_TYPEOF(double))
+        {
+            char *beforeEnd = nullptr, *afterEnd = nullptr;
+            const auto before = std::strtod(found->second.c_str(), &beforeEnd);
+            const auto after = std::strtod(value.c_str(), &afterEnd);
+            same = beforeEnd != found->second.c_str() && *beforeEnd == '\0' &&
+                afterEnd != value.c_str() && *afterEnd == '\0' &&
+                std::isfinite(before) && std::isfinite(after) && before == after;
+        }
+        if (!same) continue;
+        if (const auto persisted = original.settings.find(key); persisted != original.settings.end())
+            updated.settings[key] = persisted->second;
+        else
+            updated.settings.erase(key);
+    }
+    return updated;
 }
 
 NLS::Render::Resources::Material* ResolveMaterial(const InspectorTargetHandle& handle)
@@ -914,13 +964,32 @@ public:
         if (validation.state != NLS::Editor::Undo::UndoValidationState::Ready)
             return NLS::Editor::Undo::UndoStartResult::Failed(validation.message);
 
-        const auto attempted = direction == NLS::Editor::Undo::UndoDirection::Redo
+        auto attempted = direction == NLS::Editor::Undo::UndoDirection::Redo
             ? m_state->after
             : m_state->before;
         const auto restored = m_state->expectedCurrent;
         const auto sourcePath = ResolveAssetSourcePath(m_state->handle);
         const auto metaPath = NLS::Core::Assets::GetAssetMetaPath(sourcePath);
         const auto editorAssetPath = ToEditorAssetPath(m_state->handle);
+        bool distanceFieldsOnly = attempted.assetType == NLS::Core::Assets::AssetType::ModelScene &&
+            NLS::Core::Assets::ComputeModelImportSettingsFingerprint(attempted) ==
+                NLS::Core::Assets::ComputeModelImportSettingsFingerprint(restored) &&
+            NLS::Core::ServiceLocator::Contains<NLS::Editor::Core::EditorActions>();
+        std::string distanceFieldSourceIdentity;
+        if (distanceFieldsOnly)
+        {
+            const auto database = EDITOR_PANEL(NLS::Editor::Panels::AssetBrowser, "Asset Browser").GetAssetDatabaseSnapshot();
+            const auto manifest = database ? database->GetArtifactManifestForAssetPath(editorAssetPath) : std::nullopt;
+            distanceFieldsOnly = manifest && std::any_of(manifest->subAssets.begin(),manifest->subAssets.end(),
+                [](const auto& artifact){return artifact.artifactType==NLS::Core::Assets::ArtifactType::Mesh;});
+            if (distanceFieldsOnly)
+            {
+                distanceFieldSourceIdentity=NLS::Render::DistanceField::DistanceFieldSourceManifestIdentity(*manifest);
+                if (!restored.settings.contains("NULLUS_IMPORTER_DIRTY"))
+                    attempted.settings.erase("NULLUS_IMPORTER_DIRTY");
+            }
+        }
+        const auto previousMetaStamp=NLS::Editor::Assets::DistanceFieldBuildService::MetadataStamp(metaPath);
         const auto distanceFieldResolution = attempted.settings.find("DISTANCE_FIELD_RESOLUTION_SCALE");
         NLS_LOG_INFO("Importer Apply: " + editorAssetPath + " distanceFieldResolution=" +
             (distanceFieldResolution == attempted.settings.end() ? std::string("inherit") : distanceFieldResolution->second));
@@ -937,6 +1006,29 @@ public:
                 draft.lastError = message;
             }
             return NLS::Editor::Undo::UndoStartResult::Failed(std::string(message));
+        }
+
+        if (distanceFieldsOnly)
+        {
+            NLS::Editor::Assets::DistanceFieldBuildRequest request;
+            request.projectRoot=EDITOR_EXEC(GetContext()).projectPath;request.assetPath=editorAssetPath;
+            request.previousMetaStamp=previousMetaStamp;request.sourceIdentityHint=std::move(distanceFieldSourceIdentity);
+            if (!NLS::Editor::Assets::DistanceFieldBuildService::Queue(std::move(request)))
+            {
+                const bool rollbackSucceeded=restored.Save(metaPath);
+                return NLS::Editor::Undo::UndoStartResult::Failed("The distance field build could not be queued.",!rollbackSucceeded);
+            }
+            // Settings commit immediately. Undo/Redo queues a new generation;
+            // an older background build cannot publish over the restored recipe.
+            m_state->expectedCurrent=attempted;
+            {
+                std::lock_guard lock(g_importerDraftMutex);
+                auto& draft=EnsureImporterDraftLocked(m_state->handle);
+                draft.settings=attempted.settings;draft.dirty=false;draft.available=true;
+                EnsureModelImporterDraftDefaults(draft, attempted);
+                draft.reimportQueued=false;draft.lastError.clear();++draft.revision;
+            }
+            return NLS::Editor::Undo::UndoStartResult::Completed();
         }
 
         uint64_t draftRevision = 0u;
@@ -1033,6 +1125,11 @@ struct Snapshot
     uint64_t revision = 0u;
 };
 
+meta::Type SettingType(const std::string& name, const std::string& value)
+{
+    return ImporterSettingType(name, value);
+}
+
 Snapshot Read(const InspectorTargetHandle& handle)
 {
     std::lock_guard lock(g_importerDraftMutex);
@@ -1093,8 +1190,7 @@ uint64_t SchemaSignature(const Snapshot& snapshot)
     for (const auto& [key, value] : snapshot.settings)
     {
         append(key);
-        hash ^= static_cast<uint64_t>(ClassifyDraftValue(value));
-        hash *= prime;
+        append(SettingType(key, value).GetName());
     }
     return hash == 0u ? 1u : hash;
 }
@@ -1108,7 +1204,7 @@ bool IsCompatible(const Snapshot& left, const Snapshot& right)
     for (; leftIt != left.settings.end(); ++leftIt, ++rightIt)
     {
         if (leftIt->first != rightIt->first ||
-            ClassifyDraftValue(leftIt->second) != ClassifyDraftValue(rightIt->second))
+            SettingType(leftIt->first, leftIt->second) != SettingType(rightIt->first, rightIt->second))
         {
             return false;
         }
@@ -1116,6 +1212,87 @@ bool IsCompatible(const Snapshot& left, const Snapshot& right)
     return true;
 }
 } // namespace ImporterDraftStreamDetail
+
+ImporterEditingState ReadImporterEditingState(const InspectorTargetHandle& target)
+{
+    if (target.kind != InspectorTargetKind::AssetImporter) return {};
+    std::lock_guard lock(g_importerDraftMutex);
+    const auto& draft = EnsureImporterDraftLocked(target);
+    return {draft.settings, draft.available && IsImporterTargetAlive(target), draft.dirty,
+        draft.reimportQueued || NLS::Editor::Assets::AssetImporterFacade::IsReimportInProgress(ToEditorAssetPath(target)),
+        draft.revision, draft.lastError};
+}
+
+namespace
+{
+class ImporterDraftEditCommand final : public Undo::IEditorUndoCommand
+{
+public:
+    InspectorTargetHandle target;
+    Undo::UndoCommandInfo info;
+    std::map<std::string,std::string> before,after;
+    Undo::UndoCommandInfo GetInfo() const override { return info; }
+    Undo::UndoValidationResult Validate(Undo::UndoDirection direction,const Undo::UndoExecutionContext&) const override
+    {
+        const auto current = ReadImporterEditingState(target);
+        if (!current.available) return Undo::UndoValidationResult::Stale("The importer asset was closed or removed.");
+        if (const auto meta = LoadImporterMeta(target); meta && !target.assetId.empty() && meta->id.ToString() != target.assetId)
+            return Undo::UndoValidationResult::Stale("The source path now belongs to another asset.");
+        if (current.reimporting) return Undo::UndoValidationResult::Conflict("The asset is currently reimporting.");
+        if (current.settings != (direction == Undo::UndoDirection::Undo ? after : before))
+            return Undo::UndoValidationResult::Conflict("Importer settings changed outside this edit.");
+        return Undo::UndoValidationResult::Ready();
+    }
+    Undo::UndoStartResult Apply(Undo::UndoDirection direction,const Undo::UndoExecutionContext& context,Undo::UndoCompletion) override
+    {
+        const auto checked = Validate(direction,context);
+        if (checked.state != Undo::UndoValidationState::Ready) return Undo::UndoStartResult::Failed(checked.message);
+        if (!ImporterDraftStreamDetail::Write(target,direction == Undo::UndoDirection::Undo ? before : after))
+            return Undo::UndoStartResult::Failed("Importer settings could not be updated.");
+        return Undo::UndoStartResult::Completed();
+    }
+    bool TryMergeFrom(const Undo::IEditorUndoCommand& value) override
+    {
+        const auto* next = dynamic_cast<const ImporterDraftEditCommand*>(&value);
+        if (!next || target != next->target || info.scopes != next->info.scopes || after != next->before) return false;
+        after = next->after; UpdateSize(); return true;
+    }
+    void UpdateSize()
+    {
+        info.estimatedBytes = sizeof(*this);
+        for (const auto* values : {&before,&after})
+            for (const auto& [key,value] : *values) info.estimatedBytes += key.size()+value.size();
+    }
+};
+}
+
+bool EditImporterSettings(Undo::EditorUndoService& undo,const InspectorTargetHandle& target,
+    const std::map<std::string,std::string>& expected,std::map<std::string,std::string> replacement,
+    std::string label,std::string mergeKey,std::string& error)
+{
+    const auto current = ReadImporterEditingState(target);
+    if (!current.available || current.reimporting || current.settings != expected)
+    { error = "The importer draft is unavailable, reimporting, or changed before this edit."; return false; }
+    if (expected == replacement) { error.clear(); return true; }
+    auto command = std::make_unique<ImporterDraftEditCommand>();
+    command->target = MakeDurableAssetUndoTarget(target); command->before = expected; command->after = std::move(replacement);
+    command->info = BuildInspectorUndoCommandInfo(std::move(label),{command->target},PropertyPath("Importer.Settings"));
+    command->info.sourceModule = "Sprite"; command->info.mergeKey = std::move(mergeKey);
+    command->info.allowMerge = !command->info.mergeKey.empty(); command->UpdateSize();
+    const auto result = undo.Execute(std::move(command)); error = result.message;
+    return result.Succeeded();
+}
+
+bool ApplyImporterEditingState(const InspectorTargetHandle& target,std::string& error)
+{
+    InspectorTargetSet targets; targets.targets = {MakeDurableAssetUndoTarget(target)};
+    return AssetTargetAdapter{}.ExecuteAction(targets,InspectorTargetActionKind::Apply,error);
+}
+bool RevertImporterEditingState(const InspectorTargetHandle& target,std::string& error)
+{
+    InspectorTargetSet targets; targets.targets = {MakeDurableAssetUndoTarget(target)};
+    return AssetTargetAdapter{}.ExecuteAction(targets,InspectorTargetActionKind::Revert,error);
+}
 
 bool AssetTargetAdapter::CanBuild(const InspectorTargetSet& targets) const
 {
@@ -1426,8 +1603,7 @@ bool AssetTargetAdapter::ExecuteAction(
         draftSettings = draft.settings;
     }
 
-    auto updated = original;
-    updated.settings = draftSettings;
+    auto updated = BuildImporterMetaForApply(original, draftSettings);
     if (!NLS::Core::ServiceLocator::Contains<NLS::Editor::Undo::EditorUndoService>())
     {
         error = "The global Undo service is unavailable; importer settings were not applied.";
@@ -1546,6 +1722,13 @@ void TestHooks::ClearImporterDraftForTesting(const InspectorTargetHandle& target
     }
     g_importerDraftTestTargets.erase(key);
 }
+
+std::map<std::string, std::string> TestHooks::BuildImporterSettingsForApplyForTesting(
+    const NLS::Core::Assets::AssetMeta& original,
+    const std::map<std::string, std::string>& draft)
+{
+    return BuildImporterMetaForApply(original, draft).settings;
+}
 #endif
 } // namespace NLS::Editor::Inspector
 
@@ -1557,43 +1740,9 @@ using Engine::Serialize::NativeSerializedStreamCodec;
 using Engine::Serialize::SerializedByteStream;
 using Engine::Serialize::SerializedNodeFlags;
 using Engine::Serialize::SerializedNodeKind;
-using Engine::Serialize::SerializedNumericKind;
 using Engine::Serialize::SerializedReferenceTable;
 using Engine::Serialize::SerializedTypeTree;
 using Engine::Serialize::SerializedTypeTreeNode;
-
-enum class ImporterStreamValueKind : uint8_t
-{
-    Boolean,
-    SignedInteger,
-    FloatingPoint,
-    String
-};
-
-ImporterStreamValueKind ClassifyImporterStreamValue(const std::string& value)
-{
-    std::string lowercase = value;
-    std::transform(lowercase.begin(), lowercase.end(), lowercase.begin(), [](const unsigned char character)
-    {
-        return static_cast<char>(std::tolower(character));
-    });
-    if (lowercase == "true" || lowercase == "false")
-        return ImporterStreamValueKind::Boolean;
-
-    int64_t integer = 0;
-    const auto [integerEnd, integerError] = std::from_chars(value.data(), value.data() + value.size(), integer);
-    if (integerError == std::errc {} && integerEnd == value.data() + value.size())
-        return ImporterStreamValueKind::SignedInteger;
-
-    if (!value.empty())
-    {
-        char* end = nullptr;
-        static_cast<void>(std::strtod(value.c_str(), &end));
-        if (end != value.c_str() && *end == '\0')
-            return ImporterStreamValueKind::FloatingPoint;
-    }
-    return ImporterStreamValueKind::String;
-}
 
 bool IsLegalImporterFieldName(const std::string_view name)
 {
@@ -1619,41 +1768,6 @@ uint64_t StableImporterFieldId(const std::string_view name)
     return hash == 0u ? 1u : hash;
 }
 
-void ConfigureImporterLeaf(SerializedTypeTreeNode& node, const ImporterStreamValueKind kind)
-{
-    switch (kind)
-    {
-    case ImporterStreamValueKind::Boolean:
-        node.kind = SerializedNodeKind::Boolean;
-        node.numericKind = SerializedNumericKind::UInt8;
-        node.fixedByteSize = 1;
-        node.typeName = NLS_TYPEOF(bool).GetName();
-        node.typeId = NLS_TYPEOF(bool).GetID();
-        break;
-    case ImporterStreamValueKind::SignedInteger:
-        node.kind = SerializedNodeKind::Integer;
-        node.numericKind = SerializedNumericKind::Int64;
-        node.fixedByteSize = static_cast<int32_t>(sizeof(int64_t));
-        node.typeName = NLS_TYPEOF(int64_t).GetName();
-        node.typeId = NLS_TYPEOF(int64_t).GetID();
-        break;
-    case ImporterStreamValueKind::FloatingPoint:
-        node.kind = SerializedNodeKind::Float;
-        node.numericKind = SerializedNumericKind::Float64;
-        node.fixedByteSize = static_cast<int32_t>(sizeof(double));
-        node.typeName = NLS_TYPEOF(double).GetName();
-        node.typeId = NLS_TYPEOF(double).GetID();
-        break;
-    case ImporterStreamValueKind::String:
-        node.kind = SerializedNodeKind::String;
-        node.fixedByteSize = -1;
-        node.flags = node.flags | SerializedNodeFlags::Align4After;
-        node.typeName = NLS_TYPEOF(std::string).GetName();
-        node.typeId = NLS_TYPEOF(std::string).GetID();
-        break;
-    }
-}
-
 template <typename TValue>
 void AppendImporterScalar(std::vector<uint8_t>& bytes, const TValue value)
 {
@@ -1665,12 +1779,28 @@ void AppendImporterScalar(std::vector<uint8_t>& bytes, const TValue value)
 bool AppendImporterValue(
     std::vector<uint8_t>& bytes,
     const std::string& source,
-    const ImporterStreamValueKind kind,
+    const SerializedTypeTreeNode& node,
     std::string& error)
 {
-    switch (kind)
+    switch (node.kind)
     {
-    case ImporterStreamValueKind::Boolean:
+    case SerializedNodeKind::Enum:
+    {
+        const auto type = meta::Type(node.typeId);
+        const auto value = Assets::ImporterEnumFromSettingString(type, source);
+        if (!value.IsValid())
+        {
+            error = "Importer enum setting is invalid: " + node.serializedName;
+            return false;
+        }
+        const auto tree = NativeSerializedStreamCodec::BuildTypeTree(type);
+        SerializedReferenceTable references;
+        std::vector<uint8_t> encoded;
+        if (!tree || !NativeSerializedStreamCodec::EncodeVariant(value, *tree, references, encoded, &error)) return false;
+        bytes.insert(bytes.end(), encoded.begin(), encoded.end());
+        return true;
+    }
+    case SerializedNodeKind::Boolean:
     {
         std::string lower = source;
         std::transform(lower.begin(), lower.end(), lower.begin(), [](const unsigned char character)
@@ -1685,7 +1815,7 @@ bool AppendImporterValue(
         AppendImporterScalar(bytes, static_cast<uint8_t>(lower == "true"));
         return true;
     }
-    case ImporterStreamValueKind::SignedInteger:
+    case SerializedNodeKind::Integer:
     {
         int64_t value = 0;
         const auto [end, parseError] = std::from_chars(source.data(), source.data() + source.size(), value);
@@ -1697,7 +1827,7 @@ bool AppendImporterValue(
         AppendImporterScalar(bytes, value);
         return true;
     }
-    case ImporterStreamValueKind::FloatingPoint:
+    case SerializedNodeKind::Float:
     {
         char* end = nullptr;
         const double value = std::strtod(source.c_str(), &end);
@@ -1709,7 +1839,7 @@ bool AppendImporterValue(
         AppendImporterScalar(bytes, value);
         return true;
     }
-    case ImporterStreamValueKind::String:
+    case SerializedNodeKind::String:
     {
         if (source.size() > (std::numeric_limits<uint32_t>::max)())
         {
@@ -1756,6 +1886,25 @@ bool DecodeImporterSettings(
         }
         switch (child->kind)
         {
+        case SerializedNodeKind::Enum:
+        {
+            uint64_t bits = 0;
+            if (child->fixedByteSize <= 0 || child->fixedByteSize > sizeof(bits) ||
+                !cursor->Read(&bits, static_cast<size_t>(child->fixedByteSize)))
+            {
+                error = "Importer enum setting is truncated.";
+                return false;
+            }
+            const auto type = meta::Type(child->typeId).GetEnum();
+            auto key = Assets::ImporterEnumToSettingString(type.FromBits(bits));
+            if (key.empty())
+            {
+                error = "Importer enum setting has an unnamed value: " + child->serializedName;
+                return false;
+            }
+            settings[child->serializedName] = std::move(key);
+            break;
+        }
         case SerializedNodeKind::Boolean:
         {
             uint8_t value = 0u;
@@ -1870,11 +2019,14 @@ Engine::Serialize::TypeTreeResult ImporterDraftSerializedBackend::BuildTypeTree(
     {
         if (!IsLegalImporterFieldName(name))
             return {nullptr, "Importer setting name cannot be represented by a serialized property path: " + name};
-        SerializedTypeTreeNode leaf;
+        const auto fieldTree = NativeSerializedStreamCodec::BuildTypeTree(
+            Inspector::ImporterDraftStreamDetail::SettingType(name, value));
+        if (!fieldTree) return {nullptr, "Importer setting has no reflected schema: " + name};
+        SerializedTypeTreeNode leaf = *fieldTree->FindNode(fieldTree->GetRoot());
+        leaf.id = 0;
         leaf.parent = settingsId;
         leaf.fieldId = StableImporterFieldId(name);
         leaf.serializedName = name;
-        ConfigureImporterLeaf(leaf, ClassifyImporterStreamValue(value));
         const auto id = tree->AddNode(std::move(leaf));
         if (previous == 0u)
             tree->GetNodes()[settingsId - 1u].firstChild = id;
@@ -1905,7 +2057,7 @@ Engine::Serialize::StreamResult ImporterDraftSerializedBackend::SerializeTarget(
     {
         const auto found = snapshot.settings.find(child->serializedName);
         if (found == snapshot.settings.end() || !AppendImporterValue(
-                bytes, found->second, ClassifyImporterStreamValue(found->second), error))
+                bytes, found->second, *child, error))
         {
             return {nullptr, error.empty()
                 ? "Importer draft changed while its byte stream was being built."

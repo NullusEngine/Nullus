@@ -5,6 +5,7 @@
 #include <fstream>
 #include <map>
 #include "Rendering/Assets/DistanceFieldBuilder.h"
+#include "Rendering/Assets/DistanceFieldBuildService.h"
 #include "Rendering/Assets/DistanceFieldArtifact.h"
 #include "Rendering/Assets/SceneImportPipeline.h"
 #include "Rendering/DistanceField/DistanceFieldSceneData.h"
@@ -105,6 +106,81 @@ TEST(DistanceFieldBuildTests, BuildsSignedBoxAndIndependentSparseMips)
         }
     }
     EXPECT_GT(asset.mips[0].grid[0],asset.mips[2].grid[0]);
+}
+
+#if defined(NLS_ENABLE_TEST_HOOKS)
+TEST(DistanceFieldBuildOptimizationTests, OptimizedQueriesPreserveTheLegacySignedSurface)
+{
+    for(const auto& mesh:std::array{Box(),Sphere()})
+    {
+        const auto settings=Settings();
+        const auto reference=BuildReferenceMeshDistanceField({&mesh,1},settings);ASSERT_TRUE(reference.success);
+        DistanceFieldBuildOptions options;options.backend=DistanceFieldQueryBackend::BuiltIn;
+        DistanceFieldBuildStats stats;options.stats=&stats;std::vector<uint32_t> ready;
+        options.mipReady=[&](uint32_t mip,const auto& asset){ready.push_back(mip);EXPECT_TRUE(ValidateDistanceFieldMip(asset.mips[2]));};
+        const auto optimized=BuildMeshDistanceField({&mesh,1},settings,nullptr,nullptr,&options);ASSERT_TRUE(optimized.success);
+        EXPECT_EQ(ready,(std::vector<uint32_t>{2,1,0}));EXPECT_GT(stats.sharedSamples,0u);
+        EXPECT_GT(stats.signRays,0u);EXPECT_LT(stats.signRays,32u*(stats.sampledVoxels+stats.constantBricks));
+        for(uint32_t mip=0;mip<3;++mip)
+            for(int z=-6;z<=6;++z)for(int y=-6;y<=6;++y)for(int x=-6;x<=6;++x)
+            {
+                const NLS::Maths::Vector3 p{x*.2f,y*.2f,z*.2f};
+                const auto a=SampleMeshDistanceField(*reference.asset,p,mip),b=SampleMeshDistanceField(*optimized.asset,p,mip);
+                ASSERT_TRUE(a.valid && b.valid);
+                EXPECT_NEAR(a.distance,b.distance,reference.asset->mips[mip].maxDistance*2/255.f+1.e-5f);
+            }
+    }
+}
+#endif
+
+TEST(DistanceFieldBuildOptimizationTests, PersistentMipsResumeWithoutRebuildingCoarseGeometry)
+{
+    const auto mesh=Sphere();const auto settings=Settings();
+    DistanceFieldBuildOptions options;options.backend=DistanceFieldQueryBackend::BuiltIn;
+    options.cacheRoot=std::filesystem::path(NLS_ROOT_DIR)/"build/distance-field-cache-tests"/NLS::Guid::New().ToString();
+    DistanceFieldBuildStats stats;options.stats=&stats;options.mipMask=4;
+    auto coarse=BuildMeshDistanceField({&mesh,1},settings,nullptr,nullptr,&options);ASSERT_TRUE(coarse.success);
+    EXPECT_EQ(stats.builtMips,1u);EXPECT_TRUE(coarse.asset->mips[0].indirection.empty());
+    options.mipMask=7;
+    auto complete=BuildMeshDistanceField({&mesh,1},settings,nullptr,nullptr,&options);ASSERT_TRUE(complete.success);
+    EXPECT_EQ(stats.builtMips,2u);EXPECT_EQ(stats.cachedMips,1u);EXPECT_EQ(stats.bvhBuilds,0u);
+    const auto warm=BuildMeshDistanceField({&mesh,1},settings,nullptr,nullptr,&options);ASSERT_TRUE(warm.success);
+    EXPECT_EQ(stats.builtMips,0u);EXPECT_EQ(stats.cachedMips,3u);EXPECT_EQ(stats.distanceQueries,0u);EXPECT_EQ(stats.signRays,0u);
+    EXPECT_EQ(warm.asset->mips[0].bricks,complete.asset->mips[0].bricks);
+    auto shaded=mesh;shaded.vertices.front().normals[0]=.37f;
+    EXPECT_EQ(ComputeDistanceFieldGeometryIdentity({&mesh,1}),ComputeDistanceFieldGeometryIdentity({&shaded,1}));
+    const auto damaged=options.cacheRoot/complete.asset->buildIdentity.substr(0,2)/complete.asset->buildIdentity/"mip0.nldf";
+    {std::ofstream file(damaged,std::ios::binary|std::ios::trunc);file<<"corrupted";}
+    const auto repaired=BuildMeshDistanceField({&mesh,1},settings,nullptr,nullptr,&options);ASSERT_TRUE(repaired.success);
+    EXPECT_EQ(stats.builtMips,1u);EXPECT_EQ(stats.cachedMips,2u);
+    ASSERT_TRUE(BuildMeshDistanceField({&mesh,1},settings,nullptr,nullptr,&options).success);EXPECT_EQ(stats.builtMips,0u);
+}
+
+TEST(DistanceFieldBuildOptimizationTests, CoarseJointFieldWorksBeforeFallbackArtifactsExist)
+{
+    namespace ca=NLS::Core::Assets;
+    const auto root=std::filesystem::path(NLS_ROOT_DIR)/"build/distance-field-group-tests"/NLS::Guid::New().ToString();
+    std::filesystem::create_directories(root);
+    const std::string a="mesh:mesh/0/primitive/0",b="mesh:mesh/0/primitive/1";
+    NLS::Render::Assets::ImportedScene scene;
+    const auto input=DescribeDistanceFieldSource(scene,{{a,Box()},{b,Box()}});
+    ASSERT_EQ(input.groups.size(),1u);
+    const auto sourceBytes=SerializeDistanceFieldSource(input);
+    const auto sourcePath=root/"source.ndfi";
+    {std::ofstream file(sourcePath,std::ios::binary);file.write(reinterpret_cast<const char*>(sourceBytes.data()),sourceBytes.size());}
+    ca::ArtifactManifest manifest;manifest.sourceAssetId=ca::AssetId::New();manifest.targetPlatform="editor";
+    manifest.subAssets.push_back({manifest.sourceAssetId,a,ca::ArtifactType::Mesh,"mesh","editor",(root/"a.mesh").generic_string(),"a","A"});
+    manifest.subAssets.push_back({manifest.sourceAssetId,b,ca::ArtifactType::Mesh,"mesh","editor",(root/"b.mesh").generic_string(),"b","B"});
+    const auto joint=(root/"joint.nldf").generic_string();
+    manifest.subAssets.push_back({manifest.sourceAssetId,DistanceFieldSubAssetKey("mesh:mesh/0"),ca::ArtifactType::MeshDistanceField,"mesh-distance-field","editor",joint,"joint","Joint"});
+    manifest.subAssets.push_back({manifest.sourceAssetId,DistanceFieldSourceKey,ca::ArtifactType::MeshDistanceFieldSource,"mesh-distance-field-source","editor",sourcePath.generic_string(),"source","Source"});
+    RegisterDistanceFieldManifest(manifest);
+    DistanceFieldObjectInput first,second;first.sceneId=second.sceneId=1;first.index=1;second.index=2;
+    first.meshArtifactPath=(root/"a.mesh").generic_string();second.meshArtifactPath=(root/"b.mesh").generic_string();
+    auto grouped=GroupDistanceFieldObjects({first,second});ASSERT_EQ(grouped.size(),1u);EXPECT_EQ(grouped.front().meshArtifactPath,joint);
+    const auto fallback=FindMeshDistanceFieldSource(first.meshArtifactPath);ASSERT_TRUE(fallback);EXPECT_TRUE(fallback->mainPath.empty());
+    grouped=GroupDistanceFieldObjects({first});ASSERT_EQ(grouped.size(),1u);
+    EXPECT_EQ(grouped.front().meshArtifactPath,first.meshArtifactPath);
 }
 TEST(DistanceFieldBuildTests, SphereApproximationPreservesSignAndMeetsAnalyticalErrorBound)
 {
@@ -273,7 +349,10 @@ TEST(DistanceFieldSceneTests, MaterialSectionsShareAClosedFieldAndSplitWhenTheir
     assets::ImportedScene scene; scene.materials.resize(2);
     std::vector<NLS::Core::Assets::ArtifactPayload> payloads; std::vector<std::string> diagnostics;
     ASSERT_TRUE(AppendDistanceFieldModelPayloads(scene,parts,Settings(),payloads,diagnostics));
-    EXPECT_EQ(payloads.size(),9u);
+    EXPECT_EQ(std::count_if(payloads.begin(),payloads.end(),[](const auto& p)
+        {return p.artifactType==NLS::Core::Assets::ArtifactType::MeshDistanceField;}),9);
+    const auto source=std::find_if(payloads.begin(),payloads.end(),[](const auto& p){return p.subAssetKey==DistanceFieldSourceKey;});
+    ASSERT_NE(source,payloads.end());EXPECT_TRUE(DeserializeDistanceFieldSource(source->payload));
     NLS::Core::Assets::ArtifactManifest manifest;
     const auto root=std::filesystem::current_path()/"build/tmp/distance-field-sections";
     for(const auto& [key,part]:parts)
@@ -371,6 +450,7 @@ TEST(DistanceFieldGpuTests, Dx12SparsePagesMatchCpuAndDeletionLeavesNoSurface)
     std::vector<NLS::Maths::Vector4> values;
     input.frameSerial=1;
     const auto first=execute(input,values);
+    EXPECT_FALSE(first.CanReuseVisualization());
     ASSERT_EQ(values.size(),4u);
     DistanceFieldSceneData reference; reference.Synchronize(input.objects);
     for(uint32_t i=0;i<3;++i)
@@ -386,6 +466,7 @@ TEST(DistanceFieldGpuTests, Dx12SparsePagesMatchCpuAndDeletionLeavesNoSurface)
     EXPECT_EQ(stationary.uploadedBytes,0u);
     EXPECT_TRUE(stationary.gpuUpdateMs.has_value());
     if(stationary.gpuUpdateMs) EXPECT_GT(*stationary.gpuUpdateMs,0);
+    EXPECT_TRUE(stationary.CanReuseVisualization());
     NLS::Render::Entities::Camera camera; camera.CacheProjectionMatrix(64,64);
     input.inverseViewProjection=NLS::Maths::Matrix4::Inverse(camera.GetProjectionMatrix()*NLS::Maths::Matrix4::Translation({0,0,-5}));
     input.cameraPosition={0,0,5}; input.width=input.height=64; input.traceDistance=64;
@@ -399,9 +480,89 @@ TEST(DistanceFieldGpuTests, Dx12SparsePagesMatchCpuAndDeletionLeavesNoSurface)
     ASSERT_TRUE(picture.Succeeded()) << picture.message;
     EXPECT_GT(image[(32*64+32)*4],30);
     EXPECT_LT(image[0],30);
+
     const auto picturePath=std::filesystem::current_path()/"build/distance-field-tests/global-distance-field.ppm";
     { std::ofstream file(picturePath,std::ios::binary); file << "P6\n64 64\n255\n";
       for(size_t i=0;i<image.size();i+=4) file.write(reinterpret_cast<const char*>(image.data()+i),3); }
+
+    // Cost colors must retain the shape of the traced surface, with dark
+    // misses. View three faces so a bright flat fill cannot pass this check.
+    const auto oldInverse=input.inverseViewProjection;
+    const NLS::Maths::Vector3 eye{4,3,5};
+    const auto z=NLS::Maths::Vector3::Normalize(eye);
+    const auto x=NLS::Maths::Vector3::Normalize(NLS::Maths::Vector3::Cross({0,1,0},z));
+    const auto y=NLS::Maths::Vector3::Cross(z,x);
+    auto view=NLS::Maths::Matrix4::Identity;
+    const std::array axes{x,y,z};
+    for(uint32_t row=0;row<3;++row)
+    {
+        for(uint32_t column=0;column<3;++column) view.data[row*4+column]=axes[row].array[column];
+        view.data[row*4+3]=-NLS::Maths::Vector3::Dot(axes[row],eye);
+    }
+    const auto viewProjection=camera.GetProjectionMatrix()*view;
+    input.inverseViewProjection=NLS::Maths::Matrix4::Inverse(viewProjection);
+    input.cameraPosition=eye;
+    const auto pixelAt=[&](NLS::Maths::Vector3 p)
+    {
+        const auto clip=viewProjection*NLS::Maths::Vector4(p.x,p.y,p.z,1);
+        const auto px=std::clamp(int((clip.x/clip.w*.5f+.5f)*64),0,63);
+        const auto py=std::clamp(int((.5f-clip.y/clip.w*.5f)*64),0,63);
+        return size_t(py*64+px)*4;
+    };
+    const auto top=pixelAt({0,1,0}),front=pixelAt({0,0,1});
+    const auto luminance=[&](size_t pixel)
+    {return image[pixel]*.2126f+image[pixel+1]*.7152f+image[pixel+2]*.0722f;};
+    for(const auto mode:{DistanceFieldVisualization::Global,DistanceFieldVisualization::Mesh})
+    {
+        input.debug.visualization=mode;
+        input.debug.channel=DistanceFieldDebugChannel::Steps;
+        input.debug.traceStepsMax=64;
+        execute(input,values);
+        ASSERT_TRUE(device->ReadPixelsChecked(input.outputTexture,0,0,64,64,
+            NLS::Render::Settings::EPixelDataFormat::RGBA,NLS::Render::Settings::EPixelDataType::UNSIGNED_BYTE,image.data()).Succeeded());
+        EXPECT_LT((std::max)({image[0],image[1],image[2]}),16) << "A missed ray must stay dark";
+        EXPECT_GT(luminance(top),luminance(front)*1.4f) << "Heat colors must preserve face lighting";
+        EXPECT_GT(luminance(top),60);
+        const auto frontRed=image[front];
+        const auto path=picturePath.parent_path()/(mode==DistanceFieldVisualization::Global?"global-trace-steps.ppm":"mesh-trace-steps.ppm");
+        {std::ofstream file(path,std::ios::binary);file<<"P6\n64 64\n255\n";
+         for(size_t i=0;i<image.size();i+=4)file.write(reinterpret_cast<const char*>(image.data()+i),3);}
+        input.debug.traceStepsMax=8;
+        execute(input,values);
+        ASSERT_TRUE(device->ReadPixelsChecked(input.outputTexture,0,0,64,64,
+            NLS::Render::Settings::EPixelDataFormat::RGBA,NLS::Render::Settings::EPixelDataType::UNSIGNED_BYTE,image.data()).Succeeded());
+        EXPECT_GT(image[front],frontRed+5) << "The view's display range must reach the shader";
+    }
+    input.inverseViewProjection=oldInverse;
+    input.debug.traceStepsMax=64;
+    // Bounds pruning must compare the encoded conservative distance under
+    // nonuniform scale, rather than the much larger world-space box distance.
+    auto bounded=input;
+    auto nearer=object,stretched=object;
+    nearer.index=42;nearer.localToWorld=NLS::Maths::Matrix4::Translation({152,0,0});
+    stretched.index=43;stretched.localToWorld.data[0]=100;
+    bounded.objects={nearer,stretched};bounded.debug.visualization=DistanceFieldVisualization::Mesh;
+    bounded.width=bounded.height=0;bounded.outputTexture.reset();
+    bounded.probePositions={{150,0,0,1},{150,0,0,1},{150,0,0,1},{150,0,0,1}};
+    execute(bounded,values);
+    DistanceFieldSceneData scaledReference;scaledReference.Synchronize(bounded.objects);
+    EXPECT_NEAR(values[0].x,scaledReference.SampleReference({150,0,0},0).distance,.03);
+    EXPECT_LT(values[0].x,.8);
+    // A one-pixel view produces a ray exactly parallel to two slab axes.
+    bounded.objects={object};bounded.width=bounded.height=1;
+    bounded.cameraPosition={0,0,5};bounded.debug.channel=DistanceFieldDebugChannel::Surface;
+    viewTarget.extent={1,1,1};bounded.outputTexture=device->CreateTexture(viewTarget);
+    ASSERT_TRUE(bounded.outputTexture);
+    std::array<uint8_t,4> axisPixel{};
+    for(const bool inside:{false,true})
+    {
+        bounded.inverseViewProjection=inside?NLS::Maths::Matrix4::Inverse(camera.GetProjectionMatrix()):oldInverse;
+        bounded.cameraPosition=inside?NLS::Maths::Vector3{0,0,0}:NLS::Maths::Vector3{0,0,5};
+        execute(bounded,values);
+        ASSERT_TRUE(device->ReadPixelsChecked(bounded.outputTexture,0,0,1,1,
+            NLS::Render::Settings::EPixelDataFormat::RGBA,NLS::Render::Settings::EPixelDataType::UNSIGNED_BYTE,axisPixel.data()).Succeeded());
+        EXPECT_GT((std::max)({axisPixel[0],axisPixel[1],axisPixel[2]}),30) << "Ray from inside=" << inside;
+    }
     input.cameraPosition={0,0,0};
     input.debug.channel=DistanceFieldDebugChannel::Residency;
     for(const auto mode:{DistanceFieldVisualization::Global,DistanceFieldVisualization::Mesh})

@@ -1,4 +1,5 @@
 #include "VfxLibraryEditor.h"
+#include "Shortcuts/EditorCommandInvocation.h"
 #include "VFX/Editor/VfxStageControlWidgets.h"
 #include <algorithm>
 #include <cstring>
@@ -190,19 +191,26 @@ void VfxLibraryEditor::DuplicateToProject()
     state.error.clear();
     OpenDocument(path);
 }
+bool VfxLibraryEditor::ExecuteCommand(const std::string& id)
+{
+    auto& state = *m_state;
+    if (id == "save") { Save(); return true; }
+    if (id == "undo") { state.document.EndEdit(); return state.undo.RequestUndo().Succeeded(); }
+    if (id == "redo") { state.document.EndEdit(); return state.undo.RequestRedo().Succeeded(); }
+    if (id == "cancel" && state.document.IsEditing()) { state.document.EndEdit(false); state.graphEdit = false; return true; }
+    return false;
+}
 void VfxLibraryEditor::OnBeforeDrawWidgets()
 {
+    const auto invoke = [this](const char* id)
+    {
+        if (!NLS::Core::ServiceLocator::Contains<Shortcuts::EditorShortcutService>()) return ExecuteCommand(id);
+        return Shortcuts::InvokeEditorCommand(std::string("vfx-library.") + id, Shortcuts::CommandSource::Toolbar, "vfx-library") == Shortcuts::CommandResult::Completed;
+    };
     VFXTools::EnsureVfxInspectorReflection();
     m_state->properties.SetLifetime(m_state->document.Lifetime());
     VFXTools::VfxStyle style; auto& state = *m_state;
     state.focused = ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows);
-    if (state.focused && !ImGui::GetIO().WantTextInput && !ImGui::IsPopupOpen(nullptr,ImGuiPopupFlags_AnyPopupId|ImGuiPopupFlags_AnyPopupLevel))
-    {
-        if (ImGui::GetIO().KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_S,false)) Save();
-        if (ImGui::GetIO().KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_Z,false)) { state.document.EndEdit(); (void)state.undo.RequestUndo(); }
-        if (ImGui::GetIO().KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_Y,false)) { state.document.EndEdit(); (void)state.undo.RequestRedo(); }
-        if (ImGui::IsKeyPressed(ImGuiKey_Escape,false) && state.document.IsEditing()) { state.document.EndEdit(false); state.graphEdit = false; }
-    }
     if (state.open && state.open->Ready(0)) { const auto paths = state.open->Result(); state.open.reset(); if (!paths.empty()) OpenDocument(paths.front()); }
     if (state.save && state.save->Ready(0))
     {
@@ -230,9 +238,9 @@ void VfxLibraryEditor::OnBeforeDrawWidgets()
         ImGui::EndPopup();
     }
     ImGui::SameLine(); if (ImGui::Button("Open") && !state.open) state.open = std::make_unique<NLS::Dialogs::OpenFileDialog>("Open VFX Library Asset","",std::vector<std::string>{"VFX Library Asset","*.vfxscript *.vfxemitter"});
-    ImGui::SameLine(); if (ImGui::Button("Save")) Save(); ImGui::SameLine();
-    ImGui::BeginDisabled(!state.undo.CanUndo()); if (ImGui::Button("Undo")) { state.document.EndEdit(); (void)state.undo.RequestUndo(); } ImGui::EndDisabled(); ImGui::SameLine();
-    ImGui::BeginDisabled(!state.undo.CanRedo()); if (ImGui::Button("Redo")) { state.document.EndEdit(); (void)state.undo.RequestRedo(); } ImGui::EndDisabled(); ImGui::SameLine();
+    ImGui::SameLine(); if (ImGui::Button("Save")) invoke("save"); ImGui::SameLine();
+    ImGui::BeginDisabled(!state.undo.CanUndo()); if (ImGui::Button("Undo")) invoke("undo"); ImGui::EndDisabled(); ImGui::SameLine();
+    ImGui::BeginDisabled(!state.undo.CanRedo()); if (ImGui::Button("Redo")) invoke("redo"); ImGui::EndDisabled(); ImGui::SameLine();
     ImGui::Text("%s%s",state.document.Asset().Name().c_str(),state.document.IsDirty() ? " *" : "");
     if (state.document.IsReadOnly())
     {

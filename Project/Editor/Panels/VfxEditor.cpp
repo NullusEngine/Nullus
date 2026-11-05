@@ -1,5 +1,6 @@
 #include "Properties/CurveValue.h"
 #include "VfxEditor.h"
+#include "Shortcuts/EditorCommandInvocation.h"
 #include "VFX/Editor/VfxStageControlWidgets.h"
 #include "VfxLibraryEditor.h"
 #include "AssetBrowser.h"
@@ -344,20 +345,20 @@ void VfxEditor::Toolbar()
 {
     // NiagaraEditorCommands-style grouping: File | History | Compile |
     // Playback | Preview options | Window, with icon buttons and live status.
-    if (ToolbarButton(ICON_FA_FILE_O,"File.New","New particle system")) ExecuteCommand("File.New");
+    if (ToolbarButton(ICON_FA_FILE_O,"File.New","New particle system")) InvokeDocumentCommand(nullptr,"File.New");
     ImGui::SameLine(0,2);
-    if (ToolbarButton(ICON_FA_FOLDER_OPEN_O,"File.Open","Open particle system")) ExecuteCommand("File.Open");
+    if (ToolbarButton(ICON_FA_FOLDER_OPEN_O,"File.Open","Open particle system")) InvokeDocumentCommand(nullptr,"File.Open");
     auto* document = ActiveDocument();
     if (!document) return;
     auto& session = document->session;
     ImGui::SameLine(0,2);
-    if (ToolbarButton(ICON_FA_FLOPPY_O,"File.Save",document->session.document.IsDirty() ? "Save the current system (unsaved changes)" : "Save the current system")) ExecuteCommand(document,"File.Save");
+    if (ToolbarButton(ICON_FA_FLOPPY_O,"File.Save",document->session.document.IsDirty() ? "Save the current system (unsaved changes)" : "Save the current system")) InvokeDocumentCommand(document,"File.Save");
     ToolbarDivider();
-    if (ToolbarButton(ICON_FA_UNDO,"Edit.Undo","Undo")) ExecuteCommand(document,"Edit.Undo");
+    if (ToolbarButton(ICON_FA_UNDO,"Edit.Undo","Undo")) InvokeDocumentCommand(document,"Edit.Undo");
     ImGui::SameLine(0,2);
-    if (ToolbarButton(ICON_FA_REPEAT,"Edit.Redo","Redo")) ExecuteCommand(document,"Edit.Redo");
+    if (ToolbarButton(ICON_FA_REPEAT,"Edit.Redo","Redo")) InvokeDocumentCommand(document,"Edit.Redo");
     ToolbarDivider();
-    if (ToolbarButton(ICON_FA_WRENCH,"Compile.Compile","Compile the current system")) ExecuteCommand(document,"Compile");
+    if (ToolbarButton(ICON_FA_WRENCH,"Compile.Compile","Compile the current system")) InvokeDocumentCommand(document,"Compile");
     ImGui::SameLine(0,2);
     if (ToolbarButton(ICON_FA_CARET_DOWN,"Compile.Options","Compile options"))
     {
@@ -366,15 +367,15 @@ void VfxEditor::Toolbar()
     if (ImGui::BeginPopup("CompileOptions"))
     {
         if (ImGui::MenuItem("Auto Compile",nullptr,&session.autoCompile)) {}
-        if (ImGui::MenuItem("Full Rebuild")) ExecuteCommand(document,"Compile");
+        if (ImGui::MenuItem("Full Rebuild")) InvokeDocumentCommand(document,"Compile");
         ImGui::EndPopup();
     }
     ToolbarDivider();
-    if (ToolbarButton(ICON_FA_FAST_BACKWARD,"Simulation.Reset","Reset the simulation")) ExecuteCommand(document,"Simulation.Reset");
+    if (ToolbarButton(ICON_FA_FAST_BACKWARD,"Simulation.Reset","Reset the simulation")) InvokeDocumentCommand(document,"Simulation.Reset");
     ImGui::SameLine(0,2);
-    if (ToolbarButton(session.playing ? ICON_FA_PAUSE : ICON_FA_PLAY,"Simulation.PlayPause",session.playing ? "Pause the simulation" : "Play the simulation")) ExecuteCommand(document,"Simulation.PlayPause");
+    if (ToolbarButton(session.playing ? ICON_FA_PAUSE : ICON_FA_PLAY,"Simulation.PlayPause",session.playing ? "Pause the simulation" : "Play the simulation")) InvokeDocumentCommand(document,"Simulation.PlayPause");
     ImGui::SameLine(0,2);
-    if (ToolbarButton(ICON_FA_STEP_FORWARD,"Simulation.Step","Advance one frame")) ExecuteCommand(document,"Simulation.Step");
+    if (ToolbarButton(ICON_FA_STEP_FORWARD,"Simulation.Step","Advance one frame")) InvokeDocumentCommand(document,"Simulation.Step");
     ImGui::SameLine(0,2);
     if (ToolbarButton(ICON_FA_SLIDERS,"Simulation.Options","Simulation options"))
     {
@@ -388,17 +389,17 @@ void VfxEditor::Toolbar()
         ImGui::EndPopup();
     }
     ToolbarDivider();
-    if (ToolbarButton(ICON_FA_EXPAND,"Overview.ZoomToFit","Zoom to fit the current selection")) ExecuteCommand(document,"Overview.ZoomToFit");
+    if (ToolbarButton(ICON_FA_EXPAND,"Overview.ZoomToFit","Zoom to fit the current selection")) InvokeDocumentCommand(document,"Overview.ZoomToFit");
     ImGui::SameLine(0,2);
-    if (ToolbarButton(ICON_FA_PLUS,"Emitter.Add","Add an emitter to the system")) ExecuteCommand(document,"Emitter.Add");
+    if (ToolbarButton(ICON_FA_PLUS,"Emitter.Add","Add an emitter to the system")) InvokeDocumentCommand(document,"Emitter.Add");
     ToolbarDivider();
-    if (ToolbarToggle(ICON_FA_TH,"Preview.Grid","Show the preview grid",document->showGrid)) ExecuteCommand(document,"Preview.Grid");
+    if (ToolbarToggle(ICON_FA_TH,"Preview.Grid","Show the preview grid",document->showGrid)) InvokeDocumentCommand(document,"Preview.Grid");
     ImGui::SameLine(0,2);
-    if (ToolbarToggle(ICON_FA_SQUARE_O,"Preview.Bounds","Show the CPU emitter bounds",document->showBounds)) ExecuteCommand(document,"Preview.Bounds");
+    if (ToolbarToggle(ICON_FA_SQUARE_O,"Preview.Bounds","Show the CPU emitter bounds",document->showBounds)) InvokeDocumentCommand(document,"Preview.Bounds");
     ImGui::SameLine(0,2);
-    if (ToolbarToggle(ICON_FA_CROSSHAIRS,"Preview.OriginAxis","Show the origin axes",document->showOriginAxis)) ExecuteCommand(document,"Preview.OriginAxis");
+    if (ToolbarToggle(ICON_FA_CROSSHAIRS,"Preview.OriginAxis","Show the origin axes",document->showOriginAxis)) InvokeDocumentCommand(document,"Preview.OriginAxis");
     ImGui::SameLine(0,2);
-    if (ToolbarToggle(ICON_FA_TABLE,"Preview.ParticleCounts","Show particle counts in the viewport",document->showParticleCounts)) ExecuteCommand(document,"Preview.ParticleCounts");
+    if (ToolbarToggle(ICON_FA_TABLE,"Preview.ParticleCounts","Show particle counts in the viewport",document->showParticleCounts)) InvokeDocumentCommand(document,"Preview.ParticleCounts");
     ToolbarDivider();
     if (ToolbarButton(ICON_FA_COLUMNS,"Window.Panels","Workspace panels")) ImGui::OpenPopup("WorkspaceWindows");
     if (ImGui::BeginPopup("WorkspaceWindows"))
@@ -413,7 +414,7 @@ void VfxEditor::Toolbar()
         };
         for (const auto& entry : entries) ImGui::MenuItem(entry.label,nullptr,&(*document.*entry.flag));
         ImGui::Separator();
-        if (ImGui::MenuItem("Reset Layout")) ExecuteCommand(document,"View.ResetLayout");
+        if (ImGui::MenuItem("Reset Layout")) InvokeDocumentCommand(document,"View.ResetLayout");
         ImGui::EndPopup();
     }
     // Status feedback: compiled / out of date / failed / not compiled with the
@@ -469,8 +470,30 @@ const VfxEditor::Document* VfxEditor::ActiveDocument() const
     if (m_state->documents.empty()) return nullptr;
     return m_state->documents[(std::min)(m_state->active,m_state->documents.size()-1)].get();
 }
-bool VfxEditor::ExecuteCommand(const std::string& id) { return ExecuteCommand(ActiveDocument(),id); }
-bool VfxEditor::IsCommandEnabled(const std::string& id) const { return IsCommandEnabled(ActiveDocument(),id); }
+VfxEditor::Document* VfxEditor::ResolveDocument(const std::string& targetId) const
+{
+    if (targetId.empty()) return const_cast<Document*>(ActiveDocument());
+    for (const auto& document : m_state->documents) if (document->session.document.Asset().id == targetId) return document.get();
+    return nullptr;
+}
+bool VfxEditor::InvokeDocumentCommand(Document* document, const std::string& id)
+{
+    if (!NLS::Core::ServiceLocator::Contains<Shortcuts::EditorShortcutService>()) return ExecuteDocumentCommand(document, id);
+    Shortcuts::InvocationContext context; context.source = Shortcuts::CommandSource::Toolbar; context.contentPanel = "vfx-editor";
+    if (document) context.targetPath = document->session.document.Asset().id;
+    return Shortcuts::InvokeEditorCommand("vfx-editor." + id, context) == Shortcuts::CommandResult::Completed;
+}
+bool VfxEditor::ExecuteCommand(const std::string& id, const std::string& targetId)
+{
+    auto* document = ResolveDocument(targetId);
+    if (document && id == "Find") { document->focusSearch = true; return true; }
+    if (document && id == "Cancel") { if (document->session.document.IsEditing()) document->session.document.EndEdit(false); return true; }
+    if (document && id == "Focus") return ExecuteDocumentCommand(document, document->previewHovered ? "Preview.FocusSelection" : "Overview.ZoomToFit");
+    return ExecuteDocumentCommand(document, id);
+}
+bool VfxEditor::CanUseShortcuts() const
+{ const auto* document = ActiveDocument(); return OwnsShortcuts() && (!document || !document->camera.IsNavigating()); }
+bool VfxEditor::IsCommandEnabled(const std::string& id, const std::string& targetId) const { return IsCommandEnabled(ResolveDocument(targetId),id); }
 bool VfxEditor::IsCommandChecked(const std::string& id) const { return IsCommandChecked(ActiveDocument(),id); }
 size_t VfxEditor::ActiveEmitterCount() const
 {
@@ -517,7 +540,7 @@ bool VfxEditor::IsCommandChecked(const Document* document,const std::string& id)
     if (id == "Simulation.PlayPause") return session.playing;
     return false;
 }
-bool VfxEditor::ExecuteCommand(Document* document,const std::string& id)
+bool VfxEditor::ExecuteDocumentCommand(Document* document,const std::string& id)
 {
     if (!IsCommandEnabled(document,id)) return false;
     if (id == "File.New") { NewDocument(); return true; }
@@ -660,35 +683,6 @@ bool VfxEditor::ExecuteCommand(Document* document,const std::string& id)
     }
     return false;
 }
-void VfxEditor::Shortcuts(Document& document)
-{
-    // Key bindings mirror FNiagaraEditorCommands (5.7.4): E Add Emitter,
-    // Space Reset, S Isolate, D / Shift+D Disable/Enable emitters,
-    // F Zoom to Fit, A Zoom to Fit All, Ctrl+O Collapse to Headers,
-    // Ctrl+M Collapse disabled modules, Ctrl+F Find, Del remove module.
-    if (!m_state->keyboardFocus || ImGui::GetIO().WantTextInput || ImGui::IsPopupOpen(nullptr,ImGuiPopupFlags_AnyPopupId|ImGuiPopupFlags_AnyPopupLevel)) return;
-    // Navigation owns its keys until the shared camera controller releases capture.
-    if (document.camera.IsNavigating()) return;
-    auto& session = document.session; const auto& io = ImGui::GetIO();
-    if (io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_S,false)) ExecuteCommand(&document,"File.Save");
-    if (io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_Z,false)) ExecuteCommand(&document,"Edit.Undo");
-    if (io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_Y,false)) ExecuteCommand(&document,"Edit.Redo");
-    if (io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_C,false)) ExecuteCommand(&document,"Edit.Copy");
-    if (io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_X,false)) ExecuteCommand(&document,"Edit.Cut");
-    if (io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_V,false)) ExecuteCommand(&document,"Edit.Paste");
-    if (io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_O,false)) ExecuteCommand(&document,"Stack.CollapseToHeaders");
-    if (io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_M,false)) ExecuteCommand(&document,"Stack.CollapseDisabled");
-    if (io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_F,false)) document.focusSearch = true;
-    if (ImGui::IsKeyPressed(ImGuiKey_Space,false)) ExecuteCommand(&document,"Simulation.Reset");
-    if (ImGui::IsKeyPressed(ImGuiKey_Escape,false) && session.document.IsEditing()) session.document.EndEdit(false);
-    if (io.KeyCtrl || io.KeyAlt) return;
-    if (ImGui::IsKeyPressed(ImGuiKey_S,false)) ExecuteCommand(&document,"Select.Isolate");
-    if (ImGui::IsKeyPressed(ImGuiKey_D,false)) ExecuteCommand(&document,io.KeyShift ? "Select.EnableEmitters" : "Select.DisableEmitters");
-    if (ImGui::IsKeyPressed(ImGuiKey_F,false)) ExecuteCommand(&document,document.previewHovered ? "Preview.FocusSelection" : "Overview.ZoomToFit");
-    if (ImGui::IsKeyPressed(ImGuiKey_A,false)) ExecuteCommand(&document,"Overview.ZoomToFitAll");
-    if (ImGui::IsKeyPressed(ImGuiKey_E,false)) ExecuteCommand(&document,"Emitter.Add");
-    if (ImGui::IsKeyPressed(ImGuiKey_Delete,false)) ExecuteCommand(&document,"Module.Delete");
-}
 void VfxEditor::OnBeforeDrawWidgets()
 {
     VFXTools::VfxStyle style;
@@ -719,7 +713,7 @@ void VfxEditor::OnBeforeDrawWidgets()
             const auto flags = session.document.IsDirty() ? ImGuiTabItemFlags_UnsavedDocument : ImGuiTabItemFlags_None;
             if (ImGui::BeginTabItem(title.c_str(),&opened,flags))
             {
-                m_state->active = i; session.Rebuild(); Workspace(document); Shortcuts(document); ImGui::EndTabItem();
+                m_state->active = i; session.Rebuild(); Workspace(document);  ImGui::EndTabItem();
             }
             else document.camera.SuspendInputs();
             if (!opened)
@@ -940,8 +934,8 @@ void VfxEditor::Overview(Document& document)
         { if (!document.session.SetEmitterEnabled(emitterId,enabled)) m_state->error = document.session.ActionError(); });
         if (ImGui::BeginPopupContextItem("EmitterNodeActions"))
         {
-            if (ImGui::MenuItem("Copy","Ctrl+C")) ExecuteCommand(&document,"Edit.Copy");
-            if (ImGui::MenuItem("Paste","Ctrl+V",false,!VFXTools::VfxClipboard::Get().Empty())) ExecuteCommand(&document,"Edit.Paste");
+            if (ImGui::MenuItem("Copy","Ctrl+C")) InvokeDocumentCommand(&document,"Edit.Copy");
+            if (ImGui::MenuItem("Paste","Ctrl+V",false,!VFXTools::VfxClipboard::Get().Empty())) InvokeDocumentCommand(&document,"Edit.Paste");
             ImGui::Separator();
             const auto emitters = session.SelectedEmitters();
             const auto count = std::to_string((std::max)(size_t{1},emitters.size()));
@@ -1047,8 +1041,8 @@ void VfxEditor::Overview(Document& document)
                     }
                     if (ImGui::BeginPopupContextItem("ModuleState"))
                     {
-                        if (ImGui::MenuItem("Copy","Ctrl+C")) ExecuteCommand(&document,"Edit.Copy");
-                        if (ImGui::MenuItem("Paste","Ctrl+V",false,!VFXTools::VfxClipboard::Get().Empty())) ExecuteCommand(&document,"Edit.Paste");
+                        if (ImGui::MenuItem("Copy","Ctrl+C")) InvokeDocumentCommand(&document,"Edit.Copy");
+                        if (ImGui::MenuItem("Paste","Ctrl+V",false,!VFXTools::VfxClipboard::Get().Empty())) InvokeDocumentCommand(&document,"Edit.Paste");
                         ImGui::Separator();
                         const auto selectedModules = session.SelectedModules();
                         if (selectedModules.size() > 1 && session.IsModuleSelected(moduleId))
@@ -1510,8 +1504,8 @@ void VfxEditor::Details(Document& document)
                 }
                 if (ImGui::BeginPopupContextItem("ModuleActions"))
                 {
-                    if (ImGui::MenuItem("Copy","Ctrl+C")) ExecuteCommand(&document,"Edit.Copy");
-                    if (ImGui::MenuItem("Paste","Ctrl+V",false,!VFXTools::VfxClipboard::Get().Empty())) ExecuteCommand(&document,"Edit.Paste");
+                    if (ImGui::MenuItem("Copy","Ctrl+C")) InvokeDocumentCommand(&document,"Edit.Copy");
+                    if (ImGui::MenuItem("Paste","Ctrl+V",false,!VFXTools::VfxClipboard::Get().Empty())) InvokeDocumentCommand(&document,"Edit.Paste");
                     ImGui::Separator();
                     const auto selectedModules = session.SelectedModules();
                     if (selectedModules.size() > 1 && session.IsModuleSelected(moduleId))
@@ -2035,10 +2029,10 @@ void VfxEditor::Timeline(Document& document)
 {
     auto& session = document.session; auto& view = document.timeline;
     // Transport row.
-    if (ImGui::Button("|<")) ExecuteCommand(&document,"Simulation.Reset"); ImGui::SameLine();
+    if (ImGui::Button("|<")) InvokeDocumentCommand(&document,"Simulation.Reset"); ImGui::SameLine();
     if (ImGui::Button(session.playing ? "Pause" : "Play")) session.playing = !session.playing; ImGui::SameLine();
-    if (ImGui::Button("<|")) ExecuteCommand(&document,"Simulation.StepBack"); ImGui::SameLine();
-    if (ImGui::Button("|>")) ExecuteCommand(&document,"Simulation.Step"); ImGui::SameLine();
+    if (ImGui::Button("<|")) InvokeDocumentCommand(&document,"Simulation.StepBack"); ImGui::SameLine();
+    if (ImGui::Button("|>")) InvokeDocumentCommand(&document,"Simulation.Step"); ImGui::SameLine();
     int frameRate = static_cast<int>(document.frameRate); ImGui::SetNextItemWidth(58);
     if (ImGui::InputInt("FPS",&frameRate,0,0)) document.frameRate = static_cast<float>(std::clamp(frameRate,1,240));
     ImGui::SameLine(); float speed = static_cast<float>(session.playbackSpeed); ImGui::SetNextItemWidth(66);
@@ -2060,8 +2054,9 @@ void VfxEditor::Timeline(Document& document)
     const auto mouseTime = view.TimeAt(mouse.x-origin.x,size.x);
     const auto rangeX = view.XAt(session.rangeEnd,size.x);
     const bool onRangeHandle = std::fabs((mouse.x-origin.x)-rangeX) <= 5.0f && mouse.y <= origin.y+rulerHeight+4.0f;
-    if (hovered && io.MouseWheel != 0.0f && !onRangeHandle)
-    { view.ZoomAt(mouseTime,std::pow(1.1f,-io.MouseWheel)); }
+    const float zoom = Shortcuts::GetEditorInputState(Shortcuts::EditorInputAction::VfxTimelineZoom).value.vector.y;
+    if (hovered && zoom != 0.0f && !onRangeHandle)
+    { view.ZoomAt(mouseTime,std::pow(1.1f,-zoom)); }
     if (hovered && ImGui::IsMouseDragging(ImGuiMouseButton_Middle)) view.Pan(io.MouseDelta.x,size.x);
     // Rightmost handle trims the playback range.
     static bool draggingRange = false;

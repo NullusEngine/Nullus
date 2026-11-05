@@ -32,10 +32,14 @@ public sealed class MissingReferenceException : InvalidOperationException
 [DebuggerDisplay("{DebuggerDisplayValue,nq}")]
 public abstract class NativeObject
 {
-    private static readonly ConcurrentDictionary<(ulong Handle, Type Type), WeakReference<NativeObject>> Cache = new();
-    private static readonly ConcurrentDictionary<Type, Func<NativeObjectHandle, NativeObject>> Factories = new();
+    // A weak wrapper value alone is insufficient: a strong Type key pins its
+    // collectible assembly after hot reload. Keep type-owned data in ephemerons.
+    private static readonly ConditionalWeakTable<Type, ConcurrentDictionary<ulong, WeakReference<NativeObject>>> Cache = new();
+    private sealed class FactorySlot { internal Func<NativeObjectHandle, NativeObject>? Factory; }
+    private static readonly ConditionalWeakTable<Type, FactorySlot> Factories = new();
     private bool _destroyed;
     private NativeObjectHandle _handle;
+    private long _epoch=PlaySessionGuard.Epoch;
 
     protected NativeObject() { }
     internal NativeObject(NativeObjectHandle handle) => _handle = handle;
@@ -49,6 +53,7 @@ public abstract class NativeObject
     public void BindNativeHandle(NativeObjectHandle handle)
     {
         _handle = handle;
+        _epoch = PlaySessionGuard.Epoch;
         _destroyed = false;
         NativeBinding.MarkAlive(handle.Value);
     }
@@ -57,7 +62,8 @@ public abstract class NativeObject
         where T : NativeObject
     {
         ArgumentNullException.ThrowIfNull(factory);
-        Factories[typeof(T)] = handle => factory(handle);
+        var slot = Factories.GetValue(typeof(T), static _ => new FactorySlot());
+        System.Threading.Volatile.Write(ref slot.Factory, handle => factory(handle));
     }
 
     public static T? FromHandle<T>(NativeObjectHandle handle) where T : NativeObject
@@ -65,11 +71,12 @@ public abstract class NativeObject
         if (!handle.IsValid)
             return null;
         NativeObjectFactories.Ensure();
-        var key = (handle.Value, typeof(T));
-        if (Cache.TryGetValue(key, out var weak) && weak.TryGetTarget(out var existing))
+        var cache = Cache.GetValue(typeof(T), static _ => new());
+        if (cache.TryGetValue(handle.Value, out var weak) && weak.TryGetTarget(out var existing))
             return (T)existing;
         T created;
-        if (Factories.TryGetValue(typeof(T), out var factory))
+        var factory = Factories.TryGetValue(typeof(T), out var slot) ? System.Threading.Volatile.Read(ref slot.Factory) : null;
+        if (factory is not null)
             created = (T)factory(handle);
         else
         {
@@ -84,20 +91,26 @@ public abstract class NativeObject
 
     internal static T RegisterBoundInstance<T>(T instance) where T : NativeObject
     {
-        var key = (instance.Handle.Value, typeof(T));
-        if (Cache.TryGetValue(key, out var weak) && weak.TryGetTarget(out var existing))
+        var cache = Cache.GetValue(typeof(T), static _ => new());
+        if (cache.TryGetValue(instance.Handle.Value, out var weak) && weak.TryGetTarget(out var existing))
             return (T)existing;
-        Cache[key] = new WeakReference<NativeObject>(instance);
+        cache[instance.Handle.Value] = new WeakReference<NativeObject>(instance);
         return instance;
     }
 
-    public bool IsDestroyed => _destroyed || !NativeBinding.IsHandleAlive(Handle.Value);
+    public bool IsDestroyed => _destroyed || !PlaySessionGuard.Owns(_epoch) || !NativeBinding.IsHandleAlive(Handle.Value);
     protected void ThrowIfDestroyed()
     {
         if (IsDestroyed)
             throw new MissingReferenceException($"Native object {Handle.Value} has been destroyed.");
     }
     internal void MarkDestroyed() => _destroyed = true;
+    internal static void ResetSession()
+    {
+        Cache.Clear();
+        foreach (var entry in Factories)
+            if (entry.Key.Assembly.IsCollectible) Factories.Remove(entry.Key);
+    }
     public static bool operator ==(NativeObject? left, NativeObject? right)
         => ReferenceEquals(left, right) || (left is null ? right?.IsDestroyed == true : right is null ? left.IsDestroyed : left.Handle == right.Handle);
     public static bool operator !=(NativeObject? left, NativeObject? right) => !(left == right);
@@ -159,8 +172,8 @@ public static class Time
 {
     public static float deltaTime { get; internal set; }
     public static float unscaledDeltaTime { get; internal set; }
-    public static float fixedDeltaTime { get; set; } = 0.02f;
-    public static float maximumDeltaTime { get; set; } = 0.1f;
+    public static float fixedDeltaTime { get; set; } = 1.0f / 60.0f;
+    public static float maximumDeltaTime { get; set; } = 0.25f;
     private static float _timeScale = 1.0f;
     public static float timeScale
     {
@@ -216,10 +229,14 @@ public static class SceneManager
 
 public static class Debug
 {
-    public static void Log(object? message) => NativeBinding.Log(0, message?.ToString() ?? string.Empty);
-    public static void LogWarning(object? message) => NativeBinding.Log(1, message?.ToString() ?? string.Empty);
-    public static void LogError(object? message) => NativeBinding.Log(2, message?.ToString() ?? string.Empty);
-    public static void LogException(Exception exception) => NativeBinding.Log(2, exception.ToString());
+    public static void Log(object? message) => NativeBinding.WriteLog(0, message?.ToString() ?? string.Empty);
+    public static void LogWarning(object? message) => NativeBinding.WriteLog(1, message?.ToString() ?? string.Empty);
+    public static void LogError(object? message) => NativeBinding.WriteLog(2, message?.ToString() ?? string.Empty);
+    public static void LogException(Exception exception)
+    {
+        ArgumentNullException.ThrowIfNull(exception);
+        NativeBinding.WriteLog(2, $"{exception.GetType().FullName}: {exception.Message}", exception);
+    }
     public static void Assert(bool condition, object? message = null)
     {
         if (!condition) LogError(message ?? "Assertion failed.");
@@ -289,42 +306,52 @@ internal static class NativeSceneManager
 [EditorBrowsable(EditorBrowsableState.Never)]
 public static class LifecycleInvoker
 {
+    internal static void Reset() { Cache.Clear(); InputActionBindings.Reset(); }
     private static readonly Action<Behaviour> Missing = static _ => { };
-    private static readonly ConcurrentDictionary<(Type Type, ushort Callback), Action<Behaviour>> Cache = new();
+    private static readonly ConditionalWeakTable<Type, ConcurrentDictionary<ushort, Action<Behaviour>>> Cache = new();
 
     public static bool Invoke(Behaviour behaviour, ushort callback)
     {
-        var action = Cache.GetOrAdd((behaviour.GetType(), callback), static key =>
+        var callbacks = Cache.GetValue(behaviour.GetType(), static _ => new());
+        var action = callbacks.GetOrAdd(callback, static (callback, behaviourType) =>
         {
-            var methodName = key.Callback switch
+            var methodName = callback switch
             {
                 0 => "Awake", 1 => "Start", 2 => "OnEnable", 3 => "OnDisable",
-                4 => "Update", 5 => "FixedUpdate", 6 => "LateUpdate", 7 => "OnDestroy", _ => string.Empty
+                4 => "Update", 5 => "FixedUpdate", 6 => "LateUpdate", 7 => "OnDestroy",
+                8 => "OnCollisionEnter", 9 => "OnCollisionStay", 10 => "OnCollisionExit",
+                11 => "OnTriggerEnter", 12 => "OnTriggerStay", 13 => "OnTriggerExit",
+                14 => "OnApplicationFocus", 15 => "OnApplicationPause", 16 => "OnApplicationQuit", _ => string.Empty
             };
             if (methodName.Length == 0) return Missing;
             MethodInfo? method = null;
-            for (var type = key.Type; type is not null && method is null; type = type.BaseType)
+            for (var type = behaviourType; type is not null && method is null; type = type.BaseType)
             {
                 method = type.GetMethods(BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.DeclaredOnly)
                     .FirstOrDefault(candidate => candidate.Name == methodName
                         && !candidate.IsStatic
-                        && candidate.GetParameters().Length == 0
+                        && (candidate.GetParameters().Length == 0 ||
+                            (callback>=8 && callback<=15 && candidate.GetParameters().Length==1 &&
+                                candidate.GetParameters()[0].ParameterType==(callback<=10?typeof(Collision):callback<=13?typeof(Collider):typeof(bool))))
                         && candidate.ReturnType == typeof(void));
             }
             if (method is null) return Missing;
+            if(method.GetParameters().Length==1)
+                return target => method.Invoke(target,new object?[]{ callback<=10 ? new Collision(PlayBindingStore.Other()) :
+                    callback<=13 ? PlayBindingStore.Other() : PlayBindingStore.EventBoolean() });
             try
             {
                 // Compile the non-public method call once.  Lifecycle frames use
                 // the delegate directly and never pay MethodInfo.Invoke costs.
                 var target = Expression.Parameter(typeof(Behaviour), "target");
-                var call = Expression.Call(Expression.Convert(target, key.Type), method);
+                var call = Expression.Call(Expression.Convert(target, behaviourType), method);
                 return Expression.Lambda<Action<Behaviour>>(call, target).Compile();
             }
             catch (ArgumentException)
             {
                 return Missing;
             }
-        });
+        }, behaviour.GetType());
         if (ReferenceEquals(action, Missing)) return false;
         action(behaviour);
         return true;
@@ -334,20 +361,52 @@ public static class LifecycleInvoker
 public static unsafe class NativeBinding
 {
     private static readonly ConcurrentDictionary<ulong, byte> DestroyedHandles = new();
+    internal static void ResetSession() { PlaySessionGuard.Invalidate(); DestroyedHandles.Clear(); }
     public delegate bool IsAliveDelegate(ulong handle);
     public delegate void LogDelegate(int severity, string message);
+    private delegate void DetailedLogDelegate(int severity, string message, string stack, string source, int line);
     public static IsAliveDelegate IsAlive { get; set; } = _ => true;
     public static LogDelegate Log { get; set; } = (_, _) => { };
+    private static DetailedLogDelegate? _logDetailed;
+    private static Func<int, int>? _getLogStackMode;
+    internal static bool ShouldCaptureStack(int severity) => (_getLogStackMode?.Invoke(severity) ?? 1) != 0;
+
+    internal static void WriteLog(int severity, string message, Exception? exception = null)
+    {
+        var detailed = _logDetailed;
+        if (detailed is null) { Log(severity, message); return; }
+        var stack = string.Empty;
+        var source = string.Empty;
+        var line = 0;
+        if (ShouldCaptureStack(severity))
+        {
+            var trace = exception is null ? new StackTrace(2, true) : new StackTrace(exception, true);
+            stack = trace.ToString();
+            foreach (var frame in trace.GetFrames() ?? Array.Empty<StackFrame>())
+            {
+                var file = frame.GetFileName();
+                if (string.IsNullOrEmpty(file)) continue;
+                source = file;
+                line = frame.GetFileLineNumber();
+                break;
+            }
+        }
+        detailed(severity, message, stack, source, line);
+    }
 
     internal static void Configure(NativeApiTable table)
     {
+        PlaySessionGuard.Configure();
+        _logDetailed = null;
+        _getLogStackMode = null;
         if (table.IsAlive != null)
-            IsAlive = handle => table.IsAlive(handle) != 0;
+            IsAlive = handle => { PlaySessionGuard.Check(); return table.IsAlive(handle) != 0; };
 
         if (table.Log != null)
         {
             Log = (severity, message) =>
             {
+                PlaySessionGuard.Check();
                 var pointer = Marshal.StringToCoTaskMemUTF8(message);
                 try
                 {
@@ -360,7 +419,32 @@ public static unsafe class NativeBinding
             };
         }
 
+        if (table.GetLogStackMode != null)
+            _getLogStackMode = severity => table.GetLogStackMode((byte)severity);
+        if (table.LogDetailed != null)
+        {
+            _logDetailed = (severity, message, stack, source, line) =>
+            {
+                PlaySessionGuard.Check();
+                IntPtr messagePointer = IntPtr.Zero, stackPointer = IntPtr.Zero, sourcePointer = IntPtr.Zero;
+                try
+                {
+                    messagePointer = Marshal.StringToCoTaskMemUTF8(message);
+                    stackPointer = Marshal.StringToCoTaskMemUTF8(stack);
+                    sourcePointer = Marshal.StringToCoTaskMemUTF8(source);
+                    table.LogDetailed((byte)severity, (byte*)messagePointer, (byte*)stackPointer, (byte*)sourcePointer, line);
+                }
+                finally
+                {
+                    Marshal.FreeCoTaskMem(messagePointer);
+                    Marshal.FreeCoTaskMem(stackPointer);
+                    Marshal.FreeCoTaskMem(sourcePointer);
+                }
+            };
+        }
+
         NativeBindingStore.Configure(table);
+        PlaySessionGuard.WrapBindings();
     }
 
     public static void MarkDestroyed(ulong handle)
@@ -431,7 +515,10 @@ public static class ManagedScriptRegistry
         {
             var typeName = "global::" + (behaviour.GetType().FullName ?? string.Empty);
             if (callback >= 8)
-                return false;
+            {
+                LifecycleInvoker.Invoke(behaviour,callback);
+                return true;
+            }
             if ((CallbackMask(typeName) & (1u << callback)) == 0)
                 return true;
             return Dispatch(behaviour, callback, deltaTime);

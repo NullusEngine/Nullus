@@ -1,6 +1,7 @@
 #include "UI/Widgets/Layout/TreeNode.h"
 #include "UI/Internal/Converter.h"
 #include "ImGui/imgui.h"
+#include <unordered_map>
 
 namespace NLS::UI::Widgets
 {
@@ -25,6 +26,25 @@ void TreeNode::Close()
 bool TreeNode::IsOpened() const
 {
     return m_opened;
+}
+
+bool TreeNode::ReorderChildren(std::span<AWidget* const> children)
+{
+    if (children.size() != m_widgets.size()) return false;
+    std::unordered_map<AWidget*, size_t> indices;
+    for (size_t index = 0; index < m_widgets.size(); ++index)
+        if (!indices.emplace(m_widgets[index].first, index).second) return false;
+    std::vector<std::pair<AWidget*, Internal::EMemoryMode>> ordered;
+    ordered.reserve(children.size());
+    for (auto* child : children)
+    {
+        const auto found = indices.find(child);
+        if (found == indices.end()) return false;
+        ordered.push_back(m_widgets[found->second]);
+        indices.erase(found);
+    }
+    m_widgets = std::move(ordered);
+    return true;
 }
 
 const char* TreeNode::GetImGuiLabel()
@@ -65,11 +85,14 @@ void TreeNode::_Draw_Impl()
     ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(6.0f, 4.0f));
     ImGui::PushStyleColor(ImGuiCol_HeaderHovered, ImVec4(0.20f, 0.29f, 0.40f, 0.68f));
     ImGui::PushStyleColor(ImGuiCol_HeaderActive, ImVec4(0.24f, 0.36f, 0.52f, 0.82f));
+    if (selected && activeSelection)
+        ImGui::PushStyleColor(ImGuiCol_Header, ImVec4(0.24f, 0.40f, 0.56f, 0.90f));
     if (useTextColor)
         ImGui::PushStyleColor(ImGuiCol_Text, Internal::Converter::ToImVec4(textColor));
     bool opened = ImGui::TreeNodeEx(GetImGuiLabel(), flags);
     if (useTextColor)
         ImGui::PopStyleColor();
+    if (selected && activeSelection) ImGui::PopStyleColor();
     ImGui::PopStyleColor(2);
     ImGui::PopStyleVar();
 

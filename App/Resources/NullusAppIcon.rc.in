@@ -1,1 +1,2 @@
-1 ICON "@NLS_APP_ICON_ICO@"
+// GLFW loads this named resource when registering every native window class.
+GLFW_ICON ICON "@NLS_APP_ICON_ICO@"

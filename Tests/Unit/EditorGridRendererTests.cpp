@@ -20,7 +20,7 @@
 
 namespace
 {
-void ValidateSharedGrid(bool vulkan,bool axes = false)
+void ValidateSharedGrid(bool vulkan,bool axes = false,bool planarXY = false)
 {
     using namespace NLS;
     namespace rhi = Render::RHI; namespace sc = Render::ShaderCompiler;
@@ -69,6 +69,13 @@ void ValidateSharedGrid(bool vulkan,bool axes = false)
     auto depthView = device->CreateTextureView(depth,viewDesc); ASSERT_TRUE(colorView && depthView);
     Editor::VFXTools::VfxPreviewCamera camera; camera.Camera().SetPosition({3,5,10});
     camera.Camera().SetRotation(Maths::Quaternion::LookAt(Maths::Vector3::Normalize({-3,-5,-10}),Maths::Vector3::Up));
+    if (planarXY)
+    {
+        camera.Camera().SetPosition({3,5,10});
+        camera.Camera().SetRotation(Maths::Quaternion::LookAt(-Maths::Vector3::Forward, Maths::Vector3::Up));
+        camera.Camera().SetProjectionMode(Render::Settings::EProjectionMode::ORTHOGRAPHIC);
+        camera.Camera().SetSize(8.0f);
+    }
     const auto cameraView = camera.MakeView(96,96); Maths::Matrix4 matrix;
     std::copy(cameraView.viewProjection.begin(),cameraView.viewProjection.end(),std::begin(matrix.data));
     rhi::RHIRenderTargetLayoutDesc targets; targets.colorFormats = {colorDesc.format}; targets.hasDepth = true; targets.depthFormat = depthDesc.format;
@@ -82,7 +89,7 @@ void ValidateSharedGrid(bool vulkan,bool axes = false)
     }
     else
     {
-        auto prepared = renderer.Prepare(device,shaders,targets,matrix,camera.Camera().GetPosition(),{0.5f,0.5f,0.5f},error);
+        auto prepared = renderer.Prepare(device,shaders,targets,matrix,camera.Camera().GetPosition(),{0.5f,0.5f,0.5f},error,planarXY);
         ASSERT_TRUE(prepared) << error; draws.push_back(std::move(*prepared));
     }
     for (const auto& draw : draws)
@@ -131,6 +138,7 @@ void ValidateSharedGrid(bool vulkan,bool axes = false)
     const auto occluded = render(0); size_t occludedPixels = 0;
     for (size_t index = 0; index < occluded.size(); index += 4) occludedPixels += occluded[index] || occluded[index+1] || occluded[index+2];
     EXPECT_EQ(occludedPixels,0u) << "Grid lines must respect scene depth";
+    if (planarXY) return;
     // Exercise the same draw through the whole-system preview, including a
     // paused redraw when only the grid visibility changes.
     Editor::VFXTools::VfxSession session; ASSERT_TRUE(session.Rebuild()); session.playing = false;
@@ -211,6 +219,7 @@ void ValidateSharedGrid(bool vulkan,bool axes = false)
 }
 }
 TEST(EditorGridRenderer, Dx12SharedSceneGridProducesPixelsAndRespectsDepth) { ValidateSharedGrid(false); }
+TEST(EditorGridRenderer, Dx12OrthographicXYGridProducesPixelsAndRespectsDepth) { ValidateSharedGrid(false,false,true); }
 TEST(EditorGridRenderer, VulkanSharedSceneGridProducesPixelsAndRespectsDepth) { ValidateSharedGrid(true); }
 TEST(EditorOriginAxes, Dx12SceneAndPreviewAxesMatchAndRespectDepth) { ValidateSharedGrid(false,true); }
 TEST(EditorOriginAxes, VulkanSceneAndPreviewAxesMatchAndRespectDepth) { ValidateSharedGrid(true,true); }

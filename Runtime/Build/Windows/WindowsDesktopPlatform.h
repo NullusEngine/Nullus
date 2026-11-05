@@ -10,7 +10,7 @@ namespace NLS::Build
 // tree from the template's runtime manifest plus explicit binary dependency
 // checks, applies the product descriptor, optionally signs with Authenticode,
 // and produces a ZIP (or a plain directory) for distribution.
-class WindowsDesktopPlatform final : public IBuildPlatform
+class NLS_BUILD_API WindowsDesktopPlatform final : public IBuildPlatform
 {
 public:
     std::string GetAdapterId() const override;

@@ -507,7 +507,9 @@ public static unsafe class EditorScriptingRuntime
                         ? method.DeclaringType.FullName ?? method.DeclaringType.Name
                         : string.Empty;
                 s_commandMenuItems.Add((attribute.MenuPath, method));
-                RegisterMenuItem(host, attribute.MenuPath, windowOwner);
+                var commandId = attribute.CommandId ?? $"script:{method.DeclaringType?.Assembly.GetName().Name}:{method.DeclaringType?.FullName}.{method.Name}";
+                if (!commandId.StartsWith("script:", StringComparison.Ordinal)) commandId = "script:" + commandId;
+                RegisterMenuItem(host, attribute.MenuPath, windowOwner, commandId);
             }
         }
     }
@@ -563,21 +565,25 @@ public static unsafe class EditorScriptingRuntime
         }
     }
 
-    private static void RegisterMenuItem(EditorHostApiTable* host, string menuPath, string editorTypeName)
+    private static void RegisterMenuItem(EditorHostApiTable* host, string menuPath, string editorTypeName, string commandId)
     {
         if (host->RegisterMenuItem == null)
             return;
 
         var pathPointer = ToUtf8(menuPath);
         var ownerPointer = ToUtf8(editorTypeName);
+        var commandPointer = ToUtf8(commandId);
         try
         {
-            if (host->RegisterMenuItem((byte*)pathPointer, (byte*)ownerPointer) == 0)
+            var stableApi = host->Header.Size >= (uint)sizeof(EditorHostApiTable) && host->RegisterMenuCommand != null;
+            var accepted = stableApi ? host->RegisterMenuCommand((byte*)pathPointer, (byte*)ownerPointer, (byte*)commandPointer) :
+                host->RegisterMenuItem((byte*)pathPointer, (byte*)ownerPointer);
+            if (accepted == 0)
                 ReportError(host, $"Editor menu path '{menuPath}' was rejected by the editor host.");
         }
         finally
         {
-            FreeUtf8(pathPointer, ownerPointer);
+            FreeUtf8(pathPointer, ownerPointer, commandPointer);
         }
     }
 

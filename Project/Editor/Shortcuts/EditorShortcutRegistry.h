@@ -1,6 +1,5 @@
 #pragma once
 
-#include <optional>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -18,23 +17,16 @@ namespace NLS::Editor::Shortcuts
         const ShortcutCommand* FindCommand(const std::string& p_id) const;
         ShortcutCommand* FindCommand(const std::string& p_id);
         const std::vector<ShortcutCommand>& GetCommands() const;
-
-        bool SetBinding(const std::string& p_id, const ShortcutBinding& p_binding);
-        ShortcutBinding GetBinding(const std::string& p_id) const;
-        // Returns the effective gestures for a command. A user override
-        // replaces the full default set; otherwise the primary binding and
-        // all distinct alternate defaults are returned in declaration order.
-        std::vector<ShortcutBinding> GetBindings(const std::string& p_id) const;
-        bool ClearBinding(const std::string& p_id);
-        bool ResetBinding(const std::string& p_id);
-        std::vector<ShortcutConflict> ValidateBinding(
-            const std::string& p_id,
-            const ShortcutBinding& p_binding,
-            const std::function<bool(const ShortcutContextId&, const ShortcutContextId&)>& p_areContextsMutuallyExclusive) const;
+        bool CanExecute(const std::string& id, const InvocationContext& context = {}) const;
+        CommandResult TryExecuteCommand(const std::string& id, const InvocationContext& context = {});
+        uint64_t GetGeneration() const { return m_generation; }
+        uint64_t GetCommandGeneration(const std::string& id) const;
+        bool UnregisterCommand(const std::string& id);
 
     private:
         std::vector<ShortcutCommand> m_commands;
         std::unordered_map<std::string, size_t> m_commandIndices;
-        std::unordered_map<std::string, ShortcutBinding> m_bindingOverrides;
+        std::unordered_map<std::string, uint64_t> m_commandGenerations;
+        uint64_t m_generation = 0;
     };
 }

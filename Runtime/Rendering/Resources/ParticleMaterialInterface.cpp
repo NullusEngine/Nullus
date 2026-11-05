@@ -12,16 +12,16 @@ bool ValidateParticleSpriteReflection(const ShaderReflection& reflection, std::s
     { return buffer.name == "VfxSpriteView" && buffer.bindingSpace == 1 && buffer.bindingIndex == 0; });
     if (view == reflection.constantBuffers.end() || view->byteSize != kParticleSpriteViewBytes)
     {
-        error = "ParticleSprite requires ABI 7 VfxSpriteView (320 bytes at b0, space1)";
+        error = "ParticleSprite requires ABI 8 VfxSpriteView (336 bytes at b0, space1)";
         for (const auto& buffer : reflection.constantBuffers) error += "; "+buffer.name+" bytes="+std::to_string(buffer.byteSize)+" space="+std::to_string(buffer.bindingSpace)+" slot="+std::to_string(buffer.bindingIndex);
         return false;
     }
-    const std::array<std::pair<const char*,uint32_t>,17> members{{
+    const std::array<std::pair<const char*,uint32_t>,18> members{{
         {"VfxViewProjection",0},{"VfxLocalToWorld",64},{"VfxCameraRight",128},{"VfxCameraUp",144},
         {"VfxTint",160},{"VfxUVTransform",176},{"VfxDepthProjection",192},{"VfxShading",208},
         {"VfxCapacity",224},{"VfxSorted",228},{"VfxAlignment",232},{"VfxBlend",236},
         {"VfxSubImagesX",240},{"VfxSubImagesY",244},{"VfxBlendSubImages",248},{"VfxCircularMask",252},
-        {"VfxDynamicDefaults",256}}};
+        {"VfxDynamicDefaults",256},{"VfxSceneDebugOptions",320}}};
     for (const auto& [name,offset] : members)
         if (std::none_of(view->members.begin(),view->members.end(),[&](const auto& member) { return member.name == name && member.byteOffset == offset; }))
         { error = std::string("ParticleSprite ABI member mismatch: ")+name; return false; }

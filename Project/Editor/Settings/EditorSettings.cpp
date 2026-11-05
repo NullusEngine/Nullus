@@ -38,6 +38,24 @@ EditorSceneToolSettingsObject& EditorSettings::GetSceneToolSettingsObject()
     return object;
 }
 
+EditorSceneViewSettingsObject& EditorSettings::GetSceneViewSettingsObject()
+{
+    static EditorSceneViewSettingsObject object;
+    return object;
+}
+
+EditorGameViewSettingsObject& EditorSettings::GetGameViewSettingsObject()
+{
+    static EditorGameViewSettingsObject object;
+    return object;
+}
+
+EditorConsoleSettingsObject& EditorSettings::GetConsoleSettingsObject()
+{
+    static EditorConsoleSettingsObject object;
+    return object;
+}
+
 EditorRenderingSettingsObject& EditorSettings::GetRenderingSettingsObject()
 {
     static EditorRenderingSettingsObject object;
@@ -113,6 +131,10 @@ void EditorSettings::RegisterSettingObjects(EditorSettingsRegistry& p_registry)
 {
     NLS_META_GENERATED_LINK_FUNCTION();
     meta::ReflectionDatabase::Instance();
+    p_registry.Register({ "editor.game-view", "Game View", "Editor/Game View", EditorSettingPersistenceScope::User,
+        [] { return meta::Variant(GetGameViewSettingsObject(), meta::variant_policy::NoCopy {}); }, NLS_TYPEOF(EditorGameViewSettingsObject) });
+    p_registry.Register({ "editor.console", "Console", "Editor/Console", EditorSettingPersistenceScope::User,
+        [] { return meta::Variant(GetConsoleSettingsObject(), meta::variant_policy::NoCopy {}); }, NLS_TYPEOF(EditorConsoleSettingsObject) });
     p_registry.Register({
         "editor.runtime",
         "Runtime",
@@ -136,6 +158,14 @@ void EditorSettings::RegisterSettingObjects(EditorSettingsRegistry& p_registry)
         EditorSettingPersistenceScope::User,
         [] { return meta::Variant(GetSceneToolSettingsObject(), meta::variant_policy::NoCopy {}); },
         NLS_TYPEOF(EditorSceneToolSettingsObject)
+    });
+    p_registry.Register({
+        "editor.scene-view",
+        "Scene View",
+        "Editor/Scene View",
+        EditorSettingPersistenceScope::User,
+        [] { return meta::Variant(GetSceneViewSettingsObject(), meta::variant_policy::NoCopy {}); },
+        NLS_TYPEOF(EditorSceneViewSettingsObject)
     });
     p_registry.Register({
         "editor.rendering",

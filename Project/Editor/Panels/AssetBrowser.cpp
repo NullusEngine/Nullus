@@ -1,3 +1,5 @@
+#include "Shortcuts/EditorShortcutService.h"
+#include "Assets/AssetWatcherReimport.h"
 #include <array>
 #include <algorithm>
 #include <fstream>
@@ -30,6 +32,7 @@
 #include "ImGui/imgui.h"
 #include "ImGui/imgui_internal.h"
 #include "Panels/AnimationWorkbench.h"
+#include "Panels/SpriteEditor.h"
 #include <Json/json.hpp>
 
 #include "Assets/ArtifactLoadTelemetry.h"
@@ -74,12 +77,14 @@
 #include <VFX/Authoring/VfxAuthoring.h>
 
 #include "Panels/AssetBrowser.h"
+#include "Shortcuts/EditorCommandInvocation.h"
 #include "Icons/IconPainter.h"
 #include "Panels/AssetView.h"
 #include "Panels/Hierarchy.h"
 #include "Panels/Inspector.h"
 #include "Panels/SceneView.h"
 #include "Panels/UIDocumentDesigner.h"
+#include "Panels/InputAssetEditor.h"
 #include "Panels/VfxEditor.h"
 #include "Panels/VfxLibraryEditor.h"
 #include "Panels/MaterialEditor.h"
@@ -1437,7 +1442,12 @@ bool ManifestDependencyStampsAreCurrent(
 				checkedAsset = true;
 
 			const auto dependencyPath = NLS::Editor::Assets::ResolveEditorManifestDependencyPath(projectRoot, value);
-			if (!dependencyPath.has_value() || dependency.hashOrVersion != AssetBrowserFileStamp(*dependencyPath))
+			if (!dependencyPath.has_value())
+				return false;
+			const auto currentHash = dependency.hashOrVersion.starts_with("sha256:")
+				? NLS::Editor::Assets::CachedSourceFileContentHash(projectRoot, *dependencyPath)
+				: AssetBrowserFileStamp(*dependencyPath);
+			if (dependency.hashOrVersion != currentHash)
 				return false;
 			continue;
 		}
@@ -1447,7 +1457,14 @@ bool ManifestDependencyStampsAreCurrent(
 				checkedMeta = true;
 
 			const auto dependencyPath = NLS::Editor::Assets::ResolveEditorManifestDependencyPath(projectRoot, value);
-			if (!dependencyPath.has_value() || dependency.hashOrVersion != AssetBrowserFileStamp(*dependencyPath))
+			if (!dependencyPath.has_value())
+				return false;
+			const auto currentStamp = value == metaPath &&
+				meta->assetType == NLS::Core::Assets::AssetType::ModelScene &&
+				dependency.hashOrVersion.starts_with("model-import:")
+				? NLS::Core::Assets::ComputeModelImportSettingsFingerprint(*meta)
+				: AssetBrowserFileStamp(*dependencyPath);
+			if (dependency.hashOrVersion != currentStamp)
 				return false;
 			continue;
 		}
@@ -1824,7 +1841,7 @@ void InvalidateAssetBrowserUndoScope(
 	InvalidateAssetBrowserUndoScope(MakeAssetBrowserUndoScope(item), reason);
 }
 
-void ReimportProjectAssetAsync(
+bool ReimportProjectAssetAsync(
 	const std::string& projectAssetsFolder,
 	const NLS::Editor::Assets::AssetBrowserItem& item)
 {
@@ -1834,15 +1851,20 @@ void ReimportProjectAssetAsync(
 	if (projectRoot.empty() || assetPath.empty())
 	{
 		NLS_LOG_ERROR("Failed to resolve project asset path for reimport: " + absolutePath);
-		return;
+		return false;
 	}
 
+	if (NLS::Editor::Assets::AssetImporterFacade::IsReimportInProgress(assetPath.generic_string()))
+		return false;
+	auto reimportGuard = std::make_shared<NLS::Editor::Assets::AssetImporterFacade::ScopedReimportInProgress>(
+		assetPath.generic_string());
 	auto& tracker = EDITOR_CONTEXT(importProgressTracker);
 	auto residentPrefabPreviewRegistry = EDITOR_CONTEXT(residentPrefabPreviewRegistry);
 	const auto undoScope = MakeAssetBrowserUndoScope(item);
 	const auto queued = EDITOR_EXEC(TrackBackgroundTask([
 		projectRoot,
 		assetPath = assetPath.generic_string(),
+		reimportGuard = std::move(reimportGuard),
 		undoScope,
 		residentPrefabPreviewRegistry = std::move(residentPrefabPreviewRegistry),
 		&tracker]
@@ -1868,6 +1890,7 @@ void ReimportProjectAssetAsync(
 	}));
 	if (!queued)
 		NLS_LOG_ERROR("Failed to queue asset reimport because the editor background task queue is at capacity: " + assetPath.generic_string());
+	return queued;
 }
 
 #if defined(NLS_ENABLE_TEST_HOOKS)
@@ -2493,6 +2516,21 @@ void DrawTransactionalSnapshotRequiredTooltip()
 		ImGui::SetTooltip("%s", kTransactionalReferenceSnapshotRequired);
 }
 
+bool Editor::Panels::AssetBrowser::QueueProjectAssetReimport(const std::string& assetPath)
+{
+    const auto database = GetAssetDatabaseSnapshot();
+    if (!database || !assetPath.starts_with("Assets/") || database->AssetPathToGUID(assetPath).empty()) return false;
+    Assets::AssetBrowserItem item;
+    item.sourceAssetPath = assetPath;
+    item.selectionResourcePath = assetPath;
+    item.absolutePath = ProjectRootFromAssetsFolder(m_projectAssetFolder) / assetPath;
+    // Reimport must work when the published artifact is stale or missing.
+    const auto meta = NLS::Core::Assets::AssetMeta::Load(item.absolutePath.string() + ".meta");
+    if (!meta) return false;
+    item.assetId = meta->id;
+    return ReimportProjectAssetAsync(m_projectAssetFolder, item);
+}
+
 Editor::Panels::AssetBrowser::AssetBrowser
 (
 	const std::string& p_title,
@@ -2636,16 +2674,13 @@ Editor::Panels::AssetBrowser::AssetBrowser
 
 Editor::Panels::AssetBrowser::~AssetBrowser()
 {
-	ShutdownThumbnailPipeline();
+	StopBackgroundWork();
 	if (m_editorSelectionListener != NLS::InvalidListenerID)
 	{
 		NLS::Editor::Inspector::EditorSelectionService::Get().SelectionChangedEvent.RemoveListener(
 			m_editorSelectionListener);
 		m_editorSelectionListener = NLS::InvalidListenerID;
 	}
-	NLS::Editor::Assets::CloseAssetBrowserAsyncRefresh(m_projectAssetDatabaseRefreshState);
-	NLS::Editor::Assets::CloseAssetBrowserAsyncRefresh(m_currentFolderItemsRefreshState);
-	NLS::Editor::Assets::CloseAssetBrowserAsyncRefresh(m_objectReferencePickerRefreshState);
 
 	if (EDITOR_CONTEXT(window) != nullptr && m_windowDroppedFilesListener != 0u)
 		EDITOR_CONTEXT(window)->DroppedFilesEvent.RemoveListener(m_windowDroppedFilesListener);
@@ -2740,8 +2775,15 @@ void Editor::Panels::AssetBrowser::OnBeforeDrawWidgets()
 		}
 	}
 	const double now = ImGui::GetTime();
+	bool deleteActionDown = false;
+	if (NLS::Core::ServiceLocator::Contains<Shortcuts::EditorShortcutService>())
+	{
+	    const auto* user = NLS_SERVICE(Shortcuts::EditorShortcutService).GetInputUser();
+	    static const auto action = Guid::NewDeterministic("editor.action.asset-browser.delete");
+	    if (user) deleteActionDown = user->GetActionState(user->FindAction(action)).actuated;
+	}
 	const bool deleteActionInputsReleased =
-		!ImGui::IsKeyDown(ImGuiKey_Delete) &&
+		!deleteActionDown &&
 		!ImGui::IsMouseDown(ImGuiMouseButton_Left) &&
 		!ImGui::IsMouseDown(ImGuiMouseButton_Right);
 	if (m_projectDeleteActionAwaitingRelease &&
@@ -3072,8 +3114,18 @@ void Editor::Panels::AssetBrowser::ConsumeWatcherChangesAndSchedulePreimport()
 	if (!m_startupWatcherPreimportGateOpen)
 		return;
 
-	const auto engineAssetChanges = m_engineAssetsWatcher.ConsumeChangedPaths();
-	const auto projectAssetChanges = m_projectAssetsWatcher.ConsumeChangedPaths();
+	auto engineAssetChanges = m_engineAssetsWatcher.ConsumeChangedPaths();
+	auto projectAssetChanges = m_projectAssetsWatcher.ConsumeChangedPaths();
+    engineAssetChanges.insert(engineAssetChanges.end(),m_deferredEngineWatcherChanges.begin(),m_deferredEngineWatcherChanges.end());
+    projectAssetChanges.insert(projectAssetChanges.end(),m_deferredProjectWatcherChanges.begin(),m_deferredProjectWatcherChanges.end());
+    m_deferredEngineWatcherChanges.clear(); m_deferredProjectWatcherChanges.clear();
+	NLS::Editor::Assets::DeferInProgressAssetWatcherChanges(
+		projectAssetChanges,m_deferredProjectWatcherChanges,[this](const std::filesystem::path& path)
+		{
+			const auto source=SourceAssetPathForWatcherChange(path);
+			const auto relative=EditorAssetPathFromAbsolutePath(m_projectAssetFolder,source.string());
+			return NLS::Editor::Assets::AssetImporterFacade::IsReimportInProgress(relative.generic_string());
+		});
 	const bool engineAssetsChanged = !engineAssetChanges.empty();
 	const bool projectAssetsChanged = !projectAssetChanges.empty();
 	const bool csharpSourceChanged = std::any_of(
@@ -3102,6 +3154,18 @@ void Editor::Panels::AssetBrowser::ConsumeWatcherChangesAndSchedulePreimport()
 				[](const unsigned char character) { return static_cast<char>(std::tolower(character)); });
 			return extension == ".cs" || extension == ".lua";
 		});
+    if (scriptSourceChanged && EDITOR_EXEC(GetPlayModeController()).IsActive())
+    {
+        EDITOR_EXEC(StopPlaying());
+        EDITOR_EXEC(PumpPlayRequests());
+        if (EDITOR_EXEC(GetPlayModeController()).IsActive())
+        {
+            m_deferredEngineWatcherChanges=std::move(engineAssetChanges);
+            m_deferredProjectWatcherChanges.insert(m_deferredProjectWatcherChanges.end(),
+                std::make_move_iterator(projectAssetChanges.begin()),std::make_move_iterator(projectAssetChanges.end()));
+            return;
+        }
+    }
 	if (projectAssetsChanged)
 	{
 		std::vector<std::filesystem::path> relativeChanges;
@@ -3137,6 +3201,7 @@ void Editor::Panels::AssetBrowser::ConsumeWatcherChangesAndSchedulePreimport()
 	}
 	if (csharpSourceChanged && EDITOR_CONTEXT(managedScriptDebugSession) != nullptr)
 	{
+        EDITOR_CONTEXT(managedScriptDebugSession)->SetEnabled(true);
 		if (!EDITOR_CONTEXT(managedScriptDebugSession)->RequestBuild())
 			NLS_LOG_WARNING("C# source changed, but the managed script build session is disabled or unavailable.");
 	}
@@ -3845,7 +3910,7 @@ void Editor::Panels::AssetBrowser::DrawProjectAssetBrowser()
 	{
 		HandleProjectAssetBrowserDroppedFiles(*droppedFiles);
 	}
-	HandleProjectAssetBrowserShortcuts();
+
 	const bool currentFolderActive =
 		currentFolderHovered &&
 		(wheelActive ||
@@ -5005,6 +5070,9 @@ void Editor::Panels::AssetBrowser::DrawProjectGridItemContextMenu(
 		OpenProjectGridItem(item);
 	if (capabilities.canPreview && ImGui::MenuItem("Preview"))
 		PreviewProjectGridItem(item);
+    if (Utils::PathParser::GetFileType(item.absolutePath.string()) == Utils::PathParser::EFileType::TEXTURE &&
+        ImGui::MenuItem("Open Sprite Editor"))
+        EDITOR_PANEL(Editor::Panels::SpriteEditor,"Sprite Editor").OpenDocument(item.absolutePath);
     if(item.type==NLS::Editor::Assets::AssetBrowserItemType::Material && ImGui::MenuItem("Create Material Instance"))
     {
         RequestProjectBrowserTextDialog(ProjectBrowserTextDialogKind::CreateDefaultSurfaceMaterial,"Create Material Instance",
@@ -5065,13 +5133,13 @@ void Editor::Panels::AssetBrowser::DrawProjectGridItemContextMenu(
 		}
 	}
 	if (capabilities.canDuplicate && ImGui::MenuItem("Duplicate"))
-		(void)DuplicateProjectItem(item);
+        { Shortcuts::InvocationContext context; context.source = Shortcuts::CommandSource::Menu; context.targetPath = item.absolutePath.generic_string(); Shortcuts::InvokeEditorCommand("asset-browser.duplicate", context); }
 	const bool canRenameThroughUndo = capabilities.canRename && CanRenameProjectFileThroughUndo(item);
 	if (capabilities.canRename)
 	{
 		ImGui::BeginDisabled(!canRenameThroughUndo);
 		if (ImGui::MenuItem("Rename..."))
-			BeginInlineRenameProjectItem(item);
+            { Shortcuts::InvocationContext context; context.source = Shortcuts::CommandSource::Menu; context.targetPath = item.absolutePath.generic_string(); Shortcuts::InvokeEditorCommand("asset-browser.rename", context); }
 		ImGui::EndDisabled();
 		if (!canRenameThroughUndo)
 			DrawTransactionalSnapshotRequiredTooltip();
@@ -5081,7 +5149,7 @@ void Editor::Panels::AssetBrowser::DrawProjectGridItemContextMenu(
 	{
 		ImGui::BeginDisabled(!canDeleteThroughUndo);
 		if (ImGui::MenuItem("Delete"))
-			(void)DeleteProjectItem(item);
+            { Shortcuts::InvocationContext context; context.source = Shortcuts::CommandSource::Menu; context.targetPath = item.absolutePath.generic_string(); Shortcuts::InvokeEditorCommand("asset-browser.delete", context); }
 		ImGui::EndDisabled();
 		if (!canDeleteThroughUndo)
 			DrawTransactionalSnapshotRequiredTooltip();
@@ -5568,70 +5636,17 @@ void Editor::Panels::AssetBrowser::HandleProjectAssetBrowserDroppedFiles(const s
 		(void)ImportExternalFilesIntoCurrentFolder(sourcePaths);
 }
 
-void Editor::Panels::AssetBrowser::HandleProjectAssetBrowserShortcuts()
+bool Editor::Panels::AssetBrowser::ExecuteCommand(const std::string& id, const std::string& targetPath)
 {
-	if (ImGui::GetIO().WantTextInput || ImGui::IsAnyItemActive())
-		return;
-
-	const bool hovered = ImGui::IsWindowHovered(ImGuiHoveredFlags_AllowWhenBlockedByActiveItem);
-	const bool focused = ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows);
-	if (!hovered && !focused)
-		return;
-
-	if (ImGui::IsKeyPressed(ImGuiKey_F2))
-	{
-		if (const auto selected = std::find_if(
-				m_currentFolderItems.begin(),
-				m_currentFolderItems.end(),
-				[this](const auto& item)
-				{
-					return m_selectedProjectItem.has_value() &&
-						NLS::Editor::Assets::AssetBrowserItemMatchesActionIdentity(item, *m_selectedProjectItem);
-				});
-			selected != m_currentFolderItems.end())
-		{
-			BeginInlineRenameProjectItem(*selected);
-		}
-	}
-	if (ImGui::GetIO().KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_C))
-		CopySelectedProjectItemToClipboard();
-	if (ImGui::GetIO().KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_V))
-		(void)PasteClipboardIntoCurrentFolder();
-	if (!ImGui::IsKeyDown(ImGuiKey_Delete))
-		m_projectDeleteShortcutAwaitingRelease = false;
-	if (!m_projectDeleteActionAwaitingRelease &&
-		!m_projectDeleteShortcutAwaitingRelease &&
-		ImGui::IsKeyPressed(ImGuiKey_Delete, false))
-	{
-		m_projectDeleteShortcutAwaitingRelease = true;
-		if (const auto selected = std::find_if(
-				m_currentFolderItems.begin(),
-				m_currentFolderItems.end(),
-				[this](const auto& item)
-				{
-					return m_selectedProjectItem.has_value() &&
-						NLS::Editor::Assets::AssetBrowserItemMatchesActionIdentity(item, *m_selectedProjectItem);
-				});
-			selected != m_currentFolderItems.end())
-		{
-			(void)DeleteProjectItem(*selected);
-		}
-	}
-	if (ImGui::GetIO().KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_D))
-	{
-		if (const auto selected = std::find_if(
-				m_currentFolderItems.begin(),
-				m_currentFolderItems.end(),
-				[this](const auto& item)
-				{
-					return m_selectedProjectItem.has_value() &&
-						NLS::Editor::Assets::AssetBrowserItemMatchesActionIdentity(item, *m_selectedProjectItem);
-				});
-			selected != m_currentFolderItems.end())
-		{
-			(void)DuplicateProjectItem(*selected);
-		}
-	}
+    if (id == "copy") { CopySelectedProjectItemToClipboard(); return true; }
+    if (id == "paste") return PasteClipboardIntoCurrentFolder();
+    const auto selected = std::find_if(m_currentFolderItems.begin(), m_currentFolderItems.end(), [this, &targetPath](const auto& item)
+    { return targetPath.empty() ? (m_selectedProjectItem && NLS::Editor::Assets::AssetBrowserItemMatchesActionIdentity(item, *m_selectedProjectItem)) : item.absolutePath.generic_string() == targetPath; });
+    if (selected == m_currentFolderItems.end()) return false;
+    if (id == "rename") { BeginInlineRenameProjectItem(*selected); return true; }
+    if (id == "duplicate") return DuplicateProjectItem(*selected);
+    if (id == "delete") return DeleteProjectItem(*selected);
+    return false;
 }
 
 void Editor::Panels::AssetBrowser::DrawCurrentFolderList(
@@ -6278,6 +6293,18 @@ void Editor::Panels::AssetBrowser::ShutdownThumbnailPipeline()
 	if (m_assetThumbnailPool != nullptr)
 		m_assetThumbnailPool->Clear(true);
 	DestroyCachedThumbnailTextures(true);
+}
+
+void Editor::Panels::AssetBrowser::StopBackgroundWork()
+{
+    m_engineAssetsWatcher.Stop();
+    m_projectAssetsWatcher.Stop();
+    NLS::Editor::Assets::CloseAssetBrowserAsyncRefresh(m_projectAssetDatabaseRefreshState);
+    NLS::Editor::Assets::CloseAssetBrowserAsyncRefresh(m_currentFolderItemsRefreshState);
+    NLS::Editor::Assets::CloseAssetBrowserAsyncRefresh(m_objectReferencePickerRefreshState);
+    NLS::Editor::Assets::CloseAssetBrowserLatestRequestCoordinator(m_currentFolderItemsRefreshCoordinator);
+    NLS::Editor::Assets::CloseAssetBrowserLatestRequestCoordinator(m_objectReferencePickerRefreshCoordinator);
+    ShutdownThumbnailPipeline();
 }
 
 bool Editor::Panels::AssetBrowser::IsEditorWindowClosing() const
@@ -9997,7 +10024,9 @@ void Editor::Panels::AssetBrowser::OpenProjectGridItem(
 		(void)EDITOR_PANEL(Editor::Panels::VfxEditor, "Particle Editor").OpenDocument(item.absolutePath);
 		return;
 	}
-	if (item.kind == AssetBrowserItemKind::SourceAsset && scriptExtension == ".ui")
+        if (item.kind == AssetBrowserItemKind::SourceAsset && scriptExtension == ".inputactions")
+        { (void)EDITOR_PANEL(Editor::Panels::InputAssetEditor, "Input Editor").OpenDocument(item.absolutePath); return; }
+		if (item.kind == AssetBrowserItemKind::SourceAsset && scriptExtension == ".ui")
 	{
 		SelectProjectGridItem(item);
 		auto& designer = EDITOR_PANEL(Editor::Panels::UIDocumentDesigner, "UI Designer");

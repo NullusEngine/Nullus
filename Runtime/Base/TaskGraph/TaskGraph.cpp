@@ -1,13 +1,15 @@
 #include "TaskGraph/TaskGraph.h"
 
 #include "Profiling/Profiler.h"
-#include "Threading/ExecutionThreadBudget.h"
+#include "Jobs/JobSystem.h"
 
 #include <algorithm>
 #include <atomic>
 #include <deque>
 #include <limits>
+#include <memory_resource>
 #include <optional>
+#include <stdexcept>
 #include <thread>
 #include <unordered_map>
 #include <unordered_set>
@@ -17,61 +19,27 @@ namespace NLS::Base::TaskGraph
 {
     namespace
     {
-        constexpr size_t kPriorityQueueCount = 3u;
-        constexpr uint32_t kInvalidWorkerIndex = 0xffffffffu;
-
-        // Node lifecycle is claimed with a CAS so a cancellation that races with
-        // a worker pop can never hand the same node to two executors.
         constexpr uint8_t kLifecycleQueued = 0u;
         constexpr uint8_t kLifecycleClaimed = 1u;
         constexpr uint8_t kLifecycleTerminal = 2u;
-
-        /** Where a worker obtained the task it is about to execute. */
-        enum class ReadySource : uint8_t
-        {
-            Local = 0u,
-            Stolen,
-            Injection
-        };
-
-        size_t PriorityIndex(const TaskPriority priority)
-        {
-            return static_cast<size_t>(priority);
-        }
+        std::atomic<uint32_t> g_nextGraphGeneration {1u};
 
         bool IsNamedThread(const NamedThread thread)
         {
             return thread >= NamedThread::Game && thread < NamedThread::Count;
         }
 
-        size_t NamedThreadIndex(const NamedThread thread)
+        struct ExecutionScope;
+        thread_local ExecutionScope* g_execution = nullptr;
+        struct ExecutionScope final
         {
-            return static_cast<size_t>(thread) - static_cast<size_t>(NamedThread::Game);
-        }
-
-        const char* NamedThreadName(const NamedThread thread)
-        {
-            switch (thread)
-            {
-            case NamedThread::Game: return "Game Thread";
-            case NamedThread::Render: return "Render Thread";
-            case NamedThread::Rhi: return "RHI Thread";
-            default: return "Task Worker";
-            }
-        }
-
-        /**
-         * Worker identity for the calling thread. Nested submissions from a task
-         * body push into the owning worker lane, and a worker that blocks on a
-         * completion assists the pool instead of parking.
-         */
-        struct WorkerIdentity final
-        {
-            const void* graph = nullptr;
-            uint32_t workerIndex = kInvalidWorkerIndex;
+            const void* graph;
+            uint64_t taskId;
+            ExecutionScope* previous = g_execution;
+            ExecutionScope(const void* owner, uint64_t id) : graph(owner), taskId(id)
+            { g_execution = this; }
+            ~ExecutionScope() { g_execution = previous; }
         };
-
-        thread_local WorkerIdentity g_workerIdentity;
     }
 
     struct TaskCompletionState final
@@ -80,6 +48,7 @@ namespace NLS::Base::TaskGraph
         std::condition_variable condition;
         TaskStatus status = TaskStatus::Pending;
         std::weak_ptr<TaskGraph::Impl> graph;
+        TaskHandle handle;
 
         [[nodiscard]] bool IsCompleteLocked() const noexcept
         {
@@ -89,7 +58,7 @@ namespace NLS::Base::TaskGraph
         [[nodiscard]] TaskStatus WaitFor(std::chrono::milliseconds timeout);
     };
 
-    struct TaskGraph::Impl final
+    struct TaskGraph::Impl final : std::enable_shared_from_this<TaskGraph::Impl>
     {
         struct Node final
         {
@@ -101,17 +70,10 @@ namespace NLS::Base::TaskGraph
             std::atomic_bool cancelRequested {false};
             std::vector<std::weak_ptr<Node>> dependents;
             std::shared_ptr<TaskCompletionState> completion;
-        };
-
-        /**
-         * One work-stealing lane per worker. The lane mutex is the only lock a
-         * worker takes to pop its own work, so the steady-state scheduling path no
-         * longer contends on a single shared queue mutex.
-         */
-        struct Lane final
-        {
-            mutable std::mutex mutex;
-            std::array<std::deque<std::shared_ptr<Node>>, kPriorityQueueCount> queues;
+            // Accepted Jobs callbacks retain their payload in the existing node,
+            // avoiding a separate heap allocation per graph dispatch.
+            std::shared_ptr<Impl> executionOwner;
+            std::shared_ptr<Node> executionNode;
         };
 
         explicit Impl(TaskGraphConfig inConfig)
@@ -119,15 +81,24 @@ namespace NLS::Base::TaskGraph
         {
         }
 
+        ~Impl()
+        {
+            // ReleaseJobSystem supports the final lease returning from a worker:
+            // its shutdown join owner waits for that worker to finish. Accepted
+            // dispatches retain Impl until their bodies and finalization return.
+            if (schedulerAcquired.exchange(false))
+                Jobs::Internal::ReleaseJobSystem();
+        }
+
         TaskGraphConfig config;
-        uint32_t workerCount = 1u;
+        std::atomic<uint32_t> workerCount {0u};
+        std::atomic_bool schedulerAcquired {false};
         mutable std::mutex mutex;
-        std::condition_variable workerWake;
-        // Local lanes plus the shared injection queue. Every push takes `mutex`
-        // first, so the idle-worker predicate can never miss work.
-        std::vector<std::unique_ptr<Lane>> lanes;
-        mutable std::mutex injectionMutex;
-        std::array<std::deque<std::shared_ptr<Node>>, kPriorityQueueCount> injectionQueues;
+        std::mutex lifecycleMutex;
+        std::condition_variable changed;
+        size_t inFlightDispatchCount = 0u;
+        size_t finalizingTaskCount = 0u;
+        size_t pendingTaskCount = 0u;
         std::array<std::deque<std::shared_ptr<Node>>, static_cast<size_t>(NamedThread::Count)> namedQueues;
         std::array<TaskEvent, static_cast<size_t>(NamedThread::Count)> namedEvents;
         std::array<std::unordered_set<std::thread::id>, static_cast<size_t>(NamedThread::Count)> namedThreadIds;
@@ -135,26 +106,19 @@ namespace NLS::Base::TaskGraph
         // Terminal nodes in finalization order. The front entries are recycled once
         // the configured retention bound is exceeded.
         std::deque<TaskHandle> terminalNodeOrder;
-        std::vector<std::thread> workers;
         std::atomic<uint64_t> nextTaskId { 1u };
         std::atomic<size_t> runningTaskCount { 0u };
-        std::atomic<size_t> localExecutionCount { 0u };
-        std::atomic<size_t> stealExecutionCount { 0u };
-        std::atomic<size_t> injectionExecutionCount { 0u };
+        size_t initialLocalCount = 0u;
+        size_t initialStealCount = 0u;
+        size_t initialInjectionCount = 0u;
         uint32_t nextGeneration = 1u;
         bool started = false;
         bool acceptingWork = true;
         bool shuttingDown = false;
-        bool immediateShutdown = false;
 
         static bool IsTerminal(const TaskStatus status)
         {
             return status != TaskStatus::Pending;
-        }
-
-        static bool IsTerminalLifecycle(const uint8_t lifecycle)
-        {
-            return lifecycle == kLifecycleTerminal;
         }
 
         /**
@@ -165,7 +129,8 @@ namespace NLS::Base::TaskGraph
          */
         static void ReleaseNodePayload(
             const std::shared_ptr<Node>& node,
-            const bool bodyFinishedOnThisThread)
+            const bool bodyFinishedOnThisThread,
+            std::pmr::vector<std::function<void()>>& retiredPayloads)
         {
             if (node == nullptr)
                 return;
@@ -177,7 +142,10 @@ namespace NLS::Base::TaskGraph
 
             node->dependents.clear();
             node->desc.prerequisites.clear();
-            node->desc.function = {};
+            // The body has returned (or never started). Move its closure to a
+            // caller-owned list so capture destructors execute outside mutex.
+            if (node->desc.function)
+                retiredPayloads.push_back(std::move(node->desc.function));
         }
 
         static void SetCompletionStatus(
@@ -192,58 +160,88 @@ namespace NLS::Base::TaskGraph
             node->completion->condition.notify_all();
         }
 
-        void PushLaneLocked(const uint32_t laneIndex, const std::shared_ptr<Node>& node)
+        void FinishDispatch()
         {
-            Lane& lane = *lanes[laneIndex];
-            {
-                std::lock_guard lock(lane.mutex);
-                lane.queues[PriorityIndex(node->desc.priority)].push_back(node);
-            }
-            // A nested submission parked on this lane can be stolen by an idle
-            // worker, so wake the pool even though the submitting worker is busy.
-            workerWake.notify_all();
+            std::lock_guard lock(mutex);
+            --inFlightDispatchCount;
+            changed.notify_all();
         }
 
-        void PushInjectionLocked(const std::shared_ptr<Node>& node)
+        void ExecuteNode(const std::shared_ptr<Node>& node)
         {
-            {
-                std::lock_guard lock(injectionMutex);
-                injectionQueues[PriorityIndex(node->desc.priority)].push_back(node);
-            }
-            workerWake.notify_all();
+            uint8_t expected = kLifecycleQueued;
+            if (!node->lifecycle.compare_exchange_strong(expected, kLifecycleClaimed,
+                    std::memory_order_acq_rel, std::memory_order_acquire))
+                return;
+            runningTaskCount.fetch_add(1u, std::memory_order_acq_rel);
+            ExecuteTaskBody(node);
+            runningTaskCount.fetch_sub(1u, std::memory_order_acq_rel);
+            changed.notify_all();
         }
 
-        /**
-         * Routes a ready node to a worker lane, the injection queue, or a named
-         * thread queue. Callers hold `mutex` so the idle-worker predicate observes
-         * new work atomically with the wake-up.
-         */
-        void EnqueueReadyLocked(const std::shared_ptr<Node>& node)
+        // Never submit to Jobs while holding the graph mutex: cancellation or a
+        // fast worker may call back into Finalize before ScheduleJob returns.
+        struct DispatchScope final
         {
-            if (node == nullptr || IsTerminal(node->status))
-                return;
-            if (IsTerminalLifecycle(node->lifecycle.load(std::memory_order_acquire)))
-                return;
+            std::shared_ptr<Impl> graph;
+            std::shared_ptr<Node> node;
+            explicit DispatchScope(Node* raw)
+                : graph(std::move(raw->executionOwner)), node(std::move(raw->executionNode)) {}
+            ~DispatchScope() { graph->FinishDispatch(); }
+        };
 
-            if (node->desc.targetThread == NamedThread::Any)
+        void EnqueueReady(const std::shared_ptr<Node>& node, const bool tailContinuation = false)
+        {
             {
-                // Nested submissions stay on the submitting worker's lane so they
-                // are popped with the best cache locality; external submissions
-                // land in the shared injection queue and are stolen from there.
-                const bool submittedFromThisGraphWorker =
-                    g_workerIdentity.graph == static_cast<const void*>(this) &&
-                    g_workerIdentity.workerIndex < lanes.size() &&
-                    !lanes.empty();
-                if (submittedFromThisGraphWorker)
-                    PushLaneLocked(g_workerIdentity.workerIndex, node);
-                else
-                    PushInjectionLocked(node);
-                return;
+                std::lock_guard lock(mutex);
+                if (node == nullptr || IsTerminal(node->status))
+                    return;
+                if (node->desc.targetThread != NamedThread::Any)
+                {
+                    const auto index = static_cast<size_t>(node->desc.targetThread);
+                    namedQueues[index].push_back(node);
+                    namedEvents[index].Trigger();
+                    changed.notify_all();
+                    return;
+                }
+                // No allocation after counting an accepted dispatch. Ownership
+                // transfers exactly once, either to a callback or rejection cleanup.
+                node->executionOwner = shared_from_this();
+                node->executionNode = node;
+                ++inFlightDispatchCount;
             }
 
-            const size_t index = static_cast<size_t>(node->desc.targetThread);
-            namedQueues[index].push_back(node);
-            namedEvents[index].Trigger();
+            Jobs::JobScheduleDesc job;
+            job.function = [](void* data)
+            {
+                DispatchScope dispatch(static_cast<Node*>(data));
+                dispatch.graph->ExecuteNode(dispatch.node);
+            };
+            job.cancelFunction = [](void* data)
+            {
+                DispatchScope dispatch(static_cast<Node*>(data));
+                dispatch.graph->Finalize(dispatch.node, TaskStatus::Cancelled);
+            };
+            job.userData = node.get();
+            job.cancelUserData = node.get();
+            job.priority = node->desc.priority == TaskPriority::High ? Jobs::JobPriority::High
+                : node->desc.priority == TaskPriority::Low ? Jobs::JobPriority::Low
+                : Jobs::JobPriority::Normal;
+            job.debugName = "TaskGraph::Dispatch";
+            try
+            {
+                if (Jobs::Internal::DispatchJob(job, tailContinuation))
+                    return;
+            }
+            catch (...)
+            {
+                DispatchScope dispatch(node.get());
+                Finalize(node, TaskStatus::Failed);
+                return;
+            }
+            // A saturated or stopped scheduler never takes ownership on rejection.
+            DispatchScope dispatch(node.get());
+            Finalize(node, TaskStatus::Cancelled);
         }
 
         /**
@@ -270,6 +268,79 @@ namespace NLS::Base::TaskGraph
             }
         }
 
+        struct FinalizationScope final
+        {
+            Impl& graph;
+            bool active = false;
+            explicit FinalizationScope(Impl& owner) : graph(owner) {}
+            FinalizationScope(const FinalizationScope&) = delete;
+            FinalizationScope& operator=(const FinalizationScope&) = delete;
+            FinalizationScope(FinalizationScope&&) = delete;
+            FinalizationScope& operator=(FinalizationScope&&) = delete;
+            void BeginLocked() noexcept
+            {
+                ++graph.finalizingTaskCount;
+                active = true;
+            }
+            ~FinalizationScope()
+            {
+                if (!active)
+                    return;
+                std::lock_guard lock(graph.mutex);
+                --graph.finalizingTaskCount;
+                graph.changed.notify_all();
+            }
+        };
+
+        void FinalizeSingleSuccess(const std::shared_ptr<Node>& root,
+            std::unique_lock<std::mutex> lock, FinalizationScope& finalization)
+        {
+            std::shared_ptr<Node> successor;
+            std::function<void()> retiredPayload;
+            bool finalized = false;
+            {
+                // This inner lock is destroyed before payload/strong references
+                // on every exit, including allocation failure while recording history.
+                std::unique_lock critical(std::move(lock));
+                finalization.BeginLocked();
+                if (!IsTerminal(root->status))
+                {
+                    // Reserve the only potentially allocating record before
+                    // changing lifecycle state or moving a user-owned closure.
+                    terminalNodeOrder.push_back(root->handle);
+                    root->status = TaskStatus::Succeeded;
+                    --pendingTaskCount;
+                    root->lifecycle.exchange(kLifecycleTerminal, std::memory_order_acq_rel);
+                    if (!root->dependents.empty())
+                    {
+                        successor = root->dependents.front().lock();
+                        if (successor != nullptr && !IsTerminal(successor->status))
+                        {
+                            if (successor->remainingDependencies > 0u)
+                                --successor->remainingDependencies;
+                            if (successor->remainingDependencies != 0u)
+                                successor.reset();
+                        }
+                        else
+                            successor.reset();
+                    }
+                    root->dependents.clear();
+                    root->desc.prerequisites.clear();
+                    retiredPayload = std::move(root->desc.function);
+                    PruneTerminalNodesLocked();
+                    finalized = true;
+                }
+            }
+            if (finalized)
+            {
+                retiredPayload = {};
+                SetCompletionStatus(root, TaskStatus::Succeeded);
+                if (successor != nullptr)
+                    EnqueueReady(successor, true);
+            }
+            changed.notify_all();
+        }
+
         /**
          * Marks a node terminal and cascades through its dependents. The cascade is
          * iterative so a long dependency chain cannot overflow the stack, and every
@@ -281,12 +352,47 @@ namespace NLS::Base::TaskGraph
             if (root == nullptr)
                 return;
 
-            std::vector<std::shared_ptr<Node>> readyNodes;
-            std::vector<std::pair<std::shared_ptr<Node>, TaskStatus>> terminalNodes;
-            {
-                std::lock_guard lock(mutex);
+            // Cancellation may destroy the last facade reference from a closure.
+            // Treat its cleanup as execution so facade teardown cannot join this
+            // same finalization. Successful dispatch already has ExecutionScope.
+            std::optional<ExecutionScope> cleanupExecution;
+            if (status != TaskStatus::Succeeded)
+                cleanupExecution.emplace(this, root->handle.id);
 
-                std::vector<std::pair<std::shared_ptr<Node>, TaskStatus>> pending;
+            // Outlive all payloads and temporary node references, including
+            // reentrant user destruction on either finalization path.
+            FinalizationScope finalization {*this};
+            std::unique_lock<std::mutex> candidateLock(mutex, std::defer_lock);
+            if (status == TaskStatus::Succeeded)
+            {
+                candidateLock.lock();
+                if (root->desc.targetThread == NamedThread::Any && root->dependents.size() <= 1u)
+                {
+                    FinalizeSingleSuccess(root, std::move(candidateLock), finalization);
+                    return;
+                }
+            }
+
+            // A successful node with one successor needs only a few records.
+            // Keep those on this call's stack; branching/cancellation may spill
+            // to the standard allocator. Reentrant capture destructors get their
+            // own storage, so no thread-local scratch ownership escapes the call.
+            std::array<std::byte, 256u> scratch;
+            std::pmr::monotonic_buffer_resource scratchResource(scratch.data(), scratch.size());
+            std::pmr::vector<std::shared_ptr<Node>> readyNodes(&scratchResource);
+            std::pmr::vector<std::pair<std::shared_ptr<Node>, TaskStatus>> terminalNodes(&scratchResource);
+            std::pmr::vector<std::function<void()>> retiredPayloads(&scratchResource);
+            {
+                // A fast-path miss hands off the already-held lock. Place the
+                // owner after the containers so exception unwinding unlocks
+                // before destroying any captured user objects.
+                std::unique_lock lock(std::move(candidateLock));
+                if (!lock.owns_lock())
+                    lock.lock();
+                finalization.BeginLocked();
+                std::array<bool, static_cast<size_t>(NamedThread::Count)> pruneNamed {};
+
+                std::pmr::vector<std::pair<std::shared_ptr<Node>, TaskStatus>> pending(&scratchResource);
                 pending.emplace_back(root, status);
 
                 while (!pending.empty())
@@ -298,6 +404,9 @@ namespace NLS::Base::TaskGraph
                         continue;
 
                     node->status = nodeStatus;
+                    --pendingTaskCount;
+                    if (node->desc.targetThread != NamedThread::Any)
+                        pruneNamed[static_cast<size_t>(node->desc.targetThread)] = true;
                     // Exchange first so the release decision sees the pre-terminal
                     // state: a body already claimed by another thread must keep its
                     // std::function alive until that thread returns.
@@ -330,128 +439,31 @@ namespace NLS::Base::TaskGraph
                     // that was claimed; a cascaded dependent is never running.
                     ReleaseNodePayload(
                         node,
-                        node == root || previousLifecycle != kLifecycleClaimed);
+                        node == root || previousLifecycle != kLifecycleClaimed,
+                        retiredPayloads);
                     terminalNodeOrder.push_back(node->handle);
                     PruneTerminalNodesLocked();
                 }
-
-                for (const auto& ready : readyNodes)
-                    EnqueueReadyLocked(ready);
+                // Cancelled named tasks have no Jobs dispatch to retire them.
+                // Remove their queue references so repeated submit/cancel cannot
+                // retain unbounded payloads or queue entries without a lane pump.
+                for (size_t index = 0; index < pruneNamed.size(); ++index)
+                    if (pruneNamed[index])
+                        std::erase_if(namedQueues[index], [](const auto& node)
+                        { return node == nullptr || IsTerminal(node->status); });
             }
 
+            // Destroy the moved closures outside the graph lock before marking
+            // completion observable. No running body is included in this list.
+            retiredPayloads.clear();
             // Publish terminal state for every node this call finalized, including
             // the transitively cancelled dependents. A waiter that observed the
             // node before this point would otherwise never be released.
             for (const auto& [node, nodeStatus] : terminalNodes)
                 SetCompletionStatus(node, nodeStatus);
-        }
-
-        /**
-         * Pops the newest task from a lane (LIFO). Newest-first keeps the hottest
-         * operand data in cache for the worker that produced the work.
-         */
-        std::shared_ptr<Node> PopLane(const uint32_t laneIndex)
-        {
-            Lane& lane = *lanes[laneIndex];
-            std::lock_guard lock(lane.mutex);
-            for (size_t index = 0u; index < lane.queues.size(); ++index)
-            {
-                auto& queue = lane.queues[lane.queues.size() - 1u - index];
-                while (!queue.empty())
-                {
-                    auto node = std::move(queue.back());
-                    queue.pop_back();
-                    if (node == nullptr || IsTerminalLifecycle(
-                            node->lifecycle.load(std::memory_order_acquire)))
-                    {
-                        continue;
-                    }
-                    return node;
-                }
-            }
-            return {};
-        }
-
-        /**
-         * Steals the oldest task from another lane (FIFO). Oldest-first avoids
-         * fighting the victim for the item it is about to pop.
-         */
-        std::shared_ptr<Node> StealLane(const uint32_t laneIndex)
-        {
-            Lane& lane = *lanes[laneIndex];
-            std::lock_guard lock(lane.mutex);
-            for (size_t index = 0u; index < lane.queues.size(); ++index)
-            {
-                auto& queue = lane.queues[lane.queues.size() - 1u - index];
-                while (!queue.empty())
-                {
-                    auto node = std::move(queue.front());
-                    queue.pop_front();
-                    if (node == nullptr || IsTerminalLifecycle(
-                            node->lifecycle.load(std::memory_order_acquire)))
-                    {
-                        continue;
-                    }
-                    return node;
-                }
-            }
-            return {};
-        }
-
-        std::shared_ptr<Node> PopInjection()
-        {
-            std::lock_guard lock(injectionMutex);
-            for (size_t index = 0u; index < injectionQueues.size(); ++index)
-            {
-                auto& queue = injectionQueues[injectionQueues.size() - 1u - index];
-                while (!queue.empty())
-                {
-                    auto node = std::move(queue.front());
-                    queue.pop_front();
-                    if (node == nullptr || IsTerminalLifecycle(
-                            node->lifecycle.load(std::memory_order_acquire)))
-                    {
-                        continue;
-                    }
-                    return node;
-                }
-            }
-            return {};
-        }
-
-        /**
-         * Claims one runnable task for `workerIndex`: own lane first, then a
-         * round-robin steal scan of the other lanes, then the shared injection
-         * queue. Nothing here takes `mutex`, so workers do not serialize on the
-         * graph lock while scheduling.
-         */
-        std::shared_ptr<Node> ClaimReadyNode(
-            const uint32_t workerIndex,
-            ReadySource* outSource)
-        {
-            if (outSource != nullptr)
-                *outSource = ReadySource::Injection;
-
-            if (auto node = PopLane(workerIndex))
-            {
-                if (outSource != nullptr)
-                    *outSource = ReadySource::Local;
-                return node;
-            }
-
-            const uint32_t laneCount = static_cast<uint32_t>(lanes.size());
-            for (uint32_t offset = 1u; offset < laneCount; ++offset)
-            {
-                const uint32_t victim = (workerIndex + offset) % laneCount;
-                if (auto node = StealLane(victim))
-                {
-                    if (outSource != nullptr)
-                        *outSource = ReadySource::Stolen;
-                    return node;
-                }
-            }
-
-            return PopInjection();
+            for (const auto& ready : readyNodes)
+                EnqueueReady(ready, root->desc.targetThread == NamedThread::Any);
+            changed.notify_all();
         }
 
         std::shared_ptr<Node> PopNamedNodeLocked(const NamedThread thread)
@@ -473,6 +485,7 @@ namespace NLS::Base::TaskGraph
 
         void ExecuteTaskBody(const std::shared_ptr<Node>& node)
         {
+            ExecutionScope execution(this, node->handle.id);
             TaskStatus status = TaskStatus::Succeeded;
             if (node->cancelRequested.load(std::memory_order_acquire))
             {
@@ -496,161 +509,36 @@ namespace NLS::Base::TaskGraph
             Finalize(node, status);
         }
 
-        /**
-         * Runs at most one ready task and reports whether one was claimed. The
-         * worker loop and the blocked-worker assist path share this entry point.
-         */
-        bool TryExecuteOneReadyTask(const uint32_t workerIndex)
-        {
-            while (true)
-            {
-                ReadySource source = ReadySource::Injection;
-                auto node = ClaimReadyNode(workerIndex, &source);
-                if (node == nullptr)
-                    return false;
-
-                uint8_t expected = kLifecycleQueued;
-                if (!node->lifecycle.compare_exchange_strong(
-                        expected,
-                        kLifecycleClaimed,
-                        std::memory_order_acq_rel,
-                        std::memory_order_acquire))
-                {
-                    // Cancelled or already claimed elsewhere: keep looking.
-                    continue;
-                }
-
-                if (source == ReadySource::Local)
-                    localExecutionCount.fetch_add(1u, std::memory_order_relaxed);
-                else if (source == ReadySource::Stolen)
-                    stealExecutionCount.fetch_add(1u, std::memory_order_relaxed);
-                else
-                    injectionExecutionCount.fetch_add(1u, std::memory_order_relaxed);
-                runningTaskCount.fetch_add(1u, std::memory_order_acq_rel);
-                ExecuteTaskBody(node);
-                runningTaskCount.fetch_sub(1u, std::memory_order_acq_rel);
-                return true;
-            }
-        }
-
-        void WorkerLoop(const uint32_t workerIndex)
-        {
-            const WorkerIdentity previousIdentity = g_workerIdentity;
-            g_workerIdentity.graph = static_cast<const void*>(this);
-            g_workerIdentity.workerIndex = workerIndex;
-
-            const std::string workerName = "TaskGraph Worker " + std::to_string(workerIndex);
-            NLS_PROFILE_REGISTER_THREAD(workerName);
-
-            while (true)
-            {
-                if (TryExecuteOneReadyTask(workerIndex))
-                    continue;
-
-                std::unique_lock lock(mutex);
-                // Every queue push happens under `mutex` and notifies, so a plain
-                // predicate wait cannot miss work while idle workers stay parked.
-                workerWake.wait(
-                    lock,
-                    [this]
-                    {
-                        return shuttingDown || HasRunnableWorkLocked();
-                    });
-
-                if (shuttingDown && !HasRunnableWorkLocked())
-                    break;
-            }
-
-            g_workerIdentity = previousIdentity;
-        }
-
-        bool HasRunnableWorkLocked() const
-        {
-            for (const auto& lane : lanes)
-            {
-                if (lane == nullptr)
-                    continue;
-                std::lock_guard lock(lane->mutex);
-                for (const auto& queue : lane->queues)
-                {
-                    if (!queue.empty())
-                        return true;
-                }
-            }
-
-            {
-                std::lock_guard lock(injectionMutex);
-                for (const auto& queue : injectionQueues)
-                {
-                    if (!queue.empty())
-                        return true;
-                }
-            }
-
-            return false;
-        }
-
-        bool HasNamedWorkLocked() const
-        {
-            for (const auto& queue : namedQueues)
-            {
-                if (!queue.empty())
-                    return true;
-            }
-            return false;
-        }
-
         void ClearQueuesLocked()
         {
-            for (auto& lane : lanes)
-            {
-                if (lane == nullptr)
-                    continue;
-                std::lock_guard lock(lane->mutex);
-                for (auto& queue : lane->queues)
-                    queue.clear();
-            }
-
-            {
-                std::lock_guard lock(injectionMutex);
-                for (auto& queue : injectionQueues)
-                    queue.clear();
-            }
-
             for (auto& queue : namedQueues)
                 queue.clear();
+            for (auto& event : namedEvents)
+                event.Reset();
         }
 
-        /**
-         * Immediate shutdown: every unstarted node is cancelled and every queue is
-         * dropped. A body that is already executing cannot be preempted, so the
-         * caller still joins it.
-         */
-        void CancelAllPendingLocked()
+        void CancelPending(const bool orphanedNamedOnly)
         {
-            for (auto& [id, node] : nodes)
+            std::vector<std::shared_ptr<Node>> cancelled;
             {
-                (void)id;
-                if (node == nullptr || IsTerminal(node->status))
-                    continue;
-
-                node->status = TaskStatus::Cancelled;
-                const uint8_t previousLifecycle =
-                    node->lifecycle.exchange(kLifecycleTerminal, std::memory_order_acq_rel);
-                // A body that is already executing finishes on its own thread; its
-                // captured payload stays alive until then.
-                if (previousLifecycle != kLifecycleClaimed)
-                    ReleaseNodePayload(node, true);
-                terminalNodeOrder.push_back(node->handle);
-                PruneTerminalNodesLocked();
-
-                if (node->completion != nullptr)
+                std::lock_guard lock(mutex);
+                for (const auto& [id, node] : nodes)
                 {
-                    std::lock_guard lock(node->completion->mutex);
-                    node->completion->status = TaskStatus::Cancelled;
-                    node->completion->condition.notify_all();
+                    if (IsTerminal(node->status))
+                        continue;
+                    if (orphanedNamedOnly &&
+                        (node->desc.targetThread == NamedThread::Any ||
+                         !namedThreadIds[static_cast<size_t>(node->desc.targetThread)].empty()))
+                        continue;
+                    uint8_t expected = kLifecycleQueued;
+                    if (node->lifecycle.compare_exchange_strong(expected, kLifecycleTerminal,
+                            std::memory_order_acq_rel, std::memory_order_acquire))
+                        cancelled.push_back(node);
                 }
             }
+            // Finalize may prune the task table; never iterate that table while pruning.
+            for (const auto& node : cancelled)
+                Finalize(node, TaskStatus::Cancelled);
         }
 
         size_t PumpNamedThread(const NamedThread thread, size_t maxTasks)
@@ -664,25 +552,16 @@ namespace NLS::Base::TaskGraph
                 std::shared_ptr<Node> node;
                 {
                     std::lock_guard lock(mutex);
+                    const auto& owners = namedThreadIds[static_cast<size_t>(thread)];
+                    if (owners.find(std::this_thread::get_id()) == owners.end())
+                        return executedCount;
                     node = PopNamedNodeLocked(thread);
                 }
 
                 if (node == nullptr)
                     break;
 
-                uint8_t expected = kLifecycleQueued;
-                if (!node->lifecycle.compare_exchange_strong(
-                        expected,
-                        kLifecycleClaimed,
-                        std::memory_order_acq_rel,
-                        std::memory_order_acquire))
-                {
-                    continue;
-                }
-
-                runningTaskCount.fetch_add(1u, std::memory_order_acq_rel);
-                ExecuteTaskBody(node);
-                runningTaskCount.fetch_sub(1u, std::memory_order_acq_rel);
+                ExecuteNode(node);
                 ++executedCount;
             }
 
@@ -692,6 +571,25 @@ namespace NLS::Base::TaskGraph
                     namedEvents[static_cast<size_t>(thread)].Reset();
             }
             return executedCount;
+        }
+
+        size_t PumpOwnedNamedThreads(const size_t maxTasks)
+        {
+            size_t executed = 0u;
+            while (true)
+            {
+                const auto before = executed;
+                for (const auto lane : {NamedThread::Game, NamedThread::Render, NamedThread::Rhi})
+                {
+                    // PumpNamedThread checks registration on each visit. A thread
+                    // may own several lanes when dedicated rendering is disabled.
+                    executed += PumpNamedThread(lane, 1u);
+                    if (maxTasks != 0u && executed >= maxTasks)
+                        return executed;
+                }
+                if (executed == before)
+                    return executed;
+            }
         }
 
         TaskStatus WaitForCompletion(TaskCompletionState& state, std::chrono::milliseconds timeout)
@@ -709,22 +607,27 @@ namespace NLS::Base::TaskGraph
                         return state.status;
                 }
 
+                if (!infiniteWait && std::chrono::steady_clock::now() >= deadline)
+                    return TaskStatus::Pending;
+
                 // A blocked pool worker cooperates instead of parking, so a nested
                 // wait cannot deadlock even when the graph owns a single worker.
-                AssistWhileWaiting();
-
-                NamedThread currentThread = NamedThread::Any;
-                if (!IsCurrentThreadGraphWorker())
-                {
-                    std::lock_guard lock(mutex);
-                    currentThread = GetCurrentNamedThreadLocked();
-                }
-                if (currentThread != NamedThread::Any)
-                    PumpNamedThread(currentThread, 0u);
+                if (g_execution != nullptr && WaitWouldCycle(state.handle))
+                    throw std::logic_error("TaskGraph wait depends on the current execution stack");
+                // Visit every owned lane once: choosing only the first registered
+                // lane strands Render/Rhi continuations on a combined owner.
+                bool assisted = false;
+                for (const auto lane : {NamedThread::Game, NamedThread::Render, NamedThread::Rhi})
+                    assisted = PumpNamedThread(lane, 1u) != 0u || assisted;
+                if (!assisted)
+                    assisted = AssistWhileWaiting();
 
                 std::unique_lock lock(state.mutex);
                 if (state.IsCompleteLocked())
                     return state.status;
+
+                if (assisted)
+                    continue;
 
                 if (infiniteWait)
                 {
@@ -743,21 +646,38 @@ namespace NLS::Base::TaskGraph
 
         bool IsCurrentThreadGraphWorker() const
         {
-            return g_workerIdentity.graph == static_cast<const void*>(this) &&
-                g_workerIdentity.workerIndex < workerCount;
+            return Jobs::Internal::IsForegroundWorkerThread();
         }
 
-        /**
-         * Runs runnable `Any` work while the calling worker waits. Only workers
-         * assist: an unregistered caller keeps the documented contract that
-         * waiting never executes worker tasks.
-         */
-        void AssistWhileWaiting()
+        bool AssistWhileWaiting()
         {
-            if (!IsCurrentThreadGraphWorker())
-                return;
+            // Jobs explicitly supports a zero-worker cooperative configuration.
+            if (workerCount == 0u)
+                return Jobs::ExecuteOneJobQueueJob();
+            return Jobs::Internal::ExecuteOneForegroundJobForWorker();
+        }
 
-            (void)TryExecuteOneReadyTask(g_workerIdentity.workerIndex);
+        bool WaitWouldCycle(const TaskHandle target)
+        {
+            std::lock_guard lock(mutex);
+            std::vector<uint64_t> pending {target.id};
+            std::unordered_set<uint64_t> visited;
+            while (!pending.empty())
+            {
+                const auto id = pending.back();
+                pending.pop_back();
+                if (!visited.insert(id).second)
+                    continue;
+                for (auto* scope = g_execution; scope; scope = scope->previous)
+                    if (scope->graph == this && scope->taskId == id)
+                        return true;
+                const auto found = nodes.find(id);
+                if (found == nodes.end() || IsTerminal(found->second->status))
+                    continue;
+                for (const auto prerequisite : found->second->desc.prerequisites)
+                    pending.push_back(prerequisite.id);
+            }
+            return false;
         }
 
         NamedThread GetCurrentNamedThreadLocked() const
@@ -829,59 +749,55 @@ namespace NLS::Base::TaskGraph
 
     TaskGraph::~TaskGraph()
     {
+        for (auto* scope = g_execution; scope; scope = scope->previous)
+        {
+            if (scope->graph != m_impl.get())
+                continue;
+            // A closure may own the facade's last reference. Do not wait on the
+            // current callback; cancel unstarted nodes and let dispatch ownership
+            // keep the implementation alive until all running callbacks return.
+            {
+                std::lock_guard lock(m_impl->mutex);
+                m_impl->acceptingWork = false;
+            }
+            m_impl->CancelPending(false);
+            return;
+        }
         Shutdown(TaskGraphShutdownMode::Immediate);
     }
 
     bool TaskGraph::Start()
     {
+        return StartInternal(true);
+    }
+
+    bool TaskGraph::StartInternal(const bool explicitStart)
+    {
         if (m_impl == nullptr)
             return false;
-
+        std::lock_guard lifecycleLock(m_impl->lifecycleMutex);
         std::lock_guard lock(m_impl->mutex);
+        if (!explicitStart && !m_impl->acceptingWork)
+            return false;
         if (m_impl->started)
             return true;
-        if (m_impl->shuttingDown)
+        Jobs::JobSystemConfig jobs;
+        jobs.workerCount = (std::max)(1u, m_impl->config.workerCount);
+        // Job diagnostics are an application-level Jobs setting. The legacy
+        // graph flag must not silently enable global per-job tracing.
+        jobs.enableDiagnostics = false;
+        if (!Jobs::Internal::AcquireJobSystem(jobs))
             return false;
-
-        // A drained shutdown leaves the graph reusable so drivers and tests can
-        // restart the process-lifetime global graph in subsequent scenarios.
-        m_impl->acceptingWork = true;
-        ++m_impl->nextGeneration;
+        m_impl->schedulerAcquired = true;
+        m_impl->workerCount = Jobs::GetJobWorkerCount();
+        m_impl->initialLocalCount = Jobs::Internal::GetJobWorkerLocalExecutionCount();
+        m_impl->initialStealCount = Jobs::Internal::GetJobWorkerStealCount();
+        m_impl->initialInjectionCount = Jobs::Internal::GetJobWorkerInjectionExecutionCount();
+        m_impl->nextGeneration = g_nextGraphGeneration.fetch_add(1u, std::memory_order_relaxed);
         if (m_impl->nextGeneration == 0u)
-            ++m_impl->nextGeneration;
-
-        const uint32_t hardware = std::max(1u, std::thread::hardware_concurrency());
-        m_impl->workerCount = m_impl->config.workerCount == kAutoTaskGraphWorkerCount
-            ? NLS::Base::Threading::ResolveExecutionPoolBudget(hardware).taskGraphWorkerCount
-            : std::max(1u, m_impl->config.workerCount);
-
-        m_impl->lanes.clear();
-        m_impl->lanes.reserve(m_impl->workerCount);
-        for (uint32_t workerIndex = 0u; workerIndex < m_impl->workerCount; ++workerIndex)
-            m_impl->lanes.push_back(std::make_unique<Impl::Lane>());
-
-        m_impl->localExecutionCount.store(0u, std::memory_order_relaxed);
-        m_impl->stealExecutionCount.store(0u, std::memory_order_relaxed);
-        m_impl->injectionExecutionCount.store(0u, std::memory_order_relaxed);
-
+            m_impl->nextGeneration = g_nextGraphGeneration.fetch_add(1u, std::memory_order_relaxed);
+        m_impl->acceptingWork = true;
         m_impl->started = true;
-        try
-        {
-            m_impl->workers.reserve(m_impl->workerCount);
-            for (uint32_t workerIndex = 0u; workerIndex < m_impl->workerCount; ++workerIndex)
-            {
-                m_impl->workers.emplace_back(
-                    [impl = m_impl.get(), workerIndex] { impl->WorkerLoop(workerIndex); });
-            }
-        }
-        catch (...)
-        {
-            m_impl->started = false;
-            m_impl->acceptingWork = false;
-            m_impl->shuttingDown = true;
-            m_impl->workerWake.notify_all();
-            return false;
-        }
         return true;
     }
 
@@ -889,57 +805,38 @@ namespace NLS::Base::TaskGraph
     {
         if (m_impl == nullptr)
             return;
-
-        std::vector<std::thread> workers;
+        // Joining the callback's own lifetime is impossible. Keep this operation
+        // on the lifecycle owner; task bodies can request cancellation instead.
+        for (auto* scope = g_execution; scope; scope = scope->previous)
+            if (scope->graph == m_impl.get())
+                return;
+        std::lock_guard lifecycleLock(m_impl->lifecycleMutex);
         {
             std::lock_guard lock(m_impl->mutex);
-            if (!m_impl->started && !m_impl->acceptingWork)
-                return;
-
             m_impl->acceptingWork = false;
+            if (!m_impl->started)
+                return;
             m_impl->shuttingDown = true;
-            m_impl->immediateShutdown = mode == TaskGraphShutdownMode::Immediate;
-
-            if (mode == TaskGraphShutdownMode::Immediate)
-            {
-                m_impl->CancelAllPendingLocked();
-                m_impl->ClearQueuesLocked();
-            }
-
-            workers = std::move(m_impl->workers);
-            m_impl->workerWake.notify_all();
         }
 
-        if (mode == TaskGraphShutdownMode::DrainAcceptedWork)
+        while (true)
         {
-            while (true)
+            // Unregistered lanes have no executor. Cancel their unstarted work
+            // instead of running graphics/main-thread code on the shutdown caller.
+            m_impl->CancelPending(mode == TaskGraphShutdownMode::DrainAcceptedWork);
+            if (mode == TaskGraphShutdownMode::DrainAcceptedWork)
             {
-                for (const NamedThread thread : {NamedThread::Game, NamedThread::Render, NamedThread::Rhi})
-                    m_impl->PumpNamedThread(thread, 0u);
-
-                {
-                    std::lock_guard lock(m_impl->mutex);
-                    const bool hasPending = std::any_of(
-                        m_impl->nodes.begin(),
-                        m_impl->nodes.end(),
-                        [](const auto& entry) { return entry.second != nullptr && !Impl::IsTerminal(entry.second->status); });
-                    if (!hasPending &&
-                        !m_impl->HasRunnableWorkLocked() &&
-                        !m_impl->HasNamedWorkLocked())
-                    {
-                        break;
-                    }
-                }
-
-                m_impl->workerWake.notify_all();
-                std::this_thread::yield();
+                for (const auto lane : {NamedThread::Game, NamedThread::Render, NamedThread::Rhi})
+                    m_impl->PumpNamedThread(lane, 1u);
             }
-        }
-
-        for (auto& worker : workers)
-        {
-            if (worker.joinable())
-                worker.join();
+            const bool assisted = m_impl->AssistWhileWaiting();
+            std::unique_lock lock(m_impl->mutex);
+            if (m_impl->pendingTaskCount == 0u && m_impl->inFlightDispatchCount == 0u &&
+                m_impl->finalizingTaskCount == 0u &&
+                m_impl->runningTaskCount.load(std::memory_order_acquire) == 0u)
+                break;
+            if (!assisted)
+                m_impl->changed.wait_for(lock, std::chrono::milliseconds(1));
         }
 
         {
@@ -947,13 +844,12 @@ namespace NLS::Base::TaskGraph
             m_impl->nodes.clear();
             m_impl->terminalNodeOrder.clear();
             m_impl->ClearQueuesLocked();
-            m_impl->lanes.clear();
-            m_impl->runningTaskCount.store(0u, std::memory_order_release);
             m_impl->started = false;
             m_impl->shuttingDown = false;
-            m_impl->immediateShutdown = false;
-            m_impl->acceptingWork = true;
+            m_impl->workerCount = 0u;
         }
+        if (m_impl->schedulerAcquired.exchange(false))
+            Jobs::Internal::ReleaseJobSystem();
     }
 
     bool TaskGraph::IsStarted() const noexcept
@@ -972,6 +868,13 @@ namespace NLS::Base::TaskGraph
         std::lock_guard lock(m_impl->mutex);
         const size_t index = static_cast<size_t>(thread);
         const auto current = std::this_thread::get_id();
+        // Logical RHI Tasks mode explicitly registers pool workers. Main and
+        // Render are dedicated lanes and must not migrate into the compute pool.
+        if (thread != NamedThread::Rhi && Jobs::Internal::IsForegroundWorkerThread())
+            return false;
+        if (thread != NamedThread::Rhi && !m_impl->namedThreadIds[index].empty() &&
+            !m_impl->namedThreadIds[index].contains(current))
+            return false;
         m_impl->namedThreadIds[index].insert(current);
         return true;
     }
@@ -1009,19 +912,207 @@ namespace NLS::Base::TaskGraph
 
     TaskHandle TaskGraph::Submit(TaskDesc desc)
     {
-        if (m_impl == nullptr || !desc.function)
-            return {};
+        return SubmitInternal(std::move(desc), nullptr);
+    }
 
-        if (!IsStarted() && !Start())
+    TaskSubmission TaskGraph::SubmitTracked(TaskDesc desc)
+    {
+        TaskSubmission result;
+        result.handle = SubmitInternal(std::move(desc), &result.completion);
+        return result;
+    }
+
+    TaskGraphBatch::NodeId TaskGraphBatch::Add(TaskDesc task)
+    {
+        if (m_executed || !task.function || !task.prerequisites.empty())
+            return InvalidNode;
+        m_tasks.push_back(std::move(task));
+        m_dependencies.emplace_back();
+        return m_tasks.size() - 1u;
+    }
+
+    bool TaskGraphBatch::DependsOn(const NodeId node, const NodeId prerequisite)
+    {
+        if (m_executed || node >= m_tasks.size() || prerequisite >= m_tasks.size())
+            return false;
+        auto& dependencies = m_dependencies[node];
+        if (std::find(dependencies.begin(), dependencies.end(), prerequisite) != dependencies.end())
+            return false;
+        dependencies.push_back(prerequisite);
+        return true;
+    }
+
+    GraphCompletion TaskGraphBatch::Execute(TaskGraph& graph)
+    {
+        return graph.SubmitGraph(*this);
+    }
+
+    GraphCompletion TaskGraph::SubmitGraph(TaskGraphBatch& batch)
+    {
+        GraphCompletion result;
+        if (batch.m_executed)
+            return result;
+        batch.m_executed = true;
+        const size_t count = batch.m_tasks.size();
+        std::vector<size_t> remaining(count);
+        std::vector<std::vector<size_t>> dependents(count);
+        std::vector<size_t> order;
+        order.reserve(count);
+        for (size_t index = 0; index < count; ++index)
+        {
+            const auto& task = batch.m_tasks[index];
+            if (!task.function || (!IsNamedThread(task.targetThread) && task.targetThread != NamedThread::Any) ||
+                task.priority > TaskPriority::High || !task.prerequisites.empty())
+                return result;
+            remaining[index] = batch.m_dependencies[index].size();
+            for (const auto predecessor : batch.m_dependencies[index])
+                dependents[predecessor].push_back(index);
+            if (remaining[index] == 0u)
+                order.push_back(index);
+        }
+        for (size_t cursor = 0; cursor < order.size(); ++cursor)
+            for (const auto successor : dependents[order[cursor]])
+                if (--remaining[successor] == 0u)
+                    order.push_back(successor);
+        if (order.size() != count)
+            return result; // Includes self edges; no node has been submitted.
+
+        {
+            std::lock_guard lock(m_impl->mutex);
+            if (!m_impl->acceptingWork || m_impl->shuttingDown)
+                return result;
+        }
+        if (!IsStarted() && !StartInternal(false))
+            return result;
+
+        std::vector<std::shared_ptr<Impl::Node>> nodes;
+        nodes.reserve(count);
+        result.m_tasks.reserve(count);
+        {
+            std::lock_guard lock(m_impl->mutex);
+            if (!m_impl->acceptingWork || m_impl->shuttingDown ||
+                count > m_impl->config.maxPendingTaskCount - m_impl->pendingTaskCount)
+                return result;
+            // Prepare the complete graph before publishing roots. This remains
+            // correct with terminal retention set to zero and very fast workers.
+            for (size_t index = 0; index < count; ++index)
+            {
+                auto node = std::make_shared<Impl::Node>();
+                node->handle = {m_impl->nextTaskId.fetch_add(1u), m_impl->nextGeneration};
+                node->desc = std::move(batch.m_tasks[index]);
+                node->remainingDependencies = batch.m_dependencies[index].size();
+                node->completion = std::make_shared<TaskCompletionState>();
+                node->completion->graph = m_impl;
+                node->completion->handle = node->handle;
+                nodes.push_back(std::move(node));
+            }
+            for (size_t index = 0; index < count; ++index)
+            {
+                for (const auto predecessor : batch.m_dependencies[index])
+                {
+                    nodes[predecessor]->dependents.push_back(nodes[index]);
+                    nodes[index]->desc.prerequisites.push_back(nodes[predecessor]->handle);
+                }
+                result.m_tasks.push_back({nodes[index]->handle, TaskCompletion(nodes[index]->completion)});
+            }
+            try
+            {
+                for (const auto& node : nodes)
+                    m_impl->nodes.emplace(node->handle.id, node);
+            }
+            catch (...)
+            {
+                for (const auto& node : nodes)
+                    m_impl->nodes.erase(node->handle.id);
+                throw;
+            }
+            m_impl->pendingTaskCount += count;
+            result.m_valid = true;
+        }
+        for (const auto index : order)
+            if (batch.m_dependencies[index].empty())
+                m_impl->EnqueueReady(nodes[index]);
+        return result;
+    }
+
+    bool GraphCompletion::IsComplete() const
+    {
+        return m_valid && std::all_of(m_tasks.begin(), m_tasks.end(),
+            [](const auto& task) { return task.completion.IsComplete(); });
+    }
+
+    TaskStatus GraphCompletion::GetStatus() const
+    {
+        if (!m_valid)
+            return TaskStatus::Cancelled;
+        TaskStatus status = TaskStatus::Succeeded;
+        for (const auto& task : m_tasks)
+        {
+            const auto taskStatus = task.completion.GetStatus();
+            if (taskStatus == TaskStatus::Pending)
+                return TaskStatus::Pending;
+            if (taskStatus == TaskStatus::Failed ||
+                (taskStatus == TaskStatus::Cancelled && status != TaskStatus::Failed))
+                status = taskStatus;
+        }
+        return status;
+    }
+
+    TaskStatus GraphCompletion::Wait()
+    {
+        for (auto& task : m_tasks)
+            (void)task.completion.Wait();
+        return GetStatus();
+    }
+
+    bool GraphCompletion::WaitFor(const std::chrono::milliseconds timeout)
+    {
+        if (!m_valid)
+            return false;
+        if (timeout == std::chrono::milliseconds::max())
+        {
+            (void)Wait();
+            return true;
+        }
+        const auto deadline = std::chrono::steady_clock::now() + timeout;
+        for (auto& task : m_tasks)
+        {
+            const auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(
+                deadline - std::chrono::steady_clock::now());
+            if (!task.completion.WaitFor((std::max)(remaining, std::chrono::milliseconds(0))))
+                return false;
+        }
+        return true;
+    }
+
+    TaskHandle TaskGraph::SubmitInternal(TaskDesc desc, TaskCompletion* completion)
+    {
+        if (m_impl == nullptr || !desc.function)
             return {};
 
         std::shared_ptr<Impl::Node> node;
         TaskHandle handle;
         bool dependencyAlreadyFailed = false;
         bool runInline = false;
+        bool enqueue = false;
         {
-            std::lock_guard lock(m_impl->mutex);
+            // The started path validates and admits under one lock. Lazy startup
+            // still runs outside this mutex and rechecks admission after relocking.
+            // Keep node outside the lock scope so capture cleanup remains reentrant.
+            std::unique_lock lock(m_impl->mutex);
             if (!m_impl->acceptingWork || m_impl->shuttingDown)
+                return {};
+            if (!m_impl->started)
+            {
+                lock.unlock();
+                if (!StartInternal(false))
+                    return {};
+                lock.lock();
+            }
+            if (!m_impl->acceptingWork || m_impl->shuttingDown ||
+                m_impl->pendingTaskCount >= m_impl->config.maxPendingTaskCount)
+                return {};
+            if (desc.priority > TaskPriority::High)
                 return {};
             if (!IsNamedThread(desc.targetThread) && desc.targetThread != NamedThread::Any)
                 return {};
@@ -1060,6 +1151,7 @@ namespace NLS::Base::TaskGraph
             node->remainingDependencies = prerequisiteNodes.size();
             node->completion = std::make_shared<TaskCompletionState>();
             node->completion->graph = m_impl;
+            node->completion->handle = node->handle;
 
             for (const auto& prerequisite : prerequisiteNodes)
             {
@@ -1076,13 +1168,18 @@ namespace NLS::Base::TaskGraph
 
             handle = node->handle;
             m_impl->nodes.emplace(handle.id, node);
+            ++m_impl->pendingTaskCount;
+
+            if (completion != nullptr)
+                *completion = TaskCompletion(node->completion);
 
             if (!dependencyAlreadyFailed && node->remainingDependencies == 0u)
             {
-                if (m_impl->config.forceInlineExecution)
-                    runInline = true;
-                else
-                    m_impl->EnqueueReadyLocked(node);
+                runInline = m_impl->config.forceInlineExecution &&
+                    (node->desc.targetThread == NamedThread::Any ||
+                     m_impl->namedThreadIds[static_cast<size_t>(node->desc.targetThread)].contains(
+                         std::this_thread::get_id()));
+                enqueue = !runInline;
             }
         }
 
@@ -1091,24 +1188,19 @@ namespace NLS::Base::TaskGraph
         if (dependencyAlreadyFailed)
         {
             // A failed or cancelled dependency cannot become runnable again.
-            m_impl->Finalize(node, TaskStatus::Cancelled);
+            const auto impl = m_impl;
+            impl->Finalize(node, TaskStatus::Cancelled);
             return handle;
         }
 
         if (runInline)
         {
-            uint8_t expected = kLifecycleQueued;
-            if (node->lifecycle.compare_exchange_strong(
-                    expected,
-                    kLifecycleClaimed,
-                    std::memory_order_acq_rel,
-                    std::memory_order_acquire))
-            {
-                m_impl->runningTaskCount.fetch_add(1u, std::memory_order_acq_rel);
-                m_impl->ExecuteTaskBody(node);
-                m_impl->runningTaskCount.fetch_sub(1u, std::memory_order_acq_rel);
-            }
+            // The closure may own the facade's last reference.
+            const auto impl = m_impl;
+            impl->ExecuteNode(node);
         }
+        else if (enqueue)
+            m_impl->EnqueueReady(node);
 
         return handle;
     }
@@ -1126,7 +1218,7 @@ namespace NLS::Base::TaskGraph
                 return false;
             if (found->second->handle.generation != handle.generation)
                 return false;
-            if (Impl::IsTerminal(found->second->status))
+            if (Impl::IsTerminal(found->second->status) || !found->second->desc.cancellable)
                 return false;
             node = found->second;
         }
@@ -1156,7 +1248,8 @@ namespace NLS::Base::TaskGraph
             return true;
         }
 
-        m_impl->Finalize(node, TaskStatus::Cancelled);
+        const auto impl = m_impl;
+        impl->Finalize(node, TaskStatus::Cancelled);
         return true;
     }
 
@@ -1190,24 +1283,32 @@ namespace NLS::Base::TaskGraph
 
     size_t TaskGraph::PumpCurrentThread(const size_t maxTasks)
     {
-        if (IsWorkerThread())
+        const auto impl = m_impl;
+        if (impl == nullptr)
+            return 0u;
+        NamedThread named;
+        {
+            std::lock_guard lock(impl->mutex);
+            named = impl->GetCurrentNamedThreadLocked();
+        }
+        if (named != NamedThread::Any)
+            return impl->PumpOwnedNamedThreads(maxTasks);
+        if (impl->IsCurrentThreadGraphWorker())
         {
             size_t executed = 0u;
-            while ((maxTasks == 0u || executed < maxTasks) &&
-                m_impl->TryExecuteOneReadyTask(g_workerIdentity.workerIndex))
-            {
+            while ((maxTasks == 0u || executed < maxTasks) && impl->AssistWhileWaiting())
                 ++executed;
-            }
             return executed;
         }
-        return Pump(GetCurrentNamedThread(), maxTasks);
+        return 0u;
     }
 
     size_t TaskGraph::Pump(const NamedThread thread, const size_t maxTasks)
     {
-        if (m_impl == nullptr || !IsNamedThread(thread))
+        const auto impl = m_impl;
+        if (impl == nullptr || !IsNamedThread(thread))
             return 0u;
-        return m_impl->PumpNamedThread(thread, maxTasks);
+        return impl->PumpNamedThread(thread, maxTasks);
     }
 
     bool TaskGraph::WaitForWork(const NamedThread thread, const std::chrono::milliseconds timeout)
@@ -1234,7 +1335,8 @@ namespace NLS::Base::TaskGraph
 
     TaskStatus TaskGraph::Wait(const TaskHandle handle)
     {
-        return WaitFor(handle, std::chrono::milliseconds::max()) ? GetCompletion(handle).GetStatus() : TaskStatus::Pending;
+        auto completion = GetCompletion(handle);
+        return completion.IsValid() ? completion.Wait() : TaskStatus::Cancelled;
     }
 
     bool TaskGraph::WaitFor(const TaskHandle handle, const std::chrono::milliseconds timeout)
@@ -1300,7 +1402,10 @@ namespace NLS::Base::TaskGraph
 
     uint32_t TaskGraph::GetWorkerCount() const noexcept
     {
-        return m_impl != nullptr ? m_impl->workerCount : 0u;
+        if (m_impl == nullptr)
+            return 0u;
+        std::lock_guard lock(m_impl->mutex);
+        return m_impl->workerCount;
     }
 
     size_t TaskGraph::GetRetainedTaskCount() const
@@ -1339,28 +1444,39 @@ namespace NLS::Base::TaskGraph
 
     bool TaskGraph::IsWorkerThread() const noexcept
     {
-        return m_impl != nullptr &&
-            g_workerIdentity.graph == static_cast<const void*>(m_impl.get());
+        return m_impl != nullptr && Jobs::Internal::IsForegroundWorkerThread();
     }
 
     size_t TaskGraph::GetWorkerStealCount() const
     {
         if (m_impl == nullptr)
             return 0u;
-        return m_impl->stealExecutionCount.load(std::memory_order_relaxed);
+        std::lock_guard lock(m_impl->mutex);
+        if (!m_impl->started)
+            return 0u;
+        const auto count = Jobs::Internal::GetJobWorkerStealCount();
+        return count - (std::min)(count, m_impl->initialStealCount);
     }
 
     size_t TaskGraph::GetWorkerLocalExecutionCount() const
     {
         if (m_impl == nullptr)
             return 0u;
-        return m_impl->localExecutionCount.load(std::memory_order_relaxed);
+        std::lock_guard lock(m_impl->mutex);
+        if (!m_impl->started)
+            return 0u;
+        const auto count = Jobs::Internal::GetJobWorkerLocalExecutionCount();
+        return count - (std::min)(count, m_impl->initialLocalCount);
     }
 
     size_t TaskGraph::GetWorkerInjectionExecutionCount() const
     {
         if (m_impl == nullptr)
             return 0u;
-        return m_impl->injectionExecutionCount.load(std::memory_order_relaxed);
+        std::lock_guard lock(m_impl->mutex);
+        if (!m_impl->started)
+            return 0u;
+        const auto count = Jobs::Internal::GetJobWorkerInjectionExecutionCount();
+        return count - (std::min)(count, m_impl->initialInjectionCount);
     }
 }

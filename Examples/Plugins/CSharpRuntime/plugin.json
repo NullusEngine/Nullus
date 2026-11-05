@@ -1,0 +1,9 @@
+{
+  "schemaVersion": 1,
+  "id": "org.nullus.sample.csharp",
+  "name": "C# Runtime Extension",
+  "version": "1.0.0",
+  "engineVersion": "^1.0.0",
+  "pluginApiVersion": 1,
+  "modules": [{"name":"Runtime","type":"Runtime","loadingPhase":"PostEngine","scriptBackend":"CSharp","script":"Binaries/Nullus.SamplePlugin.dll","entry":"Nullus.SamplePlugin.RuntimePlugin","safeUnload":true}]
+}

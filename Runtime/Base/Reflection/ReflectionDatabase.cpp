@@ -51,6 +51,10 @@ namespace NLS::meta
             // register all of the native type variants explicity, before
             // anything else
             REGISTER_NATIVE_TYPE_VARIANTS( void );
+            REGISTER_NATIVE_TYPE_VARIANTS_W_ARRAY( signed char );
+            REGISTER_NATIVE_TYPE_VARIANTS_W_ARRAY( unsigned char );
+            REGISTER_NATIVE_TYPE_VARIANTS_W_ARRAY( short );
+            REGISTER_NATIVE_TYPE_VARIANTS_W_ARRAY( unsigned short );
             REGISTER_NATIVE_TYPE_VARIANTS_W_ARRAY( int );
             REGISTER_NATIVE_TYPE_VARIANTS_W_ARRAY( unsigned int );
             REGISTER_NATIVE_TYPE_VARIANTS_W_ARRAY( int64_t );
@@ -151,9 +155,14 @@ namespace NLS::meta
 
         void ReflectionDatabase::UnloadModule(TypeKey moduleKey)
         {
+            (void)TryUnloadModule(moduleKey);
+        }
+
+        bool ReflectionDatabase::TryUnloadModule(TypeKey moduleKey)
+        {
             std::scoped_lock lock(mutex);
             if (moduleKey == InvalidTypeKey)
-                return;
+                return false;
 
             if (!CanUnloadModule(moduleKey))
             {
@@ -165,7 +174,7 @@ namespace NLS::meta
                     "module unload blocked",
                     "module still has reflected types referenced by another module"
                 );
-                return;
+                return false;
             }
 
             for (TypeID id = 1; id < types.size( ); ++id)
@@ -180,6 +189,7 @@ namespace NLS::meta
             }
 
             moduleDependencies.erase(moduleKey);
+            return true;
         }
 
         bool ReflectionDatabase::CanUnloadModule(TypeKey moduleKey) const

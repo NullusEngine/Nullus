@@ -13,13 +13,14 @@ namespace NLS::Base::Threading
     // render lanes stay outside the pools.
     inline constexpr uint32_t kReservedNamedExecutionLaneCountWithoutDedicatedRhi = 2u;
     inline constexpr uint32_t kMaximumPoolWorkerCount = 31u;
-    inline constexpr uint32_t kMaximumTaskGraphWorkerCount = 12u;
+    // Compatibility name: TaskGraph now uses the Jobs compute workers.
+    inline constexpr uint32_t kMaximumTaskGraphWorkerCount = kMaximumPoolWorkerCount;
     inline constexpr uint32_t kMaximumBackgroundJobWorkerCount = 16u;
 
     struct ExecutionPoolBudget
     {
         uint32_t totalPoolWorkerCount = 2u;
-        uint32_t taskGraphWorkerCount = 1u;
+        uint32_t taskGraphWorkerCount = 1u; // Alias of jobsForegroundWorkerCount.
         uint32_t jobsWorkerCount = 2u;
         uint32_t jobsForegroundWorkerCount = 1u;
         uint32_t jobsBackgroundWorkerCount = 1u;
@@ -27,9 +28,9 @@ namespace NLS::Base::Threading
 
     /**
      * Splits the hardware lanes that remain after the named execution lanes
-     * between the rendering TaskGraph and the general Jobs pools. Both systems
-     * resolve the same hardware concurrency, so neither one can over-subscribe
-     * the machine on its own.
+     * between the shared compute pool and the isolated background I/O pool.
+     * TaskGraph uses the compute pool; its compatibility count must not be
+     * added to jobsWorkerCount when accounting for physical workers.
      *
      * `reserveDedicatedRhiLane` must be false when the RHI lane runs on
      * TaskGraph workers (RhiThreadMode::Tasks or None); otherwise the pool is
@@ -56,17 +57,9 @@ namespace NLS::Base::Threading
                 availableConcurrency > reservedNamedLanes
                     ? availableConcurrency - reservedNamedLanes
                     : 2u));
-        budget.taskGraphWorkerCount = std::min(
-            kMaximumTaskGraphWorkerCount,
-            (std::max)(1u, budget.totalPoolWorkerCount / 2u));
-        budget.jobsWorkerCount = (std::max)(
-            2u,
-            budget.totalPoolWorkerCount - budget.taskGraphWorkerCount);
-        // Tiny machines cannot satisfy both pool minimums inside
-        // hardware - reserved; report the effective total so callers can reason
-        // about the real thread count instead of the hardware-derived target.
-        budget.totalPoolWorkerCount =
-            budget.taskGraphWorkerCount + budget.jobsWorkerCount;
+        // Keep one compute lane and one blocking-I/O lane on tiny machines.
+        // They are shared by every TaskGraph, rather than repeated per graph.
+        budget.jobsWorkerCount = budget.totalPoolWorkerCount;
 
         const uint32_t automaticBackgroundWorkerCount =
             (std::max)(1u, budget.jobsWorkerCount / 3u);
@@ -79,6 +72,7 @@ namespace NLS::Base::Threading
                     : automaticBackgroundWorkerCount));
         budget.jobsForegroundWorkerCount =
             budget.jobsWorkerCount - budget.jobsBackgroundWorkerCount;
+        budget.taskGraphWorkerCount = budget.jobsForegroundWorkerCount;
         return budget;
     }
 }

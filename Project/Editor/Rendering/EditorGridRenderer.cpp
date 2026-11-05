@@ -61,6 +61,14 @@ std::array<Render::Debug::DebugDrawPrimitive,3> BuildEditorOriginAxes(const Math
     }
     return axes;
 }
+Maths::Matrix4 BuildEditorGridModelMatrix(const Maths::Vector3& eye,const bool planarXY,const float extent)
+{
+    if (planarXY)
+        return Maths::Matrix4::Translation({eye.x,eye.y,0.0f}) *
+            Maths::Matrix4::Rotation(Maths::Quaternion({-90.0f,0.0f,0.0f})) *
+            Maths::Matrix4::Scaling({extent,1.0f,extent});
+    return Maths::Matrix4::Translation({eye.x,0.0f,eye.z}) * Maths::Matrix4::Scaling({extent,1.0f,extent});
+}
 std::shared_ptr<const EditorGridShaders> CaptureEditorGridShaders(const Render::Resources::Shader& shader,rhi::NativeBackendType backend)
 {
     namespace sc = Render::ShaderCompiler;
@@ -90,10 +98,10 @@ EditorGridRenderer::~EditorGridRenderer() = default;
 std::optional<Render::Context::RecordedDrawCommandInput> EditorGridRenderer::Prepare(
     std::shared_ptr<rhi::RHIDevice> device,const std::shared_ptr<const EditorGridShaders>& shaders,
     const rhi::RHIRenderTargetLayoutDesc& targets,const Maths::Matrix4& viewProjection,
-    const Maths::Vector3& eye,const Maths::Vector3& color,std::string& error)
+    const Maths::Vector3& eye,const Maths::Vector3& color,std::string& error,const bool planarXY)
 {
-    const std::array<float,4> tint{color.x,color.y,color.z,0};
-    return PrepareHelper(m_state,false,std::move(device),shaders,targets,viewProjection,eye,std::as_bytes(std::span(&tint,1)),error);
+    const std::array<float,4> tint{color.x,color.y,color.z,planarXY ? 1.0f : 0.0f};
+    return PrepareHelper(m_state,false,std::move(device),shaders,targets,viewProjection,eye,std::as_bytes(std::span(&tint,1)),error,planarXY);
 }
 std::optional<std::array<Render::Context::RecordedDrawCommandInput,3>> EditorGridRenderer::PrepareAxes(
     std::shared_ptr<rhi::RHIDevice> device,const std::shared_ptr<const EditorGridShaders>& shaders,
@@ -117,7 +125,7 @@ std::optional<std::array<Render::Context::RecordedDrawCommandInput,3>> EditorGri
 std::optional<Render::Context::RecordedDrawCommandInput> EditorGridRenderer::PrepareHelper(
     std::unique_ptr<State>& cache,bool axes,std::shared_ptr<rhi::RHIDevice> device,
     const std::shared_ptr<const EditorGridShaders>& shaders,const rhi::RHIRenderTargetLayoutDesc& targets,
-    const Maths::Matrix4& viewProjection,const Maths::Vector3& eye,std::span<const std::byte> material,std::string& error)
+    const Maths::Matrix4& viewProjection,const Maths::Vector3& eye,std::span<const std::byte> material,std::string& error,const bool planarXY)
 {
     if (!device || !shaders || targets.colorFormats.size() != 1) { error = "Editor grid shader or render target is unavailable"; return std::nullopt; }
     const auto sameTargets = [](const auto& a,const auto& b)
@@ -163,7 +171,7 @@ std::optional<Render::Context::RecordedDrawCommandInput> EditorGridRenderer::Pre
     }
     struct Frame { std::array<float,16> viewProjection; std::array<float,4> eye; std::array<float,16> noTranslation{}; };
     const Frame frame{ShaderMatrix(viewProjection),{eye.x,eye.y,eye.z,0},{}};
-    const auto model = ShaderMatrix(Maths::Matrix4::Translation({eye.x,0,eye.z})*Maths::Matrix4::Scaling({5000,1,5000}));
+    const auto model = ShaderMatrix(BuildEditorGridModelMatrix(eye,planarXY));
     struct Owner { std::array<std::shared_ptr<rhi::RHIBuffer>,3> buffers; std::shared_ptr<rhi::RHIDevice> device; };
     auto owner = std::make_shared<Owner>(); owner->device = device;
     owner->buffers = {Upload(device,frame,rhi::BufferUsageFlags::Uniform),UploadBytes(device,material.data(),material.size(),rhi::BufferUsageFlags::Uniform),Upload(device,model,rhi::BufferUsageFlags::Uniform)};

@@ -5,9 +5,12 @@
 #include <cmath>
 #include <mutex>
 #include <unordered_map>
+#include <unordered_set>
+#include <algorithm>
 #include "Assets/NativeArtifactContainer.h"
 #include "Rendering/Assets/ArtifactFileReader.h"
 #include "Rendering/Assets/SceneImportPipeline.h"
+#include "Json/json.hpp"
 
 namespace NLS::Render::DistanceField
 {
@@ -64,6 +67,12 @@ namespace NLS::Render::DistanceField
         std::mutex sourceMutex;
         std::unordered_map<std::string,MeshDistanceFieldSource> sources;
         std::unordered_map<std::string,std::vector<std::string>> sourceOwners;
+        struct GroupDescription
+        {
+            std::string hash;
+            std::unordered_map<std::string,std::vector<std::string>> members;
+        };
+        std::unordered_map<std::string,GroupDescription> sourceGroups;
         std::atomic_uint64_t sourceRevision{1};
         std::string Normalize(const std::filesystem::path& path) { return path.lexically_normal().generic_string(); }
         std::string Path(const std::filesystem::path& root,const std::string& path)
@@ -152,27 +161,70 @@ namespace NLS::Render::DistanceField
         const auto owner=manifest.sourceAssetId.ToString()+"/"+manifest.targetPlatform+"/"+Normalize(root);
         std::vector<std::string> currentKeys;
         std::unordered_map<std::string,std::vector<std::string>> groupMembers;
+        std::unordered_set<std::string> describedGroups;
+        if(const auto* description=manifest.FindSubAsset("distancefield-source"))
+        {
+            auto& cached=sourceGroups[owner];
+            if(cached.hash!=description->contentHash)
+            {
+                cached={};cached.hash=description->contentHash;
+                std::vector<uint8_t> bytes;
+                if(Assets::Detail::ReadArtifactFileBytes(Path(root,description->artifactPath),bytes,nullptr))
+                    if(const auto data=NLS::Core::Assets::ReadNativeArtifactContainerView(bytes,NLS::Core::Assets::ArtifactType::MeshDistanceFieldSource,1))
+                    {
+                        const auto json=nlohmann::json::parse(data->payloadData,data->payloadData+data->payloadSize,nullptr,false);
+                        if(json.is_object() && json.contains("groups") && json["groups"].is_array())
+                            for(const auto& group:json["groups"])
+                            {
+                                if(!group.is_object() || !group.contains("key") || !group["key"].is_string() ||
+                                    !group.contains("members") || !group["members"].is_array())continue;
+                                const auto key=group["key"].get<std::string>();if(!key.starts_with("mesh:"))continue;
+                                std::vector<std::string> members;
+                                for(const auto& name:group["members"])
+                                {
+                                    if(!name.is_string()){members.clear();break;}
+                                    const auto meshKey=name.get<std::string>();const auto* mesh=manifest.FindSubAsset(meshKey);
+                                    const auto primitive=meshKey.starts_with("mesh:")?Assets::ParsePrimitiveMeshSourceKey(meshKey.substr(5)):std::nullopt;
+                                    if(!mesh || mesh->artifactType!=NLS::Core::Assets::ArtifactType::Mesh || !primitive || "mesh:"+primitive->first!=key)
+                                    {members.clear();break;}
+                                    members.push_back(meshKey);
+                                }
+                                if(!members.empty())cached.members[key.substr(5)]=std::move(members);
+                            }
+                    }
+            }
+            for(const auto& [key,members]:cached.members)
+            {
+                describedGroups.insert(key);
+                for(const auto& member:members)if(const auto* mesh=manifest.FindSubAsset(member))groupMembers[key].push_back(Path(root,mesh->artifactPath));
+            }
+        }
         for(const auto& mesh:manifest.subAssets)
             if(mesh.artifactType==NLS::Core::Assets::ArtifactType::Mesh && mesh.subAssetKey.starts_with("mesh:") &&
                 manifest.FindSubAsset(DistanceFieldSubAssetKey(mesh.subAssetKey)))
                 if(auto primitive=Assets::ParsePrimitiveMeshSourceKey(mesh.subAssetKey.substr(5)))
-                    groupMembers[primitive->first].push_back(Path(root,mesh.artifactPath));
+                    if(!describedGroups.contains(primitive->first))groupMembers[primitive->first].push_back(Path(root,mesh.artifactPath));
         for(const auto& mesh:manifest.subAssets)
         {
             if(mesh.artifactType!=NLS::Core::Assets::ArtifactType::Mesh) continue;
             const auto key=Path(root,mesh.artifactPath);
             const auto* main=manifest.FindSubAsset(DistanceFieldSubAssetKey(mesh.subAssetKey));
-            if(!main) { changed=sources.erase(key)!=0 || changed; continue; }
+            const auto primitive=mesh.subAssetKey.starts_with("mesh:")?Assets::ParsePrimitiveMeshSourceKey(mesh.subAssetKey.substr(5)):std::nullopt;
+            const auto members=primitive?groupMembers.find(primitive->first):groupMembers.end();
+            const bool hasGroup=primitive && members!=groupMembers.end() &&
+                std::find(members->second.begin(),members->second.end(),key)!=members->second.end() &&
+                manifest.FindSubAsset(DistanceFieldSubAssetKey("mesh:"+primitive->first));
+            if(!main && !hasGroup) { changed=sources.erase(key)!=0 || changed; continue; }
             currentKeys.push_back(key);
             MeshDistanceFieldSource source;
-            source.mainPath=Path(root,main->artifactPath); source.contentHash=main->contentHash;
+            if(main){source.mainPath=Path(root,main->artifactPath); source.contentHash=main->contentHash;}
             for(uint32_t mip=0;mip<2;++mip)
                 if(const auto* entry=manifest.FindSubAsset(DistanceFieldSubAssetKey(mesh.subAssetKey,mip))) source.mipPaths[mip]=Path(root,entry->artifactPath);
             if(mesh.subAssetKey.starts_with("mesh:"))
                 if(auto primitive=Assets::ParsePrimitiveMeshSourceKey(mesh.subAssetKey.substr(5)))
                 {
                     const auto groupKey=DistanceFieldSubAssetKey("mesh:"+primitive->first);
-                    if(const auto* group=manifest.FindSubAsset(groupKey))
+                    if(const auto* group=manifest.FindSubAsset(groupKey);group && hasGroup)
                     {
                         source.groupMainPath=Path(root,group->artifactPath);
                         source.groupMembers=groupMembers[primitive->first];

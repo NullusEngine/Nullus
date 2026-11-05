@@ -64,6 +64,8 @@ std::string ReadRuntimeManifestForTemplate(
 {
     if (!configuration.empty())
     {
+        const auto game = templateDirectory / (".nullus-runtime-Game-" + configuration + ".manifest");
+        if (const auto text = ReadTextFileOrEmpty(game); !text.empty()) return text;
         const auto named = templateDirectory / (".nullus-runtime-" + configuration + ".manifest");
         if (const auto text = ReadTextFileOrEmpty(named); !text.empty())
             return text;
@@ -72,7 +74,7 @@ std::string ReadRuntimeManifestForTemplate(
     for (const auto& file : EnumerateFiles(templateDirectory, false))
     {
         const auto name = file.filename().string();
-        if (name.rfind(".nullus-runtime-", 0u) == 0u && file.extension() == ".manifest")
+        if (name.rfind(".nullus-runtime-Game-", 0u) == 0u && file.extension() == ".manifest")
         {
             if (const auto text = ReadTextFileOrEmpty(file); !text.empty())
                 return text;
@@ -195,6 +197,12 @@ bool WindowsDesktopPlatform::IsRuntimeTemplateFile(const std::filesystem::path& 
 
     if (name == "Editor.exe" || name == "Launcher.exe")
         return false;
+    if (name.rfind("NLS_Packages",0) == 0 || name.rfind("NullusPlugins",0) == 0 || name.rfind("NullusBuild",0) == 0)
+        return false;
+    if (name.rfind("NLS_Build",0) == 0 || name.rfind("NLS_Cook",0) == 0 || name.rfind("Nullus.Editor",0) == 0 ||
+        name.rfind("GameScriptsEditor",0) == 0 || name.rfind("Nullus.GameScriptsEditor",0) == 0 ||
+        name.rfind("Nullus.ScriptGenerator",0) == 0 || name.rfind("Nullus.ScriptAnalysis",0) == 0 || text.find("/Editor/") != std::string::npos)
+        return false;
     // Build tooling that happens to sit next to the editor in the shared App
     // directory must never be copied into a player.
     if (name == "NLS_Build.dll")
@@ -270,6 +278,7 @@ std::optional<PlayerTemplateInfo> WindowsDesktopPlatform::ResolvePlayerTemplate(
         const auto manifestLines = ParseManifestLines(ReadRuntimeManifestForTemplate(candidate, configuration));
         std::set<std::string> runtimeFileNames(manifestLines.begin(), manifestLines.end());
         runtimeFileNames.insert("Game.exe");
+        runtimeFileNames.insert("Game.source-plugins.json");
 
         // The engine asset tree, managed payload, and dotnet runtime travel
         // with the player; the deployment manifest covers only first-party
@@ -304,11 +313,14 @@ std::optional<PlayerTemplateInfo> WindowsDesktopPlatform::ResolvePlayerTemplate(
             // The shared App directory also contains editor/launcher symbols;
             // never deliver those with a player.
             const auto symbolName = file.filename().string();
-            if (symbolName == "Editor.pdb" || symbolName == "Launcher.pdb" ||
-                symbolName == "NullusBuild.pdb")
+            std::error_code symbolError; const auto symbolRelative=std::filesystem::relative(file,candidate,symbolError);
+            if (symbolError || (symbolRelative.parent_path().empty() && symbolName != "Game.pdb" &&
+                !runtimeFileNames.count(file.stem().string()+".dll")))
             {
                 continue;
             }
+            auto ownerBinary=symbolRelative; ownerBinary.replace_extension(".dll");
+            if (!IsRuntimeTemplateFile(ownerBinary)) continue;
             info.symbolFiles.push_back(file);
         }
 

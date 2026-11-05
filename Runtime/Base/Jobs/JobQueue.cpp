@@ -18,6 +18,11 @@ namespace NLS::Base::Jobs
     {
         constexpr size_t kRetiredHandleHistoryLimit = 4096u;
         constexpr uint32_t kMaxHighPriorityDispatchStreak = 8u;
+        thread_local const JobQueue* g_foregroundWorkerQueue = nullptr;
+        thread_local uint32_t g_foregroundWorkerIndex = 0u;
+        thread_local uint32_t g_highPriorityDispatchStreak = 0u;
+        thread_local uint32_t g_nonLowPriorityDispatchStreak = 0u;
+        thread_local uint32_t g_priorityQueueGeneration = 0u;
         std::atomic<uint32_t> g_nextQueueGeneration{1u};
 
         uint32_t AllocateQueueGeneration()
@@ -83,7 +88,7 @@ namespace NLS::Base::Jobs
         };
     }
 
-    bool JobQueue::Start(const uint32_t workerCount)
+    bool JobQueue::Start(const uint32_t workerCount, const size_t maxPendingJobCount)
     {
         Shutdown(JobSystemShutdownMode::Immediate);
 
@@ -92,6 +97,19 @@ namespace NLS::Base::Jobs
             m_acceptingWork = true;
             m_shutdownRequested = false;
             m_queueGeneration = AllocateQueueGeneration();
+            m_maxPendingJobCount = std::max(size_t{1u}, maxPendingJobCount);
+            m_pendingJobCount = 0u;
+            m_externalDependencyGroupCount = 0u;
+#if defined(NLS_ENABLE_TEST_HOOKS)
+            m_dispatchAllocations = m_dispatchReuses = 0u;
+#endif
+            m_workerQueues.clear();
+            m_workerQueues.reserve(workerCount);
+            for (uint32_t index = 0u; index < workerCount; ++index)
+                m_workerQueues.push_back(std::make_unique<ReadyQueue>());
+            m_workerStealCount.store(0u, std::memory_order_relaxed);
+            m_workerLocalExecutionCount.store(0u, std::memory_order_relaxed);
+            m_workerInjectionExecutionCount.store(0u, std::memory_order_relaxed);
         }
 
         try
@@ -129,7 +147,10 @@ namespace NLS::Base::Jobs
 
                 WakeExternalDependencyReadyGroups();
                 if (!ExecuteOneJob())
-                    std::this_thread::yield();
+                {
+                    std::unique_lock lock(m_mutex);
+                    m_completionAvailable.wait_for(lock, std::chrono::milliseconds(1));
+                }
             }
         }
 
@@ -146,6 +167,7 @@ namespace NLS::Base::Jobs
             workers = std::move(m_workers);
         }
         m_workAvailable.notify_all();
+        m_completionAvailable.notify_all();
         NotifyCrossQueueDependencyIfNeeded(notifyCrossQueueDependency);
 
         for (const auto& [cleanupFunction, cleanupUserData] : pendingCleanup)
@@ -167,7 +189,7 @@ namespace NLS::Base::Jobs
 
         {
             std::unique_lock lock(m_mutex);
-            m_workAvailable.wait(
+            m_completionAvailable.wait(
                 lock,
                 [this]
                 {
@@ -177,9 +199,27 @@ namespace NLS::Base::Jobs
 
         {
             std::lock_guard lock(m_mutex);
-            m_highPriorityQueue.clear();
-            m_normalPriorityQueue.clear();
+            {
+                std::lock_guard readyLock(m_injectionQueue.mutex);
+                for (auto& queue : m_injectionQueue.priorities)
+                    queue.clear();
+                m_injectionQueue.size.store(0u, std::memory_order_relaxed);
+            }
+            for (auto& workerQueue : m_workerQueues)
+            {
+                std::lock_guard readyLock(workerQueue->mutex);
+                for (auto& queue : workerQueue->priorities)
+                    queue.clear();
+                workerQueue->size.store(0u, std::memory_order_relaxed);
+            }
+            m_readyCount.store(0u, std::memory_order_relaxed);
+            for (auto& count : m_readyPriorityCounts)
+                count.store(0u, std::memory_order_relaxed);
+            m_pendingJobCount = 0u;
+            m_externalDependencyGroupCount = 0u;
             m_groups.clear();
+            while (m_dispatchCacheSize != 0u)
+                m_dispatchCache[--m_dispatchCacheSize] = GroupMap::node_type{};
             m_retiredGenerations.clear();
             m_retiredStatuses.clear();
             m_retiredOrder.clear();
@@ -190,6 +230,94 @@ namespace NLS::Base::Jobs
     JobHandle JobQueue::ScheduleJob(const JobScheduleDesc& desc)
     {
         return ScheduleJobDepends(desc, desc.dependency);
+    }
+
+    bool JobQueue::DispatchJob(const JobScheduleDesc& desc, const bool tailContinuation)
+    {
+        if (desc.function == nullptr || desc.dependency.id != 0u || desc.dependency.generation != 0u)
+        {
+            Internal::RecordJobViolation(desc.function == nullptr ? JobViolationKind::NullCallback : JobViolationKind::InvalidHandle,
+                desc.dependency.id, "Owner-tracked dispatch requires a callback with no JobHandle dependency.");
+            return false;
+        }
+        bool notifyWorker = true;
+        {
+            std::lock_guard lock(m_mutex);
+            if (!m_acceptingWork || m_shutdownRequested || !CanAcceptJobsLocked(1u))
+            {
+                Internal::RecordJobViolation(m_acceptingWork && !m_shutdownRequested ?
+                    JobViolationKind::QueueCapacityExceeded : JobViolationKind::ShutdownSchedulingRejected,
+                    0u, "Owner-tracked dispatch was rejected by scheduler state or callback capacity.");
+                return false;
+            }
+            auto cached = TakeReusableDispatchLocked();
+            GroupPtr group;
+            if (!cached.empty())
+            {
+                group = cached.mapped();
+                // Anonymous dispatches have no per-job arrays or dependencies.
+                // Descriptor fields are overwritten below; only these lifecycle
+                // flags changed while the previous callback was being claimed.
+                group->debugName.clear();
+                group->state = GroupState::WaitingForDependencies;
+                group->cleanupConsumed = false;
+                group->cancellationRequested = false;
+                group->queuedDiagnosticRecorded = false;
+                group->runningDiagnosticRecorded = false;
+            }
+            else
+            {
+                group = std::make_shared<JobGroup>();
+#if defined(NLS_ENABLE_TEST_HOOKS)
+                ++m_dispatchAllocations;
+#endif
+            }
+            group->id = m_nextGroupId++;
+            group->generation = m_queueGeneration;
+            group->ownerTracked = true;
+            group->priority = desc.priority;
+            group->safetyPolicy = desc.safetyPolicy;
+            // TaskGraph already profiles and retains its node name. Copy a name
+            // only when the optional Jobs diagnostic history needs it.
+            if (Internal::AreJobDiagnosticsEnabled() && desc.debugName != nullptr)
+                group->debugName = desc.debugName;
+            group->completeFunction = desc.function;
+            group->completeUserData = desc.userData;
+            group->cancelFunction = desc.cancelFunction;
+            group->cancelUserData = desc.cancelUserData;
+            if (!cached.empty())
+            {
+                cached.key() = group->id;
+                (void)m_groups.insert(std::move(cached));
+            }
+            else
+                m_groups.emplace(group->id, group);
+            ++m_pendingJobCount;
+            try
+            {
+                std::vector<std::pair<JobFunction, void*>> cleanup;
+                std::vector<GroupPtr> retired;
+                bool notify = false;
+                EnqueueReadyGroupLocked(group, cleanup, retired, notify);
+                if (tailContinuation && IsWorkerThread() &&
+                    Internal::IsExecutingJobWorkerThread() && Internal::GetCurrentJobWorkerHandle().id == 0u)
+                {
+                    notifyWorker = m_workerQueues[g_foregroundWorkerIndex]->size.load(std::memory_order_acquire) > 1u;
+                }
+            }
+            catch (...)
+            {
+                // Queue insertion provides its strong guarantee. No callback
+                // can claim the group while this lock is held, so rollback
+                // returns ownership to the caller even on allocation failure.
+                m_groups.erase(group->id);
+                --m_pendingJobCount;
+                throw;
+            }
+        }
+        if (notifyWorker)
+            m_workAvailable.notify_one();
+        return true;
     }
 
     JobHandle JobQueue::ScheduleJobDepends(const JobScheduleDesc& desc, const JobHandle dependency)
@@ -277,14 +405,14 @@ namespace NLS::Base::Jobs
         bool notifyCrossQueueDependency = false;
         {
             std::lock_guard lock(m_mutex);
-            if (!m_acceptingWork || m_shutdownRequested)
+            if (!m_acceptingWork || m_shutdownRequested || !CanAcceptJobsLocked(jobs.size()))
             {
                 if (retainedExternalDependency)
                     Internal::ReleaseJobCompletionStatus(dependency);
                 Internal::RecordJobViolation(
-                    JobViolationKind::ShutdownSchedulingRejected,
+                    m_acceptingWork && !m_shutdownRequested ? JobViolationKind::QueueCapacityExceeded : JobViolationKind::ShutdownSchedulingRejected,
                     0u,
-                    "Job scheduling was rejected while the JobSystem is shutting down or not accepting work.");
+                    "Job scheduling was rejected: the scheduler is stopping or its accepted callback capacity is exhausted.");
                 return {};
             }
 
@@ -313,7 +441,13 @@ namespace NLS::Base::Jobs
             group->runCancelOnFailureAfterStart = runCancelOnFailureAfterStart;
 
             handle = {group->id, group->generation};
+            group->hasExternalDependency = Internal::IsBackgroundJobHandle(group->dependency) ||
+                std::any_of(group->dependencies.begin(), group->dependencies.end(),
+                    [](const JobHandle handle) { return Internal::IsBackgroundJobHandle(handle); });
+            if (group->hasExternalDependency)
+                ++m_externalDependencyGroupCount;
             m_groups.emplace(group->id, group);
+            m_pendingJobCount += std::max(size_t{1u}, group->jobs.size());
             Internal::RecordJobDiagnostic(
                 group->id,
                 group->generation,
@@ -443,14 +577,14 @@ namespace NLS::Base::Jobs
         bool notifyCrossQueueDependency = false;
         {
             std::lock_guard lock(m_mutex);
-            if (!m_acceptingWork || m_shutdownRequested)
+            if (!m_acceptingWork || m_shutdownRequested || !CanAcceptJobsLocked(jobs.size()))
             {
                 for (const JobHandle dependency : retainedExternalDependencies)
                     Internal::ReleaseJobCompletionStatus(dependency);
                 Internal::RecordJobViolation(
-                    JobViolationKind::ShutdownSchedulingRejected,
+                    m_acceptingWork && !m_shutdownRequested ? JobViolationKind::QueueCapacityExceeded : JobViolationKind::ShutdownSchedulingRejected,
                     0u,
-                    "Multi-dependency job scheduling was rejected while the JobSystem is shutting down or not accepting work.");
+                    "Multi-dependency scheduling was rejected: the scheduler is stopping or its accepted callback capacity is exhausted.");
                 return {};
             }
 
@@ -476,7 +610,13 @@ namespace NLS::Base::Jobs
             group->runCancelOnFailureAfterStart = runCancelOnFailureAfterStart;
 
             handle = {group->id, group->generation};
+            group->hasExternalDependency = Internal::IsBackgroundJobHandle(group->dependency) ||
+                std::any_of(group->dependencies.begin(), group->dependencies.end(),
+                    [](const JobHandle handle) { return Internal::IsBackgroundJobHandle(handle); });
+            if (group->hasExternalDependency)
+                ++m_externalDependencyGroupCount;
             m_groups.emplace(group->id, group);
+            m_pendingJobCount += std::max(size_t{1u}, group->jobs.size());
             Internal::RecordJobDiagnostic(
                 group->id,
                 group->generation,
@@ -611,14 +751,14 @@ namespace NLS::Base::Jobs
         }
 
         std::lock_guard lock(m_mutex);
-        if (!m_acceptingWork || m_shutdownRequested)
+        if (!m_acceptingWork || m_shutdownRequested || !CanAcceptJobsLocked(jobs.size()))
         {
             if (retainedExternalDependency)
                 Internal::ReleaseJobCompletionStatus(dependency);
             Internal::RecordJobViolation(
-                JobViolationKind::ShutdownSchedulingRejected,
+                m_acceptingWork && !m_shutdownRequested ? JobViolationKind::QueueCapacityExceeded : JobViolationKind::ShutdownSchedulingRejected,
                 0u,
-                "Pending job scheduling was rejected while the JobSystem is shutting down or not accepting work.");
+                "Pending job scheduling was rejected: the scheduler is stopping or its accepted callback capacity is exhausted.");
             return {};
         }
 
@@ -644,7 +784,13 @@ namespace NLS::Base::Jobs
         group->state = GroupState::PendingKick;
 
         const JobHandle handle{group->id, group->generation};
+        group->hasExternalDependency = Internal::IsBackgroundJobHandle(group->dependency) ||
+            std::any_of(group->dependencies.begin(), group->dependencies.end(),
+                [](const JobHandle handle) { return Internal::IsBackgroundJobHandle(handle); });
+        if (group->hasExternalDependency)
+            ++m_externalDependencyGroupCount;
         m_groups.emplace(group->id, group);
+        m_pendingJobCount += std::max(size_t{1u}, group->jobs.size());
         Internal::RecordJobDiagnostic(
             group->id,
             group->generation,
@@ -795,11 +941,7 @@ namespace NLS::Base::Jobs
     {
         WakeExternalDependencyReadyGroups();
 
-        std::optional<JobExecution> execution;
-        {
-            std::lock_guard lock(m_mutex);
-            execution = PopReadyJobLocked();
-        }
+        std::optional<JobExecution> execution = PopReadyJob();
 
         if (!execution.has_value())
             return false;
@@ -938,7 +1080,7 @@ namespace NLS::Base::Jobs
             if (!ExecuteOneJobForWait(handle, waitEligibleHandles))
             {
                 std::unique_lock lock(m_mutex);
-                m_workAvailable.wait_for(
+                m_completionAvailable.wait_for(
                     lock,
                     std::chrono::milliseconds(1),
                     [this, handle]
@@ -1300,6 +1442,12 @@ namespace NLS::Base::Jobs
         if (group == nullptr)
             return false;
 
+        if (group->ownerTracked)
+        {
+            if (m_groups.erase(group->id) != 0u)
+                --m_pendingJobCount;
+            return false;
+        }
         ReleaseExternalDependenciesForGroupLocked(group);
         const JobCompletionStatus status = GetGroupCompletionStatusLocked(group);
         m_retiredGenerations[group->id] = group->generation;
@@ -1308,7 +1456,12 @@ namespace NLS::Base::Jobs
             Internal::RecordJobTerminalStatus({group->id, group->generation}, status);
         NotifyExternalDependencyChangedLocked();
         m_retiredOrder.push_back(group->id);
-        m_groups.erase(group->id);
+        if (m_groups.erase(group->id) != 0u)
+        {
+            m_pendingJobCount -= std::max(size_t{1u}, group->jobs.size());
+            if (group->hasExternalDependency)
+                --m_externalDependencyGroupCount;
+        }
         PruneRetiredHandlesLocked();
         return notifyCrossQueueDependency;
     }
@@ -1320,17 +1473,9 @@ namespace NLS::Base::Jobs
         if (group == nullptr)
             return;
 
-        const auto alreadyQueued = std::any_of(
-            groupsToRetire.begin(),
-            groupsToRetire.end(),
-            [&group](const GroupPtr& queued)
-            {
-                return queued != nullptr &&
-                    queued->id == group->id &&
-                    queued->generation == group->generation;
-            });
-        if (alreadyQueued)
+        if (group->retirementQueued)
             return;
+        group->retirementQueued = true;
 
         group->completeCallbackRunning = true;
         groupsToRetire.push_back(group);
@@ -1360,7 +1505,12 @@ namespace NLS::Base::Jobs
 
         if (retiredAnyGroup)
         {
-            m_workAvailable.notify_all();
+            m_completionAvailable.notify_all();
+            const size_t readyCount = m_readyCount.load(std::memory_order_acquire);
+            if (readyCount > 1u)
+                m_workAvailable.notify_all();
+            else if (readyCount != 0u)
+                m_workAvailable.notify_one();
         }
     }
 
@@ -1404,6 +1554,7 @@ namespace NLS::Base::Jobs
             return {};
 
         group->state = GroupState::Cancelled;
+        group->cancellationRequested = true;
         Internal::RecordJobDiagnostic(
             group->id,
             group->generation,
@@ -1458,10 +1609,7 @@ namespace NLS::Base::Jobs
                 nullptr,
                 group->dependencies.empty() ? (group->dependency.id == 0u ? 0u : 1u) : group->dependencies.size());
         }
-        if (group->priority == JobPriority::High)
-            m_highPriorityQueue.push_back(group->id);
-        else
-            m_normalPriorityQueue.push_back(group->id);
+        PushReadyGroupLocked(group);
         return true;
     }
 
@@ -1513,6 +1661,12 @@ namespace NLS::Base::Jobs
         const bool targetedWait = foregroundHandles != nullptr;
         if (targetedWait && foregroundHandles->empty())
             return;
+        if (!targetedWait)
+        {
+            std::lock_guard lock(m_mutex);
+            if (m_externalDependencyGroupCount == 0u)
+                return;
+        }
 
         std::vector<JobHandle> dependenciesToCheck;
         {
@@ -1774,6 +1928,8 @@ namespace NLS::Base::Jobs
 
     bool JobQueue::HasExternalDependencyWaiterLocked() const
     {
+        if (m_externalDependencyGroupCount == 0u)
+            return false;
         return std::any_of(
             m_groups.begin(),
             m_groups.end(),
@@ -1791,90 +1947,210 @@ namespace NLS::Base::Jobs
             });
     }
 
-    JobQueue::GroupPtr JobQueue::PopReadyGroupLocked()
+    uint64_t JobQueue::GetAcceptedWorkBoundary() const
     {
-        auto popFromQueue = [this](std::deque<uint64_t>& queue, const bool highPriority) -> GroupPtr
-        {
-            while (!queue.empty())
-            {
-                const uint64_t groupId = queue.front();
-                queue.pop_front();
-                const auto found = m_groups.find(groupId);
-                if (found == m_groups.end() || found->second == nullptr)
-                    continue;
-
-                auto group = found->second;
-                if (group->state == GroupState::Queued)
-                {
-                    group->state = GroupState::Running;
-                    m_highPriorityDispatchStreak = highPriority
-                        ? m_highPriorityDispatchStreak + 1u
-                        : 0u;
-                    return group;
-                }
-            }
-
-            return nullptr;
-        };
-
-        if (!m_highPriorityQueue.empty() &&
-            (m_normalPriorityQueue.empty() || m_highPriorityDispatchStreak < kMaxHighPriorityDispatchStreak))
-        {
-            if (auto group = popFromQueue(m_highPriorityQueue, true))
-                return group;
-        }
-
-        if (auto group = popFromQueue(m_normalPriorityQueue, false))
-            return group;
-
-        return popFromQueue(m_highPriorityQueue, true);
+        std::lock_guard lock(m_mutex);
+        return m_nextGroupId - 1u;
     }
 
-    std::optional<JobQueue::JobExecution> JobQueue::PopReadyJobLocked()
+    bool JobQueue::IsAcceptedWorkComplete(const uint64_t boundary) const
     {
-        auto group = PopReadyGroupLocked();
-        if (group == nullptr)
-            return std::nullopt;
+        std::lock_guard lock(m_mutex);
+        return std::none_of(m_groups.begin(), m_groups.end(),
+            [boundary](const auto& entry) { return entry.first <= boundary; });
+    }
 
-        if (group->state == GroupState::Cancelled || group->state == GroupState::Failed)
-            return std::nullopt;
-
-        if (group->nextJobIndex >= group->jobs.size() && group->completeFunction == nullptr)
-            return std::nullopt;
-
-        JobExecution execution;
-        execution.group = group;
-        if (group->nextJobIndex < group->jobs.size())
+    bool JobQueue::RequestCancel(const JobHandle handle)
+    {
+        std::vector<std::pair<JobFunction, void*>> cleanupActions;
+        std::vector<GroupPtr> groupsToRetire;
+        std::vector<GroupPtr> readyDependents;
+        bool notifyCrossQueueDependency = false;
         {
-            execution.jobIndex = group->nextJobIndex;
-            execution.job = group->jobs[group->nextJobIndex++];
-            if (group->nextJobIndex < group->jobs.size())
+            std::lock_guard lock(m_mutex);
+            const auto group = FindGroupLocked(handle);
+            if (group == nullptr || IsGroupFinishedLocked(group) ||
+                group->state == GroupState::Cancelled || group->state == GroupState::Failed)
+                return false;
+            group->cancellationRequested = true;
+            if (group->nextJobIndex != 0u || group->runningJobCount != 0u || group->completeCallbackRunning)
+                return true;
+            cleanupActions.push_back(CancelGroupLocked(group, cleanupActions));
+            WakeDependentsForFinishedGroupLocked(group, readyDependents, cleanupActions,
+                groupsToRetire, notifyCrossQueueDependency);
+            AppendGroupTerminalCleanup(group, cleanupActions);
+            QueueGroupForRetirementLocked(group, groupsToRetire);
+        }
+        for (const auto& [function, userData] : cleanupActions)
+            RunUserCallback(function, userData, handle.id, "Foreground cancellation cleanup threw an exception.");
+        RetireQueuedGroupsAfterCallbacks(groupsToRetire, notifyCrossQueueDependency);
+        NotifyCrossQueueDependencyIfNeeded(notifyCrossQueueDependency);
+        m_completionAvailable.notify_all();
+        return true;
+    }
+
+    bool JobQueue::IsCancellationRequested(const JobHandle handle) const
+    {
+        std::lock_guard lock(m_mutex);
+        const auto group = FindGroupLocked(handle);
+        return group != nullptr ? group->cancellationRequested :
+            GetRetiredStatusLocked(handle) == JobCompletionStatus::Cancelled;
+    }
+
+    bool JobQueue::IsWorkerThread() const
+    {
+        return g_foregroundWorkerQueue == this;
+    }
+
+    bool JobQueue::CanAcceptJobsLocked(const size_t jobCount) const
+    {
+        const size_t requested = std::max(size_t{1u}, jobCount);
+        return requested <= m_maxPendingJobCount &&
+            m_pendingJobCount <= m_maxPendingJobCount - requested;
+    }
+
+    void JobQueue::PushReadyGroupLocked(const GroupPtr& group)
+    {
+        auto& readyQueue = IsWorkerThread()
+            ? *m_workerQueues[g_foregroundWorkerIndex]
+            : m_injectionQueue;
+        std::lock_guard lock(readyQueue.mutex);
+        const auto rawPriority = static_cast<size_t>(group->priority);
+        const auto priority = rawPriority < 3u ? rawPriority : 0u;
+        readyQueue.priorities[priority].push_back(group->id);
+        readyQueue.size.fetch_add(1u, std::memory_order_release);
+        m_readyPriorityCounts[priority].fetch_add(1u, std::memory_order_release);
+        m_readyCount.fetch_add(1u, std::memory_order_release);
+    }
+
+    uint64_t JobQueue::TakeReadyGroup()
+    {
+        const bool worker = IsWorkerThread();
+        if (g_priorityQueueGeneration != m_queueGeneration)
+        {
+            g_priorityQueueGeneration = m_queueGeneration;
+            g_highPriorityDispatchStreak = 0u;
+            g_nonLowPriorityDispatchStreak = 0u;
+        }
+        auto pop = [this](ReadyQueue& readyQueue, const size_t priority, const bool local) -> uint64_t
+        {
+            if (readyQueue.size.load(std::memory_order_acquire) == 0u)
+                return 0u;
+            std::lock_guard lock(readyQueue.mutex);
+            auto& queue = readyQueue.priorities[priority];
+            if (queue.empty())
+                return 0u;
+            const uint64_t id = local ? queue.back() : queue.front();
+            if (local)
+                queue.pop_back();
+            else
+                queue.pop_front();
+            readyQueue.size.fetch_sub(1u, std::memory_order_acq_rel);
+            m_readyPriorityCounts[priority].fetch_sub(1u, std::memory_order_acq_rel);
+            m_readyCount.fetch_sub(1u, std::memory_order_acq_rel);
+            return id;
+        };
+        std::array<size_t, 3u> priorities{1u, 0u, 2u};
+        if (g_highPriorityDispatchStreak >= kMaxHighPriorityDispatchStreak)
+            priorities = {0u, 1u, 2u};
+        if (g_nonLowPriorityDispatchStreak >= 32u)
+            priorities = {2u, 0u, 1u};
+        for (const size_t priority : priorities)
+        {
+            if (m_readyPriorityCounts[priority].load(std::memory_order_acquire) == 0u)
+                continue;
+            uint64_t id = 0u;
+            if (worker)
             {
-                std::vector<GroupPtr> unusedGroupsToRetire;
-                bool unusedNotifyCrossQueueDependency = false;
-                EnqueueReadyGroupLocked(
-                    group,
-                    execution.cleanupActions,
-                    unusedGroupsToRetire,
-                    unusedNotifyCrossQueueDependency);
-                m_workAvailable.notify_one();
+                id = pop(*m_workerQueues[g_foregroundWorkerIndex], priority, true);
+                if (id != 0u)
+                    m_workerLocalExecutionCount.fetch_add(1u, std::memory_order_relaxed);
+            }
+            if (id == 0u)
+            {
+                id = pop(m_injectionQueue, priority, false);
+                if (id != 0u && worker)
+                    m_workerInjectionExecutionCount.fetch_add(1u, std::memory_order_relaxed);
+            }
+            if (id == 0u)
+            {
+                const size_t count = m_workerQueues.size();
+                for (size_t offset = 0u; offset < count; ++offset)
+                {
+                    const size_t victim = worker
+                        ? (g_foregroundWorkerIndex + offset + 1u) % count
+                        : offset;
+                    if (worker && victim == g_foregroundWorkerIndex)
+                        continue;
+                    id = pop(*m_workerQueues[victim], priority, false);
+                    if (id != 0u)
+                    {
+                        if (worker)
+                            m_workerStealCount.fetch_add(1u, std::memory_order_relaxed);
+                        break;
+                    }
+                }
+            }
+            if (id != 0u)
+            {
+                g_highPriorityDispatchStreak = priority == 1u ? g_highPriorityDispatchStreak + 1u : 0u;
+                g_nonLowPriorityDispatchStreak = priority == 2u ? 0u : g_nonLowPriorityDispatchStreak + 1u;
+                return id;
             }
         }
-        else
-        {
-            execution.jobIndex = 0u;
-            execution.job.function = group->completeFunction;
-            execution.job.userData = group->completeUserData;
-            execution.job.debugName = group->debugName.c_str();
-            group->completeFunction = nullptr;
-            group->completeUserData = nullptr;
-            group->cleanupConsumed = true;
-        }
-        execution.recordRunningDiagnostic = !group->runningDiagnosticRecorded;
-        group->runningDiagnosticRecorded = true;
-        ++group->runningJobCount;
+        return 0u;
+    }
 
-        return execution;
+    std::optional<JobQueue::JobExecution> JobQueue::PopReadyJob()
+    {
+        // Queue locks never nest into the metadata lock. Submission takes the
+        // opposite order, so release the ready lock before claiming the group.
+        while (const uint64_t id = TakeReadyGroup())
+        {
+            std::lock_guard lock(m_mutex);
+            const auto found = m_groups.find(id);
+            if (found == m_groups.end() || found->second->state != GroupState::Queued)
+                continue;
+            auto group = found->second;
+            group->state = GroupState::Running;
+            if (group->nextJobIndex >= group->jobs.size() && group->completeFunction == nullptr)
+                continue;
+
+            JobExecution execution;
+            execution.group = group;
+            if (group->nextJobIndex < group->jobs.size())
+            {
+                execution.jobIndex = group->nextJobIndex;
+                execution.job = group->jobs[group->nextJobIndex++];
+                if (group->nextJobIndex < group->jobs.size())
+                {
+                    std::vector<GroupPtr> unusedGroupsToRetire;
+                    bool unusedNotifyCrossQueueDependency = false;
+                    EnqueueReadyGroupLocked(
+                        group,
+                        execution.cleanupActions,
+                        unusedGroupsToRetire,
+                        unusedNotifyCrossQueueDependency);
+                    m_workAvailable.notify_one();
+                }
+            }
+            else
+            {
+                execution.jobIndex = 0u;
+                execution.job.function = group->completeFunction;
+                execution.job.userData = group->completeUserData;
+                execution.job.debugName = group->debugName.c_str();
+                group->completeFunction = nullptr;
+                group->completeUserData = nullptr;
+                group->cleanupConsumed = true;
+            }
+            execution.recordRunningDiagnostic = !group->runningDiagnosticRecorded;
+            group->runningDiagnosticRecorded = true;
+            ++group->runningJobCount;
+
+            return execution;
+        }
+        return std::nullopt;
     }
 
     std::optional<JobQueue::JobExecution> JobQueue::PopReadyJobForWaitLocked(
@@ -1899,8 +2175,9 @@ namespace NLS::Base::Jobs
                 });
         };
 
-        auto extractCandidate = [this, &isWaitEligible, allowNoSyncWaitOpportunisticWork](std::deque<uint64_t>& queue) -> GroupPtr
+        auto extractCandidate = [this, &isWaitEligible, allowNoSyncWaitOpportunisticWork](ReadyQueue& readyQueue, const size_t priority) -> GroupPtr
         {
+            auto& queue = readyQueue.priorities[priority];
             for (auto iter = queue.begin(); iter != queue.end(); ++iter)
             {
                 const uint64_t groupId = *iter;
@@ -1920,6 +2197,9 @@ namespace NLS::Base::Jobs
                     continue;
 
                 queue.erase(iter);
+                readyQueue.size.fetch_sub(1u, std::memory_order_acq_rel);
+                m_readyPriorityCounts[priority].fetch_sub(1u, std::memory_order_acq_rel);
+                m_readyCount.fetch_sub(1u, std::memory_order_acq_rel);
                 group->state = GroupState::Running;
                 return group;
             }
@@ -1927,9 +2207,25 @@ namespace NLS::Base::Jobs
             return nullptr;
         };
 
-        auto group = extractCandidate(m_highPriorityQueue);
-        if (group == nullptr)
-            group = extractCandidate(m_normalPriorityQueue);
+        GroupPtr group;
+        for (const size_t priority : {size_t{1u}, size_t{0u}, size_t{2u}})
+        {
+            {
+                std::lock_guard readyLock(m_injectionQueue.mutex);
+                group = extractCandidate(m_injectionQueue, priority);
+            }
+            if (group != nullptr)
+                break;
+            for (auto& workerQueue : m_workerQueues)
+            {
+                std::lock_guard readyLock(workerQueue->mutex);
+                group = extractCandidate(*workerQueue, priority);
+                if (group != nullptr)
+                    break;
+            }
+            if (group != nullptr)
+                break;
+        }
         if (group == nullptr ||
             (group->nextJobIndex >= group->jobs.size() && group->completeFunction == nullptr))
         {
@@ -2127,10 +2423,85 @@ namespace NLS::Base::Jobs
         return externalHandles;
     }
 
+    JobQueue::GroupMap::node_type JobQueue::TakeReusableDispatchLocked()
+    {
+        for (size_t index = m_dispatchCacheSize; index != 0u;)
+        {
+            --index;
+            // A callback may have returned while its JobExecution (or another
+            // observer) still owns the group. Never reset fields it can read.
+            if (m_dispatchCache[index].mapped().use_count() != 1u)
+                continue;
+            auto cached = std::move(m_dispatchCache[index]);
+            --m_dispatchCacheSize;
+            if (index != m_dispatchCacheSize)
+                m_dispatchCache[index] = std::move(m_dispatchCache[m_dispatchCacheSize]);
+#if defined(NLS_ENABLE_TEST_HOOKS)
+            ++m_dispatchReuses;
+#endif
+            return cached;
+        }
+        return {};
+    }
+
+    void JobQueue::RecycleCompletedDispatchLocked(const GroupPtr& group)
+    {
+        auto cached = m_groups.extract(group->id);
+        if (cached.empty())
+            return;
+        --m_pendingJobCount;
+        // Do not retain arbitrarily large optional diagnostic names. Ordinary
+        // JobHandle groups and cancelled queued callbacks use normal retirement.
+        if (m_dispatchCacheSize < m_dispatchCache.size() && group->debugName.capacity() <= 256u)
+            m_dispatchCache[m_dispatchCacheSize++] = std::move(cached);
+    }
+
+    void JobQueue::ExecuteOwnerTrackedJob(const JobExecution& execution)
+    {
+        Internal::RecordJobDiagnostic(execution.group->id, execution.group->generation,
+            JobLifecycleState::Running, execution.group->debugName.c_str(), nullptr, 0u);
+        bool failed = false;
+        {
+            // No public JobHandle exists for this callback. Keep worker-safety
+            // scopes, while dependency-cycle tracking remains with its owner.
+            JobWorkerExecutionScope workerExecutionScope({});
+            std::optional<DisallowJobSyncWaitScope> noSyncWaitScope;
+            if (execution.group->safetyPolicy == JobSafetyPolicy::GuaranteedNoSyncWait)
+                noSyncWaitScope.emplace();
+            try
+            {
+                execution.job.function(execution.job.userData);
+            }
+            catch (...)
+            {
+                failed = true;
+                Internal::RecordJobViolation(JobViolationKind::CallbackException,
+                    execution.group->id, "Owner-tracked dispatch callback threw an exception.");
+            }
+        }
+        {
+            std::lock_guard lock(m_mutex);
+            execution.group->state = failed ? GroupState::Failed : GroupState::Completed;
+            execution.group->runningJobCount = 0u;
+            Internal::RecordJobDiagnostic(execution.group->id, execution.group->generation,
+                failed ? JobLifecycleState::Failed : JobLifecycleState::Completed,
+                execution.group->debugName.c_str(), nullptr, 0u);
+            // The owner holds completion state; no second terminal-handle cache
+            // or dependency cascade is needed for this accepted callback.
+            RecycleCompletedDispatchLocked(execution.group);
+        }
+        m_completionAvailable.notify_all();
+    }
+
     void JobQueue::ExecuteJob(const JobExecution& execution)
     {
         if (execution.group == nullptr)
             return;
+        if (execution.group->ownerTracked)
+        {
+            ExecuteOwnerTrackedJob(execution);
+            return;
+        }
 
         bool failed = false;
         const JobHandle groupHandle{execution.group->id, execution.group->generation};
@@ -2205,7 +2576,7 @@ namespace NLS::Base::Jobs
                     group->debugName.c_str(),
                     nullptr,
                     group->dependency.id == 0u ? 0u : 1u);
-                m_workAvailable.notify_all();
+                m_completionAvailable.notify_all();
             }
 
             const bool hasNoRunningJobs = group->runningJobCount == 0u;
@@ -2243,7 +2614,7 @@ namespace NLS::Base::Jobs
 
         if (!shouldComplete)
         {
-            m_workAvailable.notify_all();
+            m_completionAvailable.notify_all();
             return;
         }
 
@@ -2422,71 +2793,57 @@ namespace NLS::Base::Jobs
         if (group == nullptr)
             return;
 
-        JobCompletionStatus finishedGroupStatus = JobCompletionStatus::Unknown;
-        if (group->state == GroupState::Completed)
-            finishedGroupStatus = JobCompletionStatus::Succeeded;
-        else if (group->state == GroupState::Cancelled)
-            finishedGroupStatus = JobCompletionStatus::Cancelled;
-        else if (group->state == GroupState::Failed)
-            finishedGroupStatus = JobCompletionStatus::Failed;
-
-        const std::vector<std::pair<JobHandle, JobCompletionStatus>> resolvedFinishedGroup =
-            finishedGroupStatus != JobCompletionStatus::Unknown
-                ? std::vector<std::pair<JobHandle, JobCompletionStatus>>{
-                    {{group->id, group->generation}, finishedGroupStatus}}
-                : std::vector<std::pair<JobHandle, JobCompletionStatus>>{};
-
-        for (const uint64_t dependentId : group->dependents)
+        // Cancellation and empty fences can release deep chains without a
+        // callback. Iterate their completion notifications on a bounded stack.
+        const auto rootStatus = group->state == GroupState::Completed ? JobCompletionStatus::Succeeded :
+            (group->state == GroupState::Cancelled ? JobCompletionStatus::Cancelled : JobCompletionStatus::Failed);
+        std::vector<GroupPtr> finishedGroups{group};
+        std::vector<GroupPtr> cascadeRetire;
+        while (!finishedGroups.empty())
         {
-            const auto found = m_groups.find(dependentId);
-            if (found == m_groups.end() || found->second == nullptr)
-                continue;
-
-            auto dependent = found->second;
-            if (dependent->state != GroupState::WaitingForDependencies)
-                continue;
-
-            const auto dependencyStatus = GetGroupDependenciesStatusLocked(dependent, resolvedFinishedGroup);
-            if (dependencyStatus == JobCompletionStatus::Succeeded)
+            const auto finished = std::move(finishedGroups.back());
+            finishedGroups.pop_back();
+            const auto status = finished->state == GroupState::Completed ? JobCompletionStatus::Succeeded :
+                (finished->state == GroupState::Cancelled ? JobCompletionStatus::Cancelled : JobCompletionStatus::Failed);
+            const std::vector<std::pair<JobHandle, JobCompletionStatus>> resolvedFinishedGroup{
+                {{group->id, group->generation}, rootStatus},
+                {{finished->id, finished->generation}, status}};
+            for (const uint64_t dependentId : finished->dependents)
             {
-                readyDependents.push_back(dependent);
-                continue;
+                const auto found = m_groups.find(dependentId);
+                if (found == m_groups.end() || found->second == nullptr)
+                    continue;
+                const auto dependent = found->second;
+                if (dependent->state != GroupState::WaitingForDependencies)
+                    continue;
+                const auto dependencyStatus = GetGroupDependenciesStatusLocked(dependent, resolvedFinishedGroup);
+                if (dependencyStatus == JobCompletionStatus::Pending)
+                    continue;
+                if (dependencyStatus == JobCompletionStatus::Succeeded)
+                {
+                    if (!dependent->jobs.empty() || dependent->completeFunction != nullptr)
+                    {
+                        readyDependents.push_back(dependent);
+                        continue;
+                    }
+                    dependent->state = GroupState::Completed;
+                    Internal::RecordJobDiagnostic(dependent->id, dependent->generation,
+                        JobLifecycleState::Completed, dependent->debugName.c_str(), nullptr,
+                        dependent->dependencies.empty() ? (dependent->dependency.id == 0u ? 0u : 1u) : dependent->dependencies.size());
+                }
+                else
+                {
+                    cleanupActions.push_back(CancelGroupLocked(dependent, cleanupActions));
+                }
+                AppendGroupTerminalCleanup(dependent, cleanupActions);
+                cascadeRetire.push_back(dependent);
+                finishedGroups.push_back(dependent);
             }
-
-            if (dependencyStatus == JobCompletionStatus::Pending)
-                continue;
-
-            dependent->state = GroupState::Cancelled;
-            Internal::RecordJobDiagnostic(
-                dependent->id,
-                dependent->generation,
-                JobLifecycleState::Cancelled,
-                dependent->debugName.c_str(),
-                nullptr,
-                dependent->dependency.id == 0u ? 0u : 1u);
-            if (!dependent->cleanupConsumed)
-            {
-                dependent->cleanupConsumed = true;
-                const bool hasGroupCancelFunction = dependent->cancelFunction != nullptr;
-                const auto cancelFunction = dependent->cancelFunction;
-                const auto cancelUserData = dependent->cancelUserData;
-                dependent->cancelFunction = nullptr;
-                dependent->cancelUserData = nullptr;
-                if (cancelFunction != nullptr)
-                    cleanupActions.emplace_back(cancelFunction, cancelUserData);
-                if (!hasGroupCancelFunction)
-                    AppendUnstartedJobCancelCallbacks(dependent, cleanupActions);
-            }
-            WakeDependentsForFinishedGroupLocked(
-                dependent,
-                readyDependents,
-                cleanupActions,
-                groupsToRetire,
-                notifyCrossQueueDependency);
-            AppendGroupTerminalCleanup(dependent, cleanupActions);
-            QueueGroupForRetirementLocked(dependent, groupsToRetire);
         }
-
+        // Keep completed fences visible to siblings throughout this cascade;
+        // m_mutex still prevents observers from seeing incomplete cleanup.
+        for (const auto& retired : cascadeRetire)
+            QueueGroupForRetirementLocked(retired, groupsToRetire);
         for (const auto& dependent : readyDependents)
         {
             if (dependent != nullptr && dependent->state == GroupState::WaitingForDependencies)
@@ -2498,22 +2855,25 @@ namespace NLS::Base::Jobs
     {
         const std::string threadName = "Job Worker " + std::to_string(workerIndex);
         NLS_PROFILE_REGISTER_THREAD(threadName.c_str());
+        g_foregroundWorkerQueue = this;
+        g_foregroundWorkerIndex = workerIndex;
+        Internal::WorkerWakeSignal::Waiter waiter;
 
         while (true)
         {
             std::optional<JobExecution> execution;
             {
                 std::unique_lock lock(m_mutex);
-                if (HasExternalDependencyWaiterLocked())
+                if (m_readyCount.load(std::memory_order_acquire) == 0u && HasExternalDependencyWaiterLocked())
                 {
                     m_workAvailable.wait_for(
                         lock,
+                        waiter,
                         std::chrono::milliseconds(100),
                         [this]
                         {
                                 return m_shutdownRequested ||
-                                !m_highPriorityQueue.empty() ||
-                                !m_normalPriorityQueue.empty() ||
+                                m_readyCount.load(std::memory_order_acquire) != 0u ||
                                 m_externalDependencyChanged;
                         });
                     m_externalDependencyChanged = false;
@@ -2522,20 +2882,22 @@ namespace NLS::Base::Jobs
                 {
                     m_workAvailable.wait(
                         lock,
+                        waiter,
                         [this]
                         {
                             return m_shutdownRequested ||
-                                !m_highPriorityQueue.empty() ||
-                                !m_normalPriorityQueue.empty() ||
+                                m_readyCount.load(std::memory_order_acquire) != 0u ||
                                 HasExternalDependencyWaiterLocked();
                         });
                 }
 
-                if (m_shutdownRequested && m_highPriorityQueue.empty() && m_normalPriorityQueue.empty())
+                if (m_shutdownRequested && m_readyCount.load(std::memory_order_acquire) == 0u)
+                {
+                    g_foregroundWorkerQueue = nullptr;
                     return;
-
-                execution = PopReadyJobLocked();
+                }
             }
+            execution = PopReadyJob();
 
             if (execution.has_value())
                 ExecuteJob(execution.value());

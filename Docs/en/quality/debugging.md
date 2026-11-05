@@ -6,11 +6,19 @@ This page covers the engine-side debugging entry points and the test system: how
 
 | Target | CTest label | Purpose |
 | --- | --- | --- |
-| `NullusUnitTests` | `behavior` | Deterministic behavior and integration regressions |
+| `NullusUnitTests` | `unit;behavior` | Ordinary behavior, Editor, ECS, and script plugin regressions |
+| `NullusGpuTests` | `gpu` | Runs `*GpuTests.cpp` with a separate device lifecycle |
+| `NullusBuildTests` | `build;packaging` | Independent packaging CI entry point |
+| `NullusPropertyControlsTests` | `ui;properties;boundary` | Verifies that property controls depend only on UI |
+| `NullusPluginTestsStatic` / `NullusPluginTestsShared` | `plugins;abi` | Static/shared linking and real plugin DLL validation |
 | `NullusPerformanceTests` | `performance` | Performance and stress tests, built on demand |
 | `ReflectionTest` | none | Lightweight reflection pipeline smoke tool |
 
 `NullusPerformanceTests` is neither built nor registered with CTest by default. Repeatable, deterministic regressions belong in the unit tests; performance measurements, stress scenarios, and real-asset validation belong in the performance tests, so the default behavior suite never depends on machine state.
+
+Ordinary suites join `NullusUnitTests` instead of creating an executable for each feature.
+Use `--gtest_filter=SuiteName.*` for focused runs. Helper DLLs, Probe processes, and managed assemblies
+are grouped under `Tests/Fixtures`. See `Tests/README.md` at the repository root for source ownership and entry points.
 
 ## Unit test coverage
 
@@ -25,8 +33,8 @@ Reflection and MetaParser are a specific focus, including runtime registration v
 
 ```powershell
 cmake -S . -B Build -G "Visual Studio 17 2022" -A x64 -DNLS_BUILD_TESTS=ON
-cmake --build Build --config Debug --target NullusUnitTests ReflectionTest -- /m:4
-ctest --test-dir Build -C Debug -L behavior --output-on-failure
+Tools/BuildCleanEnvironment.cmd cmake --build Build --config Debug --target NullusUnitTests NullusGpuTests NullusBuildTests NullusPropertyControlsTests ReflectionTest -- /m:1
+ctest --test-dir Build -C Debug -R "^(NullusUnitTests|NullusGpuTests|NullusBuildTests|NullusPropertyControlsTests)$" --output-on-failure
 ```
 
 `ReflectionTest` is built by that command but is a separate tool and is not part of the `behavior` label.

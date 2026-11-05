@@ -1,8 +1,11 @@
 #pragma once
 
 #include "Jobs/JobTypes.h"
+#include "Jobs/WorkerWakeSignal.h"
 
 #include <condition_variable>
+#include <array>
+#include <atomic>
 #include <cstdint>
 #include <deque>
 #include <functional>
@@ -22,10 +25,11 @@ namespace NLS::Base::Jobs
         JobQueue() = default;
         ~JobQueue();
 
-        bool Start(uint32_t workerCount);
+        bool Start(uint32_t workerCount, size_t maxPendingJobCount = 65536u);
         void Shutdown(JobSystemShutdownMode mode);
 
         JobHandle ScheduleJob(const JobScheduleDesc& desc);
+        bool DispatchJob(const JobScheduleDesc& desc, bool tailContinuation);
         JobHandle ScheduleJobDepends(const JobScheduleDesc& desc, JobHandle dependency);
         JobHandle ScheduleJobs(
             std::vector<JobScheduleDesc> jobs,
@@ -76,6 +80,8 @@ namespace NLS::Base::Jobs
             bool allowNoSyncWaitOpportunisticWork = true);
         void Complete(JobHandle handle);
         bool IsCompleted(JobHandle handle) const;
+        bool RequestCancel(JobHandle handle);
+        bool IsCancellationRequested(JobHandle handle) const;
         JobCompletionStatus GetCompletionStatus(JobHandle handle) const;
         bool IsKnownHandle(JobHandle handle) const;
         std::vector<JobHandle> CollectDirectDependencies(JobHandle handle) const;
@@ -85,6 +91,20 @@ namespace NLS::Base::Jobs
         void NotifyExternalDependencyChanged();
 
         uint32_t GetWorkerCount() const;
+        uint64_t GetAcceptedWorkBoundary() const;
+        bool IsAcceptedWorkComplete(uint64_t boundary) const;
+        bool IsWorkerThread() const;
+#if defined(NLS_ENABLE_TEST_HOOKS)
+        size_t GetWaitingWorkerCountForTesting() { return m_workAvailable.GetWaitingCountForTesting(); }
+        Internal::DispatchReuseStats GetDispatchReuseStatsForTesting() const
+        {
+            std::lock_guard lock(m_mutex);
+            return {m_dispatchAllocations, m_dispatchReuses, m_dispatchCacheSize};
+        }
+#endif
+        size_t GetWorkerStealCount() const { return m_workerStealCount.load(std::memory_order_relaxed); }
+        size_t GetWorkerLocalExecutionCount() const { return m_workerLocalExecutionCount.load(std::memory_order_relaxed); }
+        size_t GetWorkerInjectionExecutionCount() const { return m_workerInjectionExecutionCount.load(std::memory_order_relaxed); }
 
     private:
         enum class GroupState : uint8_t
@@ -119,8 +139,12 @@ namespace NLS::Base::Jobs
             void* terminalCleanupUserData = nullptr;
             bool runCancelOnFailureAfterStart = false;
             bool cleanupConsumed = false;
+            bool cancellationRequested = false;
+            bool hasExternalDependency = false;
+            bool ownerTracked = false;
             bool terminalCleanupConsumed = false;
             bool completeCallbackRunning = false;
+            bool retirementQueued = false;
             bool queuedDiagnosticRecorded = false;
             bool runningDiagnosticRecorded = false;
             size_t nextJobIndex = 0u;
@@ -130,6 +154,10 @@ namespace NLS::Base::Jobs
         };
 
         using GroupPtr = std::shared_ptr<JobGroup>;
+        using GroupMap = std::unordered_map<uint64_t, GroupPtr>;
+
+        GroupMap::node_type TakeReusableDispatchLocked();
+        void RecycleCompletedDispatchLocked(const GroupPtr& group);
 
         GroupPtr FindGroupLocked(JobHandle handle) const;
         static void AppendGroupTerminalCleanup(
@@ -201,7 +229,15 @@ namespace NLS::Base::Jobs
             bool& notifyCrossQueueDependency);
         std::vector<JobHandle> CollectGroupDependencies(JobHandle handle) const;
         bool HasExternalDependencyWaiterLocked() const;
-        GroupPtr PopReadyGroupLocked();
+        struct ReadyQueue
+        {
+            std::mutex mutex;
+            std::atomic<size_t> size{0u};
+            std::array<std::deque<uint64_t>, 3u> priorities;
+        };
+        uint64_t TakeReadyGroup();
+        void PushReadyGroupLocked(const GroupPtr& group);
+        bool CanAcceptJobsLocked(size_t jobCount) const;
         struct JobExecution
         {
             GroupPtr group;
@@ -210,7 +246,7 @@ namespace NLS::Base::Jobs
             bool recordRunningDiagnostic = false;
             std::vector<std::pair<JobFunction, void*>> cleanupActions;
         };
-        std::optional<JobExecution> PopReadyJobLocked();
+        std::optional<JobExecution> PopReadyJob();
         std::optional<JobExecution> PopReadyJobForWaitLocked(
             JobHandle waitedHandle,
             const std::vector<JobHandle>& waitEligibleHandles,
@@ -226,6 +262,7 @@ namespace NLS::Base::Jobs
         std::vector<JobHandle> CollectWaitEligibleForegroundHandles(JobHandle waitedHandle) const;
         std::vector<JobHandle> CollectWaitEligibleExternalHandles(JobHandle waitedHandle) const;
         void ExecuteJob(const JobExecution& execution);
+        void ExecuteOwnerTrackedJob(const JobExecution& execution);
         void TryCompleteGroupAfterJob(const GroupPtr& group, bool failed);
         void MarkGroupCompleted(const GroupPtr& group);
         void RunCancelFunction(const GroupPtr& group);
@@ -246,19 +283,37 @@ namespace NLS::Base::Jobs
             bool& notifyCrossQueueDependency);
 
         mutable std::mutex m_mutex;
-        std::condition_variable m_workAvailable;
-        std::unordered_map<uint64_t, GroupPtr> m_groups;
+        Internal::WorkerWakeSignal m_workAvailable;
+        // Completion observers must not wake every idle worker on each tiny job.
+        std::condition_variable m_completionAvailable;
+        GroupMap m_groups;
         std::unordered_map<uint64_t, uint32_t> m_retiredGenerations;
         std::unordered_map<uint64_t, JobCompletionStatus> m_retiredStatuses;
         std::deque<uint64_t> m_retiredOrder;
-        std::deque<uint64_t> m_highPriorityQueue;
-        std::deque<uint64_t> m_normalPriorityQueue;
+        ReadyQueue m_injectionQueue;
+        std::vector<std::unique_ptr<ReadyQueue>> m_workerQueues;
+        std::atomic<size_t> m_readyCount{0u};
+        std::array<std::atomic<size_t>, 3u> m_readyPriorityCounts{};
+        std::atomic<size_t> m_workerStealCount{0u};
+        std::atomic<size_t> m_workerLocalExecutionCount{0u};
+        std::atomic<size_t> m_workerInjectionExecutionCount{0u};
+        size_t m_pendingJobCount = 0u;
+        size_t m_externalDependencyGroupCount = 0u;
+        size_t m_maxPendingJobCount = 65536u;
         std::vector<std::thread> m_workers;
         uint64_t m_nextGroupId = 1u;
         uint32_t m_queueGeneration = 1u;
-        uint32_t m_highPriorityDispatchStreak = 0u;
         bool m_acceptingWork = false;
         bool m_shutdownRequested = false;
         bool m_externalDependencyChanged = false;
+
+        // Keep the bounded completed-record cache after the normal queue state.
+        // Reuse requires the map node to own the group's sole strong reference.
+        std::array<GroupMap::node_type, 64u> m_dispatchCache;
+        size_t m_dispatchCacheSize = 0u;
+#if defined(NLS_ENABLE_TEST_HOOKS)
+        size_t m_dispatchAllocations = 0u;
+        size_t m_dispatchReuses = 0u;
+#endif
     };
 }

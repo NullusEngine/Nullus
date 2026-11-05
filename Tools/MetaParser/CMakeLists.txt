@@ -8,6 +8,25 @@ endif()
 
 set(NLS_META_PARSER_LIBCLANG_VERSION "18.1.3.2")
 set(NLS_META_PARSER_LIBCLANGSHARP_VERSION "18.1.3.1")
+set(NLS_META_PARSER_MODE "threads" CACHE STRING "MetaParser execution mode: serial, threads, or processes")
+set_property(CACHE NLS_META_PARSER_MODE PROPERTY STRINGS serial threads processes)
+set(NLS_META_PARSER_JOBS "0" CACHE STRING "MetaParser workers per module (0 selects up to four workers)")
+option(NLS_META_PARSER_CACHE "Reuse reflection parsing results across targets and builds" ON)
+set(NLS_META_PARSER_CACHE_DIR "${CMAKE_BINARY_DIR}/Tools/MetaParser/cache" CACHE PATH "Shared MetaParser input/model cache")
+set(NLS_META_PARSER_TOTAL_JOBS "0" CACHE STRING "Native parsing workers across targets (0 selects up to eight workers)")
+set(NLS_META_PARSER_TARGET_JOBS "0" CACHE STRING "Targets processed concurrently by the batch host (0 selects up to four)")
+if(NOT NLS_META_PARSER_MODE MATCHES "^(serial|threads|processes)$")
+    message(FATAL_ERROR "NLS_META_PARSER_MODE must be serial, threads, or processes.")
+endif()
+if(NOT NLS_META_PARSER_TARGET_JOBS MATCHES "^(0|[1-9][0-9]*)$" OR NLS_META_PARSER_TARGET_JOBS GREATER 2147483647)
+    message(FATAL_ERROR "NLS_META_PARSER_TARGET_JOBS must be a nonnegative integer.")
+endif()
+if(NOT NLS_META_PARSER_JOBS MATCHES "^(0|[1-9][0-9]*)$" OR NLS_META_PARSER_JOBS GREATER 2147483647)
+    message(FATAL_ERROR "NLS_META_PARSER_JOBS must be a nonnegative integer.")
+endif()
+if(NOT NLS_META_PARSER_TOTAL_JOBS MATCHES "^(0|[1-9][0-9]*)$" OR NLS_META_PARSER_TOTAL_JOBS GREATER 2147483647)
+    message(FATAL_ERROR "NLS_META_PARSER_TOTAL_JOBS must be a nonnegative integer.")
+endif()
 
 if(NOT NLS_DOTNET_EXECUTABLE)
     message(FATAL_ERROR "NLS_DOTNET_EXECUTABLE must resolve to the repository's .NET 8 SDK before configuring MetaParser.")
@@ -50,6 +69,8 @@ endif()
 
 set(NLS_META_PARSER_CPPAST_CSPROJ "${CMAKE_CURRENT_SOURCE_DIR}/ThirdParty/CppAst.NET/src/CppAst/CppAst.csproj")
 set(NLS_META_PARSER_TEMPLATES_DIR "${NLS_META_PARSER_SOURCE_DIR}/Templates")
+set(NLS_META_PARSER_TEMPLATE_COMPILER "${CMAKE_CURRENT_SOURCE_DIR}/TemplateCompiler/TemplateCompiler.csproj")
+set(NLS_META_PARSER_TEMPLATE_COMPILER_SOURCE "${CMAKE_CURRENT_SOURCE_DIR}/TemplateCompiler/Program.cs")
 set(NLS_META_PARSER_LAUNCH_SETTINGS_DIR "${NLS_META_PARSER_INTERMEDIATE_DIR}/Properties")
 set(NLS_META_PARSER_LAUNCH_SETTINGS_TEMPLATE "${NLS_META_PARSER_SOURCE_DIR}/Properties/launchSettings.json.in")
 set(NLS_META_PARSER_LAUNCH_SETTINGS "${NLS_META_PARSER_LAUNCH_SETTINGS_DIR}/launchSettings.json")
@@ -64,8 +85,13 @@ file(GLOB_RECURSE NLS_META_PARSER_SOURCE_FILES
     CONFIGURE_DEPENDS
     "${NLS_META_PARSER_SOURCE_DIR}/*.cs"
 )
+file(GLOB_RECURSE NLS_META_PARSER_CPPAST_SOURCE_FILES CONFIGURE_DEPENDS
+    "${CMAKE_CURRENT_SOURCE_DIR}/ThirdParty/CppAst.NET/src/CppAst/*.cs"
+)
 list(FILTER NLS_META_PARSER_SOURCE_FILES EXCLUDE REGEX [[/bin/]])
 list(FILTER NLS_META_PARSER_SOURCE_FILES EXCLUDE REGEX [[/obj/]])
+list(FILTER NLS_META_PARSER_CPPAST_SOURCE_FILES EXCLUDE REGEX [[/bin/]])
+list(FILTER NLS_META_PARSER_CPPAST_SOURCE_FILES EXCLUDE REGEX [[/obj/]])
 
 file(MAKE_DIRECTORY "${NLS_META_PARSER_INTERMEDIATE_DIR}")
 file(MAKE_DIRECTORY "${NLS_META_PARSER_LAUNCH_SETTINGS_DIR}")
@@ -81,33 +107,8 @@ if(CMAKE_GENERATOR MATCHES "Visual Studio")
     set_property(TARGET MetaParserSource PROPERTY FOLDER Tools)
 endif()
 
-set(NLS_META_PARSER_WINDOWS_NATIVE FALSE)
-if(WIN32 AND CMAKE_GENERATOR MATCHES "Visual Studio" AND CMAKE_VERSION VERSION_LESS 3.25)
-    set(NLS_META_PARSER_WINDOWS_NATIVE TRUE)
-endif()
-
-if(NLS_META_PARSER_WINDOWS_NATIVE)
-    project(MetaParser LANGUAGES CSharp)
-
-    set(CMAKE_CSharp_FLAGS "${CMAKE_CSharp_FLAGS} /langversion:latest")
-    set(CMAKE_DOTNET_TARGET_FRAMEWORK "net8.0")
-    set(CMAKE_DOTNET_SDK "Microsoft.NET.Sdk")
-
-    add_subdirectory(ThirdParty)
-    if(TARGET CppAst)
-        set_target_properties(CppAst PROPERTIES
-            VS_GLOBAL_AllowUnsafeBlocks "true"
-            VS_GLOBAL_GenerateAssemblyInfo "false"
-            VS_GLOBAL_GenerateTargetFrameworkAttribute "false"
-        )
-    endif()
-    add_subdirectory(src)
-    set(NLS_META_PARSER_EXECUTABLE "${CMAKE_CURRENT_BINARY_DIR}/src/$<CONFIG>/MetaParser.exe" CACHE INTERNAL "MetaParser executable path" FORCE)
-
-    # On Windows with VS generator, use dotnet build instead of publish
-    # Template copying is handled via VS_POST_BUILD_EVENT_COMMAND in .csproj
-else()
-    project(MetaParser LANGUAGES NONE)
+# The SDK project owns template preprocessing for every generator.
+project(MetaParser LANGUAGES NONE)
 
     set(NLS_META_PARSER_STAMP "${CMAKE_CURRENT_BINARY_DIR}/MetaParser_$<CONFIG>.stamp")
 
@@ -125,7 +126,10 @@ else()
             "${NLS_META_PARSER_PROJECT}"
             "${NLS_META_PARSER_LAUNCH_SETTINGS}"
             ${NLS_META_PARSER_SOURCE_FILES}
+            ${NLS_META_PARSER_CPPAST_SOURCE_FILES}
             ${NLS_META_PARSER_TEMPLATE_FILES}
+            "${NLS_META_PARSER_TEMPLATE_COMPILER}"
+            "${NLS_META_PARSER_TEMPLATE_COMPILER_SOURCE}"
             "${NLS_META_PARSER_CPPAST_CSPROJ}"
         BYPRODUCTS "${NLS_META_PARSER_EXECUTABLE}"
         COMMENT "Building C# MetaParser via generated SDK project"
@@ -135,8 +139,6 @@ else()
     add_custom_target(MetaParser ALL
         DEPENDS "${NLS_META_PARSER_STAMP}"
     )
-endif()
-
 set_target_properties(MetaParser PROPERTIES
     FOLDER CMakePredefinedTargets
     # The generated SDK project is also named MetaParser.  Give the CMake
@@ -144,3 +146,53 @@ set_target_properties(MetaParser PROPERTIES
     # build dependencies unchanged.
     PROJECT_LABEL "MetaParserBuild"
 )
+
+function(nls_define_meta_batch_target)
+    get_property(_candidates GLOBAL PROPERTY NLS_META_BATCH_TARGETS)
+    if(NOT _candidates)
+        return()
+    endif()
+    set(_configs "")
+    set(_stamps "")
+    set(_dependencies "")
+    foreach(_target IN LISTS _candidates)
+        get_target_property(_excluded ${_target} EXCLUDE_FROM_ALL)
+        get_target_property(_source ${_target} SOURCE_DIR)
+        while(_source AND NOT _excluded)
+            get_property(_excluded DIRECTORY "${_source}" PROPERTY EXCLUDE_FROM_ALL)
+            get_property(_source DIRECTORY "${_source}" PROPERTY PARENT_DIRECTORY)
+        endwhile()
+        if(_excluded)
+            continue()
+        endif()
+        get_target_property(_params ${_target} NLS_META_BATCH_PARAMS)
+        get_target_property(_stamp ${_target} NLS_META_BATCH_STAMP)
+        get_target_property(_dependency ${_target} NLS_META_BATCH_DEPENDENCY)
+        list(APPEND _configs "${_params}")
+        list(APPEND _stamps "${_stamp}")
+        list(APPEND _dependencies "${_dependency}")
+        if(NOT _command)
+            get_target_property(_command ${_target} NLS_META_BATCH_COMMAND)
+            get_target_property(_environment ${_target} NLS_META_BATCH_ENVIRONMENT)
+        endif()
+    endforeach()
+    if(NOT _configs)
+        return()
+    endif()
+    list(REMOVE_DUPLICATES _dependencies)
+    nls_join_json_array(_configs_json ${_configs})
+    set(_manifest "${CMAKE_BINARY_DIR}/Tools/MetaParser/ReflectionBatch.json")
+    file(GENERATE OUTPUT "${_manifest}"
+        CONTENT "{\n  \"Configs\": [${_configs_json}],\n  \"TargetJobs\": ${NLS_META_PARSER_TARGET_JOBS}\n}\n")
+    add_custom_target(NullusReflectionBatch
+        COMMAND "${CMAKE_COMMAND}" -E env ${_environment} "${_command}" --batch "${_manifest}"
+        COMMAND "${CMAKE_COMMAND}" -E touch ${_stamps}
+        DEPENDS ${_configs}
+        WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+        COMMENT "Generating reflection for configured targets in one MetaParser host"
+        VERBATIM)
+    add_dependencies(NullusReflectionBatch ${_dependencies})
+    set_target_properties(NullusReflectionBatch PROPERTIES FOLDER "CMakePredefinedTargets/Reflection")
+endfunction()
+
+cmake_language(DEFER DIRECTORY "${CMAKE_SOURCE_DIR}" CALL nls_define_meta_batch_target)

@@ -2,6 +2,10 @@
 
 #include <string>
 #include <map>
+#include <functional>
+#include <mutex>
+#include <unordered_map>
+#include <utility>
 #include "BaseDef.h"
 #include <Eventing/Event.h>
 
@@ -15,25 +19,31 @@
 //#define NLS_LOG_WARNING(message)	NLS::Debug::Logger::Log(message, NLS::Debug::ELogLevel::LOG_WARNING,	NLS::Debug::ELogMode::CONSOLE)
 //#define NLS_LOG_ERROR(message)	NLS::Debug::Logger::Log(message, NLS::Debug::ELogLevel::LOG_ERROR,	NLS::Debug::ELogMode::CONSOLE)
 
-#define NLS_LOG(message) do { \
-	NLS::Debug::Logger::Log(message, NLS::Debug::ELogLevel::LOG_DEFAULT, NLS::Debug::ELogMode::CONSOLE); \
-	NLS::Debug::Logger::Log(message, NLS::Debug::ELogLevel::LOG_DEFAULT, NLS::Debug::ELogMode::FILE); \
-} while (0)
-#define NLS_LOG_INFO(message) do { \
-	NLS::Debug::Logger::Log(message, NLS::Debug::ELogLevel::LOG_INFO, NLS::Debug::ELogMode::CONSOLE); \
-	NLS::Debug::Logger::Log(message, NLS::Debug::ELogLevel::LOG_INFO, NLS::Debug::ELogMode::FILE); \
-} while (0)
-#define NLS_LOG_WARNING(message) do { \
-	NLS::Debug::Logger::Log(message, NLS::Debug::ELogLevel::LOG_WARNING, NLS::Debug::ELogMode::CONSOLE); \
-	NLS::Debug::Logger::Log(message, NLS::Debug::ELogLevel::LOG_WARNING, NLS::Debug::ELogMode::FILE); \
-} while (0)
-#define NLS_LOG_ERROR(message) do { \
-	NLS::Debug::Logger::Log(message, NLS::Debug::ELogLevel::LOG_ERROR, NLS::Debug::ELogMode::CONSOLE); \
-	NLS::Debug::Logger::Log(message, NLS::Debug::ELogLevel::LOG_ERROR, NLS::Debug::ELogMode::FILE); \
-} while (0)
+#define NLS_LOG(message) do { NLS::Debug::Logger::LogWithContext((message), NLS::Debug::ELogLevel::LOG_DEFAULT, NLS::Debug::ELogMode::CONSOLE_AND_FILE, __FILE__, __LINE__, __func__); } while (0)
+#define NLS_LOG_INFO(message) do { NLS::Debug::Logger::LogWithContext((message), NLS::Debug::ELogLevel::LOG_INFO, NLS::Debug::ELogMode::CONSOLE_AND_FILE, __FILE__, __LINE__, __func__); } while (0)
+#define NLS_LOG_WARNING(message) do { NLS::Debug::Logger::LogWithContext((message), NLS::Debug::ELogLevel::LOG_WARNING, NLS::Debug::ELogMode::CONSOLE_AND_FILE, __FILE__, __LINE__, __func__); } while (0)
+#define NLS_LOG_ERROR(message) do { NLS::Debug::Logger::LogWithContext((message), NLS::Debug::ELogLevel::LOG_ERROR, NLS::Debug::ELogMode::CONSOLE_AND_FILE, __FILE__, __LINE__, __func__); } while (0)
 
 namespace NLS::Debug
 {
+	// Logger callbacks can be registered, removed, and invoked on different
+	// threads. Removal waits for in-flight callbacks, including at shutdown.
+	class NLS_BASE_API LogEventDispatcher
+	{
+	public:
+		using Callback = std::function<void(const LogData&)>;
+		ListenerID AddListener(Callback callback);
+		ListenerID operator+=(Callback callback) { return AddListener(std::move(callback)); }
+		bool RemoveListener(ListenerID id);
+		bool operator-=(ListenerID id) { return RemoveListener(id); }
+		void RemoveAllListeners();
+		uint64_t GetListenerCount();
+		void Invoke(const LogData& data);
+	private:
+		std::recursive_mutex m_mutex;
+		std::unordered_map<ListenerID, Callback> m_callbacks;
+		ListenerID m_next = InvalidListenerID + 1u;
+	};
 	/*
 	* 用于在控制台或文件上显示错误消息的静态类
 	*/
@@ -54,6 +64,18 @@ namespace NLS::Debug
 		* @param p_handlerID
 		*/
 		static void Log(const std::string& p_message, ELogLevel p_logLevel = ELogLevel::LOG_DEFAULT, ELogMode p_logMode = ELogMode::DEFAULT, std::string p_handlerId = "default");
+		static void LogWithContext(const std::string& message, ELogLevel level, ELogMode mode,
+			const char* sourceFile, int sourceLine, const char* sourceFunction,
+			ELogSource source = ELogSource::General, const std::string& scriptStack = {},
+			std::string handlerId = "default");
+		static LogData WriteWithContext(const std::string& message, ELogLevel level, ELogMode mode,
+			const char* sourceFile, int sourceLine, const char* sourceFunction,
+			ELogSource source = ELogSource::General, const std::string& scriptStack = {},
+			std::string handlerId = "default");
+		static void SetStackTraceMode(ELogLevel level, StackTraceMode mode);
+		static StackTraceMode GetStackTraceMode(ELogLevel level);
+		static void Flush();
+		static void Shutdown();
 
 		/**
 		* Create console handler
@@ -96,7 +118,7 @@ namespace NLS::Debug
 		static void LogToHandlerMap(std::map<std::string, T>& p_map, const LogData& p_data, std::string p_id);
 
 	public:
-		static NLS::Event<const LogData&> LogEvent;
+		static LogEventDispatcher LogEvent;
 
 	private:
 		static std::map<std::string, ConsoleHandler>	CONSOLE_HANDLER_MAP;

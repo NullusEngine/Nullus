@@ -252,10 +252,7 @@ EditorImportProgressStatus EditorAssetDatabase::GetImportProgressStatus(
 
     status.visible = true;
     status.normalizedProgress = static_cast<float>(activeEvent->normalizedProgress);
-    status.cancellable =
-        activeEvent->terminalStatus == ImportJobTerminalStatus::None &&
-        activeEvent->sourcePath != "Startup Scene" &&
-        activeEvent->sourcePath != "Asset Browser";
+    status.cancellable = IsImportCancellable(*activeEvent);
     status.label = activeEvent->message.empty()
         ? "Processing assets"
         : activeEvent->message;

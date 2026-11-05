@@ -7,6 +7,7 @@
 #include <vector>
 #include "Math/Vector3.h"
 #include "RenderDef.h"
+#include "Reflection/Macros.h"
 
 namespace NLS::Render::DistanceField
 {
@@ -15,9 +16,9 @@ namespace NLS::Render::DistanceField
     inline constexpr uint32_t MipCount = 3;
     inline constexpr uint32_t OutsideBrick = UINT32_MAX;
     inline constexpr uint32_t InsideBrick = UINT32_MAX - 1u;
-    inline constexpr uint32_t BuilderVersion = 1;
+    inline constexpr uint32_t BuilderVersion = 2;
 
-    enum class GenerationMode : uint8_t { Inherit, Enabled, Disabled };
+    ENUM(NLS_RENDER_API GenerationMode) : uint8_t { Inherit, Enabled, Disabled };
 
     struct DistanceFieldBuildSettings
     {

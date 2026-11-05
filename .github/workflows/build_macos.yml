@@ -80,7 +80,7 @@ jobs:
         shell: bash
         run: |
           set -o pipefail
-          NLS_CMAKE_OPTIONS="-DNLS_BUILD_TESTS=ON" NLS_BUILD_TARGETS="NullusUnitTests ReflectionTest" NLS_BUILD_JOBS=2 ./build_macos.sh debug 2>&1 | tee "build_macos_debug.log"
+          NLS_CMAKE_OPTIONS="-DNLS_BUILD_TESTS=ON" NLS_BUILD_TARGETS="NullusUnitTests NullusGpuTests NullusBuildTests NullusPropertyControlsTests ReflectionTest" NLS_BUILD_JOBS=2 ./build_macos.sh debug 2>&1 | tee "build_macos_debug.log"
 
       - name: Dump build log on failure
         if: failure()
@@ -127,4 +127,6 @@ jobs:
             fi
           }
           run_test "NullusUnitTests" nullus_unit_tests.log "${NULLUS_UNIT_TESTS}"
+          ctest --test-dir build/macos -C Debug --output-on-failure \
+            -R '^(NullusGpuTests|NullusBuildTests|NullusPropertyControlsTests)$'
           run_test "ReflectionTest" reflection_test.log "${REFLECTION_TEST}"

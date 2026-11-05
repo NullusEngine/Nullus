@@ -4,6 +4,7 @@
 #include <Platform/Utils/SystemCalls.h>
 
 #include <algorithm>
+#include <cctype>
 #include <cstdlib>
 #include <cwctype>
 #include <iterator>
@@ -28,6 +29,15 @@ bool IsCSharpSource(const std::filesystem::path& sourcePath)
     return extension.size() == 3u &&
         (extension[1] == 'c' || extension[1] == 'C') &&
         (extension[2] == 's' || extension[2] == 'S');
+}
+
+bool IsNativeSource(const std::filesystem::path& sourcePath)
+{
+    auto extension = sourcePath.extension().string();
+    std::transform(extension.begin(), extension.end(), extension.begin(), [](unsigned char value)
+        { return static_cast<char>(std::tolower(value)); });
+    return extension == ".c" || extension == ".cc" || extension == ".cpp" || extension == ".cxx" ||
+        extension == ".h" || extension == ".hh" || extension == ".hpp" || extension == ".hxx" || extension == ".inl";
 }
 
 #ifdef _WIN32
@@ -208,6 +218,34 @@ std::vector<std::string> ExternalCodeEditor::BuildVisualStudioCodeArguments(
     const int safeColumn = (std::max)(column, 1);
     return {"--reuse-window", "--goto", sourcePath.string() + ":" +
         std::to_string(safeLine) + ":" + std::to_string(safeColumn)};
+}
+
+std::vector<std::string> ExternalCodeEditor::BuildVisualStudioLineArguments(
+    const std::filesystem::path& sourcePath, int line)
+{
+    if (line <= 0) return {"/Edit", sourcePath.string()};
+    // A file as the first argument opens it before /Command runs. Combining
+    // /Edit with /Command does not reliably target the same VS instance.
+    return {sourcePath.string(), "/Command", "Edit.GoTo " + std::to_string(line)};
+}
+
+ExternalCodeEditorResult ExternalCodeEditor::OpenAtLine(
+    const std::filesystem::path& sourcePath, int line, int column,
+    const std::filesystem::path& visualStudioCodePath)
+{
+    if (!visualStudioCodePath.empty()) return Open(sourcePath, line, column, visualStudioCodePath);
+#ifdef _WIN32
+    if (line > 0 && (IsCSharpSource(sourcePath) || IsNativeSource(sourcePath)))
+    {
+        if (const auto visualStudioPath = FindVisualStudio2022(); visualStudioPath.has_value())
+        {
+            const auto launch = NLS::Platform::Process::Launch(*visualStudioPath,
+                BuildVisualStudioLineArguments(sourcePath, line));
+            if (launch.success) return {true, false, true, {}};
+        }
+    }
+#endif
+    return Open(sourcePath, line, column, visualStudioCodePath);
 }
 
 ExternalCodeEditorResult ExternalCodeEditor::Open(

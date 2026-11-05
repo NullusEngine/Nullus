@@ -1008,10 +1008,10 @@ namespace NLS::Render::Backend
 		}
 
 		D3D12_RECT fullRect{};
-		fullRect.left = 0;
-		fullRect.top = 0;
-		fullRect.right = desc.renderArea.width > 0 ? desc.renderArea.width : 1920;
-		fullRect.bottom = desc.renderArea.height > 0 ? desc.renderArea.height : 1080;
+			fullRect.left = desc.renderArea.x;
+			fullRect.top = desc.renderArea.y;
+			fullRect.right = fullRect.left + (desc.renderArea.width > 0 ? desc.renderArea.width : 1920);
+			fullRect.bottom = fullRect.top + (desc.renderArea.height > 0 ? desc.renderArea.height : 1080);
 		m_commandList->RSSetScissorRects(1, &fullRect);
 
 		std::vector<D3D12_CPU_DESCRIPTOR_HANDLE> boundRtvHandles;

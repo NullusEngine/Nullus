@@ -14,6 +14,7 @@
 #include "Components/LightComponent.h"
 #include <Engine/Rendering/DeferredSceneRenderer.h>
 #include "Core/Context.h"
+#include "Settings/EditorSettings.h"
 
 namespace NLS::Editor::Panels { class AView; }
 namespace NLS::Render::Debug { class DebugDrawService; }
@@ -43,6 +44,9 @@ class DebugSceneRenderer : public Engine::Rendering::DeferredSceneRenderer
 	            uint64_t hoverPickingVisibleDrawBudget = 1024u;
 	            uint64_t clickMinimumPickingFrameSerial = 0u;
                 std::optional<PrefabDragProxyDescriptor> prefabDragProxy;
+                std::optional<Settings::EditorDebugDrawSettingsObject> debugDrawSettings;
+                bool showSelectionOutline = true;
+                std::vector<Engine::GameObject*> selectedGameObjects;
 			};
 
 		struct CullingOverlayOptions
@@ -93,4 +97,7 @@ class DebugSceneRenderer : public Engine::Rendering::DeferredSceneRenderer
         const DebugSceneRenderer::PrefabDragProxyDescriptor& descriptor);
 	bool ShouldPublishDebugSceneCullReasonSnapshots(
 		const DebugSceneRenderer::CullingOverlayOptions& options);
+        bool IsSceneObjectHidden(const Render::Core::CompositeRenderer& renderer, NLS::InstanceID id);
+        const Settings::EditorDebugDrawSettingsObject& GetSceneViewDebugDrawSettings(
+            const Render::Core::CompositeRenderer& renderer);
 }

@@ -30,6 +30,7 @@ struct ControlOptions
     bool readOnly = false;
     bool mixed = false;
     float scale = 1.f;
+    uint64_t mixedComponents = ~0ull;
 };
 
 inline void MixedLabel(const ControlOptions& options)

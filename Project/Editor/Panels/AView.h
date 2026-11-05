@@ -185,7 +185,9 @@ namespace NLS::Editor::Panels
         virtual bool IsSceneRendererAvailable() const;
         virtual bool RequiresSynchronizedRetiredFramePresentation() const;
 		void SyncViewToCurrentContentRegion();
-		void Render(uint16_t p_width, uint16_t p_height);
+        virtual std::pair<uint16_t, uint16_t> ResolveRenderSize(Maths::Vector2 available) const;
+			virtual void Render(uint16_t p_width, uint16_t p_height);
+        virtual void ConfigureFrameDescriptor(Render::Data::FrameDescriptor& descriptor);
         bool ApplyResolvedViewSize(uint16_t p_width, uint16_t p_height);
         void SetStaticFrameCacheEnabled(bool enabled);
         void InvalidateStaticFrameCache();

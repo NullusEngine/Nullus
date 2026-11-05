@@ -47,13 +47,16 @@ namespace NLS::Engine::UI
         for (auto* canvas : m_canvases)
         {
             if (canvas)
-                canvas->Tick(deltaSeconds, viewportSize, dpiScale, frameId);
+            {
+                const auto& output=m_outputs[std::min(canvas->GetTargetDisplay(),7u)];
+                canvas->Tick(deltaSeconds,output.configured?output.size:viewportSize,output.configured?output.dpi:dpiScale,frameId);
+            }
         }
         m_latestSnapshot = BuildScreenSnapshot(
             static_cast<uint32_t>(std::max(0.0f, viewportSize.x)),
             static_cast<uint32_t>(std::max(0.0f, viewportSize.y)),
             dpiScale,
-            frameId);
+            frameId,m_inputDisplay);
     }
 
     bool UIRuntimeService::DispatchInput(const UIInputEvent& event)
@@ -63,12 +66,48 @@ namespace NLS::Engine::UI
         for (auto iterator = m_canvases.rbegin(); iterator != m_canvases.rend(); ++iterator)
         {
             auto* canvas = *iterator;
-            if (canvas == nullptr || !canvas->IsRenderable())
+            if (canvas == nullptr || !canvas->IsRenderable() || canvas->GetTargetDisplay()!=m_inputDisplay)
                 continue;
             if (canvas->GetInputRouter().Dispatch(event))
                 return true;
         }
         return false;
+    }
+
+    void UIRuntimeService::SetInputDisplay(uint32_t display)
+    {
+        display=std::min(display,7u);
+        if(m_inputDisplay!=display)CancelInput();
+        m_inputDisplay=display;
+    }
+
+    void UIRuntimeService::ConfigureOutput(uint32_t display,UIVector2 size,float dpi)
+    {
+        m_outputs[std::min(display,7u)]={size,dpi>0?dpi:1,true};
+    }
+
+    void UIRuntimeService::CancelInput(bool clearFocus)
+    {
+        for(auto* canvas:m_canvases)if(canvas)canvas->GetInputRouter().CancelInput(clearFocus);
+    }
+
+    bool UIRuntimeService::WantsKeyboardInput() const
+    {
+        for (auto* canvas : m_canvases) if (canvas && canvas->IsRenderable() && canvas->GetTargetDisplay() == m_inputDisplay && canvas->GetInputRouter().GetFocusedElement()) return true;
+        return false;
+    }
+    bool UIRuntimeService::WantsPointerInput() const
+    {
+        for (auto* canvas : m_canvases) if (canvas && canvas->IsRenderable() && canvas->GetTargetDisplay() == m_inputDisplay &&
+            (canvas->GetInputRouter().HasPointerCapture() || canvas->GetInputRouter().GetHoveredElement())) return true;
+        return false;
+    }
+    std::optional<UIRect> UIRuntimeService::GetTextInputRect() const
+    {
+        for (auto* canvas : m_canvases) if (canvas && canvas->IsRenderable() && canvas->GetTargetDisplay() == m_inputDisplay)
+            if (auto* focused = canvas->GetInputRouter().GetFocusedElement(); focused && focused->GetElementType() == UIElementType::TextField)
+                return focused->GetLayoutRect();
+        return {};
     }
 
     uint32_t UIRuntimeService::DispatchInputQueue(InputEventQueue& queue)
@@ -89,7 +128,7 @@ namespace NLS::Engine::UI
         const uint32_t viewportWidth,
         const uint32_t viewportHeight,
         const float dpiScale,
-        const uint64_t frameId) const
+        const uint64_t frameId,const uint32_t display) const
     {
         auto result = std::make_shared<NLS::Render::UI::UIDrawSnapshot>();
         result->frameId = frameId;
@@ -98,7 +137,7 @@ namespace NLS::Engine::UI
         result->dpiScale = dpiScale > 0.0f ? dpiScale : 1.0f;
         for (const auto* canvas : m_canvases)
         {
-            if (!canvas || !canvas->IsRenderable() || !canvas->GetInstance())
+            if (!canvas || !canvas->IsRenderable() || !canvas->GetInstance() || canvas->GetTargetDisplay()!=display)
                 continue;
             if (canvas->GetRenderMode() == Components::UICanvasComponent::RenderMode::World)
                 continue;

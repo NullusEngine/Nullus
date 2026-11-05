@@ -11,9 +11,8 @@ namespace NLS::Editor::Core
         uint32_t backgroundWorkerCount = 2u;
     };
 
-    // Reserves three hardware execution lanes for the game, render, and RHI
-    // threads, hands half of the bounded remainder to the rendering TaskGraph,
-    // and returns this editor's share of the Jobs pool.
+    // Reserves three named execution lanes before the rendering mode is known,
+    // then splits one shared compute pool and the isolated blocking-I/O pool.
     EditorJobWorkerBudget ResolveEditorJobWorkerBudget(
         uint32_t hardwareConcurrency,
         std::optional<uint32_t> backgroundWorkerOverride = std::nullopt);

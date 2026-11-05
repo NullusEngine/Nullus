@@ -56,13 +56,16 @@ $isCMakeBuild =
     ($normalizedArguments -contains "--build")
 
 if ($isCMakeBuild) {
-    # The Visual Studio generator creates additional MSBuild nodes. With the
-    # malformed parent environment those nodes reintroduce both casings, so
-    # keep this wrapper deterministic until the host environment is corrected.
+    # PowerShell 7 can consume the native "--" separator before this script
+    # receives it. Restore that boundary for native MSBuild switches, while
+    # preserving the caller's parallelism and generator arguments.
     $separatorIndex = [System.Array]::IndexOf($normalizedArguments, "--")
     if ($separatorIndex -ge 0) {
         $cmakeArguments = @($normalizedArguments[0..($separatorIndex - 1)])
-        $buildArguments = @($normalizedArguments[($separatorIndex + 1)..($normalizedArguments.Count - 1)])
+        $buildArguments = @()
+        if ($separatorIndex + 1 -lt $normalizedArguments.Count) {
+            $buildArguments = @($normalizedArguments[($separatorIndex + 1)..($normalizedArguments.Count - 1)])
+        }
     }
     else {
         # PowerShell 7 treats a bare "--" as its own end-of-parameters marker
@@ -72,10 +75,19 @@ if ($isCMakeBuild) {
         # Split them apart so exactly one separator is injected below.
         $cmakeArguments = @()
         $buildArguments = @()
-        foreach ($argument in $normalizedArguments) {
+        for ($argumentIndex = 0; $argumentIndex -lt $normalizedArguments.Count; ++$argumentIndex) {
+            $argument = $normalizedArguments[$argumentIndex]
+            # Windows PowerShell -File can split -m:4 into "-m", "4" before
+            # forwarding the script arguments. Rejoin this known native pair.
+            if ($argument -match "^-(?:m|maxcpucount)$" -and
+                $argumentIndex + 1 -lt $normalizedArguments.Count -and
+                $normalizedArguments[$argumentIndex + 1] -match "^[1-9][0-9]*$") {
+                ++$argumentIndex
+                $buildArguments += "${argument}:$($normalizedArguments[$argumentIndex])"
+                continue
+            }
             if ($argument.StartsWith('/') -or
-                $argument -match "^-m(?::|=)?\d*$" -or
-                $argument -ieq "-maxcpucount") {
+                $argument -match "^-(?:m|maxcpucount)(?::|=)?\d*$") {
                 $buildArguments += $argument
             }
             else {
@@ -83,11 +95,12 @@ if ($isCMakeBuild) {
             }
         }
     }
-    # /m is normalized to the deterministic single node the wrapper needs; the
-    # remaining native switches are forwarded untouched.
-    $buildArguments = @($buildArguments) |
-        Where-Object { $_ -notmatch "^(?:/|-)(?:m|maxcpucount)(?::|=)?\d*$" }
-    $normalizedArguments = @($cmakeArguments + "--" + "/m:1" + $buildArguments)
+    if ($separatorIndex -ge 0 -or @($buildArguments).Count -gt 0) {
+        $normalizedArguments = @($cmakeArguments + "--" + $buildArguments)
+    }
+    else {
+        $normalizedArguments = @($cmakeArguments)
+    }
 }
 
 & $resolvedFilePath @normalizedArguments

@@ -1,0 +1,5 @@
+add_executable(NullusPlugins NullusPlugins.cpp)
+target_link_libraries(NullusPlugins PRIVATE NLS_Packages)
+target_compile_features(NullusPlugins PRIVATE cxx_std_20)
+set_target_properties(NullusPlugins PROPERTIES FOLDER "Tools" RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin/$<CONFIG>")
+nls_copy_shared_runtime_to_target(NullusPlugins)

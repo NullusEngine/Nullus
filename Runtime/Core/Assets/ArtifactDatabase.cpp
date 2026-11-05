@@ -1,4 +1,5 @@
 #include "Assets/ArtifactDatabase.h"
+#include "Assets/ArtifactDatabasePatch.h"
 
 #include <lmdb.h>
 
@@ -764,6 +765,144 @@ bool ArtifactDatabase::Fail(std::string message) const
 bool ArtifactDatabase::FailLmdb(std::string operation, const int result) const
 {
     return Fail(LmdbErrorMessage(operation, result));
+}
+
+namespace
+{
+bool ReadSourceManifest(MDB_txn* transaction,MDB_dbi manifests,MDB_dbi records,MDB_dbi dependencies,
+    AssetId source,const std::string& target,ArtifactManifest& result,std::vector<std::string>* recordKeys,std::string& error)
+{
+    const auto base=MakeStorageKey(source,{},target);
+    const auto headerText=GetString(transaction,manifests,base);
+    const auto header=headerText?DecodeManifestHeader(*headerText):std::nullopt;
+    if(!header || header->sourceAssetId!=source || header->targetPlatform!=target)
+    {error="Artifact manifest header is missing or invalid";return false;}
+    result.sourceAssetId=source;result.importerId=header->importerId;result.importerVersion=header->importerVersion;
+    result.targetPlatform=target;result.primarySubAssetKey=header->primarySubAssetKey;
+    const auto count=GetString(transaction,dependencies,DependencyCountKey(base));
+    const auto size=count?TryParseSizeStrict(*count):std::nullopt;
+    if(!size || *size!=header->dependencyCount){error="Artifact manifest dependency count is invalid";return false;}
+    result.dependencies.reserve(*size);
+    for(size_t i=0;i<*size;++i)
+    {
+        const auto text=GetString(transaction,dependencies,DependencyStorageKey(base,i));
+        auto dependency=text?DecodeDependency(*text):std::nullopt;
+        if(!dependency){error="Artifact manifest dependency is missing or invalid";return false;}
+        result.dependencies.push_back(std::move(*dependency));
+    }
+    MDB_cursor* cursor=nullptr;int code=mdb_cursor_open(transaction,records,&cursor);
+    if(code!=MDB_SUCCESS){error=LmdbErrorMessage("mdb_cursor_open(records)",code);return false;}
+    const auto prefix=source.ToString()+"\n";MDB_val key=ToMdbVal(prefix),value{};
+    for(code=mdb_cursor_get(cursor,&key,&value,MDB_SET_RANGE);code==MDB_SUCCESS;code=mdb_cursor_get(cursor,&key,&value,MDB_NEXT))
+    {
+        const auto storage=FromMdbVal(key);if(!std::string_view(storage).starts_with(prefix))break;
+        const auto fields=SplitRecordKey(storage);if(fields.size()!=3 || fields[2]!=target)continue;
+        auto record=DecodeRecord(FromMdbVal(value));
+        if(!record || record->sourceAssetId!=source || record->targetPlatform!=target ||
+            RecordStorageKey(*record)!=storage || record->dependencyCount!=*size)
+        {mdb_cursor_close(cursor);error="Artifact source record is invalid";return false;}
+        if(recordKeys)recordKeys->push_back(storage);
+        result.subAssets.push_back({record->artifactSourceAssetId,record->subAssetKey,record->artifactType,record->loaderId,
+            record->targetPlatform,record->artifactPath,record->contentHash,record->displayName});
+    }
+    mdb_cursor_close(cursor);
+    if(code!=MDB_SUCCESS && code!=MDB_NOTFOUND){error=LmdbErrorMessage("mdb_cursor_get(records)",code);return false;}
+    return true;
+}
+bool SameManifest(const ArtifactManifest& a,const ArtifactManifest& b)
+{
+    if(a.sourceAssetId!=b.sourceAssetId || a.importerId!=b.importerId || a.importerVersion!=b.importerVersion ||
+        a.targetPlatform!=b.targetPlatform || a.primarySubAssetKey!=b.primarySubAssetKey ||
+        a.subAssets.size()!=b.subAssets.size() || a.dependencies.size()!=b.dependencies.size())return false;
+    for(const auto& entry:a.subAssets)
+    {
+        const auto* expected=b.FindSubAsset(entry.subAssetKey);
+        if(!expected || entry.sourceAssetId!=expected->sourceAssetId || entry.artifactType!=expected->artifactType ||
+            entry.loaderId!=expected->loaderId || entry.targetPlatform!=expected->targetPlatform ||
+            entry.artifactPath!=expected->artifactPath || entry.contentHash!=expected->contentHash || entry.displayName!=expected->displayName)return false;
+    }
+    for(size_t i=0;i<a.dependencies.size();++i)
+        if(a.dependencies[i].kind!=b.dependencies[i].kind || a.dependencies[i].value!=b.dependencies[i].value ||
+            a.dependencies[i].hashOrVersion!=b.dependencies[i].hashOrVersion)return false;
+    return true;
+}
+bool OpenSourceTables(MDB_txn* transaction,MDB_dbi& meta,MDB_dbi& manifests,MDB_dbi& records,MDB_dbi& dependencies,bool create,std::string& error)
+{
+    for(const auto& [name,table]:std::array<std::pair<const char*,MDB_dbi*>,4>{{{kMetaDatabaseName,&meta},{kManifestDatabaseName,&manifests},
+        {kRecordsDatabaseName,&records},{kDependenciesDatabaseName,&dependencies}}})
+    {
+        const int code=mdb_dbi_open(transaction,name,create?MDB_CREATE:0,table);
+        if(code!=MDB_SUCCESS){error=LmdbErrorMessage("mdb_dbi_open",code);return false;}
+    }
+    const auto schema=GetString(transaction,meta,"schema"),version=GetString(transaction,meta,"version");
+    if(schema && (*schema!=kArtifactDatabaseSchema || !version || *version!=kArtifactDatabaseVersion))
+    {error="Artifact database schema/version is unsupported";return false;}
+    return create || schema.has_value();
+}
+}
+
+std::optional<ArtifactManifest> ReadArtifactDatabaseManifest(const std::filesystem::path& path,
+    AssetId source,const std::string& target,std::string* outputError)
+{
+    std::string error;LmdbEnv environment;LmdbTxn transaction;ArtifactManifest result;
+    const auto fail=[&]()->std::optional<ArtifactManifest>{if(outputError)*outputError=error;return {};};
+    if(!OpenEnvironment(path,true,environment,&error))return fail();
+    const int code=mdb_txn_begin(environment.env,nullptr,MDB_RDONLY,&transaction.txn);
+    if(code!=MDB_SUCCESS){error=LmdbErrorMessage("mdb_txn_begin",code);return fail();}
+    MDB_dbi meta=0,manifests=0,records=0,dependencies=0;
+    if(!OpenSourceTables(transaction.txn,meta,manifests,records,dependencies,false,error) ||
+        !ReadSourceManifest(transaction.txn,manifests,records,dependencies,source,target,result,nullptr,error))return fail();
+    return result;
+}
+
+bool WriteArtifactDatabaseManifest(const std::filesystem::path& path,const ArtifactManifest& manifest,
+    const std::string& sourcePath,ArtifactRecordStatus status,const ArtifactManifest* expected,std::string* outputError)
+{
+    std::string error;const auto fail=[&](std::string message){if(outputError)*outputError=std::move(message);return false;};
+    if(!manifest.sourceAssetId.IsValid() || manifest.targetPlatform.find('\n')!=std::string::npos)return fail("Artifact source identity is invalid");
+#if defined(NLS_ENABLE_TEST_HOOKS)
+    ++ArtifactDatabaseSaveAttemptCountForTestingStorage();
+    if(ArtifactDatabaseFailNextSaveForTestingStorage())
+    {ArtifactDatabaseFailNextSaveForTestingStorage()=false;return fail("Injected ArtifactDB save failure for testing.");}
+    if(ArtifactDatabaseFailSaveAttemptForTestingStorage()!=0 && ArtifactDatabaseSaveAttemptCountForTestingStorage()==ArtifactDatabaseFailSaveAttemptForTestingStorage())
+    {ArtifactDatabaseFailSaveAttemptForTestingStorage()=0;return fail("Injected ArtifactDB save failure for testing.");}
+#endif
+    ArtifactDatabase delta;delta.UpsertManifest(manifest,sourcePath,status);
+    std::error_code fileError;const auto existingBytes=std::filesystem::file_size(path/"data.mdb",fileError);
+    size_t estimate=kDefaultLmdbMapSize;
+    if(!fileError)estimate=(std::max)(estimate,static_cast<size_t>(existingBytes)+kLmdbMapGrowthPadding);
+    for(const auto& record:delta.GetRecords())estimate+=EncodeRecord(record).size()*3+kLmdbRecordOverheadEstimate;
+    LmdbEnv environment;if(!OpenEnvironment(path,false,environment,&error,estimate))return fail(error);
+    LmdbTxn transaction;int code=mdb_txn_begin(environment.env,nullptr,0,&transaction.txn);
+    if(code!=MDB_SUCCESS)return fail(LmdbErrorMessage("mdb_txn_begin",code));
+    MDB_dbi meta=0,manifests=0,records=0,dependencies=0;
+    if(!OpenSourceTables(transaction.txn,meta,manifests,records,dependencies,true,error))return fail(error);
+    std::vector<std::string> oldKeys;ArtifactManifest previous;
+    const auto base=MakeStorageKey(manifest.sourceAssetId,{},manifest.targetPlatform);
+    const auto oldHeader=GetString(transaction.txn,manifests,base);
+    if(oldHeader)
+    {
+        if(!ReadSourceManifest(transaction.txn,manifests,records,dependencies,manifest.sourceAssetId,manifest.targetPlatform,previous,&oldKeys,error))return fail(error);
+        if(expected && !SameManifest(previous,*expected))return fail("Artifact source changed before incremental commit");
+    }
+    else if(expected)return fail("Artifact source was removed before incremental commit");
+    for(const auto& key:oldKeys){auto k=ToMdbVal(key);code=mdb_del(transaction.txn,records,&k,nullptr);if(code!=MDB_SUCCESS)return fail(LmdbErrorMessage("mdb_del(record)",code));}
+    if(oldHeader)
+    {
+        for(size_t i=0;i<previous.dependencies.size();++i)
+        {const auto key=DependencyStorageKey(base,i);auto k=ToMdbVal(key);code=mdb_del(transaction.txn,dependencies,&k,nullptr);if(code!=MDB_SUCCESS && code!=MDB_NOTFOUND)return fail(LmdbErrorMessage("mdb_del(dependency)",code));}
+    }
+    ArtifactDatabase::ManifestHeader header{manifest.sourceAssetId,sourcePath,manifest.importerId,manifest.importerVersion,
+        manifest.targetPlatform,manifest.primarySubAssetKey,manifest.dependencies.size(),status};
+    if(!PutString(transaction.txn,meta,"schema",kArtifactDatabaseSchema) || !PutString(transaction.txn,meta,"version",kArtifactDatabaseVersion) ||
+        !PutString(transaction.txn,manifests,base,EncodeManifestHeader(header)) ||
+        !PutString(transaction.txn,dependencies,DependencyCountKey(base),std::to_string(manifest.dependencies.size())))return fail("Artifact manifest header write failed");
+    for(const auto& record:delta.GetRecords())
+        if(!PutString(transaction.txn,records,RecordStorageKey(record),EncodeRecord(record)))return fail("Artifact source record write failed");
+    for(size_t i=0;i<manifest.dependencies.size();++i)
+        if(!PutString(transaction.txn,dependencies,DependencyStorageKey(base,i),EncodeDependency(manifest.dependencies[i])))return fail("Artifact dependency write failed");
+    code=mdb_txn_commit(transaction.txn);transaction.txn=nullptr;transaction.committed=true;
+    return code==MDB_SUCCESS?true:fail(LmdbErrorMessage("mdb_txn_commit",code));
 }
 
 bool ArtifactDatabase::Save(const std::filesystem::path& path) const

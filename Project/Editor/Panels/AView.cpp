@@ -223,6 +223,11 @@ void Editor::Panels::AView::RequestSkipNextRenderFrame()
     m_skipNextRenderFrame = true;
 }
 
+std::pair<uint16_t, uint16_t> Editor::Panels::AView::ResolveRenderSize(Maths::Vector2 available) const
+{
+    return {static_cast<uint16_t>(available.x), static_cast<uint16_t>(available.y)};
+}
+
 void Editor::Panels::AView::SyncViewToCurrentContentRegion()
 {
     m_resizedViewThisFrame = false;
@@ -240,7 +245,7 @@ void Editor::Panels::AView::SyncViewToCurrentContentRegion()
 	const auto winWidth = static_cast<uint16_t>(clampedWidth);
 	const auto winHeight = static_cast<uint16_t>(clampedHeight);
 
-    std::pair<uint16_t, uint16_t> requestedSize { winWidth, winHeight };
+    std::pair<uint16_t, uint16_t> requestedSize = ResolveRenderSize({float(winWidth), float(winHeight)});
     auto* driver = Render::Context::TryGetLocatedDriver();
 #if defined(__APPLE__)
     if (!IsSceneRendererAvailable() &&
@@ -426,8 +431,12 @@ void Editor::Panels::AView::Render(const uint16_t p_width, const uint16_t p_heig
 		frameDescriptor.renderWidth = p_width;
 		frameDescriptor.renderHeight = p_height;
 		frameDescriptor.camera = camera;
+			ConfigureFrameDescriptor(frameDescriptor);
 		const auto& clearColor = camera->GetClearColor();
-		m_fbo.SetOptimizedColorClearValue(clearColor.x, clearColor.y, clearColor.z, 1.0f);
+			// Multiple camera passes share this output. Changing the optimized
+			// clear color recreates its texture and would discard earlier cameras.
+			if (!frameDescriptor.outputViewport)
+				m_fbo.SetOptimizedColorClearValue(clearColor.x, clearColor.y, clearColor.z, 1.0f);
 		m_image->textureView = m_fbo.GetOrCreateExplicitColorView("Editor.AView.Output");
         NLS::Render::FrameGraph::SetExternalSceneOutputFramebuffer(frameDescriptor, &m_fbo);
         logStartupRenderStage("PrepareFrameDescriptor");
@@ -560,6 +569,19 @@ void Editor::Panels::AView::Render(const uint16_t p_width, const uint16_t p_heig
 bool Editor::Panels::AView::WasLastRenderFramePublished() const
 {
     return m_lastRenderFramePublished;
+}
+
+void Editor::Panels::AView::ConfigureFrameDescriptor(Render::Data::FrameDescriptor& descriptor)
+{
+    if (!NLS::Core::ServiceLocator::Contains<Core::EditorActions>())
+        return;
+    auto& play=EDITOR_EXEC(GetRuntimePlaySession());
+    if(play.IsActive() && GetScene()==EDITOR_CONTEXT(sceneManager).GetCurrentScene())
+    {
+        descriptor.gameTime=play.GetFrame().time;
+        descriptor.playSessionId=play.GetSessionId();
+        descriptor.simulationFrame=play.GetFrame().frameIndex;
+    }
 }
 
 void Editor::Panels::AView::DrawFrame()
@@ -934,14 +956,22 @@ bool Editor::Panels::AView::IsMouseHoveringView(const Maths::Vector2& mousePosit
     if (window == nullptr || !ImGui::IsWindowContentHoverable(window))
         return false;
 
-    // Camera updates run before ImGui::NewFrame(), so use the current mouse position
-    // with ImGui's window hit test instead of last frame's cached hover/focus state.
+    const auto& context = *ImGui::GetCurrentContext();
     ImGuiWindow* hoveredWindow = nullptr;
-    ImGui::FindHoveredWindowEx({mousePosition.x, mousePosition.y}, false, &hoveredWindow, nullptr);
+    if (context.WithinFrameScope && mousePosition.x == context.IO.MousePos.x && mousePosition.y == context.IO.MousePos.y)
+    {
+        // NewFrame resolves the topmost window before clearing per-frame Active flags.
+        // A fresh scan while drawing Scene would miss floating windows drawn later.
+        hoveredWindow = context.HoveredWindow;
+    }
+    else
+    {
+        // Camera updates run before NewFrame and need a hit test at the new mouse position.
+        ImGui::FindHoveredWindowEx({mousePosition.x, mousePosition.y}, false, &hoveredWindow, nullptr);
+    }
     if (hoveredWindow != window)
         return false;
 
-    const auto& context = *ImGui::GetCurrentContext();
     return context.ActiveId == 0 || context.ActiveIdAllowOverlap || context.ActiveIdWindow == window;
 }
 

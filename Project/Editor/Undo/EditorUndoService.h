@@ -490,12 +490,16 @@ public:
     void InvalidateScope(const UndoScopeId& scope, UndoInvalidationReason reason);
     void Freeze(UndoFreezeReason reason);
     void Unfreeze(UndoFreezeReason reason);
+    [[nodiscard]] UndoRequestResult BeginPlayDomain(uint64_t sessionId);
+    [[nodiscard]] UndoRequestResult EndPlayDomain();
+    [[nodiscard]] uint64_t GetPlayDomainId() const { return m_playDomainId; }
     void ClearAll(UndoClearReason reason = UndoClearReason::UserRequested);
 
     [[nodiscard]] bool CanUndo() const;
     [[nodiscard]] bool CanRedo() const;
     [[nodiscard]] bool IsPending() const;
     [[nodiscard]] bool HasActiveEditSession() const;
+    [[nodiscard]] bool HasActiveTransaction() const;
     // A UI owner must check its own token rather than merely observing that
     // some other editor surface has an active continuous edit.
     [[nodiscard]] bool IsEditSessionActive(const UndoEditSession& session) const noexcept;
@@ -519,6 +523,8 @@ public:
 
 private:
     struct HistoryEntry;
+    struct SuspendedHistory;
+    [[nodiscard]] bool IsCommandAllowedInPlay(const UndoCommandInfo& info) const;
     struct TransactionFrame;
     struct PendingOperation;
     struct ActiveEdit;
@@ -581,6 +587,8 @@ private:
 
     UndoBudget m_budget;
     std::vector<HistoryEntry> m_history;
+    std::unique_ptr<SuspendedHistory> m_editHistory;
+    uint64_t m_playDomainId = 0;
     size_t m_cursor = 0u;
     size_t m_retainedMemoryBytes = 0u;
     size_t m_retainedBlobBytes = 0u;

@@ -428,10 +428,12 @@ SceneManager::~SceneManager()
 
 void SceneManager::Update()
 {
+    if (m_currentScene && (m_currentScene->IsPhysicsMutationDeferred() || m_currentScene->IsPhysicsSynchronizing())) return;
     if (m_delayedLoadCall)
     {
-        m_delayedLoadCall();
-        m_delayedLoadCall = 0;
+        auto load=std::move(m_delayedLoadCall);
+        m_delayedLoadCall = {};
+        load();
     }
 }
 
@@ -450,6 +452,11 @@ void SceneManager::LoadAndPlayDelayed(const std::string& p_path, bool p_absolute
 
 bool SceneManager::BeginPlaySandbox(std::string* p_error)
 {
+    if (m_currentScene && (m_currentScene->IsPhysicsMutationDeferred() || m_currentScene->IsPhysicsSynchronizing()))
+    {
+        if (p_error) *p_error="Cannot begin a Play sandbox during physics callbacks or synchronization.";
+        return false;
+    }
     if (IsPlaySandboxActive())
     {
         if (p_error)
@@ -507,6 +514,11 @@ bool SceneManager::BeginPlaySandbox(std::string* p_error)
 
 bool SceneManager::ReplacePlaySandbox(std::unique_ptr<Scene> p_replacement, std::string* p_error)
 {
+    if (m_currentScene && (m_currentScene->IsPhysicsMutationDeferred() || m_currentScene->IsPhysicsSynchronizing()))
+    {
+        if (p_error) *p_error="Cannot replace a scene during physics callbacks or synchronization; queue a delayed scene load.";
+        return false;
+    }
     if (!p_replacement)
     {
         if (p_error)
@@ -531,6 +543,8 @@ bool SceneManager::ReplacePlaySandbox(std::unique_ptr<Scene> p_replacement, std:
     m_playSceneSandbox = std::move(p_replacement);
     m_currentScene = m_playSceneSandbox.get();
     m_playSandboxDirty = false;
+    // Bind host services and script runtimes before Awake on the replacement.
+    SceneLoadEvent.Invoke();
     if (wasPlaying)
         m_playSceneSandbox->Play();
 
@@ -538,12 +552,16 @@ bool SceneManager::ReplacePlaySandbox(std::unique_ptr<Scene> p_replacement, std:
     // suspended Edit scene. The event below then rebuilds editor views from
     // the replacement without emitting a successful disk-load notification.
     previousSandbox.reset();
-    SceneLoadEvent.Invoke();
     return true;
 }
 
 bool SceneManager::DiscardPlaySandbox(std::string* p_error)
 {
+    if (m_currentScene && (m_currentScene->IsPhysicsMutationDeferred() || m_currentScene->IsPhysicsSynchronizing()))
+    {
+        if (p_error) *p_error="Cannot discard a scene during physics callbacks or synchronization; stop after the callback returns.";
+        return false;
+    }
     if (!IsPlaySandboxActive())
     {
         if (p_error)
@@ -582,6 +600,7 @@ bool SceneManager::IsPlaySandboxActive() const
 
 void SceneManager::LoadEmptyScene()
 {
+    if (m_currentScene && (m_currentScene->IsPhysicsMutationDeferred() || m_currentScene->IsPhysicsSynchronizing())) return;
     if (IsPlaySandboxActive())
     {
         auto replacement = std::make_unique<Scene>();
@@ -603,6 +622,7 @@ void SceneManager::LoadEmptyScene()
 
 void SceneManager::LoadEmptyLightedScene()
 {
+    if (m_currentScene && (m_currentScene->IsPhysicsMutationDeferred() || m_currentScene->IsPhysicsSynchronizing())) return;
     AppendSceneManagerTrace("LoadEmptyLightedScene begin");
     if (IsPlaySandboxActive())
     {
@@ -638,6 +658,7 @@ bool SceneManager::LoadScene(
     bool p_absolute,
     const SceneLoadProgressCallback& p_progressCallback)
 {
+    if (m_currentScene && (m_currentScene->IsPhysicsMutationDeferred() || m_currentScene->IsPhysicsSynchronizing())) return false;
     namespace Profiling = NLS::Base::Profiling;
 
     const bool replacingPlaySandbox = IsPlaySandboxActive();
@@ -820,6 +841,11 @@ bool SceneManager::SaveCurrentScene(const std::string& p_path)
 
 bool SceneManager::SaveSceneToPath(const Scene& p_scene, const std::string& p_path)
 {
+    if (p_scene.IsSerializationReadOnly())
+    {
+        NLS_LOG_ERROR("Scene save blocked: unresolved plugin component types; original serialized data has been retained.");
+        return false;
+    }
     if (p_path.empty())
         return false;
 
@@ -853,6 +879,7 @@ bool SceneManager::SaveSceneToPath(const Scene& p_scene, const std::string& p_pa
 
 void SceneManager::UnloadCurrentScene()
 {
+    if (m_currentScene && (m_currentScene->IsPhysicsMutationDeferred() || m_currentScene->IsPhysicsSynchronizing())) return;
     if (IsPlaySandboxActive())
     {
         // Runtime scene replacement during Play must not expose or destroy the

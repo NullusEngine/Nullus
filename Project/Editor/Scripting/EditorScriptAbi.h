@@ -95,6 +95,8 @@ struct EditorScriptHostApiTable
     // Window lifetime requested by an editor script (EditorWindow.Open/Close).
     void (*openWindow)(const char* editorTypeName) = nullptr;
     void (*closeWindow)(const char* editorTypeName) = nullptr;
+    // Stable method identity, separate from its display menu path.
+    uint8_t (*registerMenuCommand)(const char* menuPath, const char* editorTypeName, const char* commandId) = nullptr;
 };
 
 // Managed -> native.  Native resolves this table through the editor-scripts

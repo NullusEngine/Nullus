@@ -1,182 +1,216 @@
 #include "Components/PhysicsColliderComponent.h"
-
+#include "Components/RigidbodyComponent.h"
+#include "Physics3DTransform.h"
+#include "PhysicsShapeBuilder.h"
+#include "GameObject.h"
+#include "SceneSystem/Scene.h"
+#include <Physics/PhysicsCommandBuffer.h>
 #include <algorithm>
 #include <cmath>
 
-#include "Components/TransformComponent.h"
-#include "GameObject.h"
-#include "SceneSystem/Scene.h"
-
 namespace NLS::Engine::Components
 {
+using namespace Physics3DDetail;
 namespace
 {
-constexpr float kMinimumExtent = 1.0e-3f;
-constexpr float kPositionEpsilon = 1.0e-6f;
-constexpr float kRotationEpsilon = 1.0e-5f;
-
-// Rotates the X-aligned PhysX capsule geometry onto the engine's Y up axis.
-const Maths::Quaternion kCapsuleAxisAlignment{0.0f, 0.0f, 0.70710678f, 0.70710678f};
-
-float FiniteOrFallback(float value, float fallback)
+const Maths::Quaternion kCapsuleAxisAlignment{0,0,0.70710678f,0.70710678f};
+RigidbodyComponent* FindRigidbody(GameObject& owner)
 {
-    return std::isfinite(value) ? value : fallback;
-}
-
-float AbsoluteScale(float value)
-{
-    return (std::max)(std::abs(FiniteOrFallback(value, 1.0f)), kMinimumExtent);
-}
-
-float AbsoluteExtent(float value)
-{
-    return (std::max)(std::abs(FiniteOrFallback(value, 0.0f)), kMinimumExtent);
-}
-
-bool SamePosition(const Maths::Vector3& left, const Maths::Vector3& right)
-{
-    return std::abs(left.x - right.x) <= kPositionEpsilon &&
-        std::abs(left.y - right.y) <= kPositionEpsilon &&
-        std::abs(left.z - right.z) <= kPositionEpsilon;
-}
-
-bool SameRotation(const Maths::Quaternion& left, const Maths::Quaternion& right)
-{
-    const auto dot = left.x * right.x + left.y * right.y + left.z * right.z + left.w * right.w;
-    return std::abs(dot) >= 1.0f - kRotationEpsilon;
+    for (auto* object=&owner; object; object=object->GetParent())
+        if (auto* candidate=object->GetComponent<RigidbodyComponent>())
+            return candidate->IsActiveAndEnabled() ? candidate : nullptr;
+    return nullptr;
 }
 }
-
 PhysicsColliderComponent::PhysicsColliderComponent() = default;
-PhysicsColliderComponent::~PhysicsColliderComponent() = default;
-
-void PhysicsColliderComponent::OnCreate()
-{
-    Synchronize();
-}
-
-void PhysicsColliderComponent::OnUpdate(float)
-{
-    Synchronize();
-}
-
-void PhysicsColliderComponent::OnDestroy()
-{
-    Release();
-}
+PhysicsColliderComponent::~PhysicsColliderComponent() { Release(); }
+void PhysicsColliderComponent::OnCreate() { if (!gameobject() || !gameobject()->GetScene() || !gameobject()->GetScene()->IsPlaying()) Synchronize(); }
+void PhysicsColliderComponent::OnUpdate(float) { if (!gameobject() || !gameobject()->GetScene() || !gameobject()->GetScene()->IsPlaying()) Synchronize(); }
+void PhysicsColliderComponent::OnDestroy() { Release(); }
+void PhysicsColliderComponent::OnDisable() { Release(); }
 
 void PhysicsColliderComponent::Synchronize()
 {
-    if (!IsActiveAndEnabled())
+    auto* owner=gameobject(); auto* scene=owner ? owner->GetScene() : nullptr;
+    if (!scene || !IsActiveAndEnabled()) { Release(); return; }
+    if (scene->IsPhysicsMutationDeferred() || (scene->IsPlaying() && !scene->IsPhysicsSynchronizing())) return;
+    Frame frame; if (!Capture(*owner->GetTransform(),frame,m_error)) return;
+    std::shared_ptr<const Assets::PhysicsMaterialData> materialData;
+    if (!physicsMaterial.IsNull())
     {
-        Release();
-        return;
-    }
-
-    auto* owner = gameobject();
-    auto* scene = owner != nullptr ? owner->GetScene() : nullptr;
-    auto* transform = owner != nullptr ? owner->GetTransform() : nullptr;
-    if (scene == nullptr || transform == nullptr)
-        return;
-
-    const auto& world = scene->GetPhysicsWorld();
-    if (world == nullptr)
-    {
-        Release();
-        return;
-    }
-
-    const auto& position = transform->GetWorldPosition();
-    const auto& rotation = transform->GetWorldRotation();
-    if (!m_body.IsValid() || m_dirty)
-    {
-        if (m_body.IsValid())
-            world->Remove(m_body);
-        m_body = PublishBody(*world);
-        m_dirty = false;
-        m_hasSyncedPose = m_body.IsValid();
-        if (m_body.IsValid())
+        Serialize::ObjectIdentifier reference;
+        if (Serialize::PersistentManager::Instance().InstanceIDToObjectIdentifier(physicsMaterial.GetInstanceID(),reference) && reference.IsAsset())
         {
-            m_syncedPosition = position;
-            m_syncedRotation = rotation;
-            scene->NotifyPhysicsChanged();
+            auto asset=Assets::LoadPhysicsMaterial(reference,m_error); if (!asset) return;
+            m_materialOwner=std::move(asset); materialData=m_materialOwner->Capture();
         }
-        return;
+        else if (const auto* asset=physicsMaterial.Get()) materialData=asset->Capture();
+        if (!materialData) { m_error="Physics material reference is unresolved."; return; }
     }
-
-    if (m_hasSyncedPose && SamePosition(position, m_syncedPosition) && SameRotation(rotation, m_syncedRotation))
-        return;
-
-    if (!world->SetTransform(m_body, position, rotation))
-        return;
-
-    m_syncedPosition = position;
-    m_syncedRotation = rotation;
-    m_hasSyncedPose = true;
-    scene->NotifyPhysicsChanged();
+    if (materialData!=m_materialData) { m_materialData=std::move(materialData); m_dirty=true; }
+    if (physicsMaterial.IsNull()) m_materialOwner.reset();
+    std::shared_ptr<const Physics::CookedCollisionMesh> meshData;
+    if (shape==EColliderShape::COLLISION_MESH)
+    {
+        if (frame.reflected) { m_error="Cooked mesh colliders require reflection baked into the collision asset's bakeScale."; return; }
+        Serialize::ObjectIdentifier reference;
+        if (Serialize::PersistentManager::Instance().InstanceIDToObjectIdentifier(collisionMesh.GetInstanceID(),reference) && reference.IsAsset())
+        {
+            auto asset=Assets::LoadCollisionMeshAsset(reference,m_error); if (!asset) return;
+            m_meshOwner=std::move(asset); meshData=m_meshOwner->Capture();
+        }
+        else if (const auto* asset=collisionMesh.Get()) meshData=asset->Capture();
+        if (!meshData) { m_error="Collision mesh reference is unresolved."; return; }
+    }
+    if (meshData!=m_meshData) { m_meshData=std::move(meshData); m_dirty=true; }
+    if (shape!=EColliderShape::COLLISION_MESH) m_meshOwner.reset();
+    std::shared_ptr<const Assets::PhysicsShapeData> shapeData;
+    if(shape==EColliderShape::SHAPE_ASSET)
+    {
+        Serialize::ObjectIdentifier reference;
+        if(Serialize::PersistentManager::Instance().InstanceIDToObjectIdentifier(shapeResource.GetInstanceID(),reference) && reference.IsAsset())
+        {
+            auto asset=Assets::LoadPhysicsShapeAsset(reference,m_error); if(!asset) return;
+            m_shapeOwner=std::move(asset); shapeData=m_shapeOwner->Capture();
+        }
+        else if(const auto* asset=shapeResource.Get()) shapeData=asset->Capture();
+        if(!shapeData) { m_error="Shape resource reference is unresolved."; return; }
+    }
+    if(shapeData!=m_shapeData) { m_shapeData=std::move(shapeData); m_dirty=true; }
+    if(shape!=EColliderShape::SHAPE_ASSET) m_shapeOwner.reset();
+    auto* rigidbody=FindRigidbody(*owner);
+    if (m_meshData && m_meshData->GetKind()!=Physics::CollisionMeshKind::Convex && ((rigidbody && scene->IsPlaying()) || trigger))
+    { m_error="Triangle mesh and heightfield colliders require a static body and cannot be triggers."; return; }
+    const auto& world=scene->GetPhysicsWorld(); if (!world) { Release(); return; }
+    const auto mutation=world->BeginMutationBatch();
+    Physics::BodyHandle body;
+    Frame root=frame;
+    if (rigidbody)
+    {
+        rigidbody->Synchronize(); body=rigidbody->GetBodyHandle();
+        if (!body.IsValid() || !Capture(*rigidbody->gameobject()->GetTransform(),root,m_error) ||
+            !Capture(*owner->GetTransform(),frame,m_error))
+        { Release(); if (m_error.empty()) m_error=rigidbody->LastError(); return; }
+    }
+    else
+    {
+        if (!m_ownsBody || m_world.lock()!=world || !world->IsValid(m_body))
+        {
+            Release(); Physics::BodySettings settings; settings.position=frame.position; settings.rotation=frame.rotation;
+            Physics::PhysicsCommandBuffer commands(world);
+            const auto creation=commands.CreateBody(settings); commands.Commit();
+            m_body=commands.GetResult(creation).body; m_world=world; m_ownsBody=true;
+        }
+        body=m_body;
+        if (!body.IsValid()) { m_error="Cannot create the static 3D collider body."; return; }
+    }
+    const auto inverse=Maths::Quaternion::Inverse(root.rotation);
+    const auto localXAxis=inverse*frame.xAxis, localYAxis=inverse*frame.yAxis, localZAxis=inverse*frame.zAxis;
+    Physics::ShapeSettings settings;
+    settings.localPosition=inverse*(frame.position+frame.xAxis*center.x+frame.yAxis*center.y+frame.zAxis*center.z-root.position);
+    settings.localRotation=inverse*frame.rotation;
+    settings.layer=layers; settings.collisionMask=collisionMask; settings.trigger=trigger;
+    settings.staticFriction=friction; settings.dynamicFriction=friction; settings.restitution=restitution;
+    if (m_materialData)
+    {
+        settings.staticFriction=m_materialData->staticFriction; settings.dynamicFriction=m_materialData->dynamicFriction;
+        settings.restitution=m_materialData->restitution; settings.frictionCombine=m_materialData->frictionCombine;
+        settings.restitutionCombine=m_materialData->restitutionCombine;
+    }
+    settings.owner=static_cast<uint64_t>(GetInstanceID());
+    if (shape==EColliderShape::CAPSULE) settings.localRotation=settings.localRotation*kCapsuleAxisAlignment;
+    ShapeBuild built;
+    if(m_shapeData)
+    {
+        if(!BuildShapeResource(*m_shapeData,frame,root,center,settings,rigidbody && scene->IsPlaying(),built,m_error)) return;
+    }
+    else built.shapes.push_back({InlineGeometry(frame.scale),settings});
+    if(built.snapshots!=m_partSnapshots) m_dirty=true;
+    const auto updateStaticPose=[&]
+    {
+        if(!rigidbody)
+        {
+            Maths::Vector3 position; Maths::Quaternion rotation;
+            if(world->GetTransform(body,position,rotation) && (!Same(position,frame.position) || !Same(rotation,frame.rotation)))
+            { world->SetTransform(body,frame.position,frame.rotation); scene->NotifyPhysicsChanged(); }
+        }
+    };
+    if (!m_shapes.empty() && m_world.lock()==world && m_body==body && IsQueryReady() && !m_dirty &&
+        Same(settings.localPosition,m_syncedPosition) && Same(settings.localRotation,m_syncedRotation) &&
+        Same(localXAxis,m_syncedXAxis) && Same(localYAxis,m_syncedYAxis) && Same(localZAxis,m_syncedZAxis))
+    { updateStaticPose(); m_error.clear(); m_simulatedBody=rigidbody && scene->IsPlaying(); return; }
+    const bool sameBody=m_world.lock()==world && m_body==body;
+    std::vector<Physics::PhysicsShapeReference> previousShapes;
+    if(sameBody) for(const auto handle:m_shapes) if(world->GetShapeBody(handle)==body) previousShapes.emplace_back(handle);
+    Physics::PhysicsCommandBuffer commands(world);
+    const auto replacement=commands.ReplaceShapes(body,std::move(previousShapes),std::move(built.shapes)); commands.Commit();
+    auto result=commands.GetResult(replacement);
+    if(result.status!=Physics::PhysicsCommandStatus::Applied)
+    { m_error="Invalid 3D collider geometry; the previous valid shape group is retained."; return; }
+    if(!sameBody) if(auto previous=m_world.lock())
+    {
+        if(m_ownsBody) scene->QueuePhysicsRemoval(previous,m_body);
+        else for(const auto handle:m_shapes) scene->QueuePhysicsRemoval(previous,handle);
+    }
+    m_body=body; m_shapes=std::move(result.shapes); m_shape=m_shapes.empty()?Physics::ShapeHandle{}:m_shapes.front();
+    m_partSnapshots=std::move(built.snapshots); m_partResidents=std::move(built.residents);
+    m_world=world; m_ownsBody=rigidbody==nullptr; updateStaticPose();
+    m_simulatedBody=rigidbody && scene->IsPlaying(); m_dirty=false; m_hasSyncedPose=true;
+    m_syncedPosition=settings.localPosition; m_syncedRotation=settings.localRotation; m_syncedScale=frame.scale;
+    m_syncedXAxis=localXAxis; m_syncedYAxis=localYAxis; m_syncedZAxis=localZAxis;
+    m_error.clear(); scene->NotifyPhysicsChanged();
 }
-
 void PhysicsColliderComponent::Release()
+{ ReleaseWithContext(nullptr); }
+void PhysicsColliderComponent::ReleaseToScene(SceneSystem::Scene& scene)
+{ ReleaseWithContext(&scene); }
+void PhysicsColliderComponent::ReleaseWithContext(SceneSystem::Scene* context)
 {
-    if (m_body.IsValid())
+    if (auto world=m_world.lock())
     {
-        auto* owner = gameobject();
-        auto* scene = owner != nullptr ? owner->GetScene() : nullptr;
-        auto* world = scene != nullptr ? scene->PeekPhysicsWorld().get() : nullptr;
-        if (world != nullptr && world->Remove(m_body))
-            scene->NotifyPhysicsChanged();
-        m_body = {};
+        auto* scene=context?context:(gameobject()?gameobject()->GetScene():nullptr);
+        if (m_ownsBody) { if (scene) scene->QueuePhysicsRemoval(world,m_body); else world->Remove(m_body); }
+        else for(const auto shape:m_shapes) { if(scene) scene->QueuePhysicsRemoval(world,shape); else world->Remove(shape); }
     }
-    m_hasSyncedPose = false;
-    m_dirty = true;
+    m_body={}; m_shape={}; m_shapes.clear(); m_world.reset(); m_ownsBody=false; m_hasSyncedPose=false; m_simulatedBody=false; m_dirty=true;
+    m_partResidents.clear(); m_partSnapshots.clear();
 }
-
-Physics::BodySettings PhysicsColliderComponent::BuildBodySettings() const
+void PhysicsColliderComponent::ReadSimulationPose()
+{ if (auto* owner=gameobject()) if (auto* body=FindRigidbody(*owner)) body->ReadSimulationPose(); }
+Physics::CollisionGeometry3D PhysicsColliderComponent::InlineGeometry(Maths::Vector3 scale) const
 {
-    Physics::BodySettings settings;
-    if (auto* owner = gameobject())
-        if (auto* transform = owner->GetTransform())
-        {
-            settings.position = transform->GetWorldPosition();
-            settings.rotation = transform->GetWorldRotation();
-        }
-    settings.layer = layers;
-    settings.trigger = trigger;
-    return settings;
-}
-
-Physics::BodyHandle PhysicsColliderComponent::PublishBody(Physics::PhysicsWorld& world) const
-{
-    auto* owner = gameobject();
-    auto* transform = owner != nullptr ? owner->GetTransform() : nullptr;
-    if (transform == nullptr)
-        return {};
-
-    auto settings = BuildBodySettings();
-    const auto& worldScale = transform->GetWorldScale();
-    const auto scaleX = AbsoluteScale(worldScale.x);
-    const auto scaleY = AbsoluteScale(worldScale.y);
-    const auto scaleZ = AbsoluteScale(worldScale.z);
-
-    switch (shape)
+    Physics::CollisionGeometry3D geometry;
+    switch(shape)
     {
     case EColliderShape::SPHERE:
-    {
-        const auto uniformScale = (std::max)({scaleX, scaleY, scaleZ});
-        return world.AddSphere(AbsoluteExtent(radius) * uniformScale, settings);
-    }
+        geometry.type=Physics::CollisionGeometryType3D::Sphere;
+        geometry.radius=std::abs(radius)*(std::max)({scale.x,scale.y,scale.z}); break;
     case EColliderShape::CAPSULE:
-    {
-        const auto radialScale = (std::max)(scaleX, scaleZ);
-        settings.localRotation = kCapsuleAxisAlignment;
-        return world.AddCapsule(AbsoluteExtent(radius) * radialScale, AbsoluteExtent(halfHeight) * scaleY, settings);
-    }
+        geometry.type=Physics::CollisionGeometryType3D::Capsule;
+        geometry.radius=std::abs(radius)*(std::max)(scale.x,scale.z); geometry.halfHeight=std::abs(halfHeight)*scale.y; break;
+    case EColliderShape::CYLINDER:
+        geometry.type=Physics::CollisionGeometryType3D::Cylinder;
+        geometry.radius=std::abs(radius)*(std::max)(scale.x,scale.z); geometry.halfHeight=std::abs(halfHeight)*scale.y; break;
     case EColliderShape::BOX:
-    default:
-        return world.AddBox({AbsoluteExtent(size.x) * scaleX, AbsoluteExtent(size.y) * scaleY,
-            AbsoluteExtent(size.z) * scaleZ}, settings);
+        geometry.halfExtents={std::abs(size.x)*scale.x,std::abs(size.y)*scale.y,std::abs(size.z)*scale.z}; break;
+    case EColliderShape::COLLISION_MESH:
+        geometry.type=Physics::CollisionGeometryType3D::CookedMesh; geometry.cookedMesh=m_meshData; geometry.meshScale=scale; break;
+    default: geometry.halfExtents={}; break;
     }
+    return geometry;
 }
+void PhysicsColliderComponent::SetCenter(Maths::Vector3 value) { if(Finite(value)) { center=value; MarkDirty(); } }
+void PhysicsColliderComponent::SetCollisionMask(uint32_t value) { if(collisionMask!=value) { collisionMask=value; MarkDirty(); } }
+void PhysicsColliderComponent::SetFriction(float value)
+{ if(std::isfinite(value) && value>=0 && friction!=value) { friction=value; MarkDirty(); } }
+void PhysicsColliderComponent::SetRestitution(float value)
+{ if(std::isfinite(value) && value>=0 && value<=1 && restitution!=value) { restitution=value; MarkDirty(); } }
+void PhysicsColliderComponent::SetPhysicsMaterial(Serialize::PPtr<Assets::PhysicsMaterial> value)
+{ if(physicsMaterial!=value) { physicsMaterial=value; MarkDirty(); } }
+void PhysicsColliderComponent::SetCollisionMesh(Serialize::PPtr<Assets::CollisionMeshAsset> value)
+{ if(collisionMesh!=value) { collisionMesh=value; MarkDirty(); } }
+void PhysicsColliderComponent::SetShapeResource(Serialize::PPtr<Assets::PhysicsShapeAsset> value)
+{ if(shapeResource!=value) { shapeResource=value; MarkDirty(); } }
 
 PhysicsColliderComponent::EColliderShape PhysicsColliderComponent::GetShape() const
 {
@@ -198,7 +232,7 @@ uint32_t PhysicsColliderComponent::GetShapeValue() const
 
 void PhysicsColliderComponent::SetShapeValue(uint32_t value)
 {
-    if (value > static_cast<uint32_t>(EColliderShape::CAPSULE))
+    if (value > static_cast<uint32_t>(EColliderShape::SHAPE_ASSET))
         return;
     SetShape(static_cast<EColliderShape>(value));
 }
@@ -268,7 +302,8 @@ void PhysicsColliderComponent::SetTrigger(bool value)
 
 bool PhysicsColliderComponent::IsQueryReady() const
 {
-    return m_body.IsValid();
+    if (const auto world=m_world.lock()) return !m_shapes.empty() && std::all_of(m_shapes.begin(),m_shapes.end(),[&](auto shape){return world->GetShapeBody(shape)==m_body;});
+    return false;
 }
 
 void PhysicsColliderComponent::MarkDirty()

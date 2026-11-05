@@ -125,7 +125,7 @@
     {
       "id": "editor.icon.asset.scene",
       "module": "editor",
-      "kind": "color",
+      "kind": "monochrome",
       "source": "editor/asset-scene.svg",
       "sizes": [
         32,
@@ -133,7 +133,7 @@
         128
       ],
       "defaultToken": "Large",
-      "themeable": false,
+      "themeable": true,
       "tags": [
         "asset",
         "file"
@@ -784,6 +784,21 @@
       }
     },
     {
+      "id": "editor.icon.toolbar.rect",
+      "module": "editor",
+      "kind": "monochrome",
+      "source": "editor/toolbar-rect.svg",
+      "sizes": [16, 32, 48],
+      "defaultToken": "Small",
+      "themeable": true,
+      "tags": ["tool", "transform", "rect"],
+      "license": {
+        "name": "CC0-1.0",
+        "author": "Nullus",
+        "source": "original"
+      }
+    },
+    {
       "id": "editor.icon.toolbar.pivot",
       "module": "editor",
       "kind": "monochrome",
@@ -991,6 +1006,292 @@
       "tags": [
         "generated",
         "diagnostic"
+      ],
+      "license": {
+        "name": "CC0-1.0",
+        "author": "Nullus",
+        "source": "original"
+      }
+    },
+    {
+      "id": "editor.icon.toolbar.grid",
+      "module": "editor",
+      "kind": "monochrome",
+      "source": "editor/toolbar-grid.svg",
+      "sizes": [
+        16,
+        32,
+        48
+      ],
+      "defaultToken": "Small",
+      "themeable": true,
+      "tags": [
+        "toolbar",
+        "scene"
+      ],
+      "license": {
+        "name": "CC0-1.0",
+        "author": "Nullus",
+        "source": "original"
+      }
+    },
+    {
+      "id": "editor.icon.toolbar.snap",
+      "module": "editor",
+      "kind": "monochrome",
+      "source": "editor/toolbar-snap.svg",
+      "sizes": [
+        16,
+        32,
+        48
+      ],
+      "defaultToken": "Small",
+      "themeable": true,
+      "tags": [
+        "toolbar",
+        "scene"
+      ],
+      "license": {
+        "name": "CC0-1.0",
+        "author": "Nullus",
+        "source": "original"
+      }
+    },
+    {
+      "id": "editor.icon.toolbar.shaded",
+      "module": "editor",
+      "kind": "monochrome",
+      "source": "editor/toolbar-shaded.svg",
+      "sizes": [
+        16,
+        32,
+        48
+      ],
+      "defaultToken": "Small",
+      "themeable": true,
+      "tags": [
+        "toolbar",
+        "scene"
+      ],
+      "license": {
+        "name": "CC0-1.0",
+        "author": "Nullus",
+        "source": "original"
+      }
+    },
+    {
+      "id": "editor.icon.toolbar.wireframe",
+      "module": "editor",
+      "kind": "monochrome",
+      "source": "editor/toolbar-wireframe.svg",
+      "sizes": [
+        16,
+        32,
+        48
+      ],
+      "defaultToken": "Small",
+      "themeable": true,
+      "tags": [
+        "toolbar",
+        "scene"
+      ],
+      "license": {
+        "name": "CC0-1.0",
+        "author": "Nullus",
+        "source": "original"
+      }
+    },
+    {
+      "id": "editor.icon.toolbar.shaded.wireframe",
+      "module": "editor",
+      "kind": "monochrome",
+      "source": "editor/toolbar-shaded-wireframe.svg",
+      "sizes": [
+        16,
+        32,
+        48
+      ],
+      "defaultToken": "Small",
+      "themeable": true,
+      "tags": [
+        "toolbar",
+        "scene"
+      ],
+      "license": {
+        "name": "CC0-1.0",
+        "author": "Nullus",
+        "source": "original"
+      }
+    },
+    {
+      "id": "editor.icon.toolbar.2d",
+      "module": "editor",
+      "kind": "monochrome",
+      "source": "editor/toolbar-2d.svg",
+      "sizes": [
+        16,
+        32,
+        48
+      ],
+      "defaultToken": "Small",
+      "themeable": true,
+      "tags": [
+        "toolbar",
+        "scene"
+      ],
+      "license": {
+        "name": "CC0-1.0",
+        "author": "Nullus",
+        "source": "original"
+      }
+    },
+    {
+      "id": "editor.icon.toolbar.effects",
+      "module": "editor",
+      "kind": "monochrome",
+      "source": "editor/toolbar-effects.svg",
+      "sizes": [
+        16,
+        32,
+        48
+      ],
+      "defaultToken": "Small",
+      "themeable": true,
+      "tags": [
+        "toolbar",
+        "scene"
+      ],
+      "license": {
+        "name": "CC0-1.0",
+        "author": "Nullus",
+        "source": "original"
+      }
+    },
+    {
+      "id": "editor.icon.toolbar.visibility",
+      "module": "editor",
+      "kind": "monochrome",
+      "source": "editor/toolbar-visibility.svg",
+      "sizes": [
+        16,
+        32,
+        48
+      ],
+      "defaultToken": "Small",
+      "themeable": true,
+      "tags": [
+        "toolbar",
+        "scene"
+      ],
+      "license": {
+        "name": "CC0-1.0",
+        "author": "Nullus",
+        "source": "original"
+      }
+    },
+    {
+      "id": "editor.icon.toolbar.visibility.off",
+      "module": "editor",
+      "kind": "monochrome",
+      "source": "editor/toolbar-visibility-off.svg",
+      "sizes": [
+        16,
+        32,
+        48
+      ],
+      "defaultToken": "Small",
+      "themeable": true,
+      "tags": [
+        "toolbar",
+        "scene"
+      ],
+      "license": {
+        "name": "CC0-1.0",
+        "author": "Nullus",
+        "source": "original"
+      }
+    },
+    {
+      "id": "editor.icon.toolbar.camera",
+      "module": "editor",
+      "kind": "monochrome",
+      "source": "editor/toolbar-camera.svg",
+      "sizes": [
+        16,
+        32,
+        48
+      ],
+      "defaultToken": "Small",
+      "themeable": true,
+      "tags": [
+        "toolbar",
+        "scene"
+      ],
+      "license": {
+        "name": "CC0-1.0",
+        "author": "Nullus",
+        "source": "original"
+      }
+    },
+    {
+      "id": "editor.icon.toolbar.gizmos",
+      "module": "editor",
+      "kind": "monochrome",
+      "source": "editor/toolbar-gizmos.svg",
+      "sizes": [
+        16,
+        32,
+        48
+      ],
+      "defaultToken": "Small",
+      "themeable": true,
+      "tags": [
+        "toolbar",
+        "scene"
+      ],
+      "license": {
+        "name": "CC0-1.0",
+        "author": "Nullus",
+        "source": "original"
+      }
+    },
+    {
+      "id": "editor.icon.toolbar.buffer",
+      "module": "editor",
+      "kind": "monochrome",
+      "source": "editor/toolbar-buffer.svg",
+      "sizes": [
+        16,
+        32,
+        48
+      ],
+      "defaultToken": "Small",
+      "themeable": true,
+      "tags": [
+        "toolbar",
+        "scene"
+      ],
+      "license": {
+        "name": "CC0-1.0",
+        "author": "Nullus",
+        "source": "original"
+      }
+    },
+    {
+      "id": "editor.icon.toolbar.overdraw",
+      "module": "editor",
+      "kind": "monochrome",
+      "source": "editor/toolbar-overdraw.svg",
+      "sizes": [
+        16,
+        32,
+        48
+      ],
+      "defaultToken": "Small",
+      "themeable": true,
+      "tags": [
+        "toolbar",
+        "scene"
       ],
       "license": {
         "name": "CC0-1.0",

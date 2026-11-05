@@ -61,6 +61,49 @@ Shader "Nullus/ShaderLab/UnlitColor"
         }
         Pass
         {
+            Name "SceneDebug"
+            Tags { "LightMode" = "SceneDebug" "ShadingModel" = "Unlit" "MaterialRenderPath" = "ForwardOpaque" }
+            Cull Back
+            ZWrite On
+            ZTest LessEqual
+            Blend Off
+
+            HLSLPROGRAM
+            #pragma multi_compile _ NLS_SKINNED
+#pragma vertex VSMain
+            #pragma fragment PSMain
+            #include "NullusShaderLibrary/Core.hlsl"
+#include "NullusShaderLibrary/Skinning.hlsl"
+
+            struct Attributes
+            {
+                float3 positionOS : POSITION;
+    NLS_SKIN_ATTRIBUTES
+};
+
+            struct Varyings
+            {
+                float4 positionCS : SV_POSITION;
+            };
+
+            cbuffer MaterialProperties : register(b0, space2)
+            {
+                float4 _BaseColor;
+            };
+
+            Varyings VSMain(Attributes input)
+            {
+                Varyings output;
+                output.positionCS = TransformObjectToHClip(NLS_SKIN_POSITION(input));
+                return output;
+            }
+
+            #include "NullusShaderLibrary/SceneDebug.hlsl"
+            float4 PSMain(Varyings input) : SV_Target0 { float4 surface = _BaseColor;return NLSSceneDebug(surface.rgb, 0, surface.a, 0); }
+            ENDHLSL
+        }
+        Pass
+        {
             Name "DepthOnly"
             Tags { "LightMode" = "DepthOnly" }
             Cull Back ZWrite On ZTest LessEqual Blend Off

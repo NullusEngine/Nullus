@@ -82,7 +82,10 @@ SceneViewCameraInteractionTransition SceneViewCameraInteractionStateMachine::Eva
     switch (p_currentState)
     {
     case SceneViewCameraInteractionStateId::Blocked:
-        return MakeTransition(p_currentState, SceneViewCameraInteractionStateId::Neutral);
+        // A fresh press can also be the event that restores viewport focus.
+        // Evaluate it in this update; held buttons without a new edge still
+        // return to Neutral below and cannot acquire navigation implicitly.
+        break;
 
     case SceneViewCameraInteractionStateId::Fly:
         if (!p_input.rightDown)

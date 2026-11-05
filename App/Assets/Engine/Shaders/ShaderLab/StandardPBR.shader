@@ -184,6 +184,119 @@ Shader "Nullus/StandardPBR"
             }
             ENDHLSL
         }
+        Pass
+        {
+            Name "SceneDebug"
+
+            Tags
+            {
+                "LightMode" = "SceneDebug"
+            }
+
+            Cull Back
+            ZWrite On
+            ZTest LessEqual
+            Blend Off
+
+            HLSLPROGRAM
+            #pragma multi_compile _ NLS_SKINNED
+#pragma vertex VSMain
+            #pragma fragment PSMain
+            #pragma shader_feature _ALPHATEST_ON
+            #pragma multi_compile _ _NORMALMAP
+            #pragma multi_compile _ MAIN_LIGHT_SHADOWS
+
+            #include "NullusShaderLibrary/Core.hlsl"
+#include "NullusShaderLibrary/Skinning.hlsl"
+            #define NLS_COMMON_TYPES_SHADER_LIBRARY_INTEROP
+            #include "CommonTypes.hlsli"
+            #undef NLS_COMMON_TYPES_SHADER_LIBRARY_INTEROP
+            #include "NullusShaderLibrary/StandardPBRSurface.hlsl"
+            #include "LightGridCommon.hlsli"
+
+            struct Attributes
+            {
+                float3 positionOS : POSITION;
+                float2 uv : TEXCOORD0;
+                float3 normalOS : NORMAL;
+                float3 tangentOS : TEXCOORD1;
+                float3 bitangentOS : TEXCOORD2;
+    NLS_SKIN_ATTRIBUTES
+};
+
+            struct Varyings
+            {
+                float4 positionCS : SV_POSITION;
+                float2 uv : TEXCOORD0;
+                float3 positionWS : TEXCOORD1;
+                float3 normalWS : TEXCOORD2;
+                float3 tangentWS : TEXCOORD3;
+                float3 bitangentWS : TEXCOORD4;
+            };
+
+            Texture2D _BaseMap : register(t0, space2);
+            Texture2D _MetallicMap : register(t1, space2);
+            Texture2D _RoughnessMap : register(t2, space2);
+            Texture2D _OcclusionMap : register(t3, space2);
+            Texture2D _NormalMap : register(t4, space2);
+            Texture2D _OpacityMap : register(t5, space2);
+            Texture2D _EmissiveMap : register(t6, space2);
+            Texture2D _SpecularMap : register(t7, space2);
+            SamplerState sampler_BaseMap : register(s0, space2);
+            SamplerState sampler_MetallicMap : register(s1, space2);
+            SamplerState sampler_RoughnessMap : register(s2, space2);
+            SamplerState sampler_OcclusionMap : register(s3, space2);
+            SamplerState sampler_NormalMap : register(s4, space2);
+            SamplerState sampler_OpacityMap : register(s5, space2);
+            SamplerState sampler_EmissiveMap : register(s6, space2);
+            SamplerState sampler_SpecularMap : register(s7, space2);
+            StructuredBuffer<uint> u_ForwardLocalLightBuffer : register(t0, space1);
+            StructuredBuffer<uint> u_NumCulledLightsGrid : register(t1, space1);
+            StructuredBuffer<uint> u_CulledLightDataGrid : register(t2, space1);
+
+            cbuffer MaterialProperties : register(b0, space2)
+            {
+                float4 _BaseColor;
+                float _Metallic;
+                float _Roughness;
+                float _AmbientOcclusion;
+                float _NormalScale;
+                float4 _MetallicMapChannel;
+                float4 _RoughnessMapChannel;
+                float4 _EmissiveColor;
+                float4 _SpecularColor;
+                float _Cutoff;
+            };
+
+            #include "NullusShaderLibrary/Instancing.hlsl"
+            StructuredBuffer<float4x4> ObjectData : register(t0, space3);
+            StructuredBuffer<uint> InstanceObjectIndices : register(t1, space3);
+            Varyings VSMain(Attributes input, uint instanceId : SV_InstanceID)
+            {
+                Varyings output = (Varyings)0;
+                const uint objectSlot = InstanceObjectIndices[u_ObjectIndex + instanceId];
+                const float4x4 model = ObjectData[objectSlot];
+                const float4 worldPosition = mul(model, float4(NLS_SKIN_POSITION(input), 1));
+                output.positionCS = mul(u_ViewProjection, worldPosition);
+                output.positionWS = worldPosition.xyz;
+                output.uv = input.uv;
+                return output;
+            }
+
+            #include "NullusShaderLibrary/SceneDebug.hlsl"
+            float4 PSMain(Varyings input) : SV_Target0
+            {
+                float4 surface = _BaseMap.Sample(sampler_BaseMap, input.uv) * _BaseColor;
+                surface.a *= _OpacityMap.Sample(sampler_OpacityMap, input.uv).r;
+            #if defined(_ALPHATEST_ON)
+                clip(surface.a - _Cutoff);
+            #endif
+                float metallic = _Metallic * dot(_MetallicMap.Sample(sampler_MetallicMap, input.uv), _MetallicMapChannel);
+                uint width, height; _BaseMap.GetDimensions(width, height);
+                return NLSSceneDebug(surface.rgb, metallic, surface.a, NLSSceneTextureLod(input.uv, float2(width,height)));
+            }
+            ENDHLSL
+        }
 
         Pass
         {

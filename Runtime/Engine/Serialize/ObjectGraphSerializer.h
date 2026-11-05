@@ -1,6 +1,7 @@
 #pragma once
 
 #include <string>
+#include <stdexcept>
 #include <unordered_map>
 #include <functional>
 #include <optional>
@@ -15,6 +16,7 @@
 #include "Serialize/ObjectGraphPPtr.h"
 #include "Serialize/PPtr.h"
 #include "Serialize/PrefabDocument.h"
+#include "Serialize/ScenePhysicsSettingsSerialization.h"
 
 namespace NLS::Engine::Serialize
 {
@@ -30,14 +32,16 @@ namespace NLS::Engine::Serialize
 
         static ObjectGraphDocument SerializeScene(const SceneSystem::Scene& scene)
         {
-            SerializationContext context;
+            if (scene.IsSerializationReadOnly())
+                throw std::runtime_error("Scene contains unresolved plugin types; saving is blocked. Restore the plugin and reload the original document.");
+            SerializationContext context(&scene);
 
             ObjectGraphDocument document;
             document.format = "Nullus.ObjectGraph.Scene";
             document.version = 2;
-            document.documentId = NLS::Guid::NewDeterministic("ObjectGraph.Scene.Document");
 
             const auto sceneId = context.GetId(&scene, "Scene.Root");
+            document.documentId = PersistentManager::Instance().FindObjectGraphDocumentId(scene).value_or(sceneId.GetGuid());
             document.root = sceneId;
 
             ObjectRecord sceneRecord;
@@ -46,13 +50,12 @@ namespace NLS::Engine::Serialize
             sceneRecord.typeName = NLS_TYPEOF(SceneSystem::Scene).GetName();
             sceneRecord.debugName = "Scene";
 
-            size_t gameObjectIndex = 0;
             for (auto* gameObject : scene.GetGameObjects())
             {
                 if (!gameObject || gameObject->IsEditorTransient())
                     continue;
 
-                context.GetId(gameObject, MakeGameObjectLabel(*gameObject, gameObjectIndex++));
+                context.GetId(gameObject, "");
             }
             for(auto* gameObject:scene.GetGameObjects())
                 if(gameObject&&!gameObject->IsEditorTransient())PreassignComponentIds(*gameObject,context);
@@ -69,25 +72,18 @@ namespace NLS::Engine::Serialize
             }
 
             sceneRecord.properties.push_back({"gameObjects", PropertyValue::Array(std::move(gameObjects))});
+            sceneRecord.properties.push_back({"physics", WriteScenePhysicsSettings(scene.GetPhysicsSettings())});
             document.objects.push_back(std::move(sceneRecord));
             return document;
         }
 
         static PrefabDocument SerializePrefab(const GameObject& root)
-        {
-            SerializationContext context;
+        { return SerializePrefabImpl(root, false); }
 
-            PrefabDocument prefab;
-            prefab.graph.format = "Nullus.ObjectGraph.Prefab";
-            prefab.graph.version = 2;
-            prefab.graph.documentId = NLS::Guid::NewDeterministic("ObjectGraph.Prefab.Document:" + root.GetName());
-
-            PreassignGameObjectIds(root, context);
-            const auto rootId = context.GetId(&root, "");
-            prefab.graph.root = rootId;
-            WriteGameObjectRecursive(root, rootId, context, prefab.graph, GameObjectOwnershipMode::OwnedHierarchy);
-            return prefab;
-        }
+        // A hierarchy Undo snapshot retains Scene identities. Publishing a
+        // normal Prefab template continues to use the existing template IDs.
+        static PrefabDocument SerializeSceneSubtree(const GameObject& root)
+        { return SerializePrefabImpl(root, true); }
 
         static ObjectRecord SerializeObjectRecord(const NLS::Object& object, ObjectId objectId,const SceneReferenceMapper& mapper = {})
         {
@@ -115,15 +111,37 @@ namespace NLS::Engine::Serialize
         }
 
     private:
+        static PrefabDocument SerializePrefabImpl(const GameObject& root, bool preserveSceneObjectIds)
+        {
+            if (root.GetScene() && root.GetScene()->IsSerializationReadOnly())
+                throw std::runtime_error("Prefab save blocked: source scene contains unresolved plugin types.");
+            SerializationContext context(preserveSceneObjectIds ? root.GetScene() : nullptr);
+            PrefabDocument prefab;
+            prefab.graph.format = "Nullus.ObjectGraph.Prefab";
+            prefab.graph.version = 2;
+            prefab.graph.documentId = NLS::Guid::NewDeterministic("ObjectGraph.Prefab.Document:" + root.GetName());
+            PreassignGameObjectIds(root, context);
+            const auto rootId = context.GetId(&root, "");
+            prefab.graph.root = rootId;
+            WriteGameObjectRecursive(root, rootId, context, prefab.graph, GameObjectOwnershipMode::OwnedHierarchy);
+            return prefab;
+        }
+
         class SerializationContext
         {
         public:
-            ObjectId GetId(const void* object, const std::string& label)
+            explicit SerializationContext(const SceneSystem::Scene* scene = nullptr) : m_scene(scene)
+            {
+                if (m_scene) PersistentManager::Instance().PruneObjectGraphIds(*m_scene);
+            }
+            ObjectId GetId(const NLS::Object* object, const std::string& label)
             {
                 if (const auto found = m_ids.find(object); found != m_ids.end())
                     return found->second;
 
-                auto id = ObjectId(NLS::Guid::NewDeterministic(label));
+                const auto id = m_scene
+                    ? PersistentManager::Instance().GetOrCreateObjectGraphId(*m_scene, *object)
+                    : ObjectId(NLS::Guid::NewDeterministic(label));
                 m_ids.emplace(object, id);
                 return id;
             }
@@ -131,6 +149,7 @@ namespace NLS::Engine::Serialize
             {const auto found=m_ids.find(object);return found==m_ids.end()?std::nullopt:std::optional<ObjectId>(found->second);}
 
         private:
+            const SceneSystem::Scene* m_scene;
             std::unordered_map<const void*, ObjectId> m_ids;
         };
 

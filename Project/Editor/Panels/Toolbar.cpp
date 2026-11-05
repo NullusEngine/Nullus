@@ -9,6 +9,8 @@
 #include "Icons/Generated/IconIds.generated.h"
 #include "Icons/IconPainter.h"
 #include "UI/UIManager.h"
+#include "Settings/EditorSettings.h"
+#include "Shortcuts/EditorCommandInvocation.h"
 
 using namespace NLS;
 
@@ -44,50 +46,43 @@ void Editor::Panels::Toolbar::_Draw_Impl()
 
 void Editor::Panels::Toolbar::DrawToolbarContent()
 {
-	using EEditorMode = Editor::Core::EditorActions::EEditorMode;
-
-	bool playEnabled = true;
-	bool pauseEnabled = false;
-	bool stopEnabled = false;
-	bool nextEnabled = false;
-	switch (m_mode)
-	{
-	case EEditorMode::EDIT:
-		break;
-	case EEditorMode::PLAY:
-		playEnabled = false;
-		pauseEnabled = true;
-		stopEnabled = true;
-		nextEnabled = true;
-		break;
-	case EEditorMode::PAUSE:
-	case EEditorMode::FRAME_BY_FRAME:
-		pauseEnabled = false;
-		stopEnabled = true;
-		nextEnabled = true;
-		break;
-	}
-
-	auto& painter = EDITOR_CONTEXT(editorResources)->GetIconPainter();
-	auto draw = [&painter](const char* p_widgetId, Icons::IconId p_icon, const char* p_tooltip, const bool p_enabled)
-	{
-		Icons::IconButtonOptions options;
-		options.tooltip = p_tooltip;
-		options.enabled = p_enabled;
-		return painter.Button(p_widgetId, p_icon, Icons::IconToken::Small, options);
-	};
-
-	if (draw("##ToolbarPlay", Icons::EditorIcons::ToolPlay, "Play", playEnabled))
-		EDITOR_EXEC(StartPlaying());
-	ImGui::SameLine(0.0f, 2.0f);
-	if (draw("##ToolbarPause", Icons::EditorIcons::ToolPause, "Pause", pauseEnabled))
-		EDITOR_EXEC(PauseGame());
-	ImGui::SameLine(0.0f, 2.0f);
-	if (draw("##ToolbarStop", Icons::EditorIcons::ToolStop, "Stop", stopEnabled))
-		EDITOR_EXEC(StopPlaying());
-	ImGui::SameLine(0.0f, 2.0f);
-	if (draw("##ToolbarNext", Icons::EditorIcons::ToolStepForward, "Step Forward", nextEnabled))
-		EDITOR_EXEC(NextFrame());
-	ImGui::SameLine(0.0f, 12.0f);
-	draw("##ToolbarRefresh", Icons::EditorIcons::ToolRefresh, "Refresh", true);
+    auto& controller = EDITOR_EXEC(GetPlayModeController());
+    const auto state = controller.GetState();
+    const bool busy = controller.IsTransitioning();
+    const bool active = controller.IsActive();
+    const bool paused = state == Editor::Core::PlaySessionState::Paused;
+    const auto& tint=Settings::EditorSettings::GetGameViewSettingsObject().playTint;
+    auto& painter = EDITOR_CONTEXT(editorResources)->GetIconPainter();
+    auto& shortcuts = NLS_SERVICE(Shortcuts::EditorShortcutService);
+    const auto playHint = std::string(active ? "Stop (" : "Play (") + shortcuts.GetBindingDisplayText("editor.play") + ")";
+    const auto pauseHint = std::string(paused ? "Resume (" : "Pause (") + shortcuts.GetBindingDisplayText("editor.pause") + ")";
+    const auto stepHint = "Step (" + shortcuts.GetBindingDisplayText("editor.step") + ")";
+    auto draw = [&painter](const char* id, Icons::IconId icon, const char* tooltip, bool enabled)
+    {
+        Icons::IconButtonOptions options;
+        options.tooltip = tooltip;
+        options.enabled = enabled;
+        return painter.Button(id, icon, Icons::IconToken::Small, options);
+    };
+    if (active) ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(tint.r,tint.g,tint.b,tint.a));
+    if (draw("##ToolbarPlay", active ? Icons::EditorIcons::ToolStop : Icons::EditorIcons::ToolPlay,
+        playHint.c_str(), !busy || active)) Shortcuts::InvokeEditorCommand("editor.play", Shortcuts::CommandSource::Toolbar);
+    if (active) ImGui::PopStyleColor();
+    ImGui::SameLine(0, 2);
+    if (paused) ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(tint.r,tint.g,tint.b,tint.a));
+    if (draw("##ToolbarPause", Icons::EditorIcons::ToolPause, pauseHint.c_str(),
+        active && !busy && state != Editor::Core::PlaySessionState::Faulted))
+    {
+        Shortcuts::InvokeEditorCommand("editor.pause", Shortcuts::CommandSource::Toolbar);
+    }
+    if (paused) ImGui::PopStyleColor();
+    ImGui::SameLine(0, 2);
+    if (draw("##ToolbarNext", Icons::EditorIcons::ToolStepForward, stepHint.c_str(),
+        active && !busy && state != Editor::Core::PlaySessionState::Faulted)) Shortcuts::InvokeEditorCommand("editor.step", Shortcuts::CommandSource::Toolbar);
+    if (state == Editor::Core::PlaySessionState::Faulted || !controller.GetError().empty())
+    {
+        ImGui::SameLine();
+        ImGui::TextUnformatted(state == Editor::Core::PlaySessionState::Faulted ? "Play failed: Stop to retry recovery" : "Play entry failed");
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", controller.GetError().c_str());
+    }
 }

@@ -2697,7 +2697,14 @@ bool ManifestDependenciesAreCurrent(
                     checkedMeta = true;
 
                 const auto dependencyPath = ResolveEditorManifestDependencyPath(projectRoot, dependency.value);
-                if (!dependencyPath.has_value() || dependency.hashOrVersion != FileStamp(*dependencyPath))
+                if (!dependencyPath.has_value())
+                    return finish(false);
+                const auto currentStamp = normalizedValue == metaPath &&
+                    meta.assetType == NLS::Core::Assets::AssetType::ModelScene &&
+                    dependency.hashOrVersion.starts_with("model-import:")
+                    ? NLS::Core::Assets::ComputeModelImportSettingsFingerprint(meta)
+                    : FileStamp(*dependencyPath);
+                if (dependency.hashOrVersion != currentStamp)
                     return finish(false);
                 continue;
             }

@@ -65,6 +65,13 @@ bool PanelWindow::IsFocused() const
     return m_focused;
 }
 
+bool PanelWindow::HasCurrentKeyboardFocus() const
+{
+    if (!m_opened || !panelSettings.allowInputs || !GImGui || !GImGui->NavWindow || !m_inputWindowId) return false;
+    auto* window = ImGui::FindWindowByID(m_inputWindowId);
+    return window && ImGui::IsWindowChildOf(GImGui->NavWindow, window, true, false);
+}
+
 bool PanelWindow::IsAppearing() const
 {
     if (auto window = ImGui::FindWindowByName((name + GetPanelID()).c_str()); window)
@@ -143,6 +150,7 @@ void PanelWindow::_Draw_Impl()
 
         if (ImGui::Begin((name + m_panelID).c_str(), panelSettings.closable ? &m_opened : nullptr, windowFlags))
         {
+            m_inputWindowId = ImGui::GetCurrentWindow()->ID;
             m_hovered = ImGui::IsWindowHovered();
             m_focused = ImGui::IsWindowFocused();
 

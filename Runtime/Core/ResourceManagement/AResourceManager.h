@@ -12,6 +12,8 @@
 
 #include "CoreDef.h"
 #include "Core/ResourceManagement/ResourceHandle.h"
+#include "Core/Assets/PluginAssetPath.h"
+#include "Core/ServiceLocator.h"
 
 
 namespace NLS::Core::ResourceManagement

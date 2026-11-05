@@ -435,6 +435,26 @@ namespace NLS::Core::ResourceManagement
 			return p_path;
 
 		const auto genericPath = std::filesystem::path(p_path).generic_string();
+        const auto pluginLogicalPath = genericPath.rfind("Assets/Plugins/", 0) == 0
+            ? genericPath : "Assets/" + genericPath;
+        if (pluginLogicalPath.rfind("Assets/Plugins/", 0) == 0 &&
+            ServiceLocator::Contains<Assets::PluginContentRoots>())
+        {
+            for (const auto& root : ServiceLocator::Get<Assets::PluginContentRoots>().roots)
+            {
+                const auto prefix = "Assets/Plugins/" + root.logicalPath.parent_path().filename().generic_string() + "/" + root.logicalPath.filename().generic_string() + "/";
+                if (pluginLogicalPath.rfind(prefix, 0) != 0) continue;
+                try
+                {
+                    const auto relative = Assets::NormalizePluginAssetPath(pluginLogicalPath.substr(prefix.size()));
+                    const auto physical = std::filesystem::weakly_canonical(root.physicalPath / std::filesystem::u8path(relative));
+                    const auto local = physical.lexically_relative(std::filesystem::weakly_canonical(root.physicalPath));
+                    if (!local.empty() && *local.begin() != "..") return physical.string();
+                }
+                catch (...) { return {}; }
+            }
+            return {};
+        }
 		if (genericPath == "Library" || genericPath.rfind("Library/", 0) == 0)
 		{
 			auto projectAssetsPath = __PROJECT_ASSETS_PATH;

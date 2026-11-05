@@ -83,6 +83,6 @@ namespace NLS::UI
 		bool hasTooltip = true;
 
 	private:
-		bool m_isDragged;
+			bool m_isDragged = false;
 	};
 }

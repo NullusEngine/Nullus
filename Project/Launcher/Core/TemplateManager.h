@@ -16,6 +16,8 @@ struct ProjectTemplate
     std::string category = "Core";      // Template category (Core, Sample, Learning, etc.)
     std::filesystem::path templateDirectory; // Absolute path to template directory
     int sortOrder = 0;
+    bool is2D = false;
+    std::string startScene;
 
     /**
      * Check if this template has initial content to copy

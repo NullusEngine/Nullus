@@ -27,11 +27,16 @@ public:
         const std::filesystem::path& sourcePath,
         int line,
         int column);
+    static std::vector<std::string> BuildVisualStudioLineArguments(
+        const std::filesystem::path& sourcePath, int line);
 
     static ExternalCodeEditorResult Open(
         const std::filesystem::path& sourcePath,
         int line = 0,
         int column = 0,
+        const std::filesystem::path& visualStudioCodePath = {});
+    static ExternalCodeEditorResult OpenAtLine(
+        const std::filesystem::path& sourcePath, int line, int column = 0,
         const std::filesystem::path& visualStudioCodePath = {});
 
     // Opens the generated managed project in the configured IDE. VS Code is

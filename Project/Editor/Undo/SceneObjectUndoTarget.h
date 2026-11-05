@@ -23,8 +23,10 @@ public:
             return std::nullopt;
 
         auto objectTarget = ObjectUndoTarget::Capture(gameObject, std::move(scope));
-        if (!objectTarget.has_value() ||
-            !objectTarget->GetObjectIdentifier().IsLocalObject())
+        // Loaded Scene objects retain their document GUID and file ID. They
+        // are live Scene targets too; requiring a runtime-local ID rejects
+        // every transform tool on saved scenes.
+        if (!objectTarget.has_value())
             return std::nullopt;
 
         return SceneObjectUndoTarget(std::move(*objectTarget));
@@ -32,7 +34,7 @@ public:
 
     [[nodiscard]] bool IsValid() const noexcept
     {
-        return m_target.IsValid() && m_target.GetObjectIdentifier().IsLocalObject();
+        return m_target.IsValid();
     }
 
     [[nodiscard]] const UndoScopeId& GetScope() const noexcept
@@ -47,7 +49,9 @@ public:
 
     [[nodiscard]] std::string GetAffectedKey() const
     {
-        return "scene-object:" + std::to_string(m_target.GetObjectIdentifier().localIdentifierInFile);
+        const auto& identifier = m_target.GetObjectIdentifier();
+        return "scene-object:" + (identifier.IsLocalObject() ? std::string {} : identifier.guid.ToString() + ":") +
+            std::to_string(identifier.localIdentifierInFile);
     }
 
     [[nodiscard]] Engine::GameObject* Resolve() const

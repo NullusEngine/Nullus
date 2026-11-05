@@ -466,6 +466,29 @@ function(nls_add_runtime_target)
     endif()
 endfunction()
 
+function(nls_define_meta_generation_command)
+    add_custom_command(
+        OUTPUT
+            "${_gen_stamp}"
+            "${_gen_cpp}"
+            "${_gen_h}"
+            ${_meta_generated_side_outputs}
+        COMMAND ${CMAKE_COMMAND} -E make_directory "${_gen_dir}"
+        COMMAND ${CMAKE_COMMAND} -E env ${_meta_parser_env_args} "${_meta_parser_command}" "${_params_file}"
+        COMMAND ${CMAKE_COMMAND} -E touch "${_gen_stamp}"
+        DEPENDS
+            ${_meta_parser_dependency_target}
+            ${_headers}
+            "${_params_file}"
+            "${_params_template}"
+            ${_meta_parser_tool_sources}
+            ${_meta_parser_template_files}
+        WORKING_DIRECTORY "${_meta_generation_working_directory}"
+        VERBATIM
+        COMMENT "Generating reflection bindings for ${_target_name}"
+    )
+endfunction()
+
 function(nls_add_meta_generation TARGET_NAME SOURCE_DIR HEADERS)
     set(_target_name "${TARGET_NAME}")
     set(_source_dir "${SOURCE_DIR}")
@@ -524,9 +547,11 @@ function(nls_add_meta_generation TARGET_NAME SOURCE_DIR HEADERS)
         list(APPEND _defines ${_target_defines})
     endif()
 
+    set(_visibility_defines "")
     if(NLS_USE_SHARED_LIBRARY)
         string(TOUPPER ${_target_name} _export_macro)
         list(APPEND _defines "${_export_macro}_EXPORT")
+        list(APPEND _visibility_defines "${_export_macro}_EXPORT")
     endif()
 
     if("${_meta_parser_compiler}" MATCHES "g..-9$")
@@ -620,6 +645,13 @@ function(nls_add_meta_generation TARGET_NAME SOURCE_DIR HEADERS)
     nls_join_json_array(NLS_META_SYSTEM_INCLUDE_DIRS_JSON ${_system_include_dirs})
     nls_join_json_array(NLS_META_DEFINES_JSON ${_defines})
     nls_join_json_array(NLS_META_COMPILER_OPTIONS_JSON ${_compiler_options})
+    nls_join_json_array(NLS_META_VISIBILITY_DEFINES_JSON ${_visibility_defines})
+    if(NLS_META_PARSER_CACHE)
+        set(NLS_META_CACHE_ENABLED true)
+    else()
+        set(NLS_META_CACHE_ENABLED false)
+    endif()
+    nls_json_quote(NLS_META_CACHE_DIRECTORY "${NLS_META_PARSER_CACHE_DIR}")
     nls_json_quote(NLS_META_ROOT_DIR "${NLS_ROOT_DIR}")
     nls_json_quote(NLS_META_SOURCE_DIR "${_source_dir}")
     nls_json_quote(NLS_META_TARGET_NAME "${_target_name}")
@@ -685,7 +717,7 @@ function(nls_add_meta_generation TARGET_NAME SOURCE_DIR HEADERS)
         set(_meta_parser_launcher "${CMAKE_CURRENT_BINARY_DIR}/${_target_name}_run_metaparser_$<CONFIG>.cmd")
         file(GENERATE
             OUTPUT "${_meta_parser_launcher}"
-            CONTENT "@echo off\nsetlocal\nset \"DOTNET_ROOT=${NLS_DOTNET_ROOT}\"\nset \"PATH=${_meta_parser_path_prefix};%PATH%\"\nif not exist \"${_meta_parser_libclang_native}\" echo [MetaParser] Missing native dependency: ${_meta_parser_libclang_native} & exit /b 5\nif not exist \"${_meta_parser_clangsharp_native}\" echo [MetaParser] Missing native dependency: ${_meta_parser_clangsharp_native} & exit /b 5\npowershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File \"${NLS_ROOT_DIR}/Tools/BuildCleanEnvironment.ps1\" \"$<SHELL_PATH:${NLS_META_PARSER_EXECUTABLE}>\" \"%~1\"\nexit /b %ERRORLEVEL%\n"
+            CONTENT "@echo off\nsetlocal\nset \"DOTNET_ROOT=${NLS_DOTNET_ROOT}\"\nset \"PATH=${_meta_parser_path_prefix};%PATH%\"\nif not exist \"${_meta_parser_libclang_native}\" echo [MetaParser] Missing native dependency: ${_meta_parser_libclang_native} & exit /b 5\nif not exist \"${_meta_parser_clangsharp_native}\" echo [MetaParser] Missing native dependency: ${_meta_parser_clangsharp_native} & exit /b 5\npowershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File \"${NLS_ROOT_DIR}/Tools/BuildCleanEnvironment.ps1\" \"$<SHELL_PATH:${NLS_META_PARSER_EXECUTABLE}>\" %*\nexit /b %ERRORLEVEL%\n"
         )
         set(_meta_parser_command "${_meta_parser_launcher}")
     elseif(APPLE)
@@ -750,43 +782,106 @@ function(nls_add_meta_generation TARGET_NAME SOURCE_DIR HEADERS)
         endif()
     endif()
 
-    add_custom_command(
-        OUTPUT
-            "${_gen_stamp}"
-            "${_gen_cpp}"
-            "${_gen_h}"
-            ${_meta_generated_side_outputs}
-        COMMAND ${CMAKE_COMMAND} -E make_directory "${_gen_dir}"
-        COMMAND ${CMAKE_COMMAND} -E env ${_meta_parser_env_args} "${_meta_parser_command}" "${_params_file}"
-        COMMAND ${CMAKE_COMMAND} -E touch "${_gen_stamp}"
-        DEPENDS
-            ${_meta_parser_dependency_target}
-            ${_headers}
-            "${_params_file}"
-            "${_params_template}"
-            ${_meta_parser_tool_sources}
-            ${_meta_parser_template_files}
-        VERBATIM
-        COMMENT "Generating reflection bindings for ${_target_name}"
-    )
-
-    # The generated sources themselves are the dependency edge. A separate
-    # custom target only creates an empty Visual Studio project and makes every
-    # module look like it has a second build product.
-    add_dependencies(${_target_name} MetaParser)
+    set_property(TARGET ${_target_name} PROPERTY NLS_META_BATCH_PARAMS "${_params_file}")
+    set_property(TARGET ${_target_name} PROPERTY NLS_META_BATCH_STAMP "${_gen_stamp}")
+    set_property(TARGET ${_target_name} PROPERTY NLS_META_BATCH_DEPENDENCY "${_meta_parser_dependency_target}")
+    set_property(TARGET ${_target_name} PROPERTY NLS_META_BATCH_COMMAND "${_meta_parser_command}")
+    set_property(TARGET ${_target_name} PROPERTY NLS_META_BATCH_ENVIRONMENT "${_meta_parser_env_args}")
+    set_property(GLOBAL APPEND PROPERTY NLS_META_BATCH_TARGETS "${_target_name}")
+    set(_meta_generation_working_directory "${CMAKE_CURRENT_BINARY_DIR}")
+    if(NLS_ENABLE_PARALLEL_REFLECTION_GENERATION)
+        # The generator depends on upstream generated headers, rather than
+        # waiting for the upstream library's compile and link to finish. In VS
+        # this needs a real generation project so the project scheduler can
+        # overlap it with compilation. Keep it out of the runtime product folder.
+        set(_generation_target "${_target_name}_Reflection")
+        set(_generation_all_option ALL)
+        get_target_property(_excluded ${_target_name} EXCLUDE_FROM_ALL)
+        set(_generation_directory "${CMAKE_CURRENT_SOURCE_DIR}")
+        while(_generation_directory AND NOT _excluded)
+            get_property(_excluded DIRECTORY "${_generation_directory}" PROPERTY EXCLUDE_FROM_ALL)
+            get_property(_generation_directory DIRECTORY "${_generation_directory}" PROPERTY PARENT_DIRECTORY)
+        endwhile()
+        if(_excluded)
+            set(_generation_all_option "")
+        endif()
+        # Defining the command in its own directory gives exactly one VS
+        # project ownership of the rule. The compiling project only consumes
+        # the generated sources, preventing a second parser invocation.
+        add_subdirectory("${NLS_ROOT_DIR}/Tools/CMake/ReflectionGeneration"
+            "${CMAKE_CURRENT_BINARY_DIR}/ReflectionGeneration")
+        set_property(TARGET ${_target_name} PROPERTY
+            NLS_REFLECTION_GENERATION_TARGET "${_generation_target}")
+        set_property(TARGET ${_target_name} PROPERTY
+            NLS_REFLECTION_GENERATED_DIRECTORY "${_gen_dir}")
+        set_property(TARGET ${_target_name} PROPERTY
+            NLS_REFLECTION_GENERATED_STAMP "${_gen_stamp}")
+        set_property(GLOBAL APPEND PROPERTY NLS_REFLECTION_MODULE_TARGETS "${_target_name}")
+        add_dependencies(${_generation_target} MetaParser)
+        add_dependencies(${_target_name} ${_generation_target})
+    else()
+        nls_define_meta_generation_command()
+        add_dependencies(${_target_name} MetaParser)
+    endif()
     set_source_files_properties("${_gen_cpp}" "${_gen_h}" PROPERTIES GENERATED TRUE)
     set_source_files_properties("${_gen_cpp}" PROPERTIES SKIP_PRECOMPILE_HEADERS TRUE)
     target_include_directories(${_target_name} PUBLIC "${_gen_dir}")
     target_sources(${_target_name} PRIVATE "${_gen_cpp}" "${_gen_h}")
 endfunction()
 
+function(nls_finalize_reflection_generation)
+    get_property(_modules GLOBAL PROPERTY NLS_REFLECTION_MODULE_TARGETS)
+    set(_migration_records "")
+    foreach(_module IN LISTS _modules)
+        get_target_property(_generation_target ${_module} NLS_REFLECTION_GENERATION_TARGET)
+        nls_collect_link_closure(${_module} _dependencies)
+        foreach(_dependency IN LISTS _dependencies)
+            if(_dependency STREQUAL _module)
+                continue()
+            endif()
+            get_target_property(_dependency_generation ${_dependency} NLS_REFLECTION_GENERATION_TARGET)
+            if(_dependency_generation)
+                add_dependencies(${_generation_target} ${_dependency_generation})
+            endif()
+        endforeach()
+        if(MSVC AND CMAKE_GENERATOR MATCHES "Visual Studio")
+            get_target_property(_binary ${_module} BINARY_DIR)
+            get_target_property(_generated ${_module} NLS_REFLECTION_GENERATED_DIRECTORY)
+            get_target_property(_stamp ${_module} NLS_REFLECTION_GENERATED_STAMP)
+            set(_contract "")
+            if(_module STREQUAL "NLS_Engine")
+                set(_contract "${NLS_ROOT_DIR}/Library/ScriptApi")
+            endif()
+            string(APPEND _migration_records "${_module}|${_binary}|${_generated}|${_stamp}|${_contract}\n")
+        endif()
+    endforeach()
+    if(_migration_records)
+        # Existing parent .tlogs can still list the outputs now owned by the
+        # generation project. Otherwise a later parent Clean deletes headers
+        # that its generation dependency has just published.
+        set(_migration_manifest "${CMAKE_BINARY_DIR}/reflection-tracking-migration.txt")
+        file(WRITE "${_migration_manifest}" "${_migration_records}")
+        execute_process(COMMAND powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass
+            -File "${NLS_ROOT_DIR}/Tools/CMake/MigrateReflectionTracking.ps1"
+            -Manifest "${_migration_manifest}"
+            RESULT_VARIABLE _migration_result)
+        if(NOT _migration_result EQUAL 0)
+            message(FATAL_ERROR "Could not migrate reflection output tracking logs.")
+        endif()
+    endif()
+endfunction()
+
 add_subdirectory("Engine")
 add_subdirectory("Cook")
 add_subdirectory("Build")
 add_subdirectory("Math")
+add_subdirectory("Input")
 add_subdirectory("Platform")
 add_subdirectory("Core")
+add_subdirectory("Plugins")
+add_subdirectory("Packages")
 add_subdirectory("Base")
+add_subdirectory("ECS")
 add_subdirectory("Rendering")
 add_subdirectory("MaterialCompiler")
 add_subdirectory("UI")

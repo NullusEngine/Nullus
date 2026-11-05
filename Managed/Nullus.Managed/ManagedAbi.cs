@@ -108,6 +108,12 @@ public unsafe struct NativeApiTable
     public delegate* unmanaged<byte*, byte*, ulong*, ScriptAbiResult> CreateGameObject;
     public delegate* unmanaged<byte**, uint*, byte*, ScriptAbiResult> GetActiveScene;
     public delegate* unmanaged<byte*, ScriptAbiResult> LoadScene;
+    public delegate* unmanaged<ulong, ulong, ScriptAbiValue*, uint, ScriptAbiValue*, ScriptAbiResult> InvokeMember;
+    public delegate* unmanaged<byte, byte*, byte*, byte*, int, void> LogDetailed;
+    public delegate* unmanaged<byte, byte> GetLogStackMode;
+    public delegate* unmanaged<ulong, byte*, uint, ulong, ScriptInputValue*, ScriptAbiResult> ReadInputAction;
+    public delegate* unmanaged<ulong, uint, byte*, ulong, ulong*, ScriptAbiResult> InputCommand;
+    public delegate* unmanaged<ulong, byte*, byte**, uint*, ScriptAbiResult> GetInputBindingName;
 }
 
 public static class ScriptValueConversion
@@ -125,6 +131,11 @@ public static class ScriptValueConversion
         {
             converted = value;
             return true;
+        }
+        if (targetType == typeof(InputActionReference) && value is string referenceText)
+        {
+            if (!InputActionReference.TryParse(referenceText, out var reference)) return false;
+            converted = reference; return true;
         }
         if (targetType.IsEnum)
         {
@@ -201,6 +212,8 @@ public static unsafe class ScriptAbiCodec
         }
         switch (value)
         {
+            case InputActionReference reference:
+                return TryEncode(reference.ToString(), output, buffers);
             case bool boolean: output->Kind = Bool; output->UnsignedValue = boolean ? 1UL : 0UL; return true;
             case sbyte signedByte: output->Kind = Int8; output->SignedValue = signedByte; return true;
             case byte unsignedByte: output->Kind = UInt8; output->UnsignedValue = unsignedByte; return true;

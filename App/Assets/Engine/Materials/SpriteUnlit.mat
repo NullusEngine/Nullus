@@ -1,0 +1,10 @@
+shaderLabMaterialVersion=1
+shader=Assets/Engine/Shaders/ShaderLab/SpriteUnlit.shader
+name=Sprite Unlit
+sourceSubAsset=material:SpriteUnlit
+surfaceMode=Transparent
+alphaMode=Blend
+doubleSided=true
+depthWrite=false
+renderQueueOverride=-1
+property _BaseColor Color 1.000000 1.000000 1.000000 1.000000

@@ -7,7 +7,7 @@ internal static class ScriptAnalysisRules
     public static readonly DiagnosticDescriptor PublicBehaviourName = new(
         "NLS100", "Behaviour class name must match the file", "Public Behaviour '{0}' must be declared in '{1}.cs'", "Nullus", DiagnosticSeverity.Error, true);
     public static readonly DiagnosticDescriptor InvalidLifecycle = new(
-        "NLS101", "Invalid Nullus lifecycle method", "Lifecycle method '{0}' must override the Nullus.Behaviour signature", "Nullus", DiagnosticSeverity.Error, true);
+        "NLS101", "Invalid Nullus lifecycle method", "Lifecycle method '{0}' must be an instance method returning void with no parameters", "Nullus", DiagnosticSeverity.Error, true);
     public static readonly DiagnosticDescriptor AsyncLifecycle = new(
         "NLS102", "Async lifecycle methods are unsupported", "Nullus lifecycle method '{0}' cannot be async", "Nullus", DiagnosticSeverity.Error, true);
     public static readonly DiagnosticDescriptor UnsupportedField = new(

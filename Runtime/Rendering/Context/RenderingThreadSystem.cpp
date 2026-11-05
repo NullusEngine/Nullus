@@ -58,6 +58,7 @@ namespace NLS::Render::Context
             uint32_t gameThreadRegistrationCount = 0u;
             std::vector<GameGraphRegistration> gameGraphs;
             std::atomic<uint32_t> activeRenderThreadCount { 0u };
+            std::atomic<uint32_t> renderingThreadOwnerCount { 0u };
             std::mutex fatalErrorMutex;
             std::string fatalError;
         };
@@ -159,6 +160,7 @@ namespace NLS::Render::Context
          */
         bool gameThreadRegistered = false;
         bool renderThreadCounted = false;
+        bool renderingThreadOwnerCounted = false;
         bool initialized = false;
         bool suspended = false;
         bool stopRequested = false;
@@ -389,6 +391,10 @@ namespace NLS::Render::Context
             state.gameThreadRegistered = true;
         }
 
+        // Suspension releases active threads, but retains this graph owner until
+        // full shutdown. Count startup too, including partial failure cleanup.
+        RegistryState().renderingThreadOwnerCount.fetch_add(1u, std::memory_order_release);
+        state.renderingThreadOwnerCounted = true;
         // The render thread is always dedicated; only the RHI lane varies by mode.
         if (!state.StartThreadsLocked())
         {
@@ -414,6 +420,7 @@ namespace NLS::Render::Context
         std::thread rhiThread;
         bool releaseGameThread = false;
         bool releaseRenderThreadCount = false;
+        bool releaseRenderingThreadOwner = false;
         {
             std::lock_guard lock(state.mutex);
             // Deliberately no early return on !initialized. A thread that was
@@ -429,6 +436,8 @@ namespace NLS::Render::Context
             state.gameThreadRegistered = false;
             releaseRenderThreadCount = state.renderThreadCounted;
             state.renderThreadCounted = false;
+            releaseRenderingThreadOwner = state.renderingThreadOwnerCounted;
+            state.renderingThreadOwnerCounted = false;
         }
 
         // Joining outside the lock lets the thread bodies take it while draining.
@@ -439,6 +448,8 @@ namespace NLS::Render::Context
             RegistryState().activeRenderThreadCount.fetch_sub(1u, std::memory_order_release);
         if (releaseGameThread)
             UnregisterGameThread(&state.Graph());
+        if (releaseRenderingThreadOwner)
+            RegistryState().renderingThreadOwnerCount.fetch_sub(1u, std::memory_order_release);
 
         std::lock_guard lock(state.mutex);
         state.initialized = false;
@@ -648,6 +659,11 @@ namespace NLS::Render::Context
     bool RenderingThreadSystem::HasActiveRenderThread()
     {
         return RegistryState().activeRenderThreadCount.load(std::memory_order_acquire) != 0u;
+    }
+
+    bool RenderingThreadSystem::HasRenderingThreadOwners()
+    {
+        return RegistryState().renderingThreadOwnerCount.load(std::memory_order_acquire) != 0u;
     }
 
     bool RenderingThreadSystem::IsInRhiThread()

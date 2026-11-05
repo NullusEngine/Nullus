@@ -131,7 +131,8 @@ public sealed class ScriptApiGenerator : IIncrementalGenerator
     {
         ["NLS::Engine::Components::CameraComponent"] = "Camera",
         ["NLS::Engine::Components::LightComponent"] = "Light",
-        ["NLS::Engine::Components::TransformComponent"] = "Transform"
+        ["NLS::Engine::Components::TransformComponent"] = "Transform",
+        ["NLS::Engine::Components::PlayerInputComponent"] = "PlayerInput"
     };
 
     private static readonly HashSet<string> ReservedComponentMemberNames = new(StringComparer.Ordinal)
@@ -640,7 +641,7 @@ public sealed class ScriptApiGenerator : IIncrementalGenerator
             or SpecialType.System_UInt64 or SpecialType.System_Single or SpecialType.System_Double
             or SpecialType.System_String)
             return true;
-        if (type.Name is "Vector2" or "Vector3" or "Vector4" or "Quaternion" or "Color"
+        if (type.Name is "Vector2" or "Vector3" or "Vector4" or "Quaternion" or "Color" or "InputActionReference"
             && type.ContainingNamespace.ToDisplayString() == "Nullus")
             return true;
         for (var current = type as INamedTypeSymbol; current is not null; current = current.BaseType)
@@ -667,6 +668,7 @@ public sealed class ScriptApiGenerator : IIncrementalGenerator
             SpecialType.System_Single => "Float",
             SpecialType.System_Double => "Double",
             SpecialType.System_String => "String",
+            _ when type.Name == "InputActionReference" && type.ContainingNamespace.ToDisplayString() == "Nullus" => "String",
             _ when type.Name == "Vector2" && type.ContainingNamespace.ToDisplayString() == "Nullus" => "Vector2",
             _ when type.Name == "Vector3" && type.ContainingNamespace.ToDisplayString() == "Nullus" => "Vector3",
             _ when type.Name == "Vector4" && type.ContainingNamespace.ToDisplayString() == "Nullus" => "Vector4",

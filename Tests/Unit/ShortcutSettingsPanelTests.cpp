@@ -22,7 +22,7 @@ TEST(ShortcutSettingsPanelTests, AppendsContextToDuplicateCommandDisplayNames)
 {
     const auto sceneDelete = Command("edit.delete-selected-gameobject", "Delete Selected GameObject", ShortcutContexts::SceneView);
     const auto hierarchyDelete = Command("edit.delete-selected-gameobject-hierarchy", "Delete Selected GameObject", ShortcutContexts::Hierarchy);
-    const std::vector<const ShortcutCommand*> commands { &sceneDelete, &hierarchyDelete };
+    const std::vector<const ShortcutDescriptor*> commands { &sceneDelete, &hierarchyDelete };
 
     EXPECT_EQ(
         Panels::ShortcutSettingsPanel::GetCommandListDisplayName(sceneDelete, commands),
@@ -35,7 +35,7 @@ TEST(ShortcutSettingsPanelTests, AppendsContextToDuplicateCommandDisplayNames)
 TEST(ShortcutSettingsPanelTests, LeavesUniqueCommandDisplayNamesUnchanged)
 {
     const auto saveScene = Command("file.save-scene", "Save Scene", ShortcutContexts::Global);
-    const std::vector<const ShortcutCommand*> commands { &saveScene };
+    const std::vector<const ShortcutDescriptor*> commands { &saveScene };
 
     EXPECT_EQ(
         Panels::ShortcutSettingsPanel::GetCommandListDisplayName(saveScene, commands),

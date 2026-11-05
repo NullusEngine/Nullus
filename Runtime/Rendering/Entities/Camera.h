@@ -110,6 +110,10 @@ namespace NLS::Render::Entities
 		*/
 		const Maths::Matrix4& GetProjectionMatrix() const;
 
+            // CPU camera/frustum/ray tools retain the historical [-1,1] matrix.
+            // All supported formal GPU backends use [0,1] clip depth.
+            Maths::Matrix4 GetGpuProjectionMatrix() const;
+
 		/**
 		* Returns the cached view matrix
 		*/

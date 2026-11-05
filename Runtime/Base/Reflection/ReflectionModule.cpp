@@ -88,10 +88,18 @@ namespace NLS::meta
 
     void ReflectionModuleRegistry::Unload(TypeKey moduleKey)
     {
+        (void)TryUnload(moduleKey);
+    }
+
+    bool ReflectionModuleRegistry::TryUnload(TypeKey moduleKey)
+    {
         if (moduleKey == InvalidTypeKey)
-            return;
+            return false;
 
         std::scoped_lock lock(GetReflectionModuleMutex());
+        // Keep descriptors intact if the database cannot release their types.
+        if (auto* db = ReflectionDatabase::TryGet(); db && !db->TryUnloadModule(moduleKey))
+            return false;
         auto &modules = GetReflectionModules();
         modules.erase(
             std::remove_if(
@@ -103,7 +111,6 @@ namespace NLS::meta
                 }),
             modules.end());
 
-        if (auto *db = ReflectionDatabase::TryGet())
-            db->UnloadModule(moduleKey);
+        return true;
     }
 }

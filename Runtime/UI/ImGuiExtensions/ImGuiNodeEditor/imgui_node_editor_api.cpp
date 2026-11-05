@@ -13,6 +13,8 @@
 
 //------------------------------------------------------------------------------
 static ax::NodeEditor::Detail::EditorContext* s_Editor = nullptr;
+static ax::NodeEditor::KeyboardInputObserver s_KeyboardObserver = nullptr;
+static void* s_KeyboardObserverUser = nullptr;
 
 static ax::NodeEditor::Detail::EditorContext* CurrentEditor()
 {
@@ -55,6 +57,7 @@ ax::NodeEditor::EditorContext* ax::NodeEditor::CreateEditor(const Config* config
 
 void ax::NodeEditor::DestroyEditor(EditorContext* ctx)
 {
+    if (s_KeyboardObserver) s_KeyboardObserver(ctx, false, true, false, s_KeyboardObserverUser);
     auto lastContext = GetCurrentEditor();
 
     // Set context we're about to destroy as current, to give callback valid context
@@ -147,6 +150,9 @@ void ax::NodeEditor::Begin(const char* id, const ImVec2& size)
 void ax::NodeEditor::End()
 {
     CurrentEditor()->End();
+    const bool focused = CurrentEditor()->IsFocused() && CurrentEditor()->CanAcceptUserInput();
+    if (!focused) CurrentEditor()->ClearKeyboardShortcutRequests();
+    if (s_KeyboardObserver) s_KeyboardObserver(GetCurrentEditor(), focused, false, CurrentEditor()->UsesClipboardShortcuts(), s_KeyboardObserverUser);
 }
 
 void ax::NodeEditor::BeginNode(NodeId id)
@@ -606,6 +612,15 @@ void ax::NodeEditor::EnableShortcuts(bool enable)
 {
     CurrentEditor()->EnableShortcuts(enable);
 }
+void ax::NodeEditor::EnableKeyboardShortcuts(bool enable) { CurrentEditor()->EnableKeyboardShortcuts(enable); }
+bool ax::NodeEditor::AreKeyboardShortcutsEnabled() { return CurrentEditor()->AreKeyboardShortcutsEnabled(); }
+void ax::NodeEditor::SetKeyboardInputObserver(KeyboardInputObserver observer, void* user)
+{
+    s_KeyboardObserver = observer;
+    s_KeyboardObserverUser = user;
+}
+bool ax::NodeEditor::IsKeyboardInputManaged() { return s_KeyboardObserver != nullptr; }
+void ax::NodeEditor::RequestKeyboardShortcut(KeyboardShortcut shortcut) { CurrentEditor()->RequestKeyboardShortcut(shortcut); }
 
 bool ax::NodeEditor::AreShortcutsEnabled()
 {
@@ -614,6 +629,7 @@ bool ax::NodeEditor::AreShortcutsEnabled()
 
 bool ax::NodeEditor::BeginShortcut()
 {
+    CurrentEditor()->NoteClipboardShortcutQuery();
     return CurrentEditor()->GetShortcut().Begin();
 }
 

@@ -1,4 +1,6 @@
 #pragma once
+#include <atomic>
+#include "Rendering/SceneRenderOptions.h"
 
 #include <chrono>
 
@@ -26,6 +28,7 @@
 #include "Rendering/LightGridPrepass.h"
 #include "Rendering/RenderScene.h"
 #include "Rendering/ParticleSceneRenderer.h"
+#include "Rendering/SpriteSceneRenderer.h"
 #include "Rendering/SceneOcclusion.h"
 #include "Rendering/SceneStreamingResidency.h"
 #include "Rendering/DistanceField/DistanceFieldSystem.h"
@@ -84,6 +87,9 @@ namespace NLS::Engine::Rendering
 			TransparentDrawables transparents;
 			SkyboxDrawables skyboxes;
                 std::vector<ParticleViewInput> particles;
+			SceneRenderOptions viewOptions;
+                std::vector<std::shared_ptr<const SpriteRenderProxy>> sprites;
+				int32_t defaultSortingLayerRank = 0;
 		};
 
 		struct SceneDescriptor
@@ -100,6 +106,7 @@ namespace NLS::Engine::Rendering
 					bool suppressHZBOcclusion = false;
 					bool suppressLightGridCompute = false;
 					bool trustSceneRenderContentRevision = false;
+						SceneRenderOptions viewOptions;
 				};
 
 
@@ -143,7 +150,7 @@ namespace NLS::Engine::Rendering
         Render::DistanceField::DistanceFieldDebugSettings GetDistanceFieldDebugSettings() const
         { return *std::atomic_load(&m_distanceFieldDebug); }
         Render::DistanceField::DistanceFieldStats GetDistanceFieldStats() const
-        { auto system = std::atomic_load(&m_distanceFieldSystem); return system ? system->GetStats() : Render::DistanceField::DistanceFieldStats{}; }
+        { auto stats = std::atomic_load(&m_distanceFieldStats); return stats ? *stats : Render::DistanceField::DistanceFieldStats{}; }
 			NLS::Render::FrameGraph::LightGridCompileContext BuildLightGridCompileContext(
 				bool hasSkyboxTexture = false) const;
 			NLS::Render::FrameGraph::LightGridCompileContext BuildLightGridCompileContext(
@@ -209,6 +216,9 @@ namespace NLS::Engine::Rendering
 		 */
 		[[nodiscard]] uint64_t GetSceneRenderContentRevision() const;
 				const Render::Data::DrawCallOptimizationStats& GetLastDrawCallOptimizationStats() const;
+            SpriteSceneRenderer::Statistics GetSpriteStatistics() const { return m_spriteRenderer.GetStatistics(); }
+            void SetSpriteCpuBatching(bool enabled) { m_spriteCpuExpanded.store(enabled); }
+            bool GetSpriteCpuBatching() const { return m_spriteCpuExpanded.load(); }
 #if defined(NLS_ENABLE_TEST_HOOKS)
 				const Render::Data::DrawCallOptimizationStats& GetLastDrawCallOptimizationStatsForTesting() const;
 #endif
@@ -270,6 +280,8 @@ namespace NLS::Engine::Rendering
 		{
 			std::vector<SceneSynchronizeCapture> scenes;
                 std::vector<ParticleViewInput> particles;
+                std::vector<std::shared_ptr<const SpriteRenderProxy>> sprites;
+				int32_t defaultSortingLayerRank = 0;
 			// The additive scenes still referenced by the descriptor this frame.
 			std::vector<SceneSystem::Scene*> activeAdditiveSceneIdentities;
 			// Owned so the resolve half can point RenderSceneSyncOptions at stable
@@ -293,6 +305,7 @@ namespace NLS::Engine::Rendering
 			std::optional<Frustum> frustumOverride;
 			bool skipSceneDrawables = false;
 			bool suppressVisibleMaterialTextureRequests = false;
+				SceneRenderOptions viewOptions;
 			/**
 			 * True when at least one scene could not claim a synchronization slot
 			 * because the previous capture is still outstanding.
@@ -311,7 +324,11 @@ namespace NLS::Engine::Rendering
 			SceneParseInput& input,
 			const NLS::Render::FrameGraph::FrozenFrameDescriptor& frame);
             void AppendParticleScenePass(Render::Context::RenderScenePackage& package,
-                const Render::FrameGraph::FrozenFrameDescriptor& frame, const std::vector<ParticleViewInput>& particles);
+                const Render::FrameGraph::FrozenFrameDescriptor& frame, const std::vector<ParticleViewInput>& particles, const SceneRenderOptions& options = {});
+            void AppendSpriteScenePass(Render::Context::RenderScenePackage& package,
+                const Render::FrameGraph::FrozenFrameDescriptor& frame, const std::vector<std::shared_ptr<const SpriteRenderProxy>>& sprites);
+        static Render::Sprites::SpriteSortKey CaptureTransparentSortKey(const Drawable& drawable,
+            const Render::FrameGraph::FrozenFrameDescriptor& frame, int32_t sortingLayerRank);
         void AppendDistanceFieldScenePass(Render::Context::RenderScenePackage& package,
             const Render::FrameGraph::FrozenFrameDescriptor& frame,
             const Render::DistanceField::DistanceFieldDebugSettings& settings, uint64_t frameId);
@@ -520,8 +537,11 @@ namespace NLS::Engine::Rendering
 		std::string m_sceneFallbackShaderResourcePath;
 		RenderScene m_renderScene;
             ParticleSceneRenderer m_particleRenderer;
+            SpriteSceneRenderer m_spriteRenderer;
+        std::atomic<bool> m_spriteCpuExpanded {false};
         // Publish immutable snapshots through the portable shared_ptr atomic operations.
         std::shared_ptr<Render::DistanceField::DistanceFieldSystem> m_distanceFieldSystem;
+        std::shared_ptr<const Render::DistanceField::DistanceFieldStats> m_distanceFieldStats;
         std::shared_ptr<const Render::DistanceField::DistanceFieldDebugSettings> m_distanceFieldDebug{
             std::make_shared<const Render::DistanceField::DistanceFieldDebugSettings>()};
         std::shared_ptr<const uint64_t> m_distanceFieldViewLifetime =

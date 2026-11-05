@@ -79,6 +79,7 @@ namespace NLS::Engine::Rendering
 			{
 				DeferredThreadedDrawCounts drawCounts;
 				uint64_t unresolvedDecalDrawCount = 0u;
+					uint64_t wireOverlayDrawCount = 0u;
 				bool lightingCaptureSucceeded = true;
                     std::vector<NLS::Render::Context::RecordedDrawCommandInput> forwardOpaqueDepth,forwardOpaqueColor;
 			};
@@ -261,6 +262,7 @@ namespace NLS::Engine::Rendering
 		void DrawDecals(NLS::Render::Data::PipelineState pso);
 		void DrawLightingPass(NLS::Render::Data::PipelineState pso);
 		void DrawTransparents(NLS::Render::Data::PipelineState pso);
+            NLS::Render::Resources::Material& GetSceneWireframeMaterial();
 
 	private:
 		NLS::Render::Buffers::MultiFramebuffer m_gBuffer;
@@ -311,6 +313,29 @@ namespace NLS::Engine::Rendering
 				NLS::Render::Resources::Shader* m_gBufferShader = nullptr;
 		NLS::Render::Resources::Shader* m_deferredDecalShader = nullptr;
 		NLS::Render::Resources::Shader* m_lightingShader = nullptr;
+            NLS::Render::Resources::Shader* m_sceneWireframeShader = nullptr;
+            std::unique_ptr<NLS::Render::Resources::Material> m_sceneWireframeMaterial;
+            NLS::Render::Resources::Shader* m_sceneDebugShader = nullptr;
+            NLS::Render::Resources::Shader* m_sceneDebugResolveShader = nullptr;
+            struct SceneDebugMaterialCacheEntry
+            {
+                std::unique_ptr<NLS::Render::Resources::Material> material;
+                std::array<uint64_t, 7u> sourceStamp {};
+                Maths::Vector4 displayOptions {};
+                Maths::Vector4 albedoRange {};
+                Maths::Vector4 specularRange {};
+                Maths::Vector4 wireColor {};
+            };
+            // Source instance ids are never reused. Each source has independent
+            // forward/transparent/wire variants so capture can retain immutable
+            // bindings while other passes use the same authored material.
+            std::unordered_map<uint64_t, std::array<SceneDebugMaterialCacheEntry, 8u>> m_sceneDebugMaterialCache;
+            NLS::Render::Resources::Material& ResolveSceneDebugMaterial(
+                NLS::Render::Resources::Material& source, const SceneRenderOptions& options,
+                bool forward, bool transparent, bool wire = false,
+                Maths::Vector4 wireColor = {0.8f, 0.8f, 0.8f, 1.0f});
+            void AppendSceneDebugPasses(NLS::Render::Context::RenderScenePackage& package,
+                const NLS::Render::FrameGraph::FrozenFrameDescriptor& frame, const AllDrawables& drawables);
 		NLS::Render::Resources::Shader* m_hzbBuildShader = nullptr;
 		NLS::Render::Resources::Shader* m_hzbOcclusionShader = nullptr;
 		NLS::Render::RHI::PipelineCacheKey m_hzbBuildPipelineKey;
@@ -348,6 +373,10 @@ namespace NLS::Engine::Rendering
 		static NLS::Render::Resources::Material& GetOrCreateGBufferMaterial(
 			DeferredSceneRenderer& renderer,
 			NLS::Render::Resources::Material& sourceMaterial);
+        static NLS::Render::Resources::Material& ResolveSceneDebugMaterialForTesting(
+            DeferredSceneRenderer& renderer, NLS::Render::Resources::Material& source,
+            const SceneRenderOptions& options, bool forward, bool transparent, bool wire,
+            Maths::Vector4 wireColor = {0.8f, 0.8f, 0.8f, 1.0f});
 		static NLS::Render::Resources::Material& ResolveFrameGBufferMaterial(
 			DeferredSceneRenderer& renderer,
 			NLS::Render::Resources::Material& sourceMaterial);

@@ -18,6 +18,10 @@
 #include "Math/Vector4.h"
 #include "Debug/Logger.h"
 #include "Rendering/BaseSceneRenderer.h"
+#include <Rendering/Context/TransparentSubmission.h>
+#include "Assets/SpriteProjectSettings.h"
+#include "Rendering/SceneRenderStoreRegistry.h"
+#include "Rendering/SceneProxySourceRegistry.h"
 #include "Rendering/Assets/DistanceFieldArtifact.h"
 #include "Rendering/EngineDrawableDescriptor.h"
 #include "Rendering/EngineFrameObjectBindingProvider.h"
@@ -744,14 +748,27 @@ void BaseSceneRenderer::BeginFrame(const Render::Data::FrameDescriptor& p_frameD
 	InvalidateLightGridCompileContextCache();
 
 	auto& sceneDescriptor = GetDescriptor<SceneDescriptor>();
-	RefreshSceneLightingDescriptor(sceneDescriptor.scene);
+    if (sceneDescriptor.viewOptions.previewLighting && p_frameDescriptor.camera)
+    {
+        m_sceneLightingProvider->CollectPreview(*p_frameDescriptor.camera);
+        SetSceneLightingDescriptor();
+    }
+    else if (!sceneDescriptor.viewOptions.hiddenObjectIds.empty())
+    {
+        m_sceneLightingProvider->Collect(sceneDescriptor.scene, sceneDescriptor.viewOptions.hiddenObjectIds);
+        SetSceneLightingDescriptor();
+    }
+    else
+        RefreshSceneLightingDescriptor(sceneDescriptor.scene);
 	ConfigureRenderSceneSynchronizationDepth();
 
-	Render::Core::CompositeRenderer::BeginFrame(p_frameDescriptor);
+	auto viewFrame = p_frameDescriptor;
+    viewFrame.applyToneMapping = sceneDescriptor.viewOptions.postProcessing;
+	Render::Core::CompositeRenderer::BeginFrame(viewFrame);
 	if (!IsFrameActive())
 		return;
 
-	if (const auto packet = BuildRenderFramePacket(p_frameDescriptor); packet.has_value())
+	if (const auto packet = BuildRenderFramePacket(viewFrame); packet.has_value())
 		SetPendingRenderFramePacket(packet.value());
 }
 
@@ -765,11 +782,13 @@ void BaseSceneRenderer::BeginFrameForBackgroundPreview(const Render::Data::Frame
 	RefreshSceneLightingDescriptor(sceneDescriptor.scene);
 	ConfigureRenderSceneSynchronizationDepth();
 
-	Render::Core::CompositeRenderer::BeginFrameForBackgroundPreview(p_frameDescriptor);
+	auto viewFrame = p_frameDescriptor;
+    viewFrame.applyToneMapping = sceneDescriptor.viewOptions.postProcessing;
+	Render::Core::CompositeRenderer::BeginFrameForBackgroundPreview(viewFrame);
 	if (!IsFrameActive())
 		return;
 
-	if (const auto packet = BuildRenderFramePacket(p_frameDescriptor); packet.has_value())
+	if (const auto packet = BuildRenderFramePacket(viewFrame); packet.has_value())
 		SetPendingRenderFramePacket(packet.value());
 }
 
@@ -1768,7 +1787,10 @@ BaseSceneRenderer::AllDrawables BaseSceneRenderer::ResolveSceneParse(
 				// later synchronization, and this walk must see one consistent store.
 				if (const auto proxyStore = renderScene.GetProxyStoreHandle())
 				{
-					m_renderSceneLightingProvider->CollectFromStore(*proxyStore);
+					if (input.viewOptions.previewLighting)
+						m_renderSceneLightingProvider->CollectPreview(camera);
+					else
+						m_renderSceneLightingProvider->CollectFromStore(*proxyStore, input.viewOptions.hiddenObjectIds);
 				}
 			}
 			logStartupParseSceneStage("SynchronizeRenderScene");
@@ -1805,11 +1827,14 @@ BaseSceneRenderer::AllDrawables BaseSceneRenderer::ResolveSceneParse(
 			visibilityOptions.frustum = frustum ? &frustum.value() : nullptr;
 			visibilityOptions.cameraPosition = camera.GetPosition();
 			visibilityOptions.visibleLayerMask = camera.GetVisibleLayerMask();
+                visibilityOptions.hiddenObjectIds = input.viewOptions.hiddenObjectIds;
+                visibilityOptions.selectionWireIds = input.viewOptions.selectionWireIds;
+                if (!visibilityOptions.hiddenObjectIds.empty()) visibilityOptions.allowHLOD = false;
 			visibilityOptions.largeSceneSettings = &occlusionSettings;
 			visibilityOptions.lodBias = 1.0f;
 			visibilityOptions.verticalFovRadians = Maths::DegreesToRadians(camera.GetFov());
 			visibilityOptions.lodHistoryViewKey = 0u;
-			visibilityOptions.allowHLOD = true;
+			visibilityOptions.allowHLOD = input.viewOptions.hiddenObjectIds.empty();
 			// Frozen by BeginSceneParse: the editor override reads the game-thread
 			// descriptor map, which this half must not touch.
 			visibilityOptions.inspectionRootInstanceIds = input.inspectionRootInstanceIds;
@@ -1860,7 +1885,7 @@ BaseSceneRenderer::AllDrawables BaseSceneRenderer::ResolveSceneParse(
 				hzbObservationCandidateHandles);
 			hzbBuildTimeNs += ElapsedNanoseconds(packetSourceStart);
 			SceneOcclusionPrimitivePacketBuildInput packetInput;
-			packetInput.viewProjection = camera.GetProjectionMatrix() * camera.GetViewMatrix();
+			packetInput.viewProjection = camera.GetGpuProjectionMatrix() * camera.GetViewMatrix();
 			packetInput.viewportWidth = static_cast<uint32_t>(frame.descriptor.renderWidth);
 			packetInput.viewportHeight = static_cast<uint32_t>(frame.descriptor.renderHeight);
 			const auto packetBuildStart = std::chrono::steady_clock::now();
@@ -1949,12 +1974,12 @@ BaseSceneRenderer::AllDrawables BaseSceneRenderer::ResolveSceneParse(
 	if (skyboxStore == nullptr)
 		return;
 	skyboxStore->ForEachSkyBox(
-			[&skyboxes](
+			[&skyboxes, &input](
 				const SceneProxyHandle&,
 				const SceneProxyPayload& payload,
 				const SceneProxyTransformState& transform)
 			{
-				if (!payload.ownerAlive || !payload.ownerActive ||
+				if (!payload.ownerAlive || !payload.ownerActive || input.viewOptions.IsObjectHidden(static_cast<int32_t>(payload.ownerInstanceId)) ||
 					payload.resources.mesh == nullptr || payload.resources.material == nullptr)
 				{
 					return;
@@ -2297,7 +2322,7 @@ BaseSceneRenderer::AllDrawables BaseSceneRenderer::ResolveSceneParse(
 		m_publishedHasVisiblePickablePrimitiveDrawSources =
 			m_hasLastVisiblePickablePrimitiveDrawSources;
 	}
-    return { opaques, decals, transparents, skyboxes, input.particles };
+	    return { opaques, decals, transparents, skyboxes, input.particles, input.viewOptions, input.sprites, input.defaultSortingLayerRank };
 }
 
 void BaseSceneRenderer::AppendDistanceFieldScenePass(Render::Context::RenderScenePackage& package,
@@ -2324,7 +2349,7 @@ void BaseSceneRenderer::AppendDistanceFieldScenePass(Render::Context::RenderScen
     {
         input.cameraPosition = frame.camera->GetPosition();
         input.inverseViewProjection = Maths::Matrix4::Inverse(
-            frame.camera->GetProjectionMatrix() * frame.camera->GetViewMatrix());
+            frame.camera->GetGpuProjectionMatrix() * frame.camera->GetViewMatrix());
         input.traceDistance = frame.camera->GetFar();
     }
     input.outputTexture = frame.descriptor.outputColorTexture;
@@ -2368,6 +2393,7 @@ void BaseSceneRenderer::AppendDistanceFieldScenePass(Render::Context::RenderScen
     }
     input.objects = df::GroupDistanceFieldObjects(std::move(input.objects));
     auto built = system->BuildFrame(std::move(input));
+    std::atomic_store(&m_distanceFieldStats, std::make_shared<const df::DistanceFieldStats>(built.stats));
     if (built.timingReadback) package.postSubmitBufferReadbacks.push_back(*built.timingReadback);
     for (auto& pass : built.passes)
     {
@@ -2430,11 +2456,32 @@ void BaseSceneRenderer::AppendDistanceFieldScenePass(Render::Context::RenderScen
 }
 
 void BaseSceneRenderer::AppendParticleScenePass(Render::Context::RenderScenePackage& package,
-    const Render::FrameGraph::FrozenFrameDescriptor& frame, const std::vector<ParticleViewInput>& particles)
+    const Render::FrameGraph::FrozenFrameDescriptor& frame, const std::vector<ParticleViewInput>& particles, const SceneRenderOptions& options)
 {
     std::string error;
-    if (!m_particleRenderer.AppendPass(Render::Context::DriverRendererAccess::GetExplicitDevice(m_driver),package,frame,particles,error))
+    if (!m_particleRenderer.AppendPass(Render::Context::DriverRendererAccess::GetExplicitDevice(m_driver),package,frame,particles,error,options))
         throw std::runtime_error("Particle scene pass: "+error);
+}
+
+void BaseSceneRenderer::AppendSpriteScenePass(Render::Context::RenderScenePackage& package,
+    const Render::FrameGraph::FrozenFrameDescriptor& frame,
+    const std::vector<std::shared_ptr<const SpriteRenderProxy>>& sprites)
+{
+    std::string error;
+    if (!m_spriteRenderer.AppendPass(Render::Context::DriverRendererAccess::GetExplicitDevice(m_driver), package, frame, sprites, error,m_spriteCpuExpanded.load()))
+        NLS_LOG_ERROR("Sprite rendering: " + error);
+    Render::Context::FinalizeTransparentSubmission(package);
+}
+
+Render::Sprites::SpriteSortKey BaseSceneRenderer::CaptureTransparentSortKey(const Drawable& drawable,
+    const Render::FrameGraph::FrozenFrameDescriptor& frame, int32_t sortingLayerRank)
+{
+    const auto* object = drawable.TryGetDescriptor<EngineDrawableDescriptor>();
+    if (!object || !frame.descriptor.camera) return {};
+    const auto position = object->modelMatrix * Maths::Vector4(0,0,0,1);
+    const auto view = frame.descriptor.camera->GetViewMatrix() * position;
+    return {sortingLayerRank,0,
+        std::isfinite(view.z) ? -view.z : 0.f, object->stableSortKey};
 }
 
 BaseSceneRenderer::SceneParseInput BaseSceneRenderer::BeginSceneParse(
@@ -2442,9 +2489,11 @@ BaseSceneRenderer::SceneParseInput BaseSceneRenderer::BeginSceneParse(
 {
 	NLS_PROFILE_SCOPE();
 	SceneParseInput input;
+	input.defaultSortingLayerRank = Assets::CaptureSpriteSortingLayers()->ResolveRank(Core::Assets::SpriteSortingLayers::DefaultId);
 
 	auto& sceneDescriptor = GetDescriptor<SceneDescriptor>();
 	input.overrideMaterial = sceneDescriptor.overrideMaterial;
+	input.viewOptions = sceneDescriptor.viewOptions;
 	input.frustumOverride = sceneDescriptor.frustumOverride;
 	input.skipSceneDrawables = sceneDescriptor.skipSceneDrawables;
 		input.suppressVisibleMaterialTextureRequests =
@@ -2513,12 +2562,16 @@ BaseSceneRenderer::SceneParseInput BaseSceneRenderer::BeginSceneParse(
             {
                 if (!component || !component->IsActiveAndEnabled()) continue;
                 auto* owner = component->gameobject();
-                if (!owner || !owner->IsAlive() || !frame.descriptor.camera || !frame.descriptor.camera->IsLayerVisible(owner->GetLayer())) continue;
+                if (!owner || !owner->IsAlive() || input.viewOptions.IsObjectHidden(owner->GetInstanceID()) || !frame.descriptor.camera || !frame.descriptor.camera->IsLayerVisible(owner->GetLayer())) continue;
                 component->PrepareForRendering();
                 const auto particleFrame = component->CaptureFrame(); const auto proxy = component->RenderProxy();
                 if (particleFrame && proxy)
                 {
                     ParticleViewInput particle{proxy,particleFrame,owner->GetTransform()->GetWorldMatrix()};
+                    if (scene.IsPlaying() && scene.GetPhysicsSettings().interpolate)
+                        particle.localToWorld = scene.CapturePhysicsPresentationTransform(*owner).worldMatrix;
+                    particle.ownerId = uint64_t(owner->GetInstanceID());
+                    particle.sortingLayerRank = input.defaultSortingLayerRank;
                     for (const auto& emitter : particleFrame->system->asset.emitters)
                     {
                         std::vector<VFX::SpriteMaterial> materials;
@@ -2549,7 +2602,12 @@ BaseSceneRenderer::SceneParseInput BaseSceneRenderer::BeginSceneParse(
                 }
             }
 
-		const RenderSceneSyncOptions options {
+        if (!input.skipSceneDrawables)
+            if (auto registry = SceneRenderStoreRegistry::Acquire(uint64_t(scene.GetInstanceID()), &scene).sourceRegistry)
+                for (auto& proxy : registry->CaptureSprites(scene))
+                    if (!input.viewOptions.IsObjectHidden(InstanceID(proxy->ownerId))) input.sprites.push_back(std::move(proxy));
+
+			const RenderSceneSyncOptions options {
 			input.defaultMaterial,
 			input.overrideMaterial,
 			requireExplicitMaterialTextures,

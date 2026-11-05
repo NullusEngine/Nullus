@@ -87,6 +87,11 @@ void TemplateManager::LoadTemplates(const std::filesystem::path& templateRoot)
         tmpl.description = description;
         tmpl.templateDirectory = templateDir;
         tmpl.sortOrder = json.value("sortOrder", 0);
+        tmpl.is2D = json.value("sceneMode", std::string("3d")) == "2d";
+        tmpl.startScene = json.value("startScene", std::string {});
+        const std::filesystem::path startPath(tmpl.startScene);
+        if (startPath.is_absolute() || std::any_of(startPath.begin(), startPath.end(),
+            [](const auto& part) { return part == ".."; })) continue;
 
         // Optional category (defaults to "Core")
         std::string category = json.value("category", std::string {});

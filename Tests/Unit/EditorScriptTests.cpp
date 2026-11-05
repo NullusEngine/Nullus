@@ -12,6 +12,9 @@
 #include "Inspector/InspectorRegistry.h"
 #include "Scripting/EditorScriptAbi.h"
 #include "Scripting/EditorScriptHost.h"
+#include <Core/ServiceLocator.h>
+#include <Input/InputSystem.h>
+#include "Shortcuts/EditorShortcutService.h"
 
 namespace
 {
@@ -87,6 +90,34 @@ TEST_F(EditorScriptTests, HostAbiTableExposesEveryManagedCallback)
     EXPECT_NE(table.endVertical, nullptr);
     EXPECT_NE(table.openWindow, nullptr);
     EXPECT_NE(table.closeWindow, nullptr);
+    EXPECT_NE(table.registerMenuCommand, nullptr);
+}
+
+TEST_F(EditorScriptTests, StableMenuCommandRebindSurvivesDisplayRenameAndUnregistersOnUnload)
+{
+    using namespace NLS; using namespace NLS::Editor::Shortcuts;
+    auto& host = NLS::Editor::Scripting::EditorScriptHost::Get(); host.ClearRegistrations();
+    Input::InputSystem system; EditorShortcutService service;
+    auto* previous = Core::ServiceLocator::Contains<EditorShortcutService>() ? &Core::ServiceLocator::Get<EditorShortcutService>() : nullptr;
+    Core::ServiceLocator::Provide(service);
+    struct Restore { EditorShortcutService* previous; ~Restore() { NLS::Editor::Scripting::EditorScriptHost::Get().ResetManagedApi(); if (previous) Core::ServiceLocator::Provide(*previous); else Core::ServiceLocator::Remove<EditorShortcutService>(); } } restore{previous};
+    static int calls = 0; calls = 0;
+    NLS::Editor::Scripting::ManagedEditorScriptApiTable api; api.invokeMenuItem = [](const char*) -> uint8_t { ++calls; return 1; }; host.SetManagedApi(&api);
+    std::string error; ASSERT_TRUE(host.RegisterMenuItem({"Tools/Original title", "", "script:test.stable"}, error));
+    host.ApplyMenuCommandRegistrations(); service.InitializeInput(system);
+    ASSERT_TRUE(service.SetBinding("script:test.stable", ShortcutBinding::FromKey(Windowing::Inputs::EKey::KEY_F8)));
+    auto press = [&]
+    {
+        Input::InputEvent event; event.device = system.GetKeyboard(); event.control = 297; event.type = Input::InputEventType::ButtonDown; ASSERT_TRUE(system.SubmitEvent(event));
+        event.type = Input::InputEventType::ButtonUp; ASSERT_TRUE(system.SubmitEvent(event)); service.UpdateInput({}); system.EndFrame();
+    };
+    press(); EXPECT_EQ(calls, 1);
+    const auto generation = service.GetRegistry().GetCommandGeneration("script:test.stable");
+    host.ClearRegistrations(); EXPECT_EQ(service.TryExecuteCommand("script:test.stable", {}), CommandResult::UnknownCommand);
+    ASSERT_TRUE(host.RegisterMenuItem({"Tools/Renamed title", "", "script:test.stable"}, error)); host.ApplyMenuCommandRegistrations();
+    EXPECT_NE(service.GetRegistry().GetCommandGeneration("script:test.stable"), generation);
+    press(); EXPECT_EQ(calls, 2); EXPECT_EQ(service.GetBindingDisplayText("script:test.stable"), "F8");
+    host.ResetManagedApi(); press(); EXPECT_EQ(calls, 2);
 }
 
 TEST_F(EditorScriptTests, ScriptedEditorOverridesTheBuiltInEditorAtHigherPriority)

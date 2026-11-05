@@ -1,0 +1,14 @@
+{
+  "schemaVersion": 1,
+  "id": "org.nullus.sample.editor",
+  "name": "Editor Tools Sample",
+  "version": "1.0.0",
+  "author": "Nullus",
+  "description": "An Editor panel and menu command backed by the host ExtensionRegistry.",
+  "engineVersion": "^1.0.0",
+  "pluginApiVersion": 1,
+  "canPackage": false,
+  "modules": [{ "name": "EditorTools", "type": "Editor", "loadingPhase": "PostEditor", "sourceTarget": "NullusEditorToolsSample" }],
+  "dependencies": [{ "id": "org.nullus.sample.runtime", "version": "^1.0.0" }],
+  "content": []
+}

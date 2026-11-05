@@ -52,16 +52,36 @@ bool DiagnosticsDisabled()
 
 ManagedScriptDebugSession::ManagedScriptDebugSession(
     NLS::Scripting::ScriptRuntime& runtime,
-    std::filesystem::path projectRoot)
+    std::filesystem::path projectRoot,
+    std::filesystem::path scriptApiManifest)
     : m_runtime(&runtime)
     , m_projectRoot(std::move(projectRoot))
+    , m_scriptApiManifest(std::move(scriptApiManifest))
 {
+}
+
+void ManagedScriptDebugSession::SetBuildCallbacks(std::function<void()> started,
+    std::function<void(const ManagedScriptBuildResult&)> completed)
+{
+    m_buildStarted = std::move(started);
+    m_buildCompleted = std::move(completed);
+    if (m_buildFuture.valid() && !m_buildStartNotified && m_buildStarted)
+    {
+        m_buildStartNotified = true;
+        m_buildStarted();
+    }
 }
 
 bool ManagedScriptDebugSession::StartBuild()
 {
     if (!m_runtime || m_projectRoot.empty())
         return false;
+
+    if (m_buildBoundary && !m_buildBoundary())
+    {
+        m_rebuildRequested = true;
+        return true;
+    }
 
     // A file watcher can observe a second save after the worker has finished
     // but before the next Editor tick consumes its future. Apply that result
@@ -75,7 +95,16 @@ bool ManagedScriptDebugSession::StartBuild()
             return true;
     }
 
-    m_buildFuture = m_buildService.Start({m_projectRoot, {}, {}, "Debug"});
+    m_buildStartNotified = false;
+    m_buildFuture = m_buildService.Start({m_projectRoot, {}, {}, "Debug",
+        m_scriptApiManifest, m_runtime->GetApi().GetSchemaHashHex()});
+    if (m_buildFuture.valid() && m_buildStarted)
+    {
+        m_buildStartNotified = true;
+        m_buildStarted();
+    }
+    if (m_buildFuture.valid())
+        m_buildTask = Core::TryBeginEditorTask("Compile C# scripts", "Building " + m_projectRoot.filename().string());
     m_preparation.state = ManagedDebugPreparationState::Building;
     return m_buildFuture.valid();
 }
@@ -145,8 +174,15 @@ bool ManagedScriptDebugSession::IsBuildInProgress() const
 
 void ManagedScriptDebugSession::Poll()
 {
+    if ((m_buildFuture.valid() || m_rebuildRequested) && m_buildBoundary && !m_buildBoundary()) return;
+    if (!m_buildFuture.valid() && m_rebuildRequested && m_enabled)
+    {
+        m_rebuildRequested = false;
+        (void)StartBuild();
+    }
     if (!m_buildFuture.valid() || IsBuildInProgress())
         return;
+    auto task = std::exchange(m_buildTask, {});
 
     // The build runs on a worker; a throw inside it would otherwise escape
     // through the frame loop, which sits outside the editor's startup guard.
@@ -158,22 +194,27 @@ void ManagedScriptDebugSession::Poll()
     {
         m_lastBuild = {};
         m_lastBuild.output = std::string("Managed script build threw: ") + exception.what();
+        if (m_buildCompleted) m_buildCompleted(m_lastBuild);
         NLS_LOG_ERROR(m_lastBuild.output);
         m_lastStatus = NLS::Scripting::ScriptStatus::Error(
             NLS::Scripting::ScriptStatusCode::Exception,
             m_lastBuild.output);
+        task.Finish(Core::EditorTaskState::Failed, m_lastBuild.output);
         return;
     }
     catch (...)
     {
         m_lastBuild = {};
         m_lastBuild.output = "Managed script build threw an unknown exception.";
+        if (m_buildCompleted) m_buildCompleted(m_lastBuild);
         NLS_LOG_ERROR(m_lastBuild.output);
         m_lastStatus = NLS::Scripting::ScriptStatus::Error(
             NLS::Scripting::ScriptStatusCode::Exception,
             m_lastBuild.output);
+        task.Finish(Core::EditorTaskState::Failed, m_lastBuild.output);
         return;
     }
+    if (m_buildCompleted) m_buildCompleted(m_lastBuild);
     if (!m_lastBuild.succeeded)
     {
         NLS_LOG_ERROR("Managed C# Debug build failed: " + m_lastBuild.output);
@@ -190,6 +231,7 @@ void ManagedScriptDebugSession::Poll()
     {
         if (m_prepareRequested)
             m_preparation.state = ManagedDebugPreparationState::LoadingRuntime;
+        task.Update("Loading compiled C# scripts");
         m_lastStatus = ApplyBuild(m_lastBuild);
         if (m_lastStatus.Succeeded())
         {
@@ -211,6 +253,9 @@ void ManagedScriptDebugSession::Poll()
             }
         }
     }
+
+    task.Finish(m_lastStatus.Succeeded() ? Core::EditorTaskState::Succeeded : Core::EditorTaskState::Failed,
+        m_lastStatus.Succeeded() ? "C# scripts activated" : m_lastStatus.message);
 
     // A save that arrived while dotnet was compiling must not be dropped. The
     // next build starts only after the current result has been committed (or
@@ -243,7 +288,23 @@ NLS::Scripting::ScriptStatus ManagedScriptDebugSession::ApplyBuild(
         auto replacement = std::make_unique<NLS::Scripting::CoreClrScriptBackend>();
         replacement->SetDotnetRoot(dotnetRoot);
         replacement->SetHostArtifacts(result.runtimeConfig, result.assembly);
-        return m_runtime->RegisterBackend(std::move(replacement));
+        const auto status = m_runtime->RegisterBackend(std::move(replacement));
+        if (!status.Succeeded() || !m_runtime->IsInitialized())
+            return status;
+        backend = dynamic_cast<NLS::Scripting::CoreClrScriptBackend*>(
+            m_runtime->GetBackend(NLS::Scripting::ScriptLanguage::CSharp));
+        if (backend)
+        {
+            try
+            {
+                ReloadEditorScripts(*backend, result.assembly);
+            }
+            catch (const std::exception& exception)
+            {
+                NLS_LOG_ERROR(std::string("Managed editor script setup threw: ") + exception.what());
+            }
+        }
+        return status;
     }
 
     backend->SetDotnetRoot(dotnetRoot);
@@ -287,6 +348,11 @@ void ManagedScriptDebugSession::ReloadEditorScripts(
     const auto managedEditorAssembly = NLS::Editor::Serialization::ResolveManagedEditorAssembly(scriptingAssembly);
     if (managedEditorAssembly.empty())
         return;
+
+    const auto serialization = NLS::Editor::Serialization::InstallManagedSerializationBridge(
+        backend.GetHost(), managedEditorAssembly);
+    if (!serialization.installed)
+        NLS_LOG_WARNING("Managed editor serialization bridge was not installed: " + serialization.message);
 
     const auto editorScriptsAssembly =
         NLS::Editor::Scripting::ResolveEditorScriptsAssembly(managedEditorAssembly.parent_path());

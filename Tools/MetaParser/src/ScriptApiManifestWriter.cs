@@ -65,7 +65,7 @@ internal static partial class MetaParserTool
         var document = new ScriptApiManifestDocument(2, schemaHash, scriptTypes);
         var json = JsonSerializer.Serialize(document, jsonOptions);
         Directory.CreateDirectory(outputDir);
-        File.WriteAllText(Path.Combine(outputDir, "ScriptApi.json"), json, new UTF8Encoding(false));
+        WriteAllTextIfChanged(Path.Combine(outputDir, "ScriptApi.json"), json);
 
         var jsonBytes = Encoding.UTF8.GetBytes(json);
         const string binaryMagic = "NLS_SCRIPT_API\0";
@@ -75,7 +75,7 @@ internal static partial class MetaParserTool
         Convert.FromHexString(schemaHash).CopyTo(binary, binaryMagic.Length + 4);
         BinaryPrimitives.WriteUInt64LittleEndian(binary.AsSpan(binaryMagic.Length + 4 + 32), (ulong)jsonBytes.Length);
         jsonBytes.CopyTo(binary, binaryMagic.Length + 4 + 32 + 8);
-        File.WriteAllBytes(Path.Combine(outputDir, "ScriptApi.bin"), binary);
+        WriteAllBytesIfChanged(Path.Combine(outputDir, "ScriptApi.bin"), binary);
 
         // Engine owns the portable gameplay API in the first scripting phase.
         // Other runtime targets still receive their per-target manifest above,
@@ -85,8 +85,8 @@ internal static partial class MetaParserTool
         {
             var libraryDir = Path.Combine(rootDir, "Library", "ScriptApi");
             Directory.CreateDirectory(libraryDir);
-            File.WriteAllText(Path.Combine(libraryDir, "ScriptApi.json"), json, new UTF8Encoding(false));
-            File.WriteAllBytes(Path.Combine(libraryDir, "ScriptApi.bin"), binary);
+            WriteAllTextIfChanged(Path.Combine(libraryDir, "ScriptApi.json"), json);
+            WriteAllBytesIfChanged(Path.Combine(libraryDir, "ScriptApi.bin"), binary);
         }
     }
 

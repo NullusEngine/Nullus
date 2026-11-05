@@ -579,6 +579,86 @@ TEST(DeferredSceneRendererMaterialCacheTests, ThreadedDrawCountEstimateCountsCap
 }
 }
 
+namespace
+{
+class ScopedSceneDebugDriverService
+{
+public:
+    explicit ScopedSceneDebugDriverService(NLS::Render::Context::Driver& driver)
+    {
+        NLS::Core::ServiceLocator::Provide(driver);
+    }
+    ~ScopedSceneDebugDriverService()
+    {
+        NLS::Core::ServiceLocator::Remove<NLS::Render::Context::Driver>();
+    }
+};
+}
+
+TEST(DeferredSceneRendererMaterialCacheTests, SceneDebugMaterialReusesIdentityWithoutMutatingUnchangedState)
+{
+    using namespace NLS::Engine::Rendering;
+    using Material = NLS::Render::Resources::Material;
+    NLS::Render::Settings::DriverSettings settings;
+    settings.graphicsBackend = NLS::Render::Settings::EGraphicsBackend::NONE;
+    settings.enableExplicitRHI = false;
+    NLS::Render::Context::Driver driver(settings);
+    const ScopedSceneDebugDriverService driverService(driver);
+    NLS::Render::Context::DriverTestAccess::PauseThreadedRenderingWorkers(driver);
+    DeferredSceneRenderer::ConstructionOptions construction;
+    construction.loadPipelineResources = false;
+    DeferredSceneRenderer renderer(driver, construction);
+    Material source;
+    source.SetRawParameter("u_Albedo", NLS::Maths::Vector4(0.2f, 0.3f, 0.4f, 1.0f));
+    SceneRenderOptions options;
+    options.geometryMode = SceneGeometryDrawMode::Wireframe;
+    const auto instanceId = DeferredSceneRendererTestAccess::ResolveSceneDebugMaterialForTesting(
+        renderer, source, options, false, false, true).GetInstanceId();
+    const auto epoch = Material::GetGlobalMutationEpoch();
+    for (size_t draw = 0; draw < 100u; ++draw)
+        EXPECT_EQ(DeferredSceneRendererTestAccess::ResolveSceneDebugMaterialForTesting(
+            renderer, source, options, false, false, true).GetInstanceId(), instanceId);
+    EXPECT_EQ(Material::GetGlobalMutationEpoch(), epoch)
+        << "Unchanged diagnostic draws must preserve material bindings and prepared draw cache entries.";
+    EXPECT_FALSE(source.GetParameterBlock().Contains("u_SceneDebugOptions"));
+    EXPECT_NE(DeferredSceneRendererTestAccess::ResolveSceneDebugMaterialForTesting(
+        renderer, source, options, true, true, true).GetInstanceId(), instanceId);
+}
+
+TEST(DeferredSceneRendererMaterialCacheTests, SceneDebugCacheRefreshesSourceEditsAndUpdatesViewParameters)
+{
+    using namespace NLS::Engine::Rendering;
+    NLS::Render::Settings::DriverSettings settings;
+    settings.graphicsBackend = NLS::Render::Settings::EGraphicsBackend::NONE;
+    settings.enableExplicitRHI = false;
+    NLS::Render::Context::Driver driver(settings);
+    const ScopedSceneDebugDriverService driverService(driver);
+    NLS::Render::Context::DriverTestAccess::PauseThreadedRenderingWorkers(driver);
+    DeferredSceneRenderer::ConstructionOptions construction;
+    construction.loadPipelineResources = false;
+    DeferredSceneRenderer renderer(driver, construction);
+    NLS::Render::Resources::Material source;
+    source.SetRawParameter("u_Albedo", NLS::Maths::Vector4(0.2f, 0.3f, 0.4f, 1.0f));
+    SceneRenderOptions options;
+    auto& initial = DeferredSceneRendererTestAccess::ResolveSceneDebugMaterialForTesting(
+        renderer, source, options, false, false, true);
+    const auto initialId = initial.GetInstanceId();
+    options.debugParameters.albedoRange = {10, 20, 30, 40};
+    const NLS::Maths::Vector4 selectedColor(1.0f, 0.6f, 0.0f, 1.0f);
+    auto& selected = DeferredSceneRendererTestAccess::ResolveSceneDebugMaterialForTesting(
+        renderer, source, options, false, false, true, selectedColor);
+    EXPECT_EQ(selected.GetInstanceId(), initialId);
+    EXPECT_EQ(std::any_cast<NLS::Maths::Vector4>(*selected.GetParameterBlock().TryGet("u_SceneWireColor")), selectedColor);
+    EXPECT_EQ(std::any_cast<NLS::Maths::Vector4>(*selected.GetParameterBlock().TryGet("u_SceneAlbedoRange")), options.debugParameters.albedoRange);
+    const NLS::Maths::Vector4 newAlbedo(0.8f, 0.1f, 0.2f, 0.5f);
+    source.SetRawParameter("u_Albedo", newAlbedo);
+    auto& refreshed = DeferredSceneRendererTestAccess::ResolveSceneDebugMaterialForTesting(
+        renderer, source, options, false, false, true, selectedColor);
+    EXPECT_NE(refreshed.GetInstanceId(), initialId);
+    EXPECT_EQ(std::any_cast<NLS::Maths::Vector4>(*refreshed.GetParameterBlock().TryGet("u_Albedo")), newAlbedo);
+    EXPECT_EQ(std::any_cast<NLS::Maths::Vector4>(*refreshed.GetParameterBlock().TryGet("u_SceneWireColor")), selectedColor);
+}
+
 TEST(DeferredSceneRendererMaterialCacheTests, HZBOcclusionObservationCanBeDiscardedAndReusedAfterReadbackFailure)
 {
     NLS::Render::Settings::DriverSettings settings;

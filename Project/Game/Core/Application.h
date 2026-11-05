@@ -6,6 +6,7 @@
 #include "Rendering/Settings/DriverSettings.h"
 #include <cstdint>
 #include <optional>
+#include <memory>
 #include <string>
 
 namespace NLS::Game::Core
@@ -26,7 +27,8 @@ namespace NLS::Game::Core
 			std::optional<Render::Settings::RenderDocSettings> renderDocOverride = std::nullopt,
 			std::optional<Render::Settings::EGraphicsBackend> backendOverride = std::nullopt,
 			std::optional<std::string> projectPathOverride = std::nullopt,
-			std::optional<Launch::MaterialValidationLaunchSettings> materialValidation = std::nullopt);
+				std::optional<Launch::MaterialValidationLaunchSettings> materialValidation = std::nullopt,
+                Scripting::RuntimePlaySession::ECSSetup registerECS = {});
 
 		/**
 		* Destructor
@@ -45,6 +47,6 @@ namespace NLS::Game::Core
 
 	private:
 		Context m_context;
-		Game m_game;
+            std::unique_ptr<Game> m_game;
 	};
 }

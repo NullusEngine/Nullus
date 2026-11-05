@@ -290,7 +290,7 @@ namespace NLS::Render::Context
         if (snapshot == nullptr || !snapshot->hasVisibleDraws)
             return false;
 
-        if (!package.targetsSwapchain)
+        if (!package.targetsSwapchain && !package.externalSceneOutputColorView)
             return false;
 
         if (package.hasUIOverlayPass)
@@ -311,7 +311,7 @@ namespace NLS::Render::Context
         input.requiresFrameData = false;
         input.requiresObjectData = false;
         input.requiresLightingData = false;
-        input.targetsSwapchain = true;
+        input.targetsSwapchain = package.targetsSwapchain;
         input.renderWidth = package.renderWidth;
         input.renderHeight = package.renderHeight;
         input.clearColor = false;
@@ -320,8 +320,16 @@ namespace NLS::Render::Context
         input.usesColorAttachment = true;
         input.usesDepthStencilAttachment = false;
         input.writesDepthStencilAttachment = false;
-        input.textureResourceAccesses.push_back(MakeSwapchainOverlayRenderTargetAccess());
-        input.exportedTextureVisibilityTransitions.push_back(MakeSwapchainOverlayPresentTransition());
+        auto targetAccess=MakeSwapchainOverlayRenderTargetAccess();
+        if (package.targetsSwapchain)
+            input.exportedTextureVisibilityTransitions.push_back(MakeSwapchainOverlayPresentTransition());
+        else
+        {
+            input.colorAttachmentViews={package.externalSceneOutputColorView};
+            targetAccess.texture=package.externalSceneOutputColorView->GetTexture();
+            targetAccess.subresourceRange=package.externalSceneOutputColorView->GetDesc().subresourceRange;
+        }
+        input.textureResourceAccesses.push_back(std::move(targetAccess));
 
         const auto sourcePassIndex = package.passCommandInputs.empty()
             ? kInvalidParallelCommandSourcePassIndex

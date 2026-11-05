@@ -372,6 +372,18 @@ namespace NLS::Engine::UI
         m_root = nullptr;
     }
 
+    void UIInputRouter::CancelInput(bool clearFocus)
+    {
+        std::vector<uint32_t> pointers;
+        for(const auto& [id,target]:m_pointerDownTargets)pointers.push_back(id);
+        for(const auto& [id,target]:m_pointerCapture)
+            if(std::find(pointers.begin(),pointers.end(),id)==pointers.end())pointers.push_back(id);
+        for(const auto id:pointers)DispatchPointer(UIEventType::PointerCancel,{-1,-1},id);
+        if(m_hovered)m_hovered->SetHovered(false);
+        m_hovered=nullptr;
+        if (clearFocus) ClearFocus();
+    }
+
     bool UIInputRouter::DispatchToTarget(UIEvent& event, UIElement* target)
     {
         if (!target)

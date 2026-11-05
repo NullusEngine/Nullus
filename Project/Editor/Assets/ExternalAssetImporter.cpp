@@ -19,6 +19,8 @@
 #include "Rendering/Assets/SceneImportPipeline.h"
 #include "Rendering/Assets/StaticMeshBuilder.h"
 #include "Rendering/Assets/DistanceFieldBuilder.h"
+#include "Rendering/Assets/DistanceFieldBuildService.h"
+#include "Project/Editor/Assets/DistanceFieldBuildService.h"
 #include "Rendering/Assets/TextureArtifact.h"
 #include "Rendering/Assets/TextureEncoder.h"
 #include "Rendering/Assets/TextureFormatResolver.h"
@@ -5498,8 +5500,9 @@ ExternalModelImportResult ImportExternalModelAsset(const ExternalModelImportRequ
 
     const auto distanceFieldSettings = NLS::Render::DistanceField::ReadDistanceFieldBuildSettings(
         request.meta.settings, request.projectRoot);
-    if (distanceFieldSettings.Enabled())
     {
+        if (distanceFieldSettings.Enabled())
+            ReportProgress(request, ImportPhase::IntermediateConversion, 0.70, "Building mesh distance fields");
         std::map<std::string,NLS::Render::Assets::MeshArtifactData> distanceFieldMeshes;
         for (const auto subAssetIndex : meshSubAssetIndices)
         {
@@ -5511,8 +5514,20 @@ ExternalModelImportResult ImportExternalModelAsset(const ExternalModelImportRequ
         std::vector<std::string> diagnostics;
         std::optional<ImportCancellationTokenHandle> distanceFieldCancellation;
         const auto* cancellation=GetImportCancellation(request,distanceFieldCancellation);
+        NLS::Render::DistanceField::DistanceFieldModelBuildOptions fieldOptions;
+        fieldOptions.kernel.cacheRoot=request.projectRoot/"Library/DistanceFieldCache";
+        // Interactive import commits geometry with its mandatory mip. Detail
+        // work resumes through the independent producer after publication.
+        if(NLS::Editor::Assets::DistanceFieldBuildService::CanSchedule())fieldOptions.kernel.mipMask=4;
+        fieldOptions.progress=[&](const auto& progress)
+        {
+            ReportProgress(request,ImportPhase::IntermediateConversion,
+                .70+.02*double(progress.completed)/std::max(1u,progress.total),
+                progress.stage+" | "+progress.meshKey+" mip="+std::to_string(progress.mip)+
+                " "+std::to_string(progress.completed)+"/"+std::to_string(progress.total));
+        };
         if (!NLS::Render::DistanceField::AppendDistanceFieldModelPayloads(scene,distanceFieldMeshes,
-            distanceFieldSettings,payloads,diagnostics,nullptr,cancellation))
+            distanceFieldSettings,payloads,diagnostics,nullptr,cancellation,&fieldOptions))
         {
             AddError(result.diagnostics,request.meta.id,request.sourcePath,
                 cancellation && cancellation->IsCancellationRequested() ? "asset-import-cancelled" : "mesh-distance-field-build-failed",

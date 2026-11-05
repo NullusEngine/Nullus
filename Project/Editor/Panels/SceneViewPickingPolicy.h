@@ -151,7 +151,7 @@ namespace NLS::Editor::Panels
         bool mouseMoved,
         bool hasPickingSample)
     {
-        if (!mouseOverView || isResizing || pickingSuppressedByGizmo || cameraControlActive)
+        if ((!mouseOverView && !hasPendingClickPick) || isResizing || pickingSuppressedByGizmo || cameraControlActive)
             return false;
 
         if (cameraMovedThisFrame && !hasPendingClickPick && !leftClicked)

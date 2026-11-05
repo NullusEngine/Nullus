@@ -4,6 +4,7 @@
 #include <regex>
 #include <algorithm>
 #include <chrono>
+#include <utility>
 #include "Rendering/Settings/EGraphicsBackend.h"
 #include "Assets/AssetDatabaseFacade.h"
 #include "Assets/EditorAssetPath.h"
@@ -51,6 +52,11 @@ MaterialEditingService::~MaterialEditingService()
 {
     for (auto& [key,session] : m_sessions) if (session->pending.valid()) session->pending.wait();
     for (auto& [key,session] : m_sessions) if (session->pendingCook.valid()) session->pendingCook.wait();
+    for (auto& [key,session] : m_sessions)
+    {
+        session->compileTask.Finish(Core::EditorTaskState::Cancelled, "Material session closed");
+        session->cookTask.Finish(Core::EditorTaskState::Cancelled, "Material session closed");
+    }
     if (auto* driver=Render::Context::TryGetLocatedDriver()) Render::Context::DriverRendererAccess::DrainThreadedRendering(*driver);
     NLS::Core::ServiceLocator::Remove<MaterialEditingService>();
 }
@@ -547,6 +553,7 @@ bool MaterialEditingService::RequestPreview(MaterialEditSession& session)
         if (input.passes.empty()) input.error="Shader has no runtime material Pass";
         return input;
     });
+    session.compileTask = Core::TryBeginEditorTask("Compile material", session.document.Asset().identity.path);
     session.error.clear();return true;
 }
 
@@ -630,9 +637,12 @@ void MaterialEditingService::Pump()
     {
         if(session->pendingCook.valid() && session->pendingCook.wait_for(std::chrono::seconds(0))==std::future_status::ready)
         {
+            auto task = std::exchange(session->cookTask, {});
             try{auto result=session->pendingCook.get();session->error=result.error;
+                task.Finish(result.Succeeded() ? Core::EditorTaskState::Succeeded : Core::EditorTaskState::Failed,
+                    result.Succeeded() ? "Material resources published" : result.error);
                 if(result.Succeeded())session->lastRelease=result.databasePath.parent_path().parent_path();}
-            catch(const std::exception& ex){session->error=ex.what();}
+            catch(const std::exception& ex){session->error=ex.what();task.Finish(Core::EditorTaskState::Failed, ex.what());}
         }
         if (!session->previewUpdates.empty() && session->preview)
         {
@@ -647,23 +657,30 @@ void MaterialEditingService::Pump()
         if (session->applyRequested && !session->pending.valid())
         {session->applyRequested=false;session->preparePublication=true;if(!RequestPreview(*session))session->preparePublication=false;}
         if (!session->pending.valid() || session->pending.wait_for(std::chrono::seconds(0))!=std::future_status::ready) continue;
+        auto task = std::exchange(session->compileTask, {});
         CompiledMaterialEdit result;
         try{result=session->pending.get();}
         catch(const std::exception& exception){session->error=exception.what();session->failedSource=session->requestedSource;
+            task.Finish(Core::EditorTaskState::Failed, exception.what());
             session->preparePublication=false;session->applyRequested=false;continue;}
         if (!Current(result,*session))
-        {session->failedSource.clear();if(result.publication){session->preparePublication=false;session->applyRequested=false;
+        {task.Finish(Core::EditorTaskState::Cancelled, "Material dependency snapshot changed");
+            session->failedSource.clear();if(result.publication){session->preparePublication=false;session->applyRequested=false;
             session->error="Publication cancelled because its dependency snapshot changed";}continue;}
         if (!result.error.empty()) {session->error=result.error;session->failedSource=result.documentSource;
+            task.Finish(Core::EditorTaskState::Failed, result.error);
             session->preparePublication=false;session->applyRequested=false;continue;}
         auto preview=BuildRuntime(result,session->error);
-        if (!preview) {session->failedSource=result.documentSource;session->preparePublication=false;session->applyRequested=false;continue;}
+        if (!preview) {task.Finish(Core::EditorTaskState::Failed, session->error);
+            session->failedSource=result.documentSource;session->preparePublication=false;session->applyRequested=false;continue;}
         if (session->preview) {drain();session->preview->CopyRuntimeFrom(*preview);}
         else session->preview=std::move(preview);
         if (session->draft) session->draft->CopyRuntimeFrom(*session->preview);
         else session->draft=session->preview->CreateDynamicCopy();
         session->compiled=std::move(result);session->failedSource.clear();session->error.clear();
         if (session->compiled->publication) {session->preparePublication=false;Publish(*session);}
+        task.Finish(session->error.empty() ? Core::EditorTaskState::Succeeded : Core::EditorTaskState::Failed,
+            session->error.empty() ? "Material compilation complete" : session->error);
     }
 }
 
@@ -743,6 +760,7 @@ bool MaterialEditingService::PublishResources(MaterialEditSession& session)
             if(!parsed.Succeeded())return MaterialCompiler::MaterialCookResult{{},{},{},parsed.DiagnosticsToString()};shader=parsed.asset;}
         return MaterialCompiler::CookMaterialFamily(shader,compiled.passes.front().parameterSchema,materials,options);
     });
+    session.cookTask = Core::TryBeginEditorTask("Cook material", session.document.Asset().identity.path);
     session.error.clear();return true;
 }
 

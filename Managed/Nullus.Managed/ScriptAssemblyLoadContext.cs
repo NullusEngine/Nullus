@@ -25,8 +25,18 @@ internal sealed class ScriptAssemblyLoadContext : AssemblyLoadContext
 
     public Assembly LoadProject(string assemblyPath)
     {
+        var assembly = LoadPlugin(assemblyPath);
+        assembly.GetType("Nullus.GameScripts.GameScriptsExports")?
+            .GetMethod("RegisterGameplayScripts", BindingFlags.Public | BindingFlags.Static)?.Invoke(null, null);
+        return assembly;
+    }
+
+    public Assembly LoadPlugin(string assemblyPath)
+    {
         var fullPath = Path.GetFullPath(assemblyPath);
         _resolver = new AssemblyDependencyResolver(fullPath);
-        return LoadFromAssemblyPath(fullPath);
+        var assembly = LoadFromAssemblyPath(fullPath);
+        System.Runtime.CompilerServices.RuntimeHelpers.RunModuleConstructor(assembly.ManifestModule.ModuleHandle);
+        return assembly;
     }
 }

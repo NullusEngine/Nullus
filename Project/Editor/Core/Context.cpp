@@ -1,4 +1,7 @@
 #include <filesystem>
+#include <Jobs/JobSystem.h>
+#include <TaskGraph/TaskGraphSystem.h>
+#include <Rendering/Context/RenderingThreadSystem.h>
 #include <Json/json.hpp>
 
 #include <fstream>
@@ -20,6 +23,7 @@
 #include <Engine/UI/UIDocumentResourceResolver.h>
 #include <Engine/UI/UIDocumentSourceResolver.h>
 #include "Assets/ArtifactDatabase.h"
+#include "Rendering/Assets/DistanceFieldArtifact.h"
 #include "Assets/AssetBrowserPresentation.h"
 #include "Assets/BuiltInScriptRegistry.h"
 #include "Assets/ScriptAssetUtility.h"
@@ -350,7 +354,14 @@ namespace
         if (manifest.entries.empty())
             return std::nullopt;
 
-        return NLS::Engine::Assets::RuntimeAssetDatabase(std::move(manifest));
+        auto database = NLS::Engine::Assets::RuntimeAssetDatabase(std::move(manifest));
+        // Runtime manifests retain portable paths. Editor IO is rooted at the
+        // project, which need not be the process working directory.
+        for (const auto& [id, source] : sourceAssets)
+            if (source.manifest)
+                NLS::Render::DistanceField::RegisterDistanceFieldManifest(
+                    *source.manifest, projectRoot / "Library" / "Artifacts");
+        return database;
     }
 
 	bool ResolveEditorLightGridEnabled(const std::filesystem::path& projectPath)
@@ -1158,7 +1169,7 @@ Editor::Core::Context::Context(const std::string& p_projectPath, const std::stri
     PresentStartupProgressFrame("Creating editor window", 0.10f);
     device = std::make_unique<NLS::Context::Device>(deviceSettings);
     window = std::make_unique<NLS::Windowing::Window>(*device, windowSettings);
-    window->SetIcon(engineAssetsPath + "Brand" + Utils::PathParser::Separator() + "NullusLogoMark.png");
+    window->SetIcon(engineAssetsPath + "Brand" + Utils::PathParser::Separator() + "NullusLogoMark.svg");
     inputManager = std::make_unique<NLS::Windowing::Inputs::InputManager>(*window);
 	driverSettings.platformWindow = window->GetGlfwWindow();
 
@@ -1239,6 +1250,7 @@ Editor::Core::Context::Context(const std::string& p_projectPath, const std::stri
         uiManager->SetFontIconCodepoints(std::move(iconCodepoints));
     }
 
+    uiManager->EnableSystemFontFallback();
     uiManager->LoadFont("Ruda_Big", editorAssetsPath + "/Fonts/Ruda-Bold.ttf", 16);
     uiManager->LoadFont("Ruda_Small", editorAssetsPath + "/Fonts/Ruda-Bold.ttf", 12);
     uiManager->LoadFont("Ruda_Medium", editorAssetsPath + "/Fonts/Ruda-Bold.ttf", 14);
@@ -1282,11 +1294,13 @@ Editor::Core::Context::Context(const std::string& p_projectPath, const std::stri
 
     /* Service Locator providing */
     NLS::Core::ServiceLocator::Provide<NLS::UI::UIManager>(*uiManager);
+    NLS::Core::ServiceLocator::Provide(taskProgress);
 
 
     NLS::Core::ServiceLocator::Provide<NLS::Windowing::Inputs::InputManager>(*inputManager);
     NLS::Core::ServiceLocator::Provide<NLS::Engine::SceneSystem::SceneManager>(sceneManager);
 
+    importTaskProgress = std::make_unique<EditorImportTaskProgress>(taskProgress, importProgressTracker);
     importProgressTracker.Subscribe([this](const NLS::Editor::Assets::ImportProgressEvent& event)
     {
         if (!ShouldShowNativeTaskProgress(event))
@@ -1298,56 +1312,62 @@ Editor::Core::Context::Context(const std::string& p_projectPath, const std::stri
             : std::nullopt);
         if (event.terminalStatus == Assets::ImportJobTerminalStatus::None)
         {
+            auto task = importTaskProgress->FindTask(event.jobId);
+            const auto current = importProgressTracker.GetCurrentEvent(event.jobId);
+            if (!task || !current || current->terminalStatus != Assets::ImportJobTerminalStatus::None)
+                return;
             std::function<void()> cancelHandler;
             if (status.cancellable && !event.cancellationRequested)
             {
                 cancelHandler = [this, jobId = event.jobId]
                 {
-                    if (auto token = importProgressTracker.GetCancellationToken(jobId); token.has_value())
-                        token->get().Cancel();
+                    if (const auto task = importTaskProgress->FindTask(jobId))
+                        taskProgress.RequestCancel(task.Id());
                 };
             }
             PresentTaskProgress(
                 event.jobId.value,
                 status.visible ? status.label : event.message,
                 status.normalizedProgress,
-                std::move(cancelHandler));
+                std::move(cancelHandler), std::move(task));
         }
         else
         {
-            if (const auto activeEvent = importProgressTracker.GetActiveEvent(); activeEvent.has_value())
+            if (const auto activeEvent = importProgressTracker.GetActiveEvent();
+                activeEvent && ShouldShowNativeTaskProgress(*activeEvent))
             {
-                if (!ShouldShowNativeTaskProgress(*activeEvent))
-                {
-                    CompleteTaskProgress(event.message);
-                    return;
-                }
-
                 const auto activeStatus = database.GetImportProgressStatus(activeEvent);
                 std::function<void()> cancelHandler;
                 if (activeStatus.cancellable && !activeEvent->cancellationRequested)
                 {
                     cancelHandler = [this, jobId = activeEvent->jobId]
                     {
-                        if (auto token = importProgressTracker.GetCancellationToken(jobId); token.has_value())
-                            token->get().Cancel();
+                        if (const auto task = importTaskProgress->FindTask(jobId))
+                            taskProgress.RequestCancel(task.Id());
                     };
                 }
-                PresentTaskProgress(
-                    activeEvent->jobId.value,
-                    activeStatus.visible ? activeStatus.label : activeEvent->message,
-                    activeStatus.normalizedProgress,
-                    std::move(cancelHandler));
+                if (auto task = importTaskProgress->FindTask(activeEvent->jobId))
+                    PresentTaskProgress(
+                        activeEvent->jobId.value,
+                        activeStatus.visible ? activeStatus.label : activeEvent->message,
+                        activeStatus.normalizedProgress,
+                        std::move(cancelHandler), std::move(task));
             }
-            else
-            {
-                CompleteTaskProgress(event.message);
-            }
+            const auto terminal = event.terminalStatus == Assets::ImportJobTerminalStatus::Succeeded
+                ? EditorTaskState::Succeeded : event.terminalStatus == Assets::ImportJobTerminalStatus::Cancelled
+                ? EditorTaskState::Cancelled : EditorTaskState::Failed;
+            CompleteTaskProgress(event.jobId.value, event.message, terminal);
         }
     });
 
     NLS::Scripting::ScriptRuntimeSetupOptions scriptingOptions;
     scriptingOptions.projectRoot = std::filesystem::path(projectPath);
+    // Compile against this Editor's contract before loading any managed code.
+    // CoreCLR keeps its first Nullus.Managed assembly for the process lifetime.
+    scriptingOptions.enableCSharp = false;
+    const auto deployedScriptApi = NLS::Platform::Process::ResolveInstallResourceRoots().installRoot / "Scripts" / "Api";
+    if (std::filesystem::is_regular_file(deployedScriptApi / "ScriptApi.bin"))
+        scriptingOptions.scriptApiDirectory = deployedScriptApi;
     // Debugger protocols are context-scoped and driven by the project
     // settings.  Keep the defaults off for existing projects, while allowing
     // an explicitly enabled Play session to start both debugger backends
@@ -1409,7 +1429,8 @@ Editor::Core::Context::Context(const std::string& p_projectPath, const std::stri
         });
         managedScriptDebugSession = std::make_unique<NLS::Editor::Scripting::ManagedScriptDebugSession>(
             scriptRuntime,
-            std::filesystem::path(projectPath));
+            std::filesystem::path(projectPath),
+            scriptingSetup.scriptApiDirectory / "ScriptApi.json");
 #if NLS_ENABLE_CSHARP_SCRIPTING
         // Editor C# compilation follows source imports, like the external editor's script
         // compilation. Debugger attachment remains opt-in, but PDB-producing
@@ -1426,7 +1447,7 @@ Editor::Core::Context::Context(const std::string& p_projectPath, const std::stri
         NLS_LOG_INFO(
             "Editor scripting runtime initialized (Lua=" +
             std::string(scriptingSetup.luaRegistered ? "on" : "off") +
-            ", C#=" + std::string(scriptingSetup.csharpRegistered ? "on" : "off") +
+            ", C#=" + std::string(autoBuildCSharp ? "building" : "off") +
             ", schema=" + scriptRuntime.GetApi().GetSchemaHashHex() + ").");
 
         // The managed editor assembly hosts SerializedObject/SerializedProperty.
@@ -1622,6 +1643,16 @@ Editor::Core::Context::Context(const std::string& p_projectPath, const std::stri
                             response["error"] = "Editor Play control is not ready.";
                         }
                     }
+                    else if (command == "StepPlay")
+                    {
+                        if (debugStepPlay)
+                            debugStepPlay();
+                        else
+                        {
+                            response["ok"] = false;
+                            response["error"] = "Editor Play control is not ready.";
+                        }
+                    }
                     else if (command == "StopPlay")
                     {
                         if (debugStopPlay)
@@ -1706,12 +1737,14 @@ void Editor::Core::Context::SetDebugControlCallbacks(
     std::function<void()> enterPlay,
     std::function<void()> pausePlay,
     std::function<void()> resumePlay,
+    std::function<void()> stepPlay,
     std::function<void()> stopPlay,
     std::function<std::string()> stateProvider)
 {
     debugEnterPlay = std::move(enterPlay);
     debugPausePlay = std::move(pausePlay);
     debugResumePlay = std::move(resumePlay);
+    debugStepPlay = std::move(stepPlay);
     debugStopPlay = std::move(stopPlay);
     debugStateProvider = std::move(stateProvider);
 }
@@ -1731,7 +1764,12 @@ Editor::Core::Context::~Context()
     }
     if (driver != nullptr)
         driver->SetSwapchainWillResizeCallback(nullptr);
+    DrainJobSystem();
     ShutdownThreadedRendering();
+    // A second live application/driver may still use the process-wide graph.
+    if (!NLS::Render::Context::RenderingThreadSystem::HasRenderingThreadOwners())
+        NLS::Base::TaskGraph::ShutdownGlobalTaskGraph();
+    m_jobSystemLifetime.Shutdown();
 
     // Resident preview packages contain ResourceHandles whose destructors
     // release leases through resourceLifetimeRegistry. Drop every Context
@@ -1768,6 +1806,15 @@ void Editor::Core::Context::ShutdownThreadedRendering()
         NLS::Engine::Rendering::SceneRenderStoreRegistry::ReleaseAll();
         driver->ShutdownThreadedRendering();
     }
+}
+
+void Editor::Core::Context::DrainJobSystem()
+{
+    if (m_jobSystemLifetime.ownsJobSystem)
+        NLS::Base::Jobs::DrainAcceptedJobs([]
+        {
+            (void)NLS::Render::Context::RenderingThreadSystem::PumpGameThreadTasks(64u);
+        });
 }
 
 void Editor::Core::Context::ResetProjectSettings()
@@ -1884,20 +1931,31 @@ void Editor::Core::Context::PresentTaskProgress(
     const uint64_t taskKey,
     const std::string& label,
     const float normalizedProgress,
-    std::function<void()> cancelHandler)
+    std::function<void()> cancelHandler,
+    EditorTaskHandle task)
 {
+    const bool sharedTask = static_cast<bool>(task);
     std::lock_guard lock(m_progressDialogMutex);
+    if (sharedTask && !task.IsRunning()) return;
     if (m_nativeProgressDialog == nullptr)
         m_nativeProgressDialog = std::make_unique<NativeProgressDialog>();
+
+    auto& trackedTask = m_taskProgressByKey[taskKey];
+    if (!trackedTask)
+        trackedTask = task ? task : taskProgress.BeginTask("Editor operation", label, normalizedProgress, cancelHandler);
 
     if (!m_taskProgressVisible || m_activeTaskProgressKey != taskKey)
     {
         m_lastTaskProgress = 0.0f;
         m_activeTaskProgressKey = taskKey;
         m_taskProgressVisible = true;
+        m_nativeTaskProgress = trackedTask;
     }
 
     m_lastTaskProgress = std::max(m_lastTaskProgress, std::clamp(normalizedProgress, 0.0f, 1.0f));
+    // Import tasks already report local progress through their bridge. Reusing
+    // the handle here avoids counting the native dialog as a second operation.
+    if (!sharedTask) m_nativeTaskProgress.Update(label, m_lastTaskProgress);
     m_nativeProgressDialog->Update(
         label,
         m_lastTaskProgress,
@@ -1908,11 +1966,17 @@ void Editor::Core::Context::PresentTaskProgress(
 
 void Editor::Core::Context::CompleteTaskProgress(
     const uint64_t taskKey,
-    const std::string& label)
+    const std::string& label,
+    const EditorTaskState terminal)
 {
     std::unique_ptr<NativeProgressDialog> dialog;
     {
         std::lock_guard lock(m_progressDialogMutex);
+        if (const auto tracked = m_taskProgressByKey.find(taskKey); tracked != m_taskProgressByKey.end())
+        {
+            tracked->second.Finish(terminal, label);
+            m_taskProgressByKey.erase(tracked);
+        }
         if (!m_taskProgressVisible || m_activeTaskProgressKey != taskKey)
             return;
 
@@ -1925,6 +1989,8 @@ void Editor::Core::Context::CompleteTaskProgress(
         m_lastTaskProgress = 0.0f;
         m_activeTaskProgressKey = 0u;
         m_taskProgressVisible = false;
+        m_nativeTaskProgress.Finish(terminal, label);
+        m_nativeTaskProgress = {};
     }
 
     if (dialog != nullptr)
@@ -1935,27 +2001,14 @@ void Editor::Core::Context::CompleteTaskProgress(
 
 void Editor::Core::Context::CompleteTaskProgress(const std::string& label)
 {
-    std::unique_ptr<NativeProgressDialog> dialog;
+    uint64_t key = 0;
     {
         std::lock_guard lock(m_progressDialogMutex);
         if (!m_taskProgressVisible)
             return;
-
-        if (m_nativeProgressDialog != nullptr)
-        {
-            m_nativeProgressDialog->Update(label, 1.0f);
-            dialog = std::move(m_nativeProgressDialog);
-        }
-
-        m_lastTaskProgress = 0.0f;
-        m_activeTaskProgressKey = 0u;
-        m_taskProgressVisible = false;
+        key = m_activeTaskProgressKey;
     }
-
-    if (dialog != nullptr)
-    {
-        dialog->Close();
-    }
+    CompleteTaskProgress(key, label);
 }
 
 void Editor::Core::Context::ClearSceneResidentPrefabPreviewLeases()

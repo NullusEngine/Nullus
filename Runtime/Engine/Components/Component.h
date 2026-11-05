@@ -95,6 +95,12 @@ public:
     bool IsSelfEnabled() const { return m_enabled; }
     bool IsActiveAndEnabled() const;
     void SetEnabled(bool enabled);
+    void RuntimeAwake();
+    void RuntimeEnable();
+    void RuntimeStart();
+    void RuntimeDisable();
+    void RuntimeDestroy();
+    bool HasRuntimeDestroyed() const { return m_runtimeDestroyed; }
 
     GameObject* gameobject() const
     {
@@ -109,7 +115,13 @@ protected:
     GameObject* m_owner = nullptr;
     bool m_enabled = true;
     bool m_destroyedFromOwner = false;
+    bool m_runtimeAwake = false;
+    bool m_runtimeEnabled = false;
+    bool m_runtimeStarted = false;
+    bool m_runtimeDestroyed = false;
 };
 } // namespace Components
 
 } // namespace NLS::Engine
+
+namespace NLS::Engine::SceneSystem { class Scene; }

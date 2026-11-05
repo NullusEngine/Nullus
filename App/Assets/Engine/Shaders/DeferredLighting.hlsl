@@ -13,9 +13,10 @@ StructuredBuffer<uint> u_CulledLightDataGrid : register(t2, space1);
 cbuffer MaterialConstants : register(b0, space2)
 {
     int u_UseProceduralSky;
-    float u_PaddingUseProceduralSky0;
+    int u_SceneDebugMode;
     float u_PaddingUseProceduralSky1;
     float u_PaddingUseProceduralSky2;
+    float4 u_BackgroundColor;
     float3 u_SkyTint;
     float u_Exposure;
     float3 u_GroundColor;
@@ -167,6 +168,7 @@ float4 PSMain(VSOutput input) : SV_Target0
     const float depth01 = u_GBufferDepth.Sample(u_LinearWrapSampler, input.TexCoord).r;
     if (depth01 >= 0.9995f)
     {
+        if (u_SceneDebugMode != 0) return float4(0, 0, 0, 1);
         const float3 skyDirection = ReconstructFarWorldDirection(input.TexCoord);
         if (u_LightGridLightingParams.w > 0.5f)
         {
@@ -177,7 +179,7 @@ float4 PSMain(VSOutput input) : SV_Target0
         if (u_UseProceduralSky != 0)
             return float4(NLSToneMapACES(EvalProceduralSky(skyDirection)), 1.0f);
 
-        return float4(0.0f, 0.0f, 0.0f, 0.0f);
+        return u_BackgroundColor;
     }
 
     const float4 albedoSample = u_GBufferAlbedo.Sample(u_LinearWrapSampler, input.TexCoord);
@@ -188,6 +190,13 @@ float4 PSMain(VSOutput input) : SV_Target0
     const float3 shadingNormalWS = NLSConstrainShadingNormalToGeometryHemisphere(
         normalSample.rgb * 2.0f - 1.0f,
         geometryNormalWS);
+    if (u_SceneDebugMode == 1) return float4(albedoSample.rgb, 1);
+    if (u_SceneDebugMode == 2) return float4(lerp(0.04f.xxx, albedoSample.rgb, materialSample.r), 1);
+    if (u_SceneDebugMode == 3) return float4((1.0f - materialSample.g).xxx, 1);
+    if (u_SceneDebugMode == 4) return float4(shadingNormalWS * 0.5f + 0.5f, 1);
+    if (u_SceneDebugMode == 5) return float4(0.12f, 0.28f, 1.0f, 1);
+    // Opaque G-buffer coverage is alpha=1; packed normal bits in albedo.a are not opacity.
+    if (u_SceneDebugMode == 6) return float4(1, 1, 1, 1);
     const bool receiveShadows = materialSample.a >= 0.5f;
     const float directVisibility = NLSResolveDeferredDirectVisibility(receiveShadows);
     const float3 worldPosition = ReconstructWorldPosition(input.TexCoord, depth01);

@@ -2,6 +2,7 @@
 #include <future>
 #include <map>
 #include <set>
+#include "Core/EditorTaskProgressService.h"
 #include "MaterialDocument.h"
 #include "MaterialSourceDocument.h"
 #include "MaterialCompiler/MaterialShaderCompiler.h"
@@ -40,6 +41,8 @@ struct MaterialEditSession
     std::shared_ptr<Render::Resources::Material> preview;
     std::unique_ptr<Render::Resources::Material> draft;
     std::optional<CompiledMaterialEdit> compiled;
+    Core::EditorTaskHandle compileTask;
+    Core::EditorTaskHandle cookTask;
     std::future<CompiledMaterialEdit> pending;
     std::string requestedSource;
     std::string failedSource;

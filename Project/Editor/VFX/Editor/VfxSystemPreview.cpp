@@ -13,6 +13,7 @@
 #include <Base/TaskGraph/TaskGraph.h>
 #include <Jobs/BackgroundJobQueue.h>
 #include <Jobs/JobSystem.h>
+#include "Core/EditorTaskProgressService.h"
 
 namespace NLS::Editor::VFXTools
 {
@@ -139,7 +140,7 @@ void VfxSystemPreview::Clear()
 }
 bool VfxSystemPreview::CanAdvance() const
 {
-    if (!m_state || !m_state->compilation.IsComplete() || !m_state->compilation.Succeeded()) return false;
+    if (!m_state || m_state->cancelled || !m_state->compilation.IsComplete() || !m_state->compilation.Succeeded()) return false;
     if (m_state->hasRender && (!m_state->render.IsComplete() || !m_state->render.Succeeded())) return false;
     std::lock_guard lock(m_state->mutex);
     return m_state->error.empty() && (!m_state->fence || m_state->fence->IsSignaled());
@@ -153,9 +154,11 @@ void VfxSystemPreview::Update(std::shared_ptr<rhi::RHIDevice> device, std::share
         if (m_state) m_state->cancelled = true;
         auto state = std::make_shared<State>(); state->device = device; state->source = system; state->program = std::make_shared<NLS::VFX::CompiledSystem>(*system);
         m_state = state;
-        state->compilation = CompilePreviewAsync([state,cacheRoot]
+        auto task = Core::TryBeginEditorTask("Compile VFX shaders", "Compiling particle preview shaders", std::nullopt,
+            [weak = std::weak_ptr<State>(state)] { if (const auto state = weak.lock()) state->cancelled = true; });
+        state->compilation = CompilePreviewAsync([state,cacheRoot,task]
         {
-            if (state->cancelled) return;
+            if (state->cancelled) {task.Finish(Core::EditorTaskState::Cancelled, "Preview closed");return;}
             const auto backend = state->device->GetAdapter()->GetBackendType(); std::vector<NLS::VFX::Diagnostic> diagnostics;
             try
             {
@@ -164,7 +167,14 @@ void VfxSystemPreview::Update(std::shared_ptr<rhi::RHIDevice> device, std::share
                     !NLS::VFX::CompilePlatformPrograms(*state->program,std::span(&backend,1),cacheRoot,diagnostics,&state->cancelled))
                     throw std::runtime_error(diagnostics.empty() ? "Particle shader compilation failed" : diagnostics.front().message);
             }
-            catch (const std::exception& exception) { std::lock_guard lock(state->mutex); state->error = exception.what(); }
+            catch (const std::exception& exception)
+            {
+                std::lock_guard lock(state->mutex); state->error = exception.what();
+                task.Finish(state->cancelled ? Core::EditorTaskState::Cancelled : Core::EditorTaskState::Failed, state->error);
+                return;
+            }
+            task.Finish(state->cancelled ? Core::EditorTaskState::Cancelled : Core::EditorTaskState::Succeeded,
+                state->cancelled ? "Preview closed" : "VFX shaders ready");
         });
     }
     auto state = m_state;
@@ -301,6 +311,7 @@ std::shared_ptr<rhi::RHITextureView> VfxSystemPreview::View()
 std::string VfxSystemPreview::Status() const
 {
     if (!m_state) return "Preview requires a rendering device";
+    if (m_state->cancelled) return "Preview compilation cancelled";
     std::lock_guard lock(m_state->mutex);
     if (!m_state->error.empty()) return m_state->error;
     if (!m_state->compilation.IsComplete()) return "Compiling shaders...";

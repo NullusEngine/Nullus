@@ -10,6 +10,7 @@
 #include <mutex>
 #include <optional>
 #include <utility>
+#include <unordered_map>
 #include "SceneSystem/SceneManager.h"
 #include "Filesystem/IniFile.h"
 #include "ResourceManagement/MeshManager.h"
@@ -24,6 +25,8 @@
 #include "Rendering/Settings/GraphicsBackendUtils.h"
 #include "Settings/EditorSettings.h"
 #include "Core/AssetFileWatcher.h"
+#include "Core/EditorTaskProgressService.h"
+#include "Core/EditorImportTaskProgress.h"
 #include "Assets/ImportProgressTracker.h"
 #include "Assets/EditorStartupAssetPreimport.h"
 #include "Assets/PrefabEditorWorkflow.h"
@@ -33,6 +36,7 @@
 #include <filesystem>
 #include <Eventing/Event.h>
 #include <Scripting/ScriptRuntime.h>
+#include <Engine/Audio/AudioDevice.h>
 #include <Scripting/ScriptDebug.h>
 
 namespace NLS::Editor::Scripting { class ManagedScriptDebugSession; }
@@ -68,6 +72,17 @@ std::optional<NLS::Engine::Assets::RuntimeAssetDatabase> LoadEditorRuntimeAssetD
  */
 class Context
 {
+    // Construct before Driver and destroy after every producer, including when
+    // Context construction throws. Editor and rendering share these workers.
+    struct JobSystemLifetime
+    {
+        JobSystemLifetime();
+        ~JobSystemLifetime();
+        void Shutdown();
+        bool ownsJobSystem = false;
+    };
+    JobSystemLifetime m_jobSystemLifetime;
+
 	public:
     /**
      * Constructor
@@ -88,6 +103,7 @@ class Context
     ~Context();
 
     void ShutdownThreadedRendering();
+    void DrainJobSystem();
 
     /**
      * Reset project settings ini file
@@ -114,8 +130,10 @@ class Context
         uint64_t taskKey,
         const std::string& label,
         float normalizedProgress,
-        std::function<void()> cancelHandler = {});
-    void CompleteTaskProgress(uint64_t taskKey, const std::string& label);
+        std::function<void()> cancelHandler = {},
+        EditorTaskHandle task = {});
+    void CompleteTaskProgress(uint64_t taskKey, const std::string& label,
+        EditorTaskState terminal = EditorTaskState::Succeeded);
     void CompleteTaskProgress(const std::string& label = "Task complete");
     void ClearSceneResidentPrefabPreviewLeases();
     void ApplyEditorSettings()
@@ -149,6 +167,7 @@ class Context
         std::function<void()> enterPlay,
         std::function<void()> pausePlay,
         std::function<void()> resumePlay,
+        std::function<void()> stepPlay,
         std::function<void()> stopPlay,
         std::function<std::string()> stateProvider);
 
@@ -164,6 +183,8 @@ class Context
     // every Context-owned handle/manager so reverse member destruction leaves
     // the registry alive until all consumers have released their leases.
     NLS::Core::ResourceManagement::ResourceLifetimeRegistry resourceLifetimeRegistry;
+    // Declared before producers so progress state outlives their shutdown.
+    EditorTaskProgressService taskProgress;
 
     std::unique_ptr<NLS::Context::Device> device;
     std::unique_ptr<NLS::Windowing::Window> window;
@@ -174,6 +195,7 @@ class Context
     // Keep the Context runtime alive until after Scene destroys its script
     // components; the member is declared before sceneManager for that order.
     NLS::Scripting::ScriptRuntime scriptRuntime;
+    std::shared_ptr<NLS::Engine::Audio::AudioDevice> audioDevice = NLS::Engine::Audio::AudioDevice::AcquireHost();
     // The build/ALC coordinator is main-thread polled and owns no process-wide
     // debugger state.  Keep it ahead of the runtime's dependent UI services.
     std::unique_ptr<NLS::Editor::Scripting::ManagedScriptDebugSession> managedScriptDebugSession;
@@ -184,6 +206,7 @@ class Context
     std::function<void()> debugEnterPlay;
     std::function<void()> debugPausePlay;
     std::function<void()> debugResumePlay;
+    std::function<void()> debugStepPlay;
     std::function<void()> debugStopPlay;
     std::function<std::string()> debugStateProvider;
     // Event-stream cursors. They keep ReadEvents useful without emitting a
@@ -199,6 +222,7 @@ class Context
     std::vector<NLS::Editor::Assets::ResidentPrefabPreviewRegistry::Lease>
         sceneResidentPrefabPreviewLeases;
     NLS::Editor::Assets::ImportProgressTracker importProgressTracker;
+    std::unique_ptr<EditorImportTaskProgress> importTaskProgress;
     std::optional<NLS::Editor::Assets::PrefabStageState> activePrefabStage;
 
     NLS::Core::ResourceManagement::MeshManager meshManager;
@@ -285,6 +309,8 @@ private:
     uint64_t m_activeTaskProgressKey = 0u;
     float m_lastTaskProgress = 0.0f;
     bool m_taskProgressVisible = false;
+    EditorTaskHandle m_nativeTaskProgress;
+    std::unordered_map<uint64_t, EditorTaskHandle> m_taskProgressByKey;
     bool m_sceneRenderingAvailable = false;
     bool m_editorWindowShown = false;
     StartupResourcePrewarmMode m_startupResourcePrewarmMode = StartupResourcePrewarmMode::Async;

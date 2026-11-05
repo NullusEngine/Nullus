@@ -1,4 +1,5 @@
 #include "Inspector/InspectorView.h"
+#include "Shortcuts/EditorCommandInvocation.h"
 
 #include <algorithm>
 #include <array>
@@ -215,6 +216,7 @@ bool ExecuteComponentStructureEdit(
 
 InspectorView::InspectorView(const bool followSelection)
 {
+    m_routesEditorCommands = followSelection;
     lineBreak = true;
     m_componentAddedListener = m_componentPicker.ComponentAddedEvent += [this]
     {
@@ -242,6 +244,7 @@ InspectorView::PropertyDrawResult InspectorView::DrawSerializedProperties(
     Serialization::SerializedObject& object, std::vector<PropertyNode> properties)
 {
     auto context = MakePropertyEditorContext(&object);
+    context.livePreview = false;
     context.apply = [&object]
     { return object.ApplyModifiedPropertiesWithoutUndo(); };
     return m_propertyEditor.DrawProperties(properties, context);
@@ -251,6 +254,7 @@ PropertyEditorContext InspectorView::MakePropertyEditorContext(Serialization::Se
 {
     PropertyEditorContext context;
     context.object = object ? object : (m_serializedDrawOverride ? m_serializedDrawOverride->owner : m_serializedObject.get());
+    context.livePreview = !object;
     if (!object)
         context.resolve = [this](const PropertyNode& property)
         { return ResolveSerializedProperty(property); };
@@ -281,6 +285,7 @@ void InspectorView::DrawPropertyRow(const PropertyNode& property)
 
 void InspectorView::SetTargets(InspectorTargetSet targets)
 {
+    m_componentCommandTarget = 0; m_componentCommandTitle.clear();
     targets.Normalize();
     if(m_drawingProperties)
     {
@@ -465,8 +470,7 @@ void InspectorView::EnsureTree()
             *m_serializedObject,
             m_targets,
             m_searchText);
-        if (m_targets.Primary() != nullptr &&
-            m_targets.Primary()->kind == InspectorTargetKind::GameObject)
+        if (m_targets.IsGameObjectSelection())
         {
             // The GameObject host consumes active/name/tag/layer itself; retain
             // the projection as auxiliary UI data so those controls resolve
@@ -506,16 +510,17 @@ void InspectorView::DrawToolbar()
     const float iconWidth = 26.0f * scale;
     const float lockWidth = 32.0f * scale;
     const float menuWidth = 28.0f * scale;
-    const auto* target = m_targets.Primary();
-    auto* gameObject = GetPrimaryGameObject();
-    const auto makeTargetProperty = [target](const char* path)
+    const auto* target = m_targets.Active();
+    auto* gameObject = m_targets.IsGameObjectSelection() && target
+        ? dynamic_cast<Engine::GameObject*>(NativeReflectionAdapter::ResolveObject(*target)) : nullptr;
+    const auto makeTargetProperty = [this, target](const char* path)
     {
         PropertyNode property;
         property.path = PropertyPath(path);
         if (target != nullptr)
         {
             property.target = *target;
-            SetPropertyNodeTargets(property, {*target});
+            SetPropertyNodeTargets(property, m_targets.targets);
         }
         return property;
     };
@@ -651,7 +656,7 @@ void InspectorView::DrawToolbar()
                 }
             }
             DrawTooltipIfHovered(canRedo ? std::string {} : redoUnavailableReason);
-            const bool hasPrefabActions = target != nullptr &&
+            const bool hasPrefabActions = m_targets.IsSingleTarget() && target != nullptr &&
                 m_prefabOverrideQuery != nullptr &&
                 m_prefabOverrideQuery->HasInstance(*target);
             if (hasPrefabActions && ImGui::BeginMenu("Overrides"))
@@ -696,6 +701,8 @@ void InspectorView::DrawToolbar()
         ImGui::EndTable();
     }
 
+    if (gameObject && !m_targets.IsSingleTarget())
+        ImGui::TextDisabled("%zu GameObjects (Active: %s)", m_targets.targets.size(), gameObject->GetName().c_str());
     if (gameObject != nullptr && ImGui::BeginTable("##InspectorTargetMetadata", 2, ImGuiTableFlags_SizingStretchProp))
     {
         ImGui::TableSetupColumn("##InspectorTargetTag", ImGuiTableColumnFlags_WidthStretch, 0.5f);
@@ -776,6 +783,14 @@ void InspectorView::DrawToolbar()
 void InspectorView::DrawGameObject(const PropertyNode& gameObjectNode)
 {
     NLS_PROFILE_NAMED_SCOPE("Inspector::DrawGameObject");
+    if (!m_targets.IsSingleTarget())
+        for (const auto& target : m_targets.targets)
+            if (auto* object = dynamic_cast<Engine::GameObject*>(NativeReflectionAdapter::ResolveObject(target));
+                object && object->GetComponents().size() > gameObjectNode.children.size())
+            {
+                ImGui::TextDisabled("Only components shared by all selected GameObjects are shown.");
+                break;
+            }
     size_t componentIndex = 0u;
     for (const auto& component : gameObjectNode.children)
     {
@@ -1155,6 +1170,9 @@ void InspectorView::DrawComponent(const PropertyNode& componentNode, const size_
                 ImGuiTreeNodeFlags_NoTreePushOnOpen,
             "%s",
             title.c_str());
+        if (ImGui::IsItemClicked(0) || ImGui::IsItemClicked(1))
+            if (auto* target = dynamic_cast<Engine::Components::Component*>(NativeReflectionAdapter::ResolveObject(componentNode.target)))
+            { m_componentCommandTarget = target->GetInstanceID(); m_componentCommandTitle = title; }
         if (hasStructuralOverride)
             ImGui::PopStyleColor();
         if (hasStructuralOverride)
@@ -1243,13 +1261,50 @@ void InspectorView::DrawAddComponent()
     m_componentPicker.Draw();
 }
 
+bool InspectorView::CanExecuteComponentCommand(const std::string& id, int32_t componentId) const
+{
+    const bool explicitTarget = componentId != 0;
+    if (!explicitTarget && !m_targets.IsSingleTarget()) return false;
+    auto* component = Object::IDToPointer<Engine::Components::Component>(explicitTarget ? componentId : m_componentCommandTarget);
+    auto* owner = component ? component->gameobject() : nullptr;
+    if (!owner || (!explicitTarget && owner != GetPrimaryGameObject())) return false;
+    if (id == "copy") return true;
+    if (!CaptureComponentObjectIdentifier(*component) || !NLS::Core::ServiceLocator::Contains<Undo::EditorUndoService>()) return false;
+    auto& undo = NLS::Core::ServiceLocator::Get<Undo::EditorUndoService>();
+    if (undo.IsFrozen() || undo.IsPending() || undo.IsPoisoned()) return false;
+    if (id == "reset") return true;
+    if (id == "paste") return m_componentClipboard && component->GetType().IsValid() && component->GetType().GetName() == m_componentClipboard->record.typeName;
+    if (dynamic_cast<Engine::Components::TransformComponent*>(component)) return false;
+    if (id == "remove") return Panels::ComponentSearchPanel::GetRemovalBlockReason(component).empty();
+    const auto& components = owner->GetComponents();
+    const auto found = std::find_if(components.begin(), components.end(), [&](const auto& value) { return value.get() == component; });
+    const auto index = static_cast<size_t>(std::distance(components.begin(), found));
+    return found != components.end() && ((id == "up" && index > 1) || (id == "down" && index + 1 < components.size()));
+}
+bool InspectorView::ExecuteComponentCommand(const std::string& id, int32_t componentId)
+{
+    if (!CanExecuteComponentCommand(id, componentId)) return false;
+    auto* component = Object::IDToPointer<Engine::Components::Component>(componentId ? componentId : m_componentCommandTarget);
+    auto* owner = component->gameobject(); const auto& components = owner->GetComponents();
+    const auto found = std::find_if(components.begin(), components.end(), [&](const auto& value) { return value.get() == component; });
+    const auto index = static_cast<size_t>(std::distance(components.begin(), found));
+    if (id == "copy") { m_componentClipboard = CaptureComponentSnapshot(*component, index); return true; }
+    ComponentStructureEditOperation operation; operation.componentIdentifier = *CaptureComponentObjectIdentifier(*component);
+    std::string label;
+    const auto title = m_componentCommandTitle.empty() ? std::string("Component") : m_componentCommandTitle;
+    if (id == "reset") { operation.kind = ComponentStructureEditKind::Reset; label = "Reset " + title; }
+    else if (id == "paste") { operation.kind = ComponentStructureEditKind::PasteValues; operation.pastedValues = *m_componentClipboard; label = "Paste " + title + " Values"; }
+    else if (id == "remove") { operation.kind = ComponentStructureEditKind::Remove; label = "Remove " + title; }
+    else { operation.kind = ComponentStructureEditKind::Move; operation.destinationIndex = id == "up" ? index - 1 : index + 1; label = "Move " + title + (id == "up" ? " Up" : " Down"); }
+    if (!ExecuteComponentStructureEdit(label, InspectorTargetHandle::FromObject(*owner, InspectorTargetKind::GameObject), CaptureComponentStructure(*owner), std::move(operation))) return false;
+    Refresh(); StructureChangedEvent.Invoke(); return true;
+}
+
 void InspectorView::DrawComponentMenu(const PropertyNode& componentNode, const size_t componentIndex)
 {
+    (void)componentIndex;
     auto* component = dynamic_cast<Engine::Components::Component*>(NativeReflectionAdapter::ResolveObject(componentNode.target));
     auto* owner = component != nullptr ? component->gameobject() : nullptr;
-    const auto componentIdentifier = component != nullptr
-        ? CaptureComponentObjectIdentifier(*component)
-        : std::nullopt;
     if (!ImGui::BeginPopup("##ComponentMenu"))
         return;
 
@@ -1288,120 +1343,29 @@ void InspectorView::DrawComponentMenu(const PropertyNode& componentNode, const s
         ImGui::Separator();
     }
 
-    const bool hasComponentTarget = component != nullptr && owner != nullptr && componentIdentifier.has_value();
-    const bool protectedComponent = componentNode.isTransform || !hasComponentTarget;
-    if (ImGui::MenuItem("Reset", nullptr, false, hasComponentTarget))
+    const auto invoke = [this, component](const char* id)
     {
-        const auto ownerHandle = InspectorTargetHandle::FromObject(*owner, InspectorTargetKind::GameObject);
-        const auto before = CaptureComponentStructure(*owner);
-        ComponentStructureEditOperation operation;
-        operation.kind = ComponentStructureEditKind::Reset;
-        operation.componentIdentifier = *componentIdentifier;
-        if (ExecuteComponentStructureEdit(
-                "Reset " + GetComponentTitle(componentNode),
-                ownerHandle,
-                before,
-                std::move(operation)))
+        if (!component) return;
+        m_componentCommandTarget = component->GetInstanceID();
+        if (m_routesEditorCommands && NLS::Core::ServiceLocator::Contains<Shortcuts::EditorShortcutService>())
         {
-            Refresh();
-            StructureChangedEvent.Invoke();
+            Shortcuts::InvocationContext context; context.source = Shortcuts::CommandSource::Menu; context.targetInstance = component->GetInstanceID(); context.contentPanel = "inspector";
+            Shortcuts::InvokeEditorCommand(std::string("inspector.component-") + id, context);
         }
-    }
-    if (ImGui::MenuItem("Copy", nullptr, false, component != nullptr))
-    {
-        m_componentClipboard = CaptureComponentSnapshot(*component, componentIndex);
-        ImGui::CloseCurrentPopup();
-    }
-    const bool canPaste = hasComponentTarget && m_componentClipboard.has_value() &&
-        component->GetType().IsValid() &&
-        component->GetType().GetName() == m_componentClipboard->record.typeName;
-    ImGui::BeginDisabled(!canPaste);
-    if (ImGui::MenuItem("Paste Values"))
-    {
-        const auto ownerHandle = InspectorTargetHandle::FromObject(*owner, InspectorTargetKind::GameObject);
-        const auto before = CaptureComponentStructure(*owner);
-        ComponentStructureEditOperation operation;
-        operation.kind = ComponentStructureEditKind::PasteValues;
-        operation.componentIdentifier = *componentIdentifier;
-        operation.pastedValues = *m_componentClipboard;
-        if (ExecuteComponentStructureEdit(
-                "Paste " + GetComponentTitle(componentNode) + " Values",
-                ownerHandle,
-                before,
-                std::move(operation)))
-        {
-            Refresh();
-            StructureChangedEvent.Invoke();
-        }
-    }
-    ImGui::EndDisabled();
+        else ExecuteComponentCommand(id, component->GetInstanceID());
+    };
+    m_componentCommandTitle = GetComponentTitle(componentNode);
+    const auto target = component ? component->GetInstanceID() : 0;
+    if (ImGui::MenuItem("Reset", nullptr, false, CanExecuteComponentCommand("reset", target))) invoke("reset");
+    if (ImGui::MenuItem("Copy", nullptr, false, CanExecuteComponentCommand("copy", target))) { invoke("copy"); ImGui::CloseCurrentPopup(); }
+    if (ImGui::MenuItem("Paste Values", nullptr, false, CanExecuteComponentCommand("paste", target))) invoke("paste");
     ImGui::Separator();
-    ImGui::BeginDisabled(protectedComponent || componentIndex <= 1u);
-    if (ImGui::MenuItem("Move Up"))
-    {
-        const auto ownerHandle = InspectorTargetHandle::FromObject(*owner, InspectorTargetKind::GameObject);
-        const auto before = CaptureComponentStructure(*owner);
-        ComponentStructureEditOperation operation;
-        operation.kind = ComponentStructureEditKind::Move;
-        operation.componentIdentifier = *componentIdentifier;
-        operation.destinationIndex = componentIndex - 1u;
-        if (ExecuteComponentStructureEdit(
-                "Move " + GetComponentTitle(componentNode) + " Up",
-                ownerHandle,
-                before,
-                std::move(operation)))
-        {
-            Refresh();
-            StructureChangedEvent.Invoke();
-        }
-    }
-    ImGui::EndDisabled();
-    const size_t componentCount = owner != nullptr ? owner->GetComponents().size() : 0u;
-    ImGui::BeginDisabled(protectedComponent || componentIndex + 1u >= componentCount);
-    if (ImGui::MenuItem("Move Down"))
-    {
-        const auto ownerHandle = InspectorTargetHandle::FromObject(*owner, InspectorTargetKind::GameObject);
-        const auto before = CaptureComponentStructure(*owner);
-        ComponentStructureEditOperation operation;
-        operation.kind = ComponentStructureEditKind::Move;
-        operation.componentIdentifier = *componentIdentifier;
-        operation.destinationIndex = componentIndex + 1u;
-        if (ExecuteComponentStructureEdit(
-                "Move " + GetComponentTitle(componentNode) + " Down",
-                ownerHandle,
-                before,
-                std::move(operation)))
-        {
-            Refresh();
-            StructureChangedEvent.Invoke();
-        }
-    }
-    ImGui::EndDisabled();
+    if (ImGui::MenuItem("Move Up", nullptr, false, CanExecuteComponentCommand("up", target))) invoke("up");
+    if (ImGui::MenuItem("Move Down", nullptr, false, CanExecuteComponentCommand("down", target))) invoke("down");
     ImGui::Separator();
-    const std::string removeBlockReason = protectedComponent
-        ? (componentNode.isTransform ? "Transform cannot be removed" : "The component target is no longer available")
-        : Panels::ComponentSearchPanel::GetRemovalBlockReason(component);
-    ImGui::BeginDisabled(!removeBlockReason.empty());
-    if (ImGui::MenuItem("Remove"))
-    {
-        const auto ownerHandle = InspectorTargetHandle::FromObject(*owner, InspectorTargetKind::GameObject);
-        const auto before = CaptureComponentStructure(*owner);
-        ComponentStructureEditOperation operation;
-        operation.kind = ComponentStructureEditKind::Remove;
-        operation.componentIdentifier = *componentIdentifier;
-        if (ExecuteComponentStructureEdit(
-                "Remove " + GetComponentTitle(componentNode),
-                ownerHandle,
-                before,
-                std::move(operation)))
-        {
-            Refresh();
-            StructureChangedEvent.Invoke();
-        }
-    }
-    ImGui::EndDisabled();
-    if (!removeBlockReason.empty())
-        DrawTooltipIfHovered(removeBlockReason);
+    const std::string removeBlockReason = !component ? "The component target is no longer available" : Panels::ComponentSearchPanel::GetRemovalBlockReason(component);
+    if (ImGui::MenuItem("Remove", nullptr, false, CanExecuteComponentCommand("remove", target))) invoke("remove");
+    if (!removeBlockReason.empty()) DrawTooltipIfHovered(removeBlockReason);
     ImGui::EndPopup();
 }
 

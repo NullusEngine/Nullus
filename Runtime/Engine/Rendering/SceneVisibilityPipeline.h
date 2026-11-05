@@ -65,6 +65,7 @@ namespace NLS::Engine::Rendering
 		const NLS::Render::Data::Frustum* frustum = nullptr;
 		Maths::Vector3 cameraPosition{};
 		uint32_t visibleLayerMask = 0xFFFF'FFFFu;
+            std::vector<uint32_t> hiddenPrimitiveIndices;
 		bool enableSpatialIndex = false;
 		bool enableParallelVisibility = true;
 		bool enableLOD = false;

@@ -1,4 +1,5 @@
 #include "Windowing/Window.h"
+#include "Windowing/Inputs/PlatformInputBackend.h"
 #include <Debug/Assertion.h>
 #include <Debug/Logger.h>
 #include <GLFW/glfw3.h>
@@ -88,6 +89,7 @@ NLS::Windowing::Window::Window(Context::Device& p_device, const Settings::Window
 
 	/* Callback binding */
 	BindKeyCallback();
+		BindCharacterCallback();
 	BindMouseCallback();
 	BindScrollsCallback();
 	BindIconifyCallback();
@@ -112,6 +114,9 @@ NLS::Windowing::Window::~Window()
     RestoreNativeWindowProc();
 #endif
 	glfwDestroyWindow(m_glfwWindow);
+    // GLFW may reuse this address for a later platform viewport. A dead
+    // Window must never be rediscovered as that viewport's input owner.
+    __WINDOWS_MAP.erase(m_glfwWindow);
 }
 
 void NLS::Windowing::Window::SetIcon(const std::string& p_filePath)
@@ -399,7 +404,28 @@ void NLS::Windowing::Window::SetCursorShape(Cursor::ECursorShape p_cursorShape)
 void NLS::Windowing::Window::SetCursorPosition(int16_t p_x, int16_t p_y)
 {
     m_infiniteCursorWrapState.SeedCursorPosition(static_cast<double>(p_x), static_cast<double>(p_y));
-	glfwSetCursorPos(m_glfwWindow, static_cast<double>(p_x), static_cast<double>(p_y));
+    WarpCursor(p_x, p_y);
+}
+
+void NLS::Windowing::Window::WarpCursor(double x, double y)
+{
+    m_pointerWarpX = x;
+    m_pointerWarpY = y;
+    m_pendingPointerWarp = true;
+    m_warpingPointer = true;
+    glfwSetCursorPos(m_glfwWindow, x, y);
+    m_warpingPointer = false;
+    // Some platforms do not send a callback for a programmatic warp.
+    // Keep the device snapshot current without manufacturing relative movement.
+    if (m_pendingPointerWarp)
+    {
+        Inputs::WindowInputEvent event;
+        event.type = Inputs::WindowInputEventType::PointerMove;
+        event.x = x;
+        event.y = y;
+        event.pointerWarp = true;
+        PublishInputEvent(event);
+    }
 }
 
 void NLS::Windowing::Window::SetInfiniteCursorWrapEnabled(bool p_enabled)
@@ -446,10 +472,7 @@ NLS::Maths::Vector2 NLS::Windowing::Window::PollInfiniteCursorWrap()
     if (!wrapRequest.has_value())
         return {};
 
-    glfwSetCursorPos(
-        m_glfwWindow,
-        static_cast<double>(wrapRequest->targetPosition.x),
-        static_cast<double>(wrapRequest->targetPosition.y));
+    WarpCursor(wrapRequest->targetPosition.x, wrapRequest->targetPosition.y);
 
     return wrapRequest->compensation;
 }
@@ -646,6 +669,13 @@ void NLS::Windowing::Window::SetNativeMessageHandler(NativeMessageHandler p_hand
 long long NLS::Windowing::Window::HandleNativeWindowMessage(void* p_hwnd, unsigned int p_msg, unsigned long long p_wParam, long long p_lParam)
 {
     HWND hwnd = static_cast<HWND>(p_hwnd);
+    const auto inputContext = m_inputBackend ? m_inputBackend->GetWindowContext(reinterpret_cast<uintptr_t>(p_hwnd)) : Inputs::InputForwardingContext{};
+    struct ContextScope
+    {
+        Inputs::InputForwardingContext hooks; void* previous;
+        ~ContextScope() { if (hooks.restore) hooks.restore(previous); }
+    } scope{inputContext, inputContext.activate ? inputContext.activate(inputContext.context) : nullptr};
+    if (m_inputBackend) m_inputBackend->HandleNativeTextMessage(p_hwnd, p_msg, p_lParam);
 
     if (m_nativeMessageHandler)
     {
@@ -738,6 +768,46 @@ long long NLS::Windowing::Window::HandleNativeWindowMessage(void* p_hwnd, unsign
 }
 #endif
 
+void NLS::Windowing::Window::PublishInputEvent(const Inputs::WindowInputEvent& event)
+{
+    struct Guard
+    {
+        bool& value;
+        bool previous;
+        ~Guard() { value = previous; }
+    } guard{m_dispatchingInputEvent, m_dispatchingInputEvent};
+    m_dispatchingInputEvent = true;
+    InputEvent.Invoke(event);
+    using Kind = Inputs::WindowInputEventType;
+    switch (event.type)
+    {
+    case Kind::KeyDown: KeyPressedEvent.Invoke(event.key); break;
+    case Kind::KeyUp: KeyReleasedEvent.Invoke(event.key); break;
+    case Kind::MouseDown: MouseButtonPressedEvent.Invoke(event.key); break;
+    case Kind::MouseUp: MouseButtonReleasedEvent.Invoke(event.key); break;
+    case Kind::PointerMove: CursorMoveEvent.Invoke(static_cast<int16_t>(event.x), static_cast<int16_t>(event.y)); break;
+    case Kind::Wheel: MouseScrollEvent.Invoke(event.x, event.y); break;
+    case Kind::Character: CharacterEvent.Invoke(event.character); break;
+    case Kind::FocusGained: GainFocusEvent.Invoke(); break;
+    case Kind::FocusLost: LostFocusEvent.Invoke(); break;
+    default: break;
+    }
+}
+
+void NLS::Windowing::Window::BindCharacterCallback() const
+{
+    glfwSetCharCallback(m_glfwWindow, [](GLFWwindow* handle, unsigned int codepoint)
+    {
+        if (auto* window = FindInstance(handle))
+        {
+            Inputs::WindowInputEvent event;
+            event.type = Inputs::WindowInputEventType::Character;
+            event.character = codepoint;
+            window->PublishInputEvent(event);
+        }
+    });
+}
+
 void NLS::Windowing::Window::BindKeyCallback() const
 {
 	auto keyCallback = [](GLFWwindow* p_window, int p_key, int p_scancode, int p_action, int p_mods)
@@ -746,11 +816,13 @@ void NLS::Windowing::Window::BindKeyCallback() const
 
 		if (windowInstance)
 		{
-			if (p_action == GLFW_PRESS)
-				windowInstance->KeyPressedEvent.Invoke(p_key);
-
-			if (p_action == GLFW_RELEASE)
-				windowInstance->KeyReleasedEvent.Invoke(p_key);
+			Inputs::WindowInputEvent event;
+			event.type = p_action == GLFW_PRESS ? Inputs::WindowInputEventType::KeyDown :
+				p_action == GLFW_RELEASE ? Inputs::WindowInputEventType::KeyUp : Inputs::WindowInputEventType::KeyRepeat;
+			event.key = p_key;
+			event.scanCode = p_scancode;
+			event.modifiers = static_cast<unsigned int>(p_mods);
+			windowInstance->PublishInputEvent(event);
 		}
 	};
 
@@ -765,11 +837,11 @@ void NLS::Windowing::Window::BindMouseCallback() const
 
 		if (windowInstance)
 		{
-			if (p_action == GLFW_PRESS)
-				windowInstance->MouseButtonPressedEvent.Invoke(p_button);
-
-			if (p_action == GLFW_RELEASE)
-				windowInstance->MouseButtonReleasedEvent.Invoke(p_button);
+			Inputs::WindowInputEvent event;
+			event.type = p_action == GLFW_PRESS ? Inputs::WindowInputEventType::MouseDown : Inputs::WindowInputEventType::MouseUp;
+			event.key = p_button;
+			event.modifiers = static_cast<unsigned int>(p_mods);
+			windowInstance->PublishInputEvent(event);
 		}
 	};
 
@@ -785,7 +857,11 @@ void NLS::Windowing::Window::BindScrollsCallback() const
 
         if (windowInstance)
         {
-			windowInstance->MouseScrollEvent.Invoke(xoffset, yoffset);
+			Inputs::WindowInputEvent event;
+			event.type = Inputs::WindowInputEventType::Wheel;
+			event.x = xoffset;
+			event.y = yoffset;
+			windowInstance->PublishInputEvent(event);
         }
     };
 
@@ -831,7 +907,14 @@ void NLS::Windowing::Window::BindCursorMoveCallback() const
 		if (windowInstance)
 		{
             windowInstance->m_infiniteCursorWrapState.SeedCursorPosition(p_x, p_y);
-			windowInstance->CursorMoveEvent.Invoke(static_cast<int16_t>(p_x), static_cast<int16_t>(p_y));
+			Inputs::WindowInputEvent event;
+			event.type = Inputs::WindowInputEventType::PointerMove;
+			event.x = p_x;
+			event.y = p_y;
+                event.pointerWarp = windowInstance->m_warpingPointer ||
+                    (windowInstance->m_pendingPointerWarp && p_x == windowInstance->m_pointerWarpX && p_y == windowInstance->m_pointerWarpY);
+                windowInstance->m_pendingPointerWarp = false;
+			windowInstance->PublishInputEvent(event);
 		}
 	};
 
@@ -880,11 +963,9 @@ void NLS::Windowing::Window::BindFocusCallback() const
 
 		if (windowInstance)
 		{
-			if (p_focused == GLFW_TRUE)
-				windowInstance->GainFocusEvent.Invoke();
-
-			if (p_focused == GLFW_FALSE)
-				windowInstance->LostFocusEvent.Invoke();
+			Inputs::WindowInputEvent event;
+			event.type = p_focused == GLFW_TRUE ? Inputs::WindowInputEventType::FocusGained : Inputs::WindowInputEventType::FocusLost;
+			windowInstance->PublishInputEvent(event);
 		}
 	};
 

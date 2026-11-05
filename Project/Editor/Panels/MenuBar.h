@@ -42,6 +42,7 @@ namespace NLS::Editor::Panels
         * @param p_execute
         */
         bool RegisterCommand(const std::string& p_menuPath, std::function<void()> p_execute);
+        void UnregisterCommand(const std::string& menuPath);
 
 	private:
 		void CreateFileMenu();
@@ -68,6 +69,7 @@ namespace NLS::Editor::Panels
         // Top-level menus created for scripted editor commands. Entries are
         // owned by the widget tree; this map only caches the lookup.
         std::unordered_map<std::string, UI::Widgets::MenuList*> m_commandMenus;
+        std::unordered_map<std::string, UI::Widgets::MenuItem*> m_scriptCommandItems;
         ShortcutSettingsPanel m_shortcutSettingsPanel;
         ProjectSettings* m_projectSettingsPanel = nullptr;
 		UI::Widgets::MenuList* m_editMenu = nullptr;
@@ -85,7 +87,6 @@ namespace NLS::Editor::Panels
 		UI::Widgets::Text* m_tracyToolStatusText = nullptr;
 		UI::Widgets::Text* m_tracyClientStatusText = nullptr;
 		UI::Widgets::MenuList* m_debuggingMenu = nullptr;
-		UI::Widgets::MenuItem* m_wireframeModeItem = nullptr;
 		UI::Widgets::MenuItem* m_renderDocEnabledItem = nullptr;
 		UI::Widgets::MenuItem* m_renderDocAutoOpenItem = nullptr;
 		UI::Widgets::Text* m_renderDocStatusText = nullptr;

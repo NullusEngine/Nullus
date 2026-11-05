@@ -397,7 +397,19 @@ IMGUI_NODE_EDITOR_API bool ShowLinkContextMenu(LinkId* linkId);
 IMGUI_NODE_EDITOR_API bool ShowBackgroundContextMenu();
 
 IMGUI_NODE_EDITOR_API void EnableShortcuts(bool enable);
+// Keyboard accelerators can be routed by the host without disabling pointer gestures.
+IMGUI_NODE_EDITOR_API void EnableKeyboardShortcuts(bool enable);
+IMGUI_NODE_EDITOR_API bool AreKeyboardShortcutsEnabled();
 IMGUI_NODE_EDITOR_API bool AreShortcutsEnabled();
+
+enum class KeyboardShortcut { FrameSelection, FrameSelectionAndZoom, Delete, Cut, Copy, Paste, Duplicate, CreateNode };
+// A host can replace keyboard accelerators while retaining all pointer gestures.
+// The observer is notified after drawing and before destruction. Requests retain
+// their order and are consumed by the existing node editing actions.
+using KeyboardInputObserver = void (*)(EditorContext*, bool focused, bool destroyed, bool clipboard, void* user);
+IMGUI_NODE_EDITOR_API void SetKeyboardInputObserver(KeyboardInputObserver observer, void* user = nullptr);
+IMGUI_NODE_EDITOR_API bool IsKeyboardInputManaged();
+IMGUI_NODE_EDITOR_API void RequestKeyboardShortcut(KeyboardShortcut shortcut);
 
 IMGUI_NODE_EDITOR_API bool BeginShortcut();
 IMGUI_NODE_EDITOR_API bool AcceptCut();

@@ -33,8 +33,7 @@ namespace
         const NLS::Editor::Rendering::GridRenderPass::GridDescriptor& gridDescriptor,
         const float gridSize)
     {
-        return Maths::Matrix4::Translation({ gridDescriptor.viewPosition.x, 0.0f, gridDescriptor.viewPosition.z }) *
-            Maths::Matrix4::Scaling({ gridSize * 2.0f, 1.f, gridSize * 2.0f });
+        return NLS::Editor::Rendering::BuildEditorGridModelMatrix(gridDescriptor.viewPosition, gridDescriptor.planarXY, gridSize * 2.0f);
     }
 }
 
@@ -51,16 +50,19 @@ void Editor::Rendering::GridRenderPass::UpdateGridAxes(
         return;
     }
 
-    if (m_hasCachedGridAxes && m_cachedGridAxesPosition == gridDescriptor.viewPosition)
+    if (m_hasCachedGridAxes && m_cachedGridAxesPosition == gridDescriptor.viewPosition &&
+        m_cachedGridAxesPlanarXY == gridDescriptor.planarXY)
         return;
 
     const auto axes = BuildEditorOriginAxes(gridDescriptor.viewPosition,gridSize);
     std::vector<NLS::Render::Debug::DebugDrawPrimitive> primitives(axes.begin(),axes.end());
+    if (gridDescriptor.planarXY) primitives.resize(2u);
 
     if (debugDrawService.SetPersistentPrimitiveGroup(kEditorGridAxesPersistentGroupId, std::move(primitives)))
     {
         m_cachedGridAxesPosition = gridDescriptor.viewPosition;
         m_hasCachedGridAxes = true;
+        m_cachedGridAxesPlanarXY = gridDescriptor.planarXY;
     }
 }
 
@@ -90,6 +92,14 @@ void Editor::Rendering::GridRenderPass::ApplyGridColor(const Maths::Vector3& gri
 	m_gridMaterial.Set("u_Color", gridColor);
 }
 
+void Editor::Rendering::GridRenderPass::ApplyGridPlane(const bool planarXY)
+{
+    const float value = planarXY ? 1.0f : 0.0f;
+    const auto* existing = m_gridMaterial.GetParameterBlock().TryGet("u_PlaneXY");
+    if (existing && existing->type() == typeid(float) && std::any_cast<float>(*existing) == value) return;
+    m_gridMaterial.Set("u_PlaneXY", value);
+}
+
 const std::optional<NLS::Render::Context::RenderPassCommandInput>& Editor::Rendering::GridRenderPass::GetPreparedThreadedPassInput() const
 {
     return m_preparedThreadedPassInput;
@@ -115,14 +125,15 @@ void Editor::Rendering::GridRenderPass::Draw(NLS::Render::Data::PipelineState p_
 	auto& gridDescriptor = m_renderer.GetDescriptor<GridDescriptor>();
 	auto& debugDrawService = *m_renderer.GetDebugDrawService();
     const auto& debugSettings = Editor::Settings::EditorSettings::GetDebugDrawSettingsObject();
-	debugDrawService.SetEnabled(debugSettings.debugDrawEnabled);
-	debugDrawService.SetCategoryEnabled(NLS::Render::Debug::DebugDrawCategory::Grid, debugSettings.debugDrawGrid);
+    const bool enabled = gridDescriptor.enabled.value_or(debugSettings.debugDrawEnabled && debugSettings.debugDrawGrid);
+	debugDrawService.SetEnabled(gridDescriptor.enabled.has_value() || debugSettings.debugDrawEnabled);
+	debugDrawService.SetCategoryEnabled(NLS::Render::Debug::DebugDrawCategory::Grid, enabled);
 
 	if (!ShouldIncludeInThreadedFrame(
         true,
         true,
-        debugSettings.debugDrawEnabled,
-        debugSettings.debugDrawGrid))
+        true,
+        enabled))
 		return;
 
 	auto pso = Editor::Rendering::CreateEditorGridPipelineState(p_pso);
@@ -132,6 +143,7 @@ void Editor::Rendering::GridRenderPass::Draw(NLS::Render::Data::PipelineState p_
 	Maths::Matrix4 model = BuildGridPlaneModelMatrix(gridDescriptor, gridSize);
 
 	ApplyGridColor(gridDescriptor.gridColor);
+    ApplyGridPlane(gridDescriptor.planarXY);
 
 	UpdateGridAxes(debugDrawService, gridDescriptor, gridSize);
 
@@ -169,10 +181,10 @@ std::optional<NLS::Render::Context::RenderPassCommandInput> Editor::Rendering::G
     const auto& grid = m_renderer.GetDescriptor<GridDescriptor>();
     std::string error;
     std::vector<NLS::Render::Context::RecordedDrawCommandInput> draws;
-    const auto viewProjection = frame.camera->GetProjectionMatrix()*frame.camera->GetViewMatrix();
+    const auto viewProjection = frame.camera->GetGpuProjectionMatrix()*frame.camera->GetViewMatrix();
     if (!ShouldSkipEditorGridPlane())
     {
-        auto draw = m_gridRenderer.Prepare(device,m_gridShaders,targets,viewProjection,grid.viewPosition,grid.gridColor,error);
+        auto draw = m_gridRenderer.Prepare(device,m_gridShaders,targets,viewProjection,grid.viewPosition,grid.gridColor,error,grid.planarXY);
         if (!draw) { NLS_LOG_WARNING("Editor grid: "+error); return std::nullopt; }
         draws.push_back(std::move(*draw));
     }
@@ -184,7 +196,8 @@ std::optional<NLS::Render::Context::RenderPassCommandInput> Editor::Rendering::G
             m_axesShaders = CaptureEditorGridShaders(*axesShader,backend);
         auto axes = m_gridRenderer.PrepareAxes(device,m_axesShaders,targets,viewProjection,grid.viewPosition,error);
         if (!axes) { NLS_LOG_WARNING("Editor axes: "+error); return std::nullopt; }
-        for (auto& draw : *axes) draws.push_back(std::move(draw));
+        for (size_t axis = 0; axis < (grid.planarXY ? 2u : 3u); ++axis)
+            draws.push_back(std::move((*axes)[axis]));
     }
     NLS::Render::Context::RenderPassCommandInput input;
     input.kind = NLS::Render::Context::RenderPassCommandKind::Helper;

@@ -164,10 +164,19 @@ const char* SchemaNameForArtifactType(const ArtifactType artifactType)
     case ArtifactType::VfxScript: return "vfx-script";
     case ArtifactType::VfxEmitter: return "vfx-emitter";
     case ArtifactType::MeshDistanceField: return "mesh-distance-field";
+    case ArtifactType::MeshDistanceFieldSource: return "mesh-distance-field-source";
     case ArtifactType::SkeletalMesh: return "skinned-mesh";
     case ArtifactType::AnimationGraph: return "animation-graph";
     case ArtifactType::BlendSpace: return "blend-space";
     case ArtifactType::BoneMask: return "bone-mask";
+    case ArtifactType::InputActions: return "input-actions";
+    case ArtifactType::InputProfile: return "input-profile";
+    case ArtifactType::Sprite: return "sprite";
+    case ArtifactType::ECSScene: return "ecs-scene";
+    case ArtifactType::ECSPrefab: return "ecs-prefab";
+    case ArtifactType::PhysicsMaterial: return "physics-material";
+    case ArtifactType::CollisionMesh: return "collision-mesh";
+    case ArtifactType::PhysicsShape: return "physics-shape";
     case ArtifactType::UIStyleSheet: return "ui-style-sheet";
     case ArtifactType::Font: return "font";
     case ArtifactType::LocalizationTable: return "localization";
@@ -191,6 +200,9 @@ uint32_t SchemaVersionForArtifactType(const ArtifactType artifactType)
     case ArtifactType::Shader:
         return 1u;
     case ArtifactType::Scene:
+    case ArtifactType::ECSScene:
+    case ArtifactType::ECSPrefab:
+    case ArtifactType::Sprite:
     case ArtifactType::Audio:
     case ArtifactType::Skeleton:
     case ArtifactType::Skin:
@@ -205,6 +217,7 @@ uint32_t SchemaVersionForArtifactType(const ArtifactType artifactType)
     case ArtifactType::VfxScript:
     case ArtifactType::VfxEmitter:
     case ArtifactType::MeshDistanceField:
+    case ArtifactType::MeshDistanceFieldSource:
     case ArtifactType::Unknown:
     case ArtifactType::Count:
         return 1u;
@@ -910,6 +923,34 @@ ArtifactWriteResult ArtifactWriter::WriteAndCommit(
     writeScope.AddCounter("nativeContainerDirectReuseCount", nativeContainerDirectReuseCount);
     result.committed = true;
     result.manifest = std::move(nextManifest);
+    return result;
+}
+
+ArtifactWriteResult ArtifactWriter::WriteIncrementalAndCommit(
+    const ArtifactWriteRequest& request, const ArtifactManifest& previous,
+    const std::vector<std::string>& removed, const IArtifactWriteCancellation* cancellation) const
+{
+    if (request.sourceAssetId != previous.sourceAssetId || request.targetPlatform != previous.targetPlatform ||
+        request.importerId != previous.importerId || request.importerVersion != previous.importerVersion ||
+        request.primarySubAssetKey != previous.primarySubAssetKey)
+    {
+        ArtifactWriteResult result; result.manifest = previous;
+        AddError(result, request.sourceAssetId, m_committedRoot, "artifact-patch-source-mismatch",
+            "An incremental artifact update must keep the published source identity and primary artifact.");
+        return result;
+    }
+    auto result = WriteAndCommit(request, &previous, cancellation);
+    if (!result.committed) return result;
+    for (const auto& artifact : previous.subAssets)
+        if (!result.manifest.FindSubAsset(artifact.subAssetKey) &&
+            std::find(removed.begin(), removed.end(), artifact.subAssetKey) == removed.end())
+            result.manifest.subAssets.push_back(artifact);
+    if (!result.manifest.FindPrimaryArtifact())
+    {
+        result.committed = false; result.manifest = previous;
+        AddError(result, request.sourceAssetId, m_committedRoot, "artifact-patch-primary-missing",
+            "An incremental artifact update cannot remove its primary artifact.");
+    }
     return result;
 }
 }

@@ -182,9 +182,8 @@ TEST_F(JobSystemSchedulerTests, AutomaticWorkerCountsStayInsideTheSharedBudget)
     EXPECT_EQ(foreground, budget.jobsForegroundWorkerCount);
     EXPECT_EQ(background, budget.jobsBackgroundWorkerCount);
     EXPECT_EQ(foreground + background, budget.jobsWorkerCount);
-    EXPECT_LE(
-        budget.taskGraphWorkerCount + foreground + background,
-        budget.totalPoolWorkerCount);
+    EXPECT_EQ(budget.taskGraphWorkerCount, foreground);
+    EXPECT_EQ(foreground + background, budget.totalPoolWorkerCount);
 }
 
 TEST_F(JobSystemSchedulerTests, LifecycleShutdownClearsInitializedState)

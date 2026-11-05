@@ -1,7 +1,12 @@
 #include "Core/Application.h"
+#include "Plugins/ApplicationPlugins.h"
+#include "Plugins/RuntimeDeployment.h"
+#include "Plugins/SourcePluginRegistry.h"
 #include "LaunchArgs.h"
 #include "Rendering/Context/RenderingThreadSystem.h"
 #include "RuntimeAssetManifestStartup.h"
+#include "ECSSceneStartup.h"
+#include <Engine/ECS/ECSAssets.h>
 #include "Platform/Process/Process.h"
 
 #include "Assets/NpakArchive.h"
@@ -66,12 +71,34 @@ namespace
 			return 7;
 		}
 
-		const auto startScene = packaged->contentRoot / "Assets" /
-			std::filesystem::path(packaged->descriptor.startScene);
-		if (!std::filesystem::is_regular_file(startScene))
+        if (Game::RuntimeAssets::IsECSStartScene(packaged->descriptor.startScene))
+        {
+            try
+            {
+                Filesystem::IniFile settings(settingsPath.string());
+                const auto scene = Game::RuntimeAssets::ResolveECSStartSceneAsset(
+                    settings.GetOrDefault<std::string>("start_scene_asset", ""),
+                    settings.GetOrDefault<std::string>("start_scene_subasset", ""));
+                const auto* entry = database->Resolve(scene);
+                if (!entry || entry->artifactType != Core::Assets::ArtifactType::ECSScene)
+                    throw std::invalid_argument("ECS startup identity is not a scene in the runtime manifest");
+                Engine::ECSIntegration::ECSAssetLoader loader(
+                    std::make_shared<const Engine::Assets::RuntimeAssetDatabase>(*database), packaged->contentRoot);
+                const auto document = loader.Read(scene);
+                if (document.kind != ECS::DocumentKind::Scene) throw std::invalid_argument("ECS startup document is not a scene");
+                for (const auto& resource : document.resources)
+                    if (!loader.ResolveResource(resource)) throw std::invalid_argument("ECS startup resource is missing or has a different content version");
+            }
+            catch (const std::exception& error)
+            {
+                std::fprintf(stderr, "[package-self-test] Invalid ECS start scene: %s\n", error.what());
+                return 8;
+            }
+        }
+		else if (!std::filesystem::is_regular_file(packaged->contentRoot / "Assets" /
+            std::filesystem::path(packaged->descriptor.startScene)))
 		{
-			std::fprintf(stderr, "[package-self-test] The start scene is missing: %s\n",
-				startScene.string().c_str());
+			std::fprintf(stderr, "[package-self-test] The start scene is missing: %s\n", packaged->descriptor.startScene.c_str());
 			return 8;
 		}
 
@@ -146,6 +173,8 @@ int main(int argc, char** argv)
 	{
 		if (std::strcmp(argv[index], "--package-self-test") == 0)
 			return RunPackageSelfTest();
+        if (std::strcmp(argv[index], "--plugin-self-test") == 0)
+            return Plugins::RunRuntimePluginSelfTest(Platform::Process::ResolveInstallResourceRoots().installRoot,Plugins::RegisterCompiledSourcePlugins);
 	}
 
 	NLS::Game::Launch::ParsedGameLaunchArgs launchArgs = NLS::Game::Launch::ParseGameArgs(argc, argv);
@@ -165,6 +194,12 @@ int main(int argc, char** argv)
 
 	try
 	{
+        const auto installRoot = Platform::Process::ResolveInstallResourceRoots().installRoot;
+        const bool packaged = std::filesystem::is_regular_file(installRoot / "Player.info");
+        Plugins::ApplicationPlugins plugins(NLS::Core::Modules::HostKind::Game,
+            launchArgs.projectPathOverride.has_value() && !packaged
+                ? std::filesystem::path(*launchArgs.projectPathOverride) : installRoot,
+            {}, packaged, Plugins::RegisterCompiledSourcePlugins);
 		Game::Core::Application app(
 			launchArgs.hasRenderDocOverride
 				? std::optional<Render::Settings::RenderDocSettings>(launchArgs.renderDocSettings)

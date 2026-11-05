@@ -1,8 +1,10 @@
 #include "Rendering/SceneLightingProvider.h"
+#include <algorithm>
 
 #include "Components/LightComponent.h"
 #include "SceneSystem/Scene.h"
 #include "Rendering/SceneRenderStore.h"
+#include <Rendering/Entities/Camera.h>
 
 namespace NLS::Engine::Rendering
 {
@@ -49,7 +51,7 @@ void SceneLightingProvider::AppendSnapshot(const NLS::Render::Entities::Light& s
     ++m_snapshotCount;
 }
 
-void SceneLightingProvider::Collect(const SceneSystem::Scene& scene)
+void SceneLightingProvider::Collect(const SceneSystem::Scene& scene, std::span<const int32_t> hiddenObjectIds)
 {
     BeginCollection();
 
@@ -59,7 +61,7 @@ void SceneLightingProvider::Collect(const SceneSystem::Scene& scene)
             continue;
 
         auto* owner = light->gameobject();
-        if (owner == nullptr || !owner->IsActive())
+        if (owner == nullptr || !owner->IsActive() || std::binary_search(hiddenObjectIds.begin(), hiddenObjectIds.end(), owner->GetInstanceID()))
             continue;
 
         // Scene components own their lights for as long as the scene lives, and
@@ -72,7 +74,7 @@ void SceneLightingProvider::Collect(const SceneSystem::Scene& scene)
     PublishLightingDescriptor();
 }
 
-void SceneLightingProvider::CollectFromStore(const SceneRenderStore& store)
+void SceneLightingProvider::CollectFromStore(const SceneRenderStore& store, std::span<const int32_t> hiddenObjectIds)
 {
     // Snapshot: store slots destroy their lights on Remove/Clear and one store is
     // shared by every render scene of that Scene, so referencing the store here
@@ -82,7 +84,7 @@ void SceneLightingProvider::CollectFromStore(const SceneRenderStore& store)
         [this](const NLS::Render::Entities::Light& light)
         {
             AppendSnapshot(light);
-        });
+        }, hiddenObjectIds);
 
     PublishLightingDescriptor();
 }
@@ -93,6 +95,24 @@ void SceneLightingProvider::PrepareRenderScenePackage(
 {
     package.hasLightingData = scene.sceneLightCount > 0u;
     package.lightingDataReady = true;
+}
+
+void SceneLightingProvider::CollectPreview(const NLS::Render::Entities::Camera& camera)
+{
+    BeginCollection();
+    NLS::Maths::Transform transform;
+    transform.SetWorldPosition(camera.GetPosition());
+    transform.SetWorldRotation(camera.GetRotation());
+    NLS::Render::Entities::Light directional(&transform);
+    directional.type = NLS::Render::Settings::ELightType::DIRECTIONAL;
+    directional.intensity = 0.75f;
+    AppendSnapshot(directional);
+    NLS::Render::Entities::Light ambient(&transform);
+    ambient.type = NLS::Render::Settings::ELightType::AMBIENT_SPHERE;
+    ambient.range = 10000.0f;
+    ambient.intensity = 0.1f;
+    AppendSnapshot(ambient);
+    PublishLightingDescriptor();
 }
 
 const SceneLightingProvider::LightingDescriptor& SceneLightingProvider::GetLightingDescriptor() const

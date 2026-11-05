@@ -126,7 +126,7 @@ public enum Space
     Self = 1
 }
 
-public sealed class Camera : Component
+public sealed partial class Camera : Component
 {
     /// <summary>Stable reflected native type name used by editor metadata.</summary>
     public const string NativeTypeName = "NLS::Engine::Components::CameraComponent";
@@ -266,6 +266,8 @@ internal static class NativeBindingStore
 
     public static unsafe void Configure(NativeApiTable table)
     {
+        PlayBindingStore.Configure(table);
+        InputActionBindings.Install(table);
         if (table.GetObject != null)
         {
             GetObject = (owner, member) =>
@@ -422,7 +424,7 @@ internal static class NativeBindingStore
             };
     }
 
-    private static void ThrowOnFailure(ScriptAbiResult result, string fallback)
+    internal static void ThrowOnFailure(ScriptAbiResult result, string fallback)
     {
         if (result.Code == 0)
             return;

@@ -20,6 +20,7 @@ namespace NLS::Context
 	class NLS_PLATFORM_API Device
 	{
 	public:
+			Event<> InputPollCompletedEvent;
 		/**
 		* 将此事件绑定一个侦听器以接收设备错误
 		*/

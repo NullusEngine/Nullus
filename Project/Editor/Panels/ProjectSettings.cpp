@@ -11,6 +11,7 @@
 #include <cstring>
 
 #include "../Core/Context.h"
+#include "Core/Editor.h"
 #include "Core/EditorInteractionBlocker.h"
 #include "Inspector/InspectorUndo.h"
 #include "Inspector/InspectorTypes.h"
@@ -178,7 +179,10 @@ void ProjectSettings::EnsureInitialized()
         return;
 
     Settings::EditorSettings::RegisterSettingObjects(m_registry);
-    Settings::EditorSettingsPersistence::Load(GetSettingsPath(), m_registry);
+    // Context loaded these shared objects before the editor panels were created.
+    // Loading again here would discard edits made through the Scene toolbar.
+    if (!NLS::Core::ServiceLocator::Contains<NLS::Editor::Core::Context>())
+        Settings::EditorSettingsPersistence::Load(GetSettingsPath(), m_registry);
     m_selectedSettingId = ChooseSelectionAfterSearch(m_registry, m_selectedSettingId, m_searchText);
     m_initialized = true;
 }
@@ -299,6 +303,8 @@ void ProjectSettings::ApplyLiveSettings()
 {
     if (NLS::Core::ServiceLocator::Contains<NLS::Editor::Core::Context>())
         NLS::Core::ServiceLocator::Get<NLS::Editor::Core::Context>().ApplyEditorSettings();
+    if (NLS::Core::ServiceLocator::Contains<NLS::Editor::Core::Editor>())
+        NLS::Core::ServiceLocator::Get<NLS::Editor::Core::Editor>().SyncConsoleSettings();
 }
 
 void ProjectSettings::HandleUndoHistoryEvent(const Undo::UndoHistoryEvent& p_event)

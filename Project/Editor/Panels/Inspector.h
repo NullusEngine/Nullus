@@ -36,6 +36,8 @@ public:
      * Refresh the inspector
      */
     void Refresh();
+    bool CanExecuteComponentCommand(const std::string& id, int32_t componentId = 0) const;
+    bool ExecuteComponentCommand(const std::string& id, int32_t componentId = 0);
 
 private:
     NLS::Editor::Inspector::InspectorView* m_view = nullptr;

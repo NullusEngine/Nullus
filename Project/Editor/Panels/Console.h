@@ -1,121 +1,143 @@
 #pragma once
 
-#include <cstdint>
-#include <mutex>
-#include <string>
-#include <unordered_map>
-#include <vector>
+#include "Panels/ConsoleLogModel.h"
 
 #include <Debug/Logger.h>
-#include <Scripting/ScriptTypes.h>
-
 #include <UI/Panels/PanelWindow.h>
-#include <UI/Widgets/Layout/Group.h>
-#include <UI/Widgets/Texts/TextClickable.h>
-#include <UI/Widgets/Texts/TextColored.h>
+
+#include <array>
+#include <chrono>
+#include <deque>
+#include <functional>
+#include <mutex>
+#include <string>
+#include <vector>
+
+namespace NLS::Scripting { class ScriptErrorConsole; }
 
 namespace NLS::Editor::Panels
 {
-	class Console : public UI::PanelWindow
-	{
-	public:
-		/**
-		* Constructor
-		* @param p_title
-		* @param p_opened
-		* @param p_windowSettings
-		*/
-		Console
-		(
-			const std::string& p_title,
-			bool p_opened,
-			const UI::PanelWindowSettings& p_windowSettings
-		);
-		~Console();
+struct ConsoleStatusSnapshot
+{
+    bool hasMessage = false;
+    ::NLS::Debug::ELogLevel level = ::NLS::Debug::ELogLevel::LOG_DEFAULT;
+    std::string message;
+    uint64_t sequence = 0;
+};
 
-		/**
-		* Method called when a log event occured
-		* @param p_logData
-		*/
-		void OnLogIntercepted(const Debug::LogData& p_logData);
+// Values are supplied by the Editor's user-settings registry. Keeping this
+// independent of reflection also allows the headless console tests to use it.
+struct ConsoleOptions
+{
+    bool clearOnPlay = true;
+    bool clearOnBuild = false;
+    bool clearOnRecompile = false;
+    bool collapse = false;
+    bool errorPause = false;
+    bool showTimestamp = true;
+    bool messages = true;
+    bool warnings = true;
+    bool errors = true;
+    bool csharp = true;
+    bool lua = true;
+    bool build = true;
+    int lineCount = 2;
+    float detailRatio = 0.30f;
+    // 0 = None, 1 = ScriptOnly, 2 = Full.
+    int messageStack = 1;
+    int warningStack = 1;
+    int errorStack = 1;
+};
 
-		/**
-		* Flush pending log entries on the UI thread.
-		*/
-		void FlushPendingLogs();
+class Console : public UI::PanelWindow
+{
+public:
+    Console(const std::string& title, bool opened, const UI::PanelWindowSettings& windowSettings);
+    ~Console();
+    bool ExecuteCommand(const std::string& id);
 
-		/**
-		* Called when the scene plays. It will clear the console if the "Clear on play" settings is on
-		*/
-		void ClearOnPlay();
+    void OnLogIntercepted(const ::NLS::Debug::LogData& logData);
+    void FlushPendingLogs();
+    void UpdateLogState(const NLS::Scripting::ScriptErrorConsole* scriptConsole = nullptr);
+    void SetScriptConsole(NLS::Scripting::ScriptErrorConsole* scriptConsole,
+        std::function<void(const NLS::Scripting::ScriptError&)> openDiagnostic = {});
+    void SetSourceAvailability(std::function<bool(const std::string&)> available) { m_sourceAvailable = std::move(available); }
+    const ConsoleStatusSnapshot& GetStatusSnapshot() const { return m_statusSnapshot; }
+    bool ConsumeErrorPauseRequest() { const bool result = m_errorPauseRequested; m_errorPauseRequested = false; return result; }
 
-		/**
-		* Clear the console
-		*/
-		void Clear();
+    void SetOptions(const ConsoleOptions& options);
+    const ConsoleOptions& GetOptions() const { return m_options; }
+    void SetOptionsChanged(std::function<void(const ConsoleOptions&)> changed) { m_optionsChanged = std::move(changed); }
+    void SetOpenLogFile(std::function<void()> open) { m_openLogFile = std::move(open); }
+    void ClearOnPlay();
+    void ClearOnBuild();
+    void ClearOnRecompile();
+    void Clear();
+    void ReplaceCompilerDiagnostics(std::vector<ConsoleLogEntry> diagnostics);
+    void FilterLogs();
+    bool IsAllowedByFilter(::NLS::Debug::ELogLevel level);
+    void AddScriptDiagnostic(const NLS::Scripting::ScriptError& error);
+    const ConsoleLogModel& GetLogModel() const { return m_model; }
+    const ConsoleLogFilter& GetFilter() const { return m_filter; }
 
-		/**
-		* Filter logs using defined filters
-		*/
-		void FilterLogs();
+private:
+    bool m_scrollToSelection = false;
+    struct PendingLog
+    {
+        ::NLS::Debug::LogData data;
+        std::chrono::steady_clock::time_point received;
+    };
+    struct PendingNativeResolution
+    {
+        uint64_t entryId = 0;
+        std::shared_ptr<::NLS::Debug::NativeStackTrace> trace;
+    };
 
-		/**
-		* Verify if a given log level is allowed by the current filter
-		* @param p_logLevel
-		*/
-		bool IsAllowedByFilter(Debug::ELogLevel p_logLevel);
-		void AddScriptDiagnostic(const NLS::Scripting::ScriptError& error);
+    void AddLog(const ::NLS::Debug::LogData& data, std::chrono::steady_clock::time_point received);
+    void AddScriptDiagnostic(const NLS::Scripting::ScriptError& error, std::chrono::steady_clock::time_point received);
+    void FlushScriptDiagnostics(const NLS::Scripting::ScriptErrorConsole& scriptConsole);
+    void UpdateStatus(::NLS::Debug::ELogLevel level, const std::string& message, std::chrono::steady_clock::time_point received);
+    void DrawToolbar();
+    void DrawList(float height);
+    void DrawDetails(float height);
+    void DrawOptionsMenu();
+    void DrawStackMenu();
+    void OpenEntry(const ConsoleLogEntry& entry);
+    void OpenSource(const std::string& path, int line, int column);
+    bool CanOpenSource(const std::string& path) const;
+    void OptionsChanged();
+    void RefreshRows();
+    void _Draw_Impl() override;
+    void OnBeforeDrawWidgets() override;
 
-	private:
-		enum class EntrySource
-		{
-			General,
-			CSharp,
-			Lua,
-			Build
-		};
-		struct EntryInfo
-		{
-			Debug::ELogLevel level;
-			EntrySource source;
-		};
-		struct ScriptEntryInfo
-		{
-			Debug::ELogLevel level;
-			EntrySource source;
-			NLS::Scripting::ScriptError error;
-			std::string header;
-			bool expanded = false;
-		};
-		void SetShowDefaultLogs(bool p_value);
-		void SetShowInfoLogs(bool p_value);
-		void SetShowWarningLogs(bool p_value);
-		void SetShowErrorLogs(bool p_value);
-		void SetShowCSharpLogs(bool p_value);
-		void SetShowLuaLogs(bool p_value);
-		void SetShowBuildLogs(bool p_value);
-		void AddLogWidget(const Debug::LogData& p_logData);
-		void FlushScriptDiagnostics();
-		bool IsAllowedBySource(EntrySource source) const;
-		void OnBeforeDrawWidgets() override;
+    ConsoleLogModel m_model;
+    ConsoleOptions m_options;
+    ConsoleLogFilter m_filter;
+    std::vector<ConsoleLogRow> m_rows;
+    uint64_t m_rowsRevision = ~uint64_t{0};
+    bool m_rowsDirty = true;
+    uint64_t m_selectedId = 0;
+    uint64_t m_lastDrawnRevision = 0;
+    bool m_followBottom = true;
+    bool m_haveListScroll = false;
+    float m_lastListScrollY = 0.0f;
+    std::array<char, 512> m_search{};
 
-	private:
-		UI::Widgets::Group* m_logGroup;
-		std::unordered_map<UI::Widgets::TextColored*, EntryInfo> m_logTextWidgets;
-		std::unordered_map<UI::Widgets::TextClickable*, ScriptEntryInfo> m_scriptTextWidgets;
-		std::mutex m_pendingLogsMutex;
-		std::vector<Debug::LogData> m_pendingLogs;
-
-		bool m_clearOnPlay = true;
-		bool m_showDefaultLog = true;
-		bool m_showInfoLog = true;
-		bool m_showWarningLog = true;
-		bool m_showErrorLog = true;
-		bool m_showCSharpLog = true;
-		bool m_showLuaLog = true;
-		bool m_showBuildLog = true;
-		size_t m_forwardedScriptErrors = 0;
-		uint64_t m_playListener = 0;
-		uint64_t m_logListener = 0;
-	};
+    std::mutex m_pendingLogsMutex;
+    std::deque<PendingLog> m_pendingLogs;
+    std::vector<PendingNativeResolution> m_pendingNativeResolutions;
+    uint64_t m_pendingDropped = 0;
+    bool m_pendingDroppedError = false;
+    bool m_errorPauseRequested = false;
+    uint64_t m_forwardedScriptSequence = 0;
+    uint64_t m_nextConsoleSequence = 0;
+    ConsoleStatusSnapshot m_statusSnapshot;
+    std::chrono::steady_clock::time_point m_lastStatusReceipt;
+    NLS::Scripting::ScriptErrorConsole* m_scriptConsole = nullptr;
+    std::function<void(const NLS::Scripting::ScriptError&)> m_openDiagnostic;
+    std::function<bool(const std::string&)> m_sourceAvailable;
+    std::function<void(const ConsoleOptions&)> m_optionsChanged;
+    std::function<void()> m_openLogFile;
+    uint64_t m_logListener = 0;
+};
 }

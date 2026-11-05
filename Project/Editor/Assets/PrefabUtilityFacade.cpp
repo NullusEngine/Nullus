@@ -1,4 +1,6 @@
 #include "Assets/PrefabUtilityFacade.h"
+#include "Undo/EditorUndoService.h"
+#include <ServiceLocator.h>
 
 #include <algorithm>
 #include <memory>
@@ -2259,6 +2261,12 @@ PrefabOperationResult PrefabUtilityFacade::ApplyOverrideGroup(
     const std::vector<PrefabOverrideDescriptor>& overrides,
     const bool targetGeneratedReadOnly) const
 {
+    if(NLS::Core::ServiceLocator::Contains<NLS::Editor::Undo::EditorUndoService>() &&
+        NLS::Core::ServiceLocator::Get<NLS::Editor::Undo::EditorUndoService>().GetPlayDomainId())
+    {
+        PrefabOperationResult result;result.status=PrefabOperationStatus::Rejected;
+        AddDiagnostic(result,"prefab-apply-disabled-during-play","Stop Play before applying prefab overrides.");return result;
+    }
     if (targetGeneratedReadOnly || IsGeneratedModelPrefab(prefab))
     {
         PrefabOperationResult result;

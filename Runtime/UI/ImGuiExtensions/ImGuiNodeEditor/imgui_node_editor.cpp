@@ -1220,6 +1220,7 @@ ed::EditorContext::~EditorContext()
 
 void ed::EditorContext::Begin(const char* id, const ImVec2& size)
 {
+    m_UsesClipboardShortcuts = false;
     m_EditorActiveId = ImGui::GetID(id);
     ImGui::PushID(id);
 
@@ -3647,9 +3648,11 @@ ed::EditorAction::AcceptResult ed::NavigateAction::Accept(const Control& control
 
     auto& io = ImGui::GetIO();
 
-    if (Editor->CanAcceptUserInput() && ImGui::IsKeyPressed(GetKeyIndexForF()) && Editor->AreShortcutsEnabled())
+    const bool frameZoom = Editor->TakeKeyboardShortcut(KeyboardShortcut::FrameSelectionAndZoom);
+    const bool frameSelection = !frameZoom && Editor->TakeKeyboardShortcut(KeyboardShortcut::FrameSelection);
+    if (Editor->CanAcceptUserInput() && (frameZoom || frameSelection || (Editor->AreKeyboardShortcutsEnabled() && ImGui::IsKeyPressed(GetKeyIndexForF()))))
     {
-        const auto zoomMode = io.KeyShift ? NavigateAction::ZoomMode::WithMargin : NavigateAction::ZoomMode::None;
+        const auto zoomMode = (frameZoom || (!frameSelection && io.KeyShift)) ? NavigateAction::ZoomMode::WithMargin : NavigateAction::ZoomMode::None;
 
         auto findHotObjectToZoom = [this, &control, &io]() -> Object*
         {
@@ -4752,21 +4755,22 @@ ed::ShortcutAction::ShortcutAction(EditorContext* editor):
 
 ed::EditorAction::AcceptResult ed::ShortcutAction::Accept(const Control& control)
 {
-    if (!Editor->IsFocused() || !Editor->AreShortcutsEnabled())
+    if (!Editor->IsFocused())
         return False;
 
     Action candidateAction = None;
 
     auto& io = ImGui::GetIO();
-    if (io.KeyCtrl && !io.KeyShift && !io.KeyAlt && ImGui::IsKeyPressed(GetKeyIndex(ImGuiKey_X)))
+    const bool keyboard = Editor->AreKeyboardShortcutsEnabled();
+    if (Editor->TakeKeyboardShortcut(KeyboardShortcut::Cut) || (keyboard && io.KeyCtrl && !io.KeyShift && !io.KeyAlt && ImGui::IsKeyPressed(GetKeyIndex(ImGuiKey_X))))
         candidateAction = Cut;
-    if (io.KeyCtrl && !io.KeyShift && !io.KeyAlt && ImGui::IsKeyPressed(GetKeyIndex(ImGuiKey_C)))
+    else if (Editor->TakeKeyboardShortcut(KeyboardShortcut::Copy) || (keyboard && io.KeyCtrl && !io.KeyShift && !io.KeyAlt && ImGui::IsKeyPressed(GetKeyIndex(ImGuiKey_C))))
         candidateAction = Copy;
-    if (io.KeyCtrl && !io.KeyShift && !io.KeyAlt && ImGui::IsKeyPressed(GetKeyIndex(ImGuiKey_V)))
+    else if (Editor->TakeKeyboardShortcut(KeyboardShortcut::Paste) || (keyboard && io.KeyCtrl && !io.KeyShift && !io.KeyAlt && ImGui::IsKeyPressed(GetKeyIndex(ImGuiKey_V))))
         candidateAction = Paste;
-    if (io.KeyCtrl && !io.KeyShift && !io.KeyAlt && ImGui::IsKeyPressed(GetKeyIndexForD()))
+    else if (Editor->TakeKeyboardShortcut(KeyboardShortcut::Duplicate) || (keyboard && io.KeyCtrl && !io.KeyShift && !io.KeyAlt && ImGui::IsKeyPressed(GetKeyIndexForD())))
         candidateAction = Duplicate;
-    if (!io.KeyCtrl && !io.KeyShift && !io.KeyAlt && ImGui::IsKeyPressed(GetKeyIndex(ImGuiKey_Space)))
+    else if (Editor->TakeKeyboardShortcut(KeyboardShortcut::CreateNode) || (keyboard && !io.KeyCtrl && !io.KeyShift && !io.KeyAlt && ImGui::IsKeyPressed(GetKeyIndex(ImGuiKey_Space))))
         candidateAction = CreateNode;
 
     if (candidateAction != None)
@@ -5348,7 +5352,7 @@ ed::EditorAction::AcceptResult ed::DeleteItemsAction::Accept(const Control& cont
         return False;
 
     auto& io = ImGui::GetIO();
-    if (Editor->CanAcceptUserInput() && ImGui::IsKeyPressed(GetKeyIndex(ImGuiKey_Delete)) && Editor->AreShortcutsEnabled())
+    if (Editor->CanAcceptUserInput() && (Editor->TakeKeyboardShortcut(KeyboardShortcut::Delete) || (Editor->AreKeyboardShortcutsEnabled() && ImGui::IsKeyPressed(GetKeyIndex(ImGuiKey_Delete)))))
     {
         auto& selection = Editor->GetSelectedObjects();
         if (!selection.empty())

@@ -13,6 +13,7 @@ namespace NLS::Engine::SceneSystem
 
 namespace NLS::Engine::Rendering
 {
+    struct SpriteRenderProxy;
     /**
      * Game-thread owned source registry. It observes scene revisions and emits
      * only add/update/remove commands; the render side never dereferences a
@@ -33,6 +34,9 @@ namespace NLS::Engine::Rendering
             uint64_t frameId = 0u);
 
         void Reset();
+        // Complete immutable Sprite revision for a view, captured only on the
+        // game thread and retained independently of the source scene lifetime.
+        std::vector<std::shared_ptr<const SpriteRenderProxy>> CaptureSprites(SceneSystem::Scene& scene);
 
         [[nodiscard]] size_t GetTrackedPrimitiveProxyCount() const;
         [[nodiscard]] size_t GetTrackedLightProxyCount() const;

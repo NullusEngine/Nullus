@@ -6,11 +6,19 @@
 
 | 目标 | CTest 标签 | 定位 |
 | --- | --- | --- |
-| `NullusUnitTests` | `behavior` | 确定性的行为与集成回归 |
+| `NullusUnitTests` | `unit;behavior` | 普通行为、编辑器、ECS 与脚本插件回归 |
+| `NullusGpuTests` | `gpu` | 集中运行 `*GpuTests.cpp`，独立管理设备生命周期 |
+| `NullusBuildTests` | `build;packaging` | 打包 CI 使用的独立入口 |
+| `NullusPropertyControlsTests` | `ui;properties;boundary` | 验证属性控件只依赖 UI |
+| `NullusPluginTestsStatic` / `NullusPluginTestsShared` | `plugins;abi` | 静态/动态链接与真实插件 DLL 验证 |
 | `NullusPerformanceTests` | `performance` | 按需构建的性能与压力测试 |
 | `ReflectionTest` | 无 | 反射链路的轻量冒烟工具 |
 
 `NullusPerformanceTests` 默认既不构建也不注册到 CTest。可重复、确定性的行为回归应放进单元测试；性能测量、压力场景与依赖真实资产的验证放进性能测试，避免默认行为测试受机器状态影响。
+
+普通测试统一加入 `NullusUnitTests`，不再为每个功能创建独立项目。
+用 `--gtest_filter=套件名.*` 聚焦运行；辅助 DLL、Probe 子进程和托管程序集放在 `Tests/Fixtures`。
+完整入口与源码归属见仓库根目录的 `Tests/README.md`。
 
 ## 单元测试覆盖范围
 
@@ -25,8 +33,8 @@
 
 ```powershell
 cmake -S . -B Build -G "Visual Studio 17 2022" -A x64 -DNLS_BUILD_TESTS=ON
-cmake --build Build --config Debug --target NullusUnitTests ReflectionTest -- /m:4
-ctest --test-dir Build -C Debug -L behavior --output-on-failure
+Tools/BuildCleanEnvironment.cmd cmake --build Build --config Debug --target NullusUnitTests NullusGpuTests NullusBuildTests NullusPropertyControlsTests ReflectionTest -- /m:1
+ctest --test-dir Build -C Debug -R "^(NullusUnitTests|NullusGpuTests|NullusBuildTests|NullusPropertyControlsTests)$" --output-on-failure
 ```
 
 `ReflectionTest` 会随命令一起构建，但它是独立工具，不带 `behavior` 标签。

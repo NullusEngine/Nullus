@@ -9,16 +9,17 @@ Configure an existing build directory with `NLS_BUILD_TESTS=ON` as described in 
 ## Automated tests
 
 ```powershell
-cmake --build build --config Debug --target NullusAnimationTests NullusAnimationImportTests NullusAnimationEditorTests NullusAnimationGpuTests
-ctest --test-dir build -C Debug -R "^NullusAnimation" --output-on-failure
+cmake --build build --config Debug --target NullusUnitTests NullusGpuTests
+build/bin/Debug/NullusUnitTests.exe --gtest_filter="Animation*.*"
+build/bin/Debug/NullusGpuTests.exe --gtest_filter="Animation*.*"
 ```
 
 | Target | Main checks |
 | --- | --- |
-| `NullusAnimationTests` | TRS/quaternions, sampling, blending, states, events, binary round trips, failed program replacement |
-| `NullusAnimationImportTests` | glTF/GLB, FBX, multiple Takes, sample rates, separate animation binding, stable reimport identity, dependencies |
-| `NullusAnimationEditorTests` | Document Undo/Redo, scene updates, Prefabs, shared Animators, deferred binding, frozen dependencies |
-| `NullusAnimationGpuTests` | Skinned positions and normals, object bindings, retained submission resources, pixel readback |
+| `NullusUnitTests`: `AnimationCore` / `AnimationGraph` | TRS/quaternions, sampling, blending, states, events, binary round trips, failed program replacement |
+| `NullusUnitTests`: `AnimationFixture` / `AnimationSourceCompiler` | glTF/GLB, FBX, multiple Takes, sample rates, separate animation binding, stable reimport identity, dependencies |
+| `NullusUnitTests`: `AnimationDocument` / `AnimationScene` | Document Undo/Redo, scene updates, Prefabs, shared Animators, deferred binding, frozen dependencies |
+| `NullusGpuTests`: `AnimationGpu` | Skinned positions and normals, object bindings, retained submission resources, pixel readback |
 
 Record the actual backend, device, configuration, exit status, and skipped cases. Backend-specific checks do not replace full-scene acceptance.
 

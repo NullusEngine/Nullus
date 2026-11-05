@@ -1,0 +1,35 @@
+{
+  "version": 1,
+  "id": "33e8ea12-6186-454e-8691-774f4ff9f400",
+  "defaultContext": "df500085-d399-4d61-b1ea-18e635e2291f",
+  "actions": [
+    { "id": "172db044-427e-4b65-9042-9c645648c37f", "name": "Jump", "type": 0, "nature": 0 },
+    { "id": "c680c109-5f1c-46ec-a004-718d8f5fb00a", "name": "Move", "type": 2, "nature": 2 }
+  ],
+  "contexts": [
+    {
+      "id": "df500085-d399-4d61-b1ea-18e635e2291f",
+      "name": "Gameplay",
+      "bindings": [
+        {
+          "id": "c6944877-a431-4509-afc5-48f4c0bab8bf",
+          "action": "172db044-427e-4b65-9042-9c645648c37f",
+          "parts": [{ "path": { "device": 0, "kind": 0, "control": 32 }, "contribution": [1,0,0] }]
+        },
+        {
+          "id": "cca2057b-82f1-4f5d-b215-78124aad1877",
+          "action": "c680c109-5f1c-46ec-a004-718d8f5fb00a",
+          "nature": 2,
+          "composite": 2,
+          "parts": [
+            { "path": { "device": 0, "kind": 0, "control": 87 }, "contribution": [0,1,0] },
+            { "path": { "device": 0, "kind": 0, "control": 83 }, "contribution": [0,-1,0] },
+            { "path": { "device": 0, "kind": 0, "control": 65 }, "contribution": [-1,0,0] },
+            { "path": { "device": 0, "kind": 0, "control": 68 }, "contribution": [1,0,0] }
+          ],
+          "processors": [{ "kind": 3 }]
+        }
+      ]
+    }
+  ]
+}

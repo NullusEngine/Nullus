@@ -22,6 +22,7 @@
 #include "Inspector/ScriptedComponentEditor.h"
 #include "Panels/EditorTopBar.h"
 #include "Scripting/EditorScriptWindowService.h"
+#include "Shortcuts/EditorCommandInvocation.h"
 
 namespace NLS::Editor::Scripting
 {
@@ -92,6 +93,16 @@ uint8_t HostRegisterMenuItem(const char* menuPath, const char* editorTypeName)
         return 0u;
     }
     return 1u;
+}
+
+uint8_t HostRegisterMenuCommand(const char* path, const char* owner, const char* id)
+{
+    EditorScriptMenuItem item{std::string(SafeString(path)), std::string(SafeString(owner)), std::string(SafeString(id))};
+    if (item.commandId.empty()) return 0;
+    std::string error;
+    if (EditorScriptHost::Get().RegisterMenuItem(item, error)) return 1;
+    EditorScriptHost::Get().LogError(std::move(error));
+    return 0;
 }
 
 void HostClearRegistrations()
@@ -371,6 +382,7 @@ const EditorScriptHostApiTable& BuildHostApiTable()
         value.endVertical = &HostEndVertical;
         value.openWindow = &HostOpenWindow;
         value.closeWindow = &HostCloseWindow;
+        value.registerMenuCommand = &HostRegisterMenuCommand;
         return value;
     }();
     return table;
@@ -390,6 +402,18 @@ EditorScriptHost& EditorScriptHost::Get()
 
 void EditorScriptHost::ClearRegistrations()
 {
+    if (NLS::Core::ServiceLocator::Contains<Shortcuts::EditorShortcutService>())
+    {
+        auto& registry = NLS::Core::ServiceLocator::Get<Shortcuts::EditorShortcutService>().GetRegistry();
+        for (const auto& id : m_registeredMenuCommands) registry.UnregisterCommand(id);
+    }
+    if (NLS::Core::ServiceLocator::Contains<Core::EditorActions>())
+    {
+        auto& panels = NLS::Core::ServiceLocator::Get<Core::EditorActions>().GetPanelsManager();
+        if (panels.HasPanel("Editor Top Bar"))
+            for (const auto& item : m_menuItems) panels.GetPanelAs<Panels::EditorTopBar>("Editor Top Bar").UnregisterCommand(item.menuPath);
+    }
+    m_registeredMenuCommands.clear();
     m_descriptors.clear();
     m_menuItems.clear();
 }
@@ -419,6 +443,8 @@ bool EditorScriptHost::RegisterComponentEditor(const EditorScriptDescriptor& des
 
 bool EditorScriptHost::RegisterMenuItem(const EditorScriptMenuItem& item, std::string& error)
 {
+    if (!item.commandId.empty() && !item.commandId.starts_with("script:"))
+    { error = "Script CommandIds must use the script: namespace."; return false; }
     if (item.menuPath.empty())
     {
         error = "A scripted editor menu item must declare a menu path.";
@@ -427,7 +453,7 @@ bool EditorScriptHost::RegisterMenuItem(const EditorScriptMenuItem& item, std::s
 
     const auto duplicate = std::find_if(m_menuItems.begin(), m_menuItems.end(), [&](const auto& existing)
     {
-        return existing.menuPath == item.menuPath;
+        return existing.menuPath == item.menuPath || (!item.commandId.empty() && existing.commandId == item.commandId);
     });
     if (duplicate != m_menuItems.end())
     {
@@ -437,6 +463,28 @@ bool EditorScriptHost::RegisterMenuItem(const EditorScriptMenuItem& item, std::s
 
     m_menuItems.push_back(item);
     return true;
+}
+
+void EditorScriptHost::ApplyMenuCommandRegistrations()
+{
+    if (!NLS::Core::ServiceLocator::Contains<Shortcuts::EditorShortcutService>()) return;
+    auto& service = NLS::Core::ServiceLocator::Get<Shortcuts::EditorShortcutService>();
+    for (const auto& item : m_menuItems)
+    {
+        if (item.commandId.empty() || std::find(m_registeredMenuCommands.begin(), m_registeredMenuCommands.end(), item.commandId) != m_registeredMenuCommands.end()) continue;
+        if (service.GetRegistry().FindCommand(item.commandId)) { LogError("Script CommandId is already registered: " + item.commandId); continue; }
+        Shortcuts::ShortcutCommand command; command.id = item.commandId; command.displayName = item.menuPath; command.category = "Scripts";
+        command.availability = [this] { return GetManagedApi() && GetManagedApi()->invokeMenuItem; };
+        command.invoke = [this, id = item.commandId](const Shortcuts::InvocationContext&)
+        {
+            const auto item = std::find_if(m_menuItems.begin(), m_menuItems.end(), [&](const auto& value) { return value.commandId == id; });
+            const auto* api = GetManagedApi();
+            if (item == m_menuItems.end() || !api || !api->invokeMenuItem) return Shortcuts::CommandResult::TargetExpired;
+            const auto path = item->menuPath;
+            return api->invokeMenuItem(path.c_str()) ? Shortcuts::CommandResult::Completed : Shortcuts::CommandResult::Failed;
+        };
+        service.RegisterCommand(std::move(command)); m_registeredMenuCommands.push_back(item.commandId);
+    }
 }
 
 void EditorScriptHost::ApplyComponentEditorRegistrations()
@@ -651,8 +699,6 @@ void EditorScriptHost::LogError(std::string message)
 
 void InstallScriptMenuEntries()
 {
-    static std::vector<std::string> installedPaths;
-
     if (!NLS::Core::ServiceLocator::Contains<NLS::Editor::Core::EditorActions>())
         return;
 
@@ -662,17 +708,17 @@ void InstallScriptMenuEntries()
         return;
 
     auto& topBar = manager.GetPanelAs<NLS::Editor::Panels::EditorTopBar>("Editor Top Bar");
+    EditorScriptHost::Get().ApplyMenuCommandRegistrations();
     for (const auto& item : EditorScriptHost::Get().GetMenuItems())
     {
-        if (std::find(installedPaths.begin(), installedPaths.end(), item.menuPath) != installedPaths.end())
-            continue;
-
         const auto editorTypeName = item.editorTypeName;
         const auto menuPath = item.menuPath;
+        const auto commandId = item.commandId;
         try
         {
-            const auto registered = topBar.RegisterCommand(menuPath, [editorTypeName, menuPath]
+            const auto registered = topBar.RegisterCommand(menuPath, [editorTypeName, menuPath, commandId]
             {
+                if (!commandId.empty()) { Shortcuts::InvokeEditorCommand(commandId, Shortcuts::CommandSource::Menu); return; }
                 auto& host = EditorScriptHost::Get();
                 const auto* api = host.GetManagedApi();
                 if (api != nullptr && api->invokeMenuItem != nullptr)
@@ -686,7 +732,6 @@ void InstallScriptMenuEntries()
             });
             if (!registered)
                 continue;
-            installedPaths.push_back(menuPath);
         }
         catch (const std::exception& exception)
         {

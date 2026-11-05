@@ -31,6 +31,8 @@ public:
     void SetTargets(InspectorTargetSet targets);
     [[nodiscard]] const InspectorTargetSet& GetTargets() const;
     void Refresh();
+    bool CanExecuteComponentCommand(const std::string& id, int32_t componentId = 0) const;
+    bool ExecuteComponentCommand(const std::string& id, int32_t componentId = 0);
     void SetSearchText(std::string searchText);
     void SetToolbarVisible(bool visible);
 
@@ -90,6 +92,9 @@ private:
     bool m_treeDirty = true;
     bool m_locked = false;
     bool m_toolbarVisible = true;
+    bool m_routesEditorCommands = false;
+    int32_t m_componentCommandTarget = 0;
+    std::string m_componentCommandTitle;
     bool m_prefabOverridesDirty = true;
     std::string m_searchText;
     float m_labelColumnLogicalWidth = 0.0f;

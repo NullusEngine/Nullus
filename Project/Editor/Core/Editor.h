@@ -1,12 +1,15 @@
 ﻿#pragma once
 #include "Core/Context.h"
+#include "Plugins/EditorExtensionAdapter.h"
 #include "Core/EditorActions.h"
 #include "UI/EditorUiOverlayPresenter.h"
 #include "Core/AssetFileWatcher.h"
 #include "Core/PanelsManager.h"
 #include "Assets/EditorStartupAssetPreimport.h"
 #include "Shortcuts/EditorShortcutService.h"
+#include "Shortcuts/EditorGraphInput.h"
 #include "Undo/EditorUndoService.h"
+#include "ECS/SceneBakingService.h"
 #include <Rendering/Data/FrameInfo.h>
 #include <UI/Modules/Canvas.h>
 #include <chrono>
@@ -31,6 +34,7 @@ public:
      * Destructor of the editor
      */
     ~Editor();
+    bool PrepareForClose();
 
     /**
      * Handle panels creation and canvas binding
@@ -55,8 +59,10 @@ public:
      * Handle editor global shortcuts
      */
     void HandleGlobalShortcuts();
+    Shortcuts::EditorInputRoute GetInputRoute();
     void RegisterShortcutContexts();
-    void RegisterDefaultShortcuts();
+    void RegisterEditorCommands();
+    void RegisterPanelCommands();
     void ApplyStartupValidationDirectives();
     void RestoreStartupScene();
     void RefreshProjectAssetBrowser();
@@ -125,6 +131,8 @@ public:
     float GetCurrentFrameRate() const;
     float GetCurrentDeltaTime() const;
     void OpenConsole();
+    void SyncConsoleSettings();
+    ECSAuthoring::SceneBakingService& GetSceneBakingService() { return m_bakingService; }
 
     /**
      * Actually render the scene (Buffer swapping)
@@ -133,10 +141,13 @@ public:
     void PostUpdate();
 
 private:
+    bool m_closePrepared=false;
 	uint64_t m_elapsedFrames = 0;
 	uint64_t m_sceneSourcePathChangedListener = 0;
 	uint64_t m_sceneLoadListener = 0;
 	uint64_t m_editorModeChangedListener = 0;
+        uint64_t m_consolePlayListener = 0;
+        uint64_t m_consoleBuildListener = 0;
     uint32_t m_frameRateSampleCount = 0;
     float m_currentDeltaTime = 0.0f;
     float m_currentFrameRate = 0.0f;
@@ -161,18 +172,13 @@ private:
     Context& m_context;
     // Panels may cancel document edits during destruction.
     Undo::EditorUndoService m_undoService;
+    ECSAuthoring::SceneBakingService m_bakingService;
     PanelsManager	m_panelsManager;
-    struct JobSystemLifetime
-    {
-        JobSystemLifetime();
-        ~JobSystemLifetime();
-        void Shutdown();
-
-        bool ownsJobSystem = false;
-    };
-	JobSystemLifetime m_jobSystemLifetime;
 	EditorActions	m_editorActions;
 	Shortcuts::EditorShortcutService m_shortcutService;
+    std::unique_ptr<Shortcuts::EditorGraphInput> m_graphInput;
+    std::unique_ptr<NLS::Editor::PluginSupport::EditorExtensionAdapter> m_pluginExtensions;
+    bool m_inputUpdatePending = false;
 	// Presents the retained game UI of the edited scene inside the Game View.
 	UiOverlay::EditorUiOverlayPresenter m_uiOverlayPresenter;
 	bool m_uiOverlaySupplementInstalled = false;

@@ -16,6 +16,7 @@ namespace NLS::Render::DistanceField
         float slicePosition = 0;
         bool forceRebuild = false;
         bool mostlyStaticOnly = false;
+        uint16_t traceStepsMax = 64;
     };
     struct DistanceFieldStats
     {
@@ -25,6 +26,8 @@ namespace NLS::Render::DistanceField
         double updateCpuMs = 0;
         std::optional<double> gpuUpdateMs;
         std::string diagnostic;
+        [[nodiscard]] bool CanReuseVisualization() const
+        { return !pendingLoads && !dirtyPages && gpuUpdateMs.has_value() && diagnostic.empty(); }
     };
     struct DistanceFieldFrameInput
     {

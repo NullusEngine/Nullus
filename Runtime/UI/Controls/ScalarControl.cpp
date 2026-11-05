@@ -53,7 +53,6 @@ ControlResult Scalar(const char* id, ImGuiDataType type, void* value, const Scal
                      const ControlOptions& options)
 {
     ImGui::BeginDisabled(options.readOnly);
-    MixedLabel(options);
     if (type < 0 || type >= ImGuiDataType_COUNT)
     {
         ImGui::EndDisabled();
@@ -62,6 +61,7 @@ ControlResult Scalar(const char* id, ImGuiDataType type, void* value, const Scal
     constexpr size_t widths[]{1, 1, 2, 2, 4, 4, 8, 8, 4, 8};
     std::array<unsigned char, 8> before{};
     std::memcpy(before.data(), value, widths[type]);
+    const float fieldWidth = ImGui::CalcItemWidth();
     if (scalar.vertical && scalar.minimum && scalar.maximum)
         ImGui::VSliderScalar(id, scalar.size, type, value, scalar.minimum, scalar.maximum, scalar.format, scalar.flags);
     else if (scalar.slider && scalar.minimum && scalar.maximum)
@@ -72,6 +72,17 @@ ControlResult Scalar(const char* id, ImGuiDataType type, void* value, const Scal
         ImGui::InputScalar(id, type, value, scalar.step, scalar.fastStep, scalar.format, scalar.textFlags);
     const bool changed = std::memcmp(before.data(), value, widths[type]) != 0;
     auto result = ItemResult(changed);
+    if (options.mixed && !ImGui::IsItemActive() && !ImGui::IsItemFocused())
+    {
+        const auto min = ImGui::GetItemRectMin();
+        const auto max = ImGui::GetItemRectMax();
+        const auto padding = ImGui::GetStyle().FramePadding;
+        const ImVec2 textMin{min.x + padding.x, min.y + padding.y};
+        const ImVec2 textMax{(std::min)(max.x, min.x + fieldWidth) - padding.x, max.y - padding.y};
+        auto* draw = ImGui::GetWindowDrawList();
+        draw->AddRectFilled(textMin, textMax, ImGui::GetColorU32(ImGuiCol_FrameBg));
+        draw->AddText(textMin, ImGui::GetColorU32(ImGuiCol_Text), "-");
+    }
     result.completed |= ImGui::IsItemFocused() && ImGui::IsKeyPressed(ImGuiKey_Enter);
     const auto key = ImGui::GetID(id);
     ImGui::PushID(id);

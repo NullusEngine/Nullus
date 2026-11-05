@@ -127,7 +127,7 @@ void ValidateSpritePixels(bool vulkan)
             for (size_t i = 0; i < dynamicNames.size(); ++i) cpu.Write(cpu.FindAttribute(dynamicNames[i]),0,layer.dynamic[i]);
             SpriteRenderer renderer; rhi::RHIRenderTargetLayoutDesc targets; targets.colorFormats = {colorDesc.format};
             targets.hasDepth = true; targets.depthFormat = depthDesc.format;
-            const bool initialized = renderer.Initialize(device,attributes,shaders[0],shaders[1],targets,error,nullptr,nullptr,nullptr,layer.settings);
+            const bool initialized = renderer.Initialize(device,attributes,shaders[0],shaders[1],targets,error,nullptr,nullptr,nullptr,layer.settings,nullptr,drawContext.debugMode);
             EXPECT_TRUE(initialized) << error; if (!initialized) return pixels;
             pass.depthStencilAttachment->readOnlyDepthStencil = !renderer.WritesDepth();
             SpriteView camera; camera.frustumCulling = false;
@@ -168,6 +168,18 @@ void ValidateSpritePixels(bool vulkan)
         SCOPED_TRACE(gpu ? "GPU SoA" : "CPU frozen data");
         Layer layer; layer.gpu = gpu;
         expectCenter(render({layer},material),{141,13,13,255});
+        // The frozen per-view mode reaches both CPU/GPU constants and the PSO.
+        auto diagnostic = material; diagnostic.debugMode = 5;
+        expectCenter(render({layer},diagnostic),{255,217,0,255});
+        diagnostic.debugMode = 6;
+        expectCenter(render({layer},diagnostic,1,false,{0,0,0,0}),{0,0,0,128});
+        expectCenter(render({layer,layer},diagnostic,1,false,{0,0,0,0}),{0,0,0,192});
+        diagnostic.debugMode = 7; layer.settings.blend = SpriteBlendMode::Masked;
+        layer.settings.alphaCutoff = 0.4f;
+        expectCenter(render({layer},diagnostic,0,false,{0,0,0,0}),{255,255,255,255});
+        layer.settings.alphaCutoff = 0.6f;
+        expectCenter(render({layer},diagnostic,0,false,{0,0,0,0}),{0,0,0,0});
+        layer = Layer{}; layer.gpu = gpu;
         layer.frame = 2; expectCenter(render({layer},material),{13,13,141,255});
         layer.frame = 0.5f; layer.settings.blendSubImages = true;
         expectCenter(render({layer},material),{77,77,13,255});
@@ -214,6 +226,17 @@ void ValidateSpritePixels(bool vulkan)
         layer.alignment = {1,0,0,0};
         const auto deprojected = render({layer},{},1,false,{0,0,0,1}); EXPECT_NE(attributeAligned,deprojected);
         EXPECT_GT(attributeAligned[(48*64+32)*4],200); EXPECT_EQ(attributeAligned[(32*64+48)*4],0);
+    }
+    // Reinitializing a renderer for a normal view must also restore its depth policy.
+    {
+        SpriteSettings solid; solid.blend = SpriteBlendMode::Opaque;
+        rhi::RHIRenderTargetLayoutDesc targets; targets.colorFormats = {rhi::TextureFormat::RGBA8};
+        targets.hasDepth = true; targets.depthFormat = rhi::TextureFormat::Depth32F;
+        SpriteRenderer reused;
+        ASSERT_TRUE(reused.Initialize(device,attributes,shaders[0],shaders[1],targets,error,nullptr,nullptr,nullptr,solid,nullptr,7)) << error;
+        EXPECT_FALSE(reused.WritesDepth());
+        ASSERT_TRUE(reused.Initialize(device,attributes,shaders[0],shaders[1],targets,error,nullptr,nullptr,nullptr,solid,nullptr,0)) << error;
+        EXPECT_TRUE(reused.WritesDepth());
     }
     // A fragment from an imported ParticleSprite pass uses the same vertex ABI
     // with its own material constants/texture/sampler and four particle inputs.
@@ -421,6 +444,52 @@ static void ValidateRibbonPixels(bool vulkan)
     uint32_t gaps = 0;
     for (int y = firstLit; y <= lastLit; ++y) if (!rowLit(static_cast<uint32_t>(y))) ++gaps;
     EXPECT_EQ(gaps,0u) << "the strip must be contiguous; a gap means the segments are not connected";
+    if (!vulkan)
+    {
+        size_t covered = pixels.size();
+        for (uint32_t x = 0; x < 64; ++x)
+            if (pixels[(32*64+x)*4] > 8) { covered = (32*64+x)*4; break; }
+        ASSERT_LT(covered,pixels.size());
+        for (uint32_t index = 0; index < particleCount; ++index) cpu.Write(color,index,{1,1,1,0.5f});
+        VFX::GpuDataSet gpu; ASSERT_TRUE(gpu.Initialize(device,cpu,error)) << error;
+        const auto cpuData = UploadCpuRenderData(device,cpu,error); ASSERT_TRUE(cpuData) << error;
+        for (const uint32_t mode : {5u,6u,7u})
+            for (const bool useGpu : {false,true})
+            {
+                SCOPED_TRACE(mode);
+                SCOPED_TRACE(useGpu);
+                VFX::ParticleRenderer diagnostic;
+                ASSERT_TRUE(diagnostic.Initialize(device,attributes,shaders[0],shaders[1],targets,error,nullptr,nullptr,nullptr,
+                    VFX::ResolveRibbonDrawSettings(ribbonSettings),nullptr,mode)) << error;
+                auto debugCommands = pool->CreateCommandBuffer("RibbonDiagnostic"); ASSERT_TRUE(debugCommands);
+                debugCommands->Begin();
+                rhi::RHIRenderPassDesc debugPass; debugPass.renderArea = {0,0,64,64};
+                rhi::RHIRenderPassColorAttachmentDesc debugColor; debugColor.view = output; debugColor.clearValue = {0,0,0,0};
+                debugPass.colorAttachments = {debugColor};
+                rhi::RHIRenderPassDepthStencilAttachmentDesc debugDepth; debugDepth.view = depthView; debugDepth.clearValue.depth = mode == 7 ? 0 : 1;
+                debugPass.depthStencilAttachment = debugDepth;
+                debugCommands->BeginRenderPass(debugPass); debugCommands->EndRenderPass();
+                debugPass.colorAttachments[0].loadOp = rhi::LoadOp::Load;
+                debugPass.depthStencilAttachment->depthLoadOp = rhi::LoadOp::Load;
+                debugPass.depthStencilAttachment->readOnlyDepthStencil = !diagnostic.WritesDepth();
+                VFX::SpriteDrawContext debugContext; debugContext.debugMode = mode;
+                const auto debugDraw = useGpu ? diagnostic.Record(*debugCommands,gpu,camera,debugPass,error,debugContext)
+                                              : diagnostic.Record(*debugCommands,*cpuData,camera,debugPass,error,debugContext);
+                ASSERT_TRUE(debugDraw) << error;
+                debugCommands->End(); auto debugFence = device->CreateFence("RibbonDiagnosticComplete"); ASSERT_TRUE(debugFence);
+                debugFence->Reset(); rhi::RHISubmitDesc debugSubmit; debugSubmit.commandBuffers = {debugCommands}; debugSubmit.signalFence = debugFence;
+                ASSERT_TRUE(device->GetQueue(rhi::QueueType::Graphics)->SubmitChecked(debugSubmit).Succeeded());
+                ASSERT_TRUE(debugFence->Wait(30000000000ull));
+                std::vector<uint8_t> result(64*64*4);
+                const auto debugRead = device->BeginReadPixels(target,0,0,64,64,NLS::Render::Settings::EPixelDataFormat::RGBA,
+                    NLS::Render::Settings::EPixelDataType::UNSIGNED_BYTE,result.data());
+                ASSERT_TRUE(debugRead.Succeeded()) << debugRead.message;
+                if (debugRead.completion) ASSERT_TRUE(debugRead.completion->Wait(30000000000ull).Succeeded());
+                if (mode == 5) { EXPECT_NEAR(result[covered],255,2); EXPECT_NEAR(result[covered+1],217,2); EXPECT_EQ(result[covered+2],0); }
+                else if (mode == 6) EXPECT_NEAR(result[covered+3],128,3);
+                else EXPECT_NEAR(result[covered],255,2);
+            }
+    }
     if (vulkan) EXPECT_EQ(NLS::Render::Backend::GetVulkanValidationErrorCountForTesting(),validationBefore);
 }
 

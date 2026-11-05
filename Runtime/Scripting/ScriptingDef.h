@@ -2,7 +2,7 @@
 
 #include "CommonDef.h"
 
-#ifdef NLS_SHARED_LIB
+#if defined(NLS_SHARED_LIB) && !defined(NLS_SCRIPTING_STATIC_DEFINE)
     #ifdef NLS_SCRIPTING_EXPORT
         #define NLS_SCRIPTING_API DLLEXPORT
     #else

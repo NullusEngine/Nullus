@@ -148,6 +148,8 @@ namespace NLS::Render::Context
         [[nodiscard]] static bool IsInRenderingThread();
         /** Includes startup and shutdown so the game thread never takes over a live pipe. */
         [[nodiscard]] static bool HasActiveRenderThread();
+        /** Includes suspended owners that still depend on their TaskGraph. */
+        [[nodiscard]] static bool HasRenderingThreadOwners();
         [[nodiscard]] static bool IsInRhiThread();
         [[nodiscard]] static NLS::Base::TaskGraph::NamedThread GetCurrentNamedThread();
 

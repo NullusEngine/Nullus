@@ -18,6 +18,7 @@
 #include "GameObject.h"
 #include "Components/LightComponent.h"
 #include "Components/CameraComponent.h"
+#include "Components/SpriteRendererComponent.h"
 #include "Components/MeshFilter.h"
 #include "Engine/PrimitiveType.h"
 using namespace NLS;
@@ -173,12 +174,14 @@ void Editor::Utils::GameObjectCreationMenu::GenerateGameObjectCreationMenu(UI::W
     p_menuList.CreateWidget<Widgets::MenuItem>("Create Empty").ClickedEvent +=
         Combine([parentId] { CreateEmptyThroughUndo(parentId); }, p_onItemClicked);
 
+    auto& twoD = p_menuList.CreateWidget<Widgets::MenuList>("2D Objects");
     auto& primitives = p_menuList.CreateWidget<Widgets::MenuList>("Primitives");
     auto& physicals = p_menuList.CreateWidget<Widgets::MenuList>("Physicals");
     auto& lights = p_menuList.CreateWidget<Widgets::MenuList>("Lights");
     auto& audio = p_menuList.CreateWidget<Widgets::MenuList>("Audio");
     auto& others = p_menuList.CreateWidget<Widgets::MenuList>("Others");
 
+    twoD.CreateWidget<Widgets::MenuItem>("Sprite").ClickedEvent                 += GameObjectWithComponentCreationHandler<SpriteRendererComponent>(p_parent, p_onItemClicked);
     primitives.CreateWidget<Widgets::MenuItem>("Cube").ClickedEvent              += PrimitiveCreationHandler(p_parent, Engine::PrimitiveType::Cube, p_onItemClicked);
     primitives.CreateWidget<Widgets::MenuItem>("Sphere").ClickedEvent            += PrimitiveCreationHandler(p_parent, Engine::PrimitiveType::Sphere, p_onItemClicked);
     primitives.CreateWidget<Widgets::MenuItem>("Cone").ClickedEvent              += PrimitiveCreationHandler(p_parent, Engine::PrimitiveType::Cone, p_onItemClicked);

@@ -1,4 +1,5 @@
 #include "Panels/UIDocumentDesigner.h"
+#include "Shortcuts/EditorCommandInvocation.h"
 
 #include <algorithm>
 #include <cfloat>
@@ -176,6 +177,22 @@ namespace NLS::Editor::Panels
 
     bool UIDocumentDesigner::ExecuteCommand(const std::string& id)
     {
+        if (id == "cancel") { m_canvas.CancelGesture(m_model); return true; }
+        if (id == "undo" || id == "redo")
+        {
+            if (m_canvas.HasActiveGesture()) { m_canvas.CancelGesture(m_model); return true; }
+            if (auto* undo = TryGetUndoService()) return (id == "undo" ? undo->RequestUndo() : undo->RequestRedo()).Succeeded();
+            return false;
+        }
+        if (m_canvas.HasActiveGesture()) return false;
+        if (id == "rename") { m_hierarchy.RequestRename(m_model, m_model.GetSelectedNodeGuid()); return true; }
+        if (id.starts_with("nudge-"))
+        {
+            const float step = id.ends_with("-fast") ? 10.f : 1.f;
+            m_canvas.NudgeSelection(m_model, id.starts_with("nudge-left") ? -step : id.starts_with("nudge-right") ? step : 0,
+                id.starts_with("nudge-up") ? -step : id.starts_with("nudge-down") ? step : 0);
+            return true;
+        }
         if (id == "save")
         {
             if (!CanSave())
@@ -207,6 +224,14 @@ namespace NLS::Editor::Panels
 
     bool UIDocumentDesigner::IsCommandEnabled(const std::string& id) const
     {
+        if (id == "cancel") return m_canvas.HasActiveGesture();
+        if (id == "undo" || id == "redo")
+        {
+            auto* undo = TryGetUndoService();
+            return m_canvas.HasActiveGesture() || (undo && (id == "undo" ? undo->CanUndo() : undo->CanRedo()));
+        }
+        if (m_canvas.HasActiveGesture()) return false;
+        if (id == "rename" || id.starts_with("nudge-")) return !m_model.GetSelectedNodes().empty();
         if (id == "save") return CanSave();
         if (id == "revert") return m_model.IsLoaded();
         if (id == "paste") return NLS::Editor::UIDocumentTools::UIDocumentCanvasView::HasClipboardContent();
@@ -237,7 +262,6 @@ namespace NLS::Editor::Panels
 
         DrawToolbar();
         DrawExternalChangeBanner();
-        HandleShortcuts();
 
         const ImVec2 content = ImGui::GetContentRegionAvail();
         const float diagnosticsHeight = 108.0f;
@@ -314,13 +338,18 @@ namespace NLS::Editor::Panels
 
     void UIDocumentDesigner::DrawToolbar()
     {
+        const auto invoke = [this](const char* id)
+        {
+            if (!NLS::Core::ServiceLocator::Contains<Shortcuts::EditorShortcutService>()) return ExecuteCommand(id);
+            return Shortcuts::InvokeEditorCommand(std::string("ui-designer.") + id, Shortcuts::CommandSource::Toolbar, "ui-designer") == Shortcuts::CommandResult::Completed;
+        };
         auto* undoService = TryGetUndoService();
 
         const bool canSave = CanSave();
         if (!canSave)
             ImGui::BeginDisabled();
         if (ImGui::Button("Save"))
-            SaveDocument();
+            invoke("save");
         if (!canSave)
             ImGui::EndDisabled();
         if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled) && !canSave)
@@ -333,7 +362,7 @@ namespace NLS::Editor::Panels
 
         ImGui::SameLine();
         if (ImGui::Button("Revert"))
-            ReloadDocument();
+            invoke("revert");
         if (ImGui::IsItemHovered())
             ImGui::SetTooltip("Reload the document from disk.");
 
@@ -346,7 +375,7 @@ namespace NLS::Editor::Panels
         if (!canUndo)
             ImGui::BeginDisabled();
         if (ImGui::Button("Undo") && undoService != nullptr)
-            (void)undoService->RequestUndo();
+            invoke("undo");
         if (!canUndo)
             ImGui::EndDisabled();
         if (!canUndo && ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
@@ -363,7 +392,7 @@ namespace NLS::Editor::Panels
         if (!canRedo)
             ImGui::BeginDisabled();
         if (ImGui::Button("Redo") && undoService != nullptr)
-            (void)undoService->RequestRedo();
+            invoke("redo");
         if (!canRedo)
             ImGui::EndDisabled();
         if (!canRedo && ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
@@ -379,20 +408,20 @@ namespace NLS::Editor::Panels
         ImGui::SameLine();
 
         if (ImGui::Button("Fit"))
-            m_canvas.FrameAll(m_model);
+            invoke("frame-all");
         if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("Frame the whole document (F).");
+            ImGui::SetTooltip("Frame the whole document.");
         ImGui::SameLine();
         if (ImGui::Button("-"))
-            m_canvas.ZoomOut(m_model);
+            invoke("zoom-out");
         ImGui::SameLine();
         ImGui::Text("%.0f%%", m_canvas.GetZoom() * 100.0f);
         ImGui::SameLine();
         if (ImGui::Button("+"))
-            m_canvas.ZoomIn(m_model);
+            invoke("zoom-in");
         ImGui::SameLine();
         if (ImGui::Button("100%"))
-            m_canvas.SetZoom(m_model, 1.0f);
+            invoke("zoom-100");
 
         ImGui::SameLine();
         ImGui::TextDisabled("|");
@@ -717,95 +746,6 @@ namespace NLS::Editor::Panels
         }
 
         ImGui::EndPopup();
-    }
-
-    void UIDocumentDesigner::HandleShortcuts()
-    {
-        auto& io = ImGui::GetIO();
-        if (!m_shortcutFocus || io.WantTextInput || m_hierarchy.IsRenaming())
-            return;
-        if (ImGui::IsPopupOpen("", ImGuiPopupFlags_AnyPopupId | ImGuiPopupFlags_AnyPopupLevel))
-            return;
-
-        const bool control = io.KeyCtrl;
-        const bool shift = io.KeyShift;
-
-        if (!control && ImGui::IsKeyPressed(ImGuiKey_Escape, false))
-            m_canvas.CancelGesture(m_model);
-        if (control && ImGui::IsKeyPressed(ImGuiKey_Z, false))
-        {
-            if (m_canvas.HasActiveGesture())
-            {
-                m_canvas.CancelGesture(m_model);
-            }
-            else if (auto* undo = TryGetUndoService())
-            {
-                (void)(shift ? undo->RequestRedo() : undo->RequestUndo());
-            }
-        }
-
-        // While a canvas gesture owns the pointer, save/structural commands and
-        // nudges must wait for its commit or cancel.
-        if (m_canvas.HasActiveGesture())
-            return;
-
-        if (control && ImGui::IsKeyPressed(ImGuiKey_S, false))
-            SaveDocument();
-        if (control && ImGui::IsKeyPressed(ImGuiKey_Y, false))
-        {
-            if (auto* undo = TryGetUndoService())
-                (void)undo->RequestRedo();
-        }
-        if (control && ImGui::IsKeyPressed(ImGuiKey_D, false))
-            m_canvas.DuplicateSelection(m_model);
-        if (control && ImGui::IsKeyPressed(ImGuiKey_C, false))
-            m_canvas.CopySelection(m_model);
-        if (control && ImGui::IsKeyPressed(ImGuiKey_V, false))
-            m_canvas.PasteClipboard(m_model);
-
-        if (!control && ImGui::IsKeyPressed(ImGuiKey_Delete, false))
-            m_canvas.DeleteSelection(m_model);
-        if (!control && ImGui::IsKeyPressed(ImGuiKey_F2, false))
-            m_hierarchy.RequestRename(m_model, m_model.GetSelectedNodeGuid());
-        if (!control && ImGui::IsKeyPressed(ImGuiKey_F, false))
-        {
-            if (shift)
-                m_canvas.RequestFrameSelection();
-            else
-                m_canvas.RequestFrameAll();
-        }
-
-        float deltaX = 0.0f;
-        float deltaY = 0.0f;
-        if (!control)
-        {
-            const float step = shift ? 10.0f : 1.0f;
-            if (ImGui::IsKeyPressed(ImGuiKey_LeftArrow))
-                deltaX -= step;
-            if (ImGui::IsKeyPressed(ImGuiKey_RightArrow))
-                deltaX += step;
-            if (ImGui::IsKeyPressed(ImGuiKey_UpArrow))
-                deltaY -= step;
-            if (ImGui::IsKeyPressed(ImGuiKey_DownArrow))
-                deltaY += step;
-        }
-        if (std::abs(deltaX) > 0.0f || std::abs(deltaY) > 0.0f)
-            m_canvas.NudgeSelection(m_model, deltaX, deltaY);
-
-        if (control &&
-            (ImGui::IsKeyPressed(ImGuiKey_Equal, false) ||
-             ImGui::IsKeyPressed(ImGuiKey_KeypadAdd, false)))
-        {
-            m_canvas.ZoomIn(m_model);
-        }
-        if (control &&
-            (ImGui::IsKeyPressed(ImGuiKey_Minus, false) ||
-             ImGui::IsKeyPressed(ImGuiKey_KeypadSubtract, false)))
-        {
-            m_canvas.ZoomOut(m_model);
-        }
-        if (control && ImGui::IsKeyPressed(ImGuiKey_0, false))
-            m_canvas.SetZoom(m_model, 1.0f);
     }
 
     void UIDocumentDesigner::PollExternalChanges()

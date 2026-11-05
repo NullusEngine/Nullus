@@ -389,12 +389,34 @@ void ApplyPostLoadMigrations(const Json& p_root)
     const auto version = p_root["version"].is_number()
         ? static_cast<int>(p_root["version"].number_value())
         : 0;
-    if (version >= kEditorSettingsVersion)
-        return;
-
     auto& debugSettings = NLS::Editor::Settings::EditorSettings::GetDebugDrawSettingsObject();
-    debugSettings.debugDrawCamera = true;
-    debugSettings.debugDrawLighting = true;
+    if (version < kEditorSettingsVersion)
+    {
+        debugSettings.debugDrawCamera = true;
+        debugSettings.debugDrawLighting = true;
+    }
+    // The old Debug Draw preferences remain defaults for other preview windows.
+    // Scene View gets its own copy once, so its toolbar cannot change those views.
+    if (!p_root["objects"]["editor.scene-view"].is_object() &&
+        p_root["objects"]["editor.debug-draw"].is_object())
+    {
+        auto& scene = NLS::Editor::Settings::EditorSettings::GetSceneViewSettingsObject();
+        scene.showGrid = debugSettings.debugDrawEnabled && debugSettings.debugDrawGrid;
+        scene.showGizmos = debugSettings.debugDrawEnabled;
+        scene.showCameras = debugSettings.debugDrawCamera;
+        scene.showCameraIcons = debugSettings.debugDrawCamera;
+        scene.showLights = debugSettings.debugDrawLighting;
+        scene.showLightIcons = debugSettings.debugDrawLighting;
+        scene.showBounds = debugSettings.debugDrawBounds;
+        scene.lightBillboardScale = debugSettings.lightBillboardScale;
+    }
+    const auto& sceneFields = p_root["objects"]["editor.scene-view"]["fields"];
+    if (sceneFields.is_object())
+    {
+        auto& scene = NLS::Editor::Settings::EditorSettings::GetSceneViewSettingsObject();
+        if (!sceneFields["showCameraIcons"].is_bool()) scene.showCameraIcons = scene.showCameras;
+        if (!sceneFields["showLightIcons"].is_bool()) scene.showLightIcons = scene.showLights;
+    }
 }
 }
 

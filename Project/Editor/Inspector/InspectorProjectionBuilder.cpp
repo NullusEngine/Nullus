@@ -118,6 +118,8 @@ PropertyNode BuildNode(
     if(schemaNode && schemaNode->typeId!=meta::InvalidTypeID) node.valueType=meta::Type(schemaNode->typeId,property.IsArray());
     if(!node.valueType.IsValid()) if(const auto value=property.GetValue();value.IsValid()) node.valueType=value.GetType();
     const auto* parent = schemaNode ? schema->FindNode(schemaNode->parent) : nullptr;
+    if (parent)
+        node.ownerTypeName = parent->typeName;
     if (parent && parent->typeId != meta::InvalidTypeID)
     {
         const meta::Type declaringType(parent->typeId);

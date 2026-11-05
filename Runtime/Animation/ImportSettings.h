@@ -3,10 +3,11 @@
 #include <string>
 #include <vector>
 #include "Animation.h"
+#include "Reflection/Macros.h"
 
 namespace NLS::Animation
 {
-enum class FbxReaderSelection {Autodesk,Assimp,AutodeskWithAssimpFallback};
+ENUM(FbxReaderSelection) {Autodesk,Assimp,AutodeskWithAssimpFallback};
 struct ImportSettings
 {
     bool importSkeleton=true;

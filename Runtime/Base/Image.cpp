@@ -4,6 +4,8 @@
 #define STB_IMAGE_WRITE_IMPLEMENTATION
 #include <stb/stb_image_write.h>
 #include "Image.h"
+#include "Detail/SvgRasterizer.h"
+#include <algorithm>
 #include <iostream>
 #include <cstring>
 #include <fstream>
@@ -33,6 +35,46 @@ bool ReadFileBytes(const std::string& filename, std::vector<uint8_t>& bytes)
     input.read(reinterpret_cast<char*>(bytes.data()), static_cast<std::streamsize>(bytes.size()));
     return input.good() || input.eof();
 }
+
+bool DecodeImage(const uint8_t* encodedData, size_t encodedSize, bool flipVertically,
+    int& width, int& height, int& channels, std::vector<unsigned char>& data)
+{
+    stbi_set_flip_vertically_on_load_thread(flipVertically);
+    int decodedWidth = 0;
+    int decodedHeight = 0;
+    int decodedChannels = 0;
+    if (auto* loadedData = stbi_load_from_memory(encodedData, static_cast<int>(encodedSize),
+        &decodedWidth, &decodedHeight, &decodedChannels, 0))
+    {
+        const size_t dataSize = static_cast<size_t>(decodedWidth) * decodedHeight * decodedChannels;
+        data.assign(loadedData, loadedData + dataSize);
+        stbi_image_free(loadedData);
+        width = decodedWidth;
+        height = decodedHeight;
+        channels = decodedChannels;
+        return true;
+    }
+
+    Detail::SvgPixels svg;
+    if (!Detail::RasterizeSvg(encodedData, encodedSize, svg))
+        return false;
+
+    width = svg.width;
+    height = svg.height;
+    channels = 4;
+    data = std::move(svg.rgba);
+    if (flipVertically)
+    {
+        const size_t stride = static_cast<size_t>(width) * 4u;
+        for (int y = 0; y < height / 2; ++y)
+        {
+            auto top = data.begin() + static_cast<size_t>(y) * stride;
+            auto bottom = data.begin() + static_cast<size_t>(height - 1 - y) * stride;
+            std::swap_ranges(top, top + stride, bottom);
+        }
+    }
+    return true;
+}
 }
 
 Image::Image(const std::string& filename, bool flipVertically)
@@ -48,28 +90,17 @@ Image::Image(const uint8_t* encodedData, size_t encodedDataSize, bool flipVertic
     , height(0)
     , channels(0)
 {
-    stbi_set_flip_vertically_on_load_thread(flipVertically);
     if (encodedData == nullptr || encodedDataSize == 0u || encodedDataSize > static_cast<size_t>(std::numeric_limits<int>::max()))
     {
         return;
     }
 
-    unsigned char* loadedData = stbi_load_from_memory(
-        encodedData,
-        static_cast<int>(encodedDataSize),
-        &width,
-        &height,
-        &channels,
-        0);
-    if (!loadedData)
+    if (!DecodeImage(encodedData, encodedDataSize, flipVertically, width, height, channels, data))
     {
         std::cerr << "Failed to load image from memory." << std::endl;
         return;
     }
 
-    const size_t dataSize = static_cast<size_t>(width) * static_cast<size_t>(height) * static_cast<size_t>(channels);
-    data.assign(loadedData, loadedData + dataSize);
-    stbi_image_free(loadedData);
 }
 // 创建指定大小的空白图像
 Image::Image(int width, int height, int channels)
@@ -135,24 +166,13 @@ void Image::Load(const std::string& filename, bool flipVertically)
         return;
     }
 
-    stbi_set_flip_vertically_on_load_thread(flipVertically);
-    unsigned char* loadedData = stbi_load_from_memory(
-        encodedBytes.data(),
-        static_cast<int>(encodedBytes.size()),
-        &width,
-        &height,
-        &channels,
-        0);
-    if (!loadedData)
+    if (!DecodeImage(encodedBytes.data(), encodedBytes.size(), flipVertically, width, height, channels, data))
     {
         std::cerr << "Failed to load image: " << filename << std::endl;
         width = height = channels = 0;
         return;
     }
 
-    const size_t dataSize = static_cast<size_t>(width) * static_cast<size_t>(height) * static_cast<size_t>(channels);
-    data.assign(loadedData, loadedData + dataSize);
-    stbi_image_free(loadedData);
 }
 
 

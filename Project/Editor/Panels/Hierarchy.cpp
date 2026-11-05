@@ -1,4 +1,8 @@
 #include "Panels/Hierarchy.h"
+#include "Shortcuts/EditorCommandInvocation.h"
+namespace Shortcuts = NLS::Editor::Shortcuts;
+#include "ImGui/imgui_internal.h"
+#include "Panels/SceneView.h"
 
 #include "Inspector/EditorSelectionService.h"
 #include "Core/EditorActions.h"
@@ -34,6 +38,10 @@
 #include <filesystem>
 #include <functional>
 #include <mutex>
+#include <algorithm>
+#include <ImGui/imgui.h>
+#include "Inspector/NativeReflectionAdapter.h"
+#include "Core/SceneSelection.h"
 
 using namespace NLS;
 
@@ -154,6 +162,25 @@ void RenameGameObjectThroughUndo(Engine::GameObject& gameObject, std::string new
         BuildHierarchyUndoScope(gameObject)));
 }
 
+struct HierarchyDragSelection
+{
+    NLS::Editor::Inspector::InspectorTargetHandle source;
+    NLS::Editor::Inspector::InspectorTargetSet selection;
+    NLS::Editor::Undo::UndoScopeId scope;
+};
+HierarchyDragSelection& GetHierarchyDragSelection()
+{
+    static HierarchyDragSelection snapshot;
+    return snapshot;
+}
+
+std::vector<Engine::GameObject*> GetHierarchyCommandSelection(Engine::GameObject& object)
+{
+    if (EDITOR_EXEC(IsGameObjectSelected(object))) return EDITOR_EXEC(GetSelectedGameObjects());
+    EDITOR_EXEC(SelectGameObject(object));
+    return {&object};
+}
+
 void ReparentGameObjectThroughUndo(Engine::GameObject& gameObject, Engine::GameObject* newParent)
 {
     if (!NLS::Core::ServiceLocator::Contains<NLS::Editor::Undo::EditorUndoService>())
@@ -163,11 +190,18 @@ void ReparentGameObjectThroughUndo(Engine::GameObject& gameObject, Engine::GameO
     }
 
     auto& undoService = NLS::Core::ServiceLocator::Get<NLS::Editor::Undo::EditorUndoService>();
-    ReportHierarchyUndoFailure(NLS::Editor::Panels::HierarchyUndo::ReparentGameObject(
-        undoService,
-        gameObject,
-        newParent,
-        BuildHierarchyUndoScope(gameObject)));
+    std::vector<Engine::GameObject*> objects;
+    const auto& drag = GetHierarchyDragSelection();
+    if (NLS::Editor::Inspector::NativeReflectionAdapter::ResolveObject(drag.source) == &gameObject &&
+        drag.scope == BuildHierarchyUndoScope(gameObject))
+    {
+        for (const auto& target : drag.selection.targets)
+            if (auto* object = dynamic_cast<Engine::GameObject*>(NLS::Editor::Inspector::NativeReflectionAdapter::ResolveObject(target)))
+                objects.push_back(object);
+    }
+    else objects = GetHierarchyCommandSelection(gameObject);
+    ReportHierarchyUndoFailure(NLS::Editor::Panels::HierarchyUndo::ReparentGameObjects(
+        undoService, objects, newParent, BuildHierarchyUndoScope(gameObject)));
 }
 
 void DuplicateGameObjectThroughUndo(Engine::GameObject& gameObject)
@@ -179,11 +213,9 @@ void DuplicateGameObjectThroughUndo(Engine::GameObject& gameObject)
     }
 
     auto& undoService = NLS::Core::ServiceLocator::Get<NLS::Editor::Undo::EditorUndoService>();
-    ReportHierarchyUndoFailure(NLS::Editor::Panels::HierarchyUndo::DuplicateGameObject(
-        undoService,
-        gameObject,
-        nullptr,
-        BuildHierarchyUndoScope(gameObject)));
+    const auto objects = GetHierarchyCommandSelection(gameObject);
+    ReportHierarchyUndoFailure(NLS::Editor::Panels::HierarchyUndo::DuplicateGameObjects(
+        undoService, objects, BuildHierarchyUndoScope(gameObject)));
 }
 
 void DeleteGameObjectThroughUndo(Engine::GameObject& gameObject)
@@ -195,10 +227,9 @@ void DeleteGameObjectThroughUndo(Engine::GameObject& gameObject)
     }
 
     auto& undoService = NLS::Core::ServiceLocator::Get<NLS::Editor::Undo::EditorUndoService>();
-    ReportHierarchyUndoFailure(NLS::Editor::Panels::HierarchyUndo::DeleteGameObject(
-        undoService,
-        gameObject,
-        BuildHierarchyUndoScope(gameObject)));
+    const auto objects = GetHierarchyCommandSelection(gameObject);
+    ReportHierarchyUndoFailure(NLS::Editor::Panels::HierarchyUndo::DeleteGameObjects(
+        undoService, objects, BuildHierarchyUndoScope(gameObject)));
 }
 
 void DropAssetIntoHierarchy(
@@ -306,21 +337,34 @@ public:
         if (m_target)
         {
             auto& focusButton = CreateWidget<UI::Widgets::MenuItem>("Focus");
-            focusButton.ClickedEvent += [this]
+            focusButton.ClickedEvent += [target = m_target->GetInstanceID()]
             {
-                EDITOR_EXEC(MoveToTarget(*m_target));
+                Shortcuts::InvocationContext invocation; invocation.source = Shortcuts::CommandSource::Menu; invocation.targetInstance = target;
+                Shortcuts::InvokeEditorCommand("edit.frame-selection-hierarchy", invocation);
             };
 
+            auto& visibilityMenu = CreateWidget<UI::Widgets::MenuList>("Scene Visibility");
+            visibilityMenu.CreateWidget<UI::Widgets::MenuItem>("Hide (with children)").ClickedEvent += [this]
+            { EDITOR_PANEL(Editor::Panels::SceneView, "Scene View").SetObjectVisibility(*m_target, false); };
+            visibilityMenu.CreateWidget<UI::Widgets::MenuItem>("Show (with children)").ClickedEvent += [this]
+            { EDITOR_PANEL(Editor::Panels::SceneView, "Scene View").SetObjectVisibility(*m_target, true); };
+            visibilityMenu.CreateWidget<UI::Widgets::MenuItem>("Hide this object").ClickedEvent += [this]
+            { EDITOR_PANEL(Editor::Panels::SceneView, "Scene View").SetObjectVisibility(*m_target, false, false); };
+            visibilityMenu.CreateWidget<UI::Widgets::MenuItem>("Show this object").ClickedEvent += [this]
+            { EDITOR_PANEL(Editor::Panels::SceneView, "Scene View").SetObjectVisibility(*m_target, true, false); };
+
             auto& duplicateButton = CreateWidget<UI::Widgets::MenuItem>("Duplicate");
-            duplicateButton.ClickedEvent += [this]
+            duplicateButton.ClickedEvent += [target = m_target->GetInstanceID()]
             {
-                DuplicateGameObjectThroughUndo(*m_target);
+                Shortcuts::InvocationContext invocation; invocation.source = Shortcuts::CommandSource::Menu; invocation.targetInstance = target;
+                Shortcuts::InvokeEditorCommand("edit.duplicate-selection-hierarchy", invocation);
             };
 
             auto& deleteButton = CreateWidget<UI::Widgets::MenuItem>("Delete");
-            deleteButton.ClickedEvent += [this]
+            deleteButton.ClickedEvent += [target = m_target->GetInstanceID()]
             {
-                DeleteGameObjectThroughUndo(*m_target);
+                Shortcuts::InvocationContext invocation; invocation.source = Shortcuts::CommandSource::Menu; invocation.targetInstance = target;
+                Shortcuts::InvokeEditorCommand("edit.delete-selected-gameobject-hierarchy", invocation);
             };
 
 			auto& renameMenu = CreateWidget<UI::Widgets::MenuList>("Rename to...");
@@ -509,12 +553,22 @@ Editor::Panels::Hierarchy::Hierarchy
 	{
 		NLS_PROFILE_NAMED_SCOPE("Hierarchy::ApplyEditorSelection");
 		UnselectGameObjectsWidgets();
-		const auto* target = selection.Primary();
-		if (target == nullptr || target->kind != NLS::Editor::Inspector::InspectorTargetKind::GameObject)
-			return;
-
-		if (auto* gameObject = NLS::Object::IDToPointer<Engine::GameObject>(target->instanceId))
-			SelectGameObjectByInstance(*gameObject);
+        for (const auto& target : selection.targets)
+        {
+            if (target.kind != NLS::Editor::Inspector::InspectorTargetKind::GameObject) continue;
+            auto* object = NLS::Object::IDToPointer<Engine::GameObject>(target.instanceId);
+            const auto found = m_widgetGameObjectLink.find(object);
+            if (found == m_widgetGameObjectLink.end() || !found->second) continue;
+            auto* widget = found->second;
+            widget->selected = true;
+            widget->activeSelection = selection.Active() && target == *selection.Active();
+            m_selectedWidgets.push_back(widget);
+            if (widget->activeSelection)
+            {
+                m_selectedWidget = widget;
+                if (widget->HasParent()) ExpandTreeNode(*static_cast<UI::Widgets::TreeNode*>(widget->GetParent()), m_sceneRoot);
+            }
+        }
 	};
 	m_sceneUnloadListener = EDITOR_CONTEXT(sceneManager).SceneUnloadEvent += std::bind(&Hierarchy::Clear, this);
 	m_sceneLoadListener = EDITOR_CONTEXT(sceneManager).SceneLoadEvent += std::bind(&Hierarchy::RebuildFromCurrentScene, this);
@@ -548,6 +602,8 @@ Editor::Panels::Hierarchy::~Hierarchy()
 void Editor::Panels::Hierarchy::Clear()
 {
 	EDITOR_EXEC(UnselectGameObject());
+    m_pendingSelectionClick.reset();
+    m_rangeAnchor = NLS::InstanceID_None;
 
 	m_sceneRoot->RemoveAllWidgets();
 	m_selectedWidget = nullptr;
@@ -557,11 +613,10 @@ void Editor::Panels::Hierarchy::Clear()
 
 void Editor::Panels::Hierarchy::UnselectGameObjectsWidgets()
 {
-	if (m_selectedWidget != nullptr)
-	{
-		m_selectedWidget->selected = false;
-		m_selectedWidget = nullptr;
-	}
+    for (auto* widget : m_selectedWidgets)
+        if (widget) { widget->selected = false; widget->activeSelection = false; }
+    m_selectedWidgets.clear();
+    m_selectedWidget = nullptr;
 }
 
 void Editor::Panels::Hierarchy::SelectGameObjectByInstance(Engine::GameObject& p_actor)
@@ -576,6 +631,8 @@ void Editor::Panels::Hierarchy::SelectGameObjectByWidget(UI::Widgets::TreeNode &
 	UnselectGameObjectsWidgets();
 
 	p_widget.selected = true;
+	p_widget.activeSelection = true;
+	m_selectedWidgets.push_back(&p_widget);
 	m_selectedWidget = &p_widget;
 
 	if (p_widget.HasParent())
@@ -621,10 +678,12 @@ void Editor::Panels::Hierarchy::DetachFromParent(Engine::GameObject & p_actor)
 
 void Editor::Panels::Hierarchy::DeleteGameObjectByInstance(Engine::GameObject& p_actor)
 {
+    EDITOR_EXEC(RemoveGameObjectFromSelection(p_actor));
 	if (auto result = m_widgetGameObjectLink.find(&p_actor); result != m_widgetGameObjectLink.end())
 	{
 		if (result->second)
 		{
+			std::erase(m_selectedWidgets, result->second);
 			result->second->Destroy();
 		}
 
@@ -654,7 +713,16 @@ void Editor::Panels::Hierarchy::AddGameObjectByInstance(Engine::GameObject & p_a
 	auto& textSelectable = m_sceneRoot->CreateWidget<UI::Widgets::TreeNode>(p_actor.GetName(), true);
 	textSelectable.leaf = true;
 	textSelectable.AddPlugin<GameObjectContextualMenu>(&p_actor, textSelectable);
-	textSelectable.AddPlugin<UI::DDSource<std::pair<Engine::GameObject*, UI::Widgets::TreeNode*>>>("GameObject", "Attach to...", std::make_pair(&p_actor, &textSelectable));
+    auto& dragSource = textSelectable.AddPlugin<UI::DDSource<std::pair<Engine::GameObject*, UI::Widgets::TreeNode*>>>("GameObject", "Attach selection to...", std::make_pair(&p_actor, &textSelectable));
+    dragSource.DragStartEvent += [this, &p_actor]
+    {
+        m_pendingSelectionClick.reset();
+        if (!EDITOR_EXEC(IsGameObjectSelected(p_actor))) EDITOR_EXEC(SelectGameObject(p_actor));
+        auto& drag = GetHierarchyDragSelection();
+        drag.source = NLS::Editor::Inspector::InspectorTargetHandle::FromObject(p_actor, NLS::Editor::Inspector::InspectorTargetKind::GameObject);
+        drag.selection = NLS::Editor::Inspector::EditorSelectionService::Get().GetSelection();
+        drag.scope = BuildHierarchyUndoScope(p_actor);
+    };
 	textSelectable.AddPlugin<UI::DDTarget<std::pair<Engine::GameObject*, UI::Widgets::TreeNode*>>>("GameObject").DataReceivedEvent += [&p_actor](std::pair<Engine::GameObject*, UI::Widgets::TreeNode*> p_element)
 	{
 		if (p_element.first == nullptr)
@@ -685,12 +753,166 @@ void Editor::Panels::Hierarchy::AddGameObjectByInstance(Engine::GameObject & p_a
 	m_widgetGameObjectLink[targetPtr] = &textSelectable;
 	RefreshPrefabPresentation(*targetPtr);
 
-	textSelectable.ClickedEvent += EDITOR_BIND(SelectGameObject, std::ref(p_actor));
+    textSelectable.ClickedEvent += [this, &p_actor] { HandleSelectionClick(p_actor); };
 	textSelectable.DoubleClickedEvent += EDITOR_BIND(MoveToTarget, std::ref(p_actor));
+}
+
+std::vector<Engine::GameObject*> Editor::Panels::Hierarchy::CaptureVisibleObjects() const
+{
+    std::unordered_map<const UI::Widgets::TreeNode*, Engine::GameObject*> objects;
+    for (const auto& [object, widget] : m_widgetGameObjectLink) objects.emplace(widget, object);
+    std::vector<Engine::GameObject*> visible;
+    const auto collect = [&](auto&& self, const UI::Widgets::TreeNode& parent) -> void
+    {
+        if (!parent.IsOpened()) return;
+        for (const auto& [item, mode] : parent.GetWidgets())
+            if (const auto* node = dynamic_cast<const UI::Widgets::TreeNode*>(item);
+                node && node->enabled && !node->IsDestroyed())
+            {
+                if (const auto found = objects.find(node); found != objects.end()) visible.push_back(found->second);
+                self(self, *node);
+            }
+    };
+    if (m_sceneRoot) collect(collect, *m_sceneRoot);
+    return visible;
+}
+
+void Editor::Panels::Hierarchy::SelectAll()
+{
+    m_pendingSelectionClick.reset();
+    const auto visible = CaptureVisibleObjects();
+    EDITOR_EXEC(SelectGameObjects(visible));
+    if (!visible.empty()) m_rangeAnchor = visible.back()->GetInstanceID();
+}
+
+void Editor::Panels::Hierarchy::HandleSelectionClick(Engine::GameObject& object)
+{
+    using namespace NLS::Editor::Inspector;
+    auto& service = EditorSelectionService::Get();
+    const auto handle = InspectorTargetHandle::FromObject(object, InspectorTargetKind::GameObject);
+    const auto& io = ImGui::GetIO();
+    const bool action = io.KeyCtrl || io.KeySuper;
+    const auto before = object.GetScene() ? Core::FilterSceneSelection(service.GetSelection(), *object.GetScene()) : InspectorTargetSet{};
+    m_pendingSelectionClick.reset();
+    if (io.KeyShift)
+    {
+        const auto visible = CaptureVisibleObjects();
+        const auto begin = std::find_if(visible.begin(), visible.end(), [this](const auto* candidate) { return candidate->GetInstanceID() == m_rangeAnchor; });
+        const auto end = std::find(visible.begin(), visible.end(), &object);
+        InspectorTargetSet range;
+        if (begin != visible.end() && end != visible.end())
+            for (auto it = (std::min)(begin, end); it != (std::max)(begin, end) + 1; ++it)
+                range.targets.push_back(InspectorTargetHandle::FromObject(**it, InspectorTargetKind::GameObject));
+        else { range.targets.push_back(handle); m_rangeAnchor = object.GetInstanceID(); }
+        range.activeTarget = handle;
+        service.SetSelection(ComposeSelection(before, std::move(range), action ? SelectionOperation::Add : SelectionOperation::Replace));
+    }
+    else if (action)
+    {
+        service.SetSelection(ComposeSelection(before, {{handle}}, SelectionOperation::Toggle));
+        m_rangeAnchor = object.GetInstanceID();
+    }
+    else
+    {
+        m_rangeAnchor = object.GetInstanceID();
+        if (service.Contains(handle) && !service.GetSelection().IsSingleTarget())
+        {
+            m_pendingSelectionClick = handle;
+            m_selectionPressPosition = {io.MousePos.x, io.MousePos.y};
+        }
+        else EDITOR_EXEC(SelectGameObject(object));
+    }
+}
+
+void Editor::Panels::Hierarchy::OnBeforeDrawWidgets()
+{
+    if (ImGui::GetIO().AppFocusLost) m_pendingSelectionClick.reset();
+    const auto revision = HierarchyUndo::GetHierarchyOrderRevision();
+    if (m_hierarchyOrderRevision != revision)
+    {
+        SynchronizeHierarchyOrder();
+        m_hierarchyOrderRevision = revision;
+    }
+}
+
+void Editor::Panels::Hierarchy::SynchronizeHierarchyOrder()
+{
+    auto* scene = EDITOR_CONTEXT(sceneManager).GetCurrentScene();
+    if (EDITOR_CONTEXT(activePrefabStage).has_value() && EDITOR_CONTEXT(activePrefabStage)->stageScene)
+        scene = EDITOR_CONTEXT(activePrefabStage)->stageScene.get();
+    if (!scene) return;
+
+    const auto reorder = [this](UI::Widgets::TreeNode& parent, const auto& objects)
+    {
+        parent.CollectGarbages();
+        std::vector<UI::Widgets::AWidget*> ordered;
+        for (auto* object : objects)
+        {
+            if (!object || object->IsEditorTransient()) continue;
+            const auto found = m_widgetGameObjectLink.find(object);
+            if (found == m_widgetGameObjectLink.end() || found->second->GetParent() != &parent) return;
+            ordered.push_back(found->second);
+        }
+        (void)parent.ReorderChildren(ordered);
+    };
+    std::vector<Engine::GameObject*> roots;
+    for (auto* object : scene->GetGameObjects())
+        if (object && !object->HasParent()) roots.push_back(object);
+    reorder(*m_sceneRoot, roots);
+    for (auto* object : scene->GetGameObjects())
+    {
+        if (!object || object->IsEditorTransient()) continue;
+        const auto found = m_widgetGameObjectLink.find(object);
+        if (found != m_widgetGameObjectLink.end()) reorder(*found->second, object->GetChildren());
+    }
+}
+
+void Editor::Panels::Hierarchy::OnAfterDrawWidgets()
+{
+    const auto& io = ImGui::GetIO();
+    if (m_pendingSelectionClick && !io.MouseDown[0])
+    {
+        const float dx = io.MousePos.x - m_selectionPressPosition.x, dy = io.MousePos.y - m_selectionPressPosition.y;
+        if (ImGui::IsMouseReleased(0) && dx * dx + dy * dy <= io.MouseDragThreshold * io.MouseDragThreshold)
+            if (auto* object = dynamic_cast<Engine::GameObject*>(NLS::Editor::Inspector::NativeReflectionAdapter::ResolveObject(*m_pendingSelectionClick)))
+                EDITOR_EXEC(SelectGameObject(*object));
+        m_pendingSelectionClick.reset();
+    }
+    if (ImGui::IsWindowHovered() && ImGui::IsMouseClicked(0) && !ImGui::IsAnyItemHovered() && !ImGui::IsDragDropActive())
+    {
+        m_pendingSelectionClick.reset(); m_rangeAnchor = NLS::InstanceID_None;
+        EDITOR_EXEC(UnselectGameObject());
+    }
+}
+
+std::vector<NLS::InstanceID> Editor::Panels::Hierarchy::CaptureExpandedObjects() const
+{
+    std::vector<NLS::InstanceID> ids;
+    if(m_sceneRoot && m_sceneRoot->IsOpened())ids.push_back(NLS::InstanceID_None);
+    for (const auto& [object, widget] : m_widgetGameObjectLink)
+        if (object && widget && widget->IsOpened()) ids.push_back(object->GetInstanceID());
+    return ids;
+}
+void Editor::Panels::Hierarchy::RestoreExpandedObjects(const std::vector<NLS::InstanceID>& ids)
+{
+    if(m_sceneRoot)
+    {
+        if(std::find(ids.begin(),ids.end(),NLS::InstanceID_None)!=ids.end())m_sceneRoot->Open();
+        else m_sceneRoot->Close();
+    }
+    for (const auto& [object, widget] : m_widgetGameObjectLink)
+        if (object && widget)
+        {
+            if (std::find(ids.begin(),ids.end(),object->GetInstanceID()) != ids.end()) widget->Open();
+            else widget->Close();
+        }
 }
 
 void Editor::Panels::Hierarchy::RebuildFromCurrentScene()
 {
+	UnselectGameObjectsWidgets();
+	m_pendingSelectionClick.reset();
+	m_rangeAnchor = NLS::InstanceID_None;
 	m_sceneRoot->RemoveAllWidgets();
 	m_selectedWidget = nullptr;
 	m_widgetGameObjectLink.clear();

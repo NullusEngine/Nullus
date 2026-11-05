@@ -9,6 +9,7 @@ internal static partial class MetaParserTool
         string outputDir)
     {
         var manifest = MetaParserGeneratorRegistry.ReflectionManifest;
+        using var renderer = new MetaParserTemplateRenderer();
         var templateRoot = Path.Combine(AppContext.BaseDirectory, "Templates");
         var moduleSession = BuildModuleTemplateSession(config.TargetName);
         var generatedSourceIncludes = new List<string>();
@@ -48,10 +49,10 @@ internal static partial class MetaParserTool
                     .ThenBy(static type => type.QualifiedName, StringComparer.Ordinal)
                     .ToList(),
                 reflectionTypeCatalog);
-            var generatedHeaderText = MetaParserTemplateRenderer.Render(
+            var generatedHeaderText = renderer.Render(
                 MetaParserTemplateCatalog.ResolvePath(templateRoot, manifest.Templates.HeaderRule.HeaderTemplate),
                 headerSession);
-            var generatedSourceText = MetaParserTemplateRenderer.Render(
+            var generatedSourceText = renderer.Render(
                 MetaParserTemplateCatalog.ResolvePath(templateRoot, manifest.Templates.HeaderRule.SourceTemplate),
                 headerSession);
 
@@ -70,7 +71,7 @@ internal static partial class MetaParserTool
             var extensionModel = new EditorExtensionTemplateModel(
                 BuildEditorExtensionRegistrationFunctionName(moduleSession.SanitizedTargetName),
                 editorExtensions);
-            var extensionSourceText = MetaParserTemplateRenderer.Render(
+            var extensionSourceText = renderer.Render(
                 MetaParserTemplateCatalog.ResolvePath(templateRoot, MetaParserTemplateCatalog.EditorExtensionDescriptorsSource),
                 CreateTemplateSession(extensionModel));
             WriteAllTextIfChanged(extensionPath, extensionSourceText);
@@ -87,10 +88,10 @@ internal static partial class MetaParserTool
             moduleModel.LinkFunctionName,
             BuildEditorExtensionRegistrationFunctionName(moduleModel.SanitizedTargetName));
 
-        var moduleHeaderText = MetaParserTemplateRenderer.Render(
+        var moduleHeaderText = renderer.Render(
             MetaParserTemplateCatalog.ResolvePath(templateRoot, manifest.Templates.ModuleRule.HeaderTemplate),
             CreateTemplateSession(moduleHeaderModel));
-        var moduleSourceText = MetaParserTemplateRenderer.Render(
+        var moduleSourceText = renderer.Render(
             MetaParserTemplateCatalog.ResolvePath(templateRoot, manifest.Templates.ModuleRule.SourceTemplate),
             CreateTemplateSession(moduleModel));
 
@@ -732,22 +733,32 @@ internal static partial class MetaParserTool
         if (File.Exists(path))
             return;
 
-        var encoding = new UTF8Encoding(false);
-        var bytes = encoding.GetBytes(text);
+        var temporaryPath = $"{path}.{Guid.NewGuid():N}.tmp";
         try
         {
-            using var stream = new FileStream(path, FileMode.CreateNew, FileAccess.Write, FileShare.Read);
-            stream.Write(bytes, 0, bytes.Length);
+            File.WriteAllText(temporaryPath, text, new UTF8Encoding(false));
+            try
+            {
+                // Different module invocations may need the same external
+                // stub. Publish complete contents without replacing its owner.
+                File.Move(temporaryPath, path, overwrite: false);
+            }
+            catch (IOException) when (File.Exists(path))
+            {
+            }
         }
-        catch (IOException)
+        finally
         {
+            if (File.Exists(temporaryPath))
+                File.Delete(temporaryPath);
         }
     }
 
     private static void WriteAllTextIfChanged(string path, string text)
+        => WriteAllBytesIfChanged(path, new UTF8Encoding(false).GetBytes(text));
+
+    private static void WriteAllBytesIfChanged(string path, byte[] bytes)
     {
-        var encoding = new UTF8Encoding(false);
-        var bytes = encoding.GetBytes(text);
         if (File.Exists(path))
         {
             var existingBytes = File.ReadAllBytes(path);

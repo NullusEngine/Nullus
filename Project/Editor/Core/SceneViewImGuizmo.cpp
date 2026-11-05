@@ -9,6 +9,8 @@
 #include "Math/Vector4.h"
 #include "Rendering/Geometry/BoundingSphereUtils.h"
 #include "Settings/EditorSettings.h"
+#include <algorithm>
+#include <cmath>
 
 namespace NLS::Editor::Core
 {
@@ -510,7 +512,8 @@ void ApplyGameObjectWorldGizmoMatrix(
     const SceneViewGizmoPivot p_pivot)
 {
     auto* transform = p_actor.GetTransform();
-    if (transform == nullptr)
+    if (transform == nullptr || !std::all_of(p_matrix.begin(), p_matrix.end(),
+        [](const float value) { return std::isfinite(value); }))
         return;
 
     const Maths::Vector3 previousPivotPosition = GetGameObjectGizmoPivotPosition(p_actor, p_pivot);

@@ -11,6 +11,7 @@
 #include "Windowing/InfiniteCursorWrapState.h"
 #include "Math/Vector2.h"
 #include "PlatformDef.h"
+#include "Windowing/Inputs/WindowInputEvent.h"
 
 namespace NLS::Windowing
 {
@@ -21,9 +22,14 @@ namespace NLS::Windowing
 	class NLS_PLATFORM_API Window
 	{
 	public:
+			Event<const Inputs::WindowInputEvent&> InputEvent;
+			bool IsDispatchingInputEvent() const { return m_dispatchingInputEvent; }
+			Inputs::PlatformInputBackend* GetInputBackend() const { return m_inputBackend; }
+			void SetInputBackend(Inputs::PlatformInputBackend* backend) { m_inputBackend = backend; }
 		/* Inputs relatives */
 		Event<int> KeyPressedEvent;
 		Event<int> KeyReleasedEvent;
+			Event<unsigned int> CharacterEvent;
 		Event<int> MouseButtonPressedEvent;
 		Event<int> MouseButtonReleasedEvent;
 		Event<double, double> MouseScrollEvent;
@@ -340,9 +346,11 @@ namespace NLS::Windowing
 #endif
 	private:
 		void CreateGlfwWindow(const Settings::WindowSettings& p_windowSettings);
+			void PublishInputEvent(const Inputs::WindowInputEvent& event);
 
 		/* Callbacks binding */
 		void BindKeyCallback() const;
+			void BindCharacterCallback() const;
 		void BindMouseCallback() const;
 		void BindScrollsCallback() const;
 		void BindResizeCallback() const;
@@ -368,6 +376,13 @@ namespace NLS::Windowing
 
 		Context::Device& m_device;
 		GLFWwindow* m_glfwWindow;
+			Inputs::PlatformInputBackend* m_inputBackend = nullptr;
+			bool m_dispatchingInputEvent = false;
+			bool m_warpingPointer = false;
+                bool m_pendingPointerWarp = false;
+                double m_pointerWarpX = 0.0;
+                double m_pointerWarpY = 0.0;
+                void WarpCursor(double x, double y);
 
 		/* Window settings */
 		std::string m_title;

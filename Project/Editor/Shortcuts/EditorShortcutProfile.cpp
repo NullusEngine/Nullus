@@ -1,6 +1,7 @@
 #include "Shortcuts/EditorShortcutProfile.h"
 
 #include <fstream>
+#include <charconv>
 
 #include <Json/json.hpp>
 
@@ -10,51 +11,30 @@ namespace NLS::Editor::Shortcuts
     {
         using json = nlohmann::json;
 
-        std::string KeyToStorageString(const Windowing::Inputs::EKey p_key)
-        {
-            return std::to_string(static_cast<int>(p_key));
-        }
-
-        Windowing::Inputs::EKey KeyFromStorageString(const std::string& p_value)
-        {
-            return static_cast<Windowing::Inputs::EKey>(std::stoi(p_value));
-        }
-
-        json BindingToJson(const ShortcutBinding& p_binding)
-        {
-            return json::object({
-                { "assigned", p_binding.assigned },
-                { "key", KeyToStorageString(p_binding.primaryKey) },
-                { "modifiers", p_binding.modifiers }
-            });
-        }
-
         std::optional<ShortcutBinding> BindingFromJson(const json& p_json)
         {
             if (!p_json.is_object())
                 return std::nullopt;
 
             ShortcutBinding binding;
-            binding.assigned = p_json.value("assigned", false);
-            binding.primaryKey = KeyFromStorageString(p_json.value("key", "-1"));
-            binding.modifiers = static_cast<ShortcutModifiers>(p_json.value("modifiers", 0));
+            const auto assigned = p_json.find("assigned"), key = p_json.find("key"), modifiers = p_json.find("modifiers");
+            if (assigned == p_json.end() || !assigned->is_boolean() || key == p_json.end() || !key->is_string() ||
+                modifiers == p_json.end() || !modifiers->is_number_integer()) return std::nullopt;
+            const auto keyText = key->get<std::string>();
+            int keyCode = -1;
+            const auto converted = std::from_chars(keyText.data(), keyText.data() + keyText.size(), keyCode);
+            if (converted.ec != std::errc{} || converted.ptr != keyText.data() + keyText.size()) return std::nullopt;
+            const auto modifierBits = modifiers->get<int64_t>();
+            if (modifierBits < 0 || modifierBits > 31 || keyCode < 0 || keyCode >= 512) return std::nullopt;
+            binding.assigned = assigned->get<bool>();
+            binding.primaryKey = static_cast<Windowing::Inputs::EKey>(keyCode);
+            binding.modifiers = static_cast<ShortcutModifiers>(modifierBits);
 
             if (!binding.IsValid())
                 return std::nullopt;
 
             return binding;
         }
-    }
-
-    void EditorShortcutProfile::SetBindingOverride(const std::string& p_commandId, const ShortcutBinding& p_binding)
-    {
-        m_bindingOverrides[p_commandId] = p_binding;
-        m_unassignedCommands.erase(p_commandId);
-    }
-
-    void EditorShortcutProfile::RemoveBindingOverride(const std::string& p_commandId)
-    {
-        m_bindingOverrides.erase(p_commandId);
     }
 
     std::optional<ShortcutBinding> EditorShortcutProfile::GetBindingOverride(const std::string& p_commandId) const
@@ -68,17 +48,6 @@ namespace NLS::Editor::Shortcuts
     const std::unordered_map<std::string, ShortcutBinding>& EditorShortcutProfile::GetBindingOverrides() const
     {
         return m_bindingOverrides;
-    }
-
-    void EditorShortcutProfile::SetCommandUnassigned(const std::string& p_commandId)
-    {
-        m_bindingOverrides.erase(p_commandId);
-        m_unassignedCommands.insert(p_commandId);
-    }
-
-    void EditorShortcutProfile::RemoveCommandUnassigned(const std::string& p_commandId)
-    {
-        m_unassignedCommands.erase(p_commandId);
     }
 
     bool EditorShortcutProfile::IsCommandUnassigned(const std::string& p_commandId) const
@@ -109,8 +78,10 @@ namespace NLS::Editor::Shortcuts
             // recoverable configuration error even in builds where the JSON
             // library is compiled with exceptions disabled.
             const json root = json::parse(input, nullptr, false);
-            if (root.is_discarded())
+            if (root.is_discarded() || !root.is_object())
                 return false;
+            if (const auto version = root.find("version"); version != root.end() &&
+                (!version->is_number_integer() || version->get<int64_t>() != 1)) return false;
 
             if (const auto bindingsIt = root.find("bindings");
                 bindingsIt != root.end() && bindingsIt->is_object())
@@ -142,35 +113,4 @@ namespace NLS::Editor::Shortcuts
         return true;
     }
 
-    bool EditorShortcutProfile::Save(const std::filesystem::path& p_path) const
-    {
-        try
-        {
-            std::filesystem::create_directories(p_path.parent_path());
-
-            json bindings = json::object();
-            for (const auto& [commandId, binding] : m_bindingOverrides)
-                bindings[commandId] = BindingToJson(binding);
-
-            json unassigned = json::array();
-            for (const auto& commandId : m_unassignedCommands)
-                unassigned.push_back(commandId);
-
-            const json root = json::object({
-                { "version", 1 },
-                { "profileName", "Default" },
-                { "bindings", bindings },
-                { "unassigned", unassigned }
-            });
-
-            std::ofstream output(p_path);
-            output << root.dump(4);
-        }
-        catch (...)
-        {
-            return false;
-        }
-
-        return true;
-    }
 }

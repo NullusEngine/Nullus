@@ -43,6 +43,8 @@ target_link_libraries(
   PUBLIC
     NLS_Engine
     NLS_Scripting
+    NLS_Plugins
+    NLS_Packages
     NLS_VFXCompiler
     NLS_MaterialCompiler
     NLS_Build
@@ -66,6 +68,7 @@ nls_add_meta_generation(EditorProject "${CMAKE_CURRENT_SOURCE_DIR}" "${EDITOR_HE
 add_executable(Editor ${EDITOR_ENTRY_SOURCE})
 nls_add_windows_app_icon(Editor)
 nls_copy_editor_resources_to_target(Editor)
+nls_copy_script_api_to_target(Editor)
 nls_copy_tracy_tools_to_target(Editor)
 
 # 指定输出路径
@@ -83,6 +86,7 @@ target_include_directories(
 )
 
 target_link_libraries(Editor PRIVATE EditorProject)
+nls_attach_source_plugins(Editor Editor)
 if(UNIX)
   find_package(Threads REQUIRED)
   target_link_libraries(Editor PRIVATE Threads::Threads)

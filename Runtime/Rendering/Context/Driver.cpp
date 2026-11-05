@@ -20,6 +20,7 @@
 
 #include "Profiling/Profiler.h"
 #include "TaskGraph/TaskGraphSystem.h"
+#include "Jobs/JobSystem.h"
 #include "Threading/ExecutionThreadBudget.h"
 #include "Rendering/Data/PipelineState.h"
 #include "Rendering/Settings/DriverSettings.h"
@@ -642,6 +643,12 @@ namespace
 
         Render::RHI::RHIRenderPassDesc renderPassDesc;
         renderPassDesc.renderArea = { 0, 0, input.renderWidth, input.renderHeight };
+        if (input.outputViewport)
+        {
+            const auto rect=*input.outputViewport;
+            renderPassDesc.renderArea={static_cast<int32_t>(rect.x),static_cast<int32_t>(rect.y),
+                static_cast<uint32_t>(rect.z),static_cast<uint32_t>(rect.w)};
+        }
         renderPassDesc.debugName = ResolvePassProfileScopeName(input);
         renderPassDesc.attachmentsRequireExternalStateTransitions = useResourceStateTracker;
 
@@ -775,10 +782,10 @@ namespace
 
         commandBuffer.BeginRenderPass(renderPassDesc);
         commandBuffer.SetViewport({
-            0.0f,
-            0.0f,
-            static_cast<float>(input.renderWidth),
-            static_cast<float>(input.renderHeight),
+            static_cast<float>(renderPassDesc.renderArea.x),
+            static_cast<float>(renderPassDesc.renderArea.y),
+            static_cast<float>(renderPassDesc.renderArea.width),
+            static_cast<float>(renderPassDesc.renderArea.height),
             0.0f,
             1.0f
         });
@@ -1274,14 +1281,17 @@ namespace
     {
         const bool proceduralIndirect = drawCommand.indirectArguments != nullptr && drawCommand.mesh == nullptr;
         const bool indexedIndirect = drawCommand.indirectArguments != nullptr && drawCommand.mesh != nullptr;
+        const bool proceduralDirect = drawCommand.indirectArguments == nullptr && drawCommand.mesh == nullptr &&
+            drawCommand.vertexCount > 0u && drawCommand.instanceCount > 0u;
         if (drawCommand.pipeline == nullptr ||
-            (!proceduralIndirect && !indexedIndirect && (drawCommand.materialBindingSet == nullptr || drawCommand.mesh == nullptr)))
+            (!proceduralIndirect && !indexedIndirect && !proceduralDirect &&
+                (drawCommand.materialBindingSet == nullptr || drawCommand.mesh == nullptr)))
         {
             return false;
         }
 
         const auto& pipelineDesc = drawCommand.pipeline->GetDesc();
-        if ((proceduralIndirect || indexedIndirect) && PipelineRequiresBindingSet(pipelineDesc,::NLS::Render::RHI::BindingPointMap::kMaterialDescriptorSet) &&
+        if ((proceduralIndirect || indexedIndirect || proceduralDirect) && PipelineRequiresBindingSet(pipelineDesc,::NLS::Render::RHI::BindingPointMap::kMaterialDescriptorSet) &&
             !drawCommand.materialBindingSet) return false;
         const bool requiresObjectBindingSet = PipelineRequiresBindingSet(
             pipelineDesc,
@@ -1333,6 +1343,13 @@ namespace
             commandBuffer.BindIndexBuffer({indices,0,drawCommand.mesh->GetIndexType()});
             const auto result = commandBuffer.DrawIndexedIndirect(drawCommand.indirectArguments,drawCommand.indirectArgumentOffset);
             if (!result.Succeeded()) NLS_LOG_ERROR(result.message);
+            return result.Succeeded();
+        }
+        if (proceduralDirect)
+        {
+            const auto result = commandBuffer.DrawChecked(
+                drawCommand.vertexCount, drawCommand.instanceCount, drawCommand.vertexStart, 0u);
+            if (!result.Succeeded() && !result.message.empty()) NLS_LOG_ERROR(result.message);
             return result.Succeeded();
         }
         commandBuffer.PushConstants(
@@ -2671,6 +2688,18 @@ std::vector<uint64_t> DriverRendererAccess::CollectStreamingDependencyPins(const
         return {};
 
     return Detail::CollectPendingStreamingDependencyPins(*driver.m_impl);
+}
+
+bool DriverRendererAccess::SetPreviewVsyncOverride(Driver& driver,std::optional<bool> value)
+{
+    const bool supported=driver.GetActiveGraphicsBackend()==Settings::EGraphicsBackend::DX12;
+    driver.m_impl->previewPresentVsync.store(supported&&value.has_value()?(*value?1:0):-1,std::memory_order_release);
+    return supported;
+}
+std::optional<bool> DriverRendererAccess::GetEffectivePresentVsync(const Driver& driver)
+{
+    const int value=driver.m_impl->effectivePresentVsync.load(std::memory_order_acquire);
+    return value<0?std::nullopt:std::optional<bool>(value!=0);
 }
 
 void DriverRendererAccess::SetViewport(
@@ -5047,16 +5076,20 @@ void Driver::StartThreadedRenderingWorkers()
         return;
     }
     m_impl->taskGraph = &NLS::Base::TaskGraph::GetGlobalTaskGraph();
+    // An application may establish the shared scheduler (including an explicit
+    // background-worker override) before creating its first Driver.
+    m_impl->jobsForegroundWorkerCount = NLS::Base::Jobs::GetJobWorkerCount();
+    m_impl->jobsBackgroundWorkerCount = NLS::Base::Jobs::GetBackgroundJobWorkerCount();
     // Bind the pool that the async render command pipe executes on so resource
     // preparation overlaps the serial main pipe instead of running inline.
     RenderCommandDispatcher::SetTaskGraph(m_impl->taskGraph);
     NLS_LOG_INFO(
-        "Driver: rendering TaskGraph workers=" +
+        "Driver: shared TaskGraph/Jobs compute workers=" +
         std::to_string(m_impl->taskGraph->GetWorkerCount()) +
         " jobsForegroundWorkers=" +
-        std::to_string(threadBudget.jobsForegroundWorkerCount) +
+        std::to_string(m_impl->jobsForegroundWorkerCount) +
         " jobsBackgroundWorkers=" +
-        std::to_string(threadBudget.jobsBackgroundWorkerCount) +
+        std::to_string(m_impl->jobsBackgroundWorkerCount) +
         " hardwareConcurrency=" +
         std::to_string(std::thread::hardware_concurrency()));
     NLS_LOG_INFO("Driver: RHI thread mode " + m_impl->rhiThreadModeSummary);

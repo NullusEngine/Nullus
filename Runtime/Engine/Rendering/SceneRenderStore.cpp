@@ -425,13 +425,15 @@ namespace NLS::Engine::Rendering
     }
 
     void SceneRenderStore::ForEachLightInternal(
-        const std::function<void(const NLS::Render::Entities::Light&)>& visitor) const
+        const std::function<void(const NLS::Render::Entities::Light&)>& visitor,
+        std::span<const int32_t> hiddenObjectIds) const
     {
         if (!visitor)
             return;
         for (const auto& slot : m_slots)
         {
-            if (slot.occupied && slot.light != nullptr)
+            if (slot.occupied && slot.light != nullptr &&
+                !std::binary_search(hiddenObjectIds.begin(), hiddenObjectIds.end(), static_cast<int32_t>(slot.payload.ownerInstanceId)))
                 visitor(*slot.light);
         }
     }
@@ -487,10 +489,11 @@ namespace NLS::Engine::Rendering
     }
 
     void SceneRenderStore::ForEachLight(
-        const std::function<void(const NLS::Render::Entities::Light&)>& visitor) const
+        const std::function<void(const NLS::Render::Entities::Light&)>& visitor,
+        std::span<const int32_t> hiddenObjectIds) const
     {
         const auto view = Read();
-        view.ForEachLight(visitor);
+        view.ForEachLight(visitor, hiddenObjectIds);
     }
 
     void SceneRenderStore::ForEachSkyBox(
@@ -565,10 +568,11 @@ namespace NLS::Engine::Rendering
     }
 
     void SceneRenderStore::ReadView::ForEachLight(
-        const std::function<void(const NLS::Render::Entities::Light&)>& visitor) const
+        const std::function<void(const NLS::Render::Entities::Light&)>& visitor,
+        std::span<const int32_t> hiddenObjectIds) const
     {
         RequireRenderThread();
-        m_store.ForEachLightInternal(visitor);
+        m_store.ForEachLightInternal(visitor, hiddenObjectIds);
     }
 
     void SceneRenderStore::ReadView::ForEachSkyBox(

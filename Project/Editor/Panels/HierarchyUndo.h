@@ -2,6 +2,7 @@
 
 #include <optional>
 #include <string>
+#include <span>
 
 #include <Math/Vector3.h>
 #include <Engine/PrimitiveType.h>
@@ -25,6 +26,15 @@ struct ScriptAsset;
 
 namespace NLS::Editor::Panels::HierarchyUndo
 {
+// Changes when a forest command changes the displayed hierarchy order.
+[[nodiscard]] uint64_t GetHierarchyOrderRevision();
+[[nodiscard]] Undo::ExecuteResult DeleteGameObjects(Undo::EditorUndoService& undoService,
+    std::span<Engine::GameObject* const> objects, Undo::UndoScopeId scope);
+[[nodiscard]] Undo::ExecuteResult DuplicateGameObjects(Undo::EditorUndoService& undoService,
+    std::span<Engine::GameObject* const> objects, Undo::UndoScopeId scope);
+[[nodiscard]] Undo::ExecuteResult ReparentGameObjects(Undo::EditorUndoService& undoService,
+    std::span<Engine::GameObject* const> objects, Engine::GameObject* parent, Undo::UndoScopeId scope);
+
 // These entry points are deliberately independent from the Hierarchy widget.
 // Commands retain ObjectIdentifiers through ObjectUndoTarget, so a rebuilt
 // panel cannot leave a history entry with a dangling UI or GameObject pointer.

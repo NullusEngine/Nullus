@@ -94,6 +94,7 @@ void ImportProgressTracker::ReportProgress(
             state->localProgress,
             ClampProgress(normalizedProgress));
         event.normalizedProgress = CalculateTargetBatchProgressLocked(event.targetPlatform);
+        event.localProgress = state->localProgress;
         event.message = std::move(message);
         event.cancellationRequested = state->cancellation.IsCancellationRequested();
         Publish(*state, std::move(event));
@@ -147,6 +148,7 @@ void ImportProgressTracker::FinishJob(
         }
         state->finished = true;
         event.normalizedProgress = CalculateTargetBatchProgressLocked(event.targetPlatform);
+        event.localProgress = state->localProgress;
         Publish(*state, std::move(event));
 
         m_batchProgress.activeJob.reset();

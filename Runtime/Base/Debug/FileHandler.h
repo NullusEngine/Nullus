@@ -29,6 +29,7 @@ namespace NLS::Debug
 		* @param p_path
 		*/
 		static void SetLogFilePath(const std::string& p_path);
+		static void Flush();
 
 	private:
 		static std::string GetLogHeader(ELogLevel p_logLevel);

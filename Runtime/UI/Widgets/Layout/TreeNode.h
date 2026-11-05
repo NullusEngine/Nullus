@@ -1,6 +1,7 @@
 #pragma once
 
 #include <vector>
+#include <span>
 
 #include <Eventing/Event.h>
 #include <Math/Color.h>
@@ -38,6 +39,9 @@ namespace NLS::UI::Widgets
 		*/
 		bool IsOpened() const;
 
+            // Reorder existing children without changing their ownership or state.
+            bool ReorderChildren(std::span<AWidget* const> children);
+
 	protected:
 		virtual void _Draw_Impl() override;
 
@@ -47,6 +51,7 @@ namespace NLS::UI::Widgets
 	public:
 		std::string name;
 		bool selected = false;
+            bool activeSelection = false;
         bool leaf = false;
         bool useTextColor = false;
         Maths::Color textColor = Maths::Color(1.0f, 1.0f, 1.0f, 1.0f);

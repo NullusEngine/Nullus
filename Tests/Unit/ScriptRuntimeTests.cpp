@@ -10,11 +10,13 @@
 #include "Scripting/ScriptRuntimeSetup.h"
 #include "Scripting/ScriptDebug.h"
 #include "Scripting/UIScriptEventBinding.h"
+#include "Debug/Logger.h"
 #include "Debug/ExternalCodeEditor.h"
 #include "Debug/ProjectDebugWorkspace.h"
 #include "Debug/VSCodeConfigurationGenerator.h"
 #include "Debug/VisualStudioConfigurationGenerator.h"
 #include "Scripting/ManagedScriptBuildService.h"
+#include "Scripting/ManagedScriptDebugSession.h"
 #include "Serialization/EditorSerializationManagedBridge.h"
 #include "Engine/GameObject.h"
 #include "Engine/Components/CameraComponent.h"
@@ -43,6 +45,7 @@
 #include <iterator>
 #include <stdexcept>
 #include <sstream>
+#include <thread>
 #include <unordered_map>
 #include <unordered_set>
 #include <utility>
@@ -433,6 +436,17 @@ TEST(ScriptRuntimeTests, ExternalCodeEditorBuildsStableVisualStudioCodeLocation)
     EXPECT_EQ(arguments[2], "Assets/Player Script.cs:1:1");
 }
 
+TEST(ScriptRuntimeTests, ExternalCodeEditorBuildsVisualStudioLineCommand)
+{
+    const auto arguments = NLS::Editor::Debug::ExternalCodeEditor::BuildVisualStudioLineArguments("Source File.cpp", 42);
+    ASSERT_EQ(arguments.size(), 3u);
+    EXPECT_EQ(arguments[0], "Source File.cpp");
+    EXPECT_EQ(arguments[1], "/Command");
+    EXPECT_EQ(arguments[2], "Edit.GoTo 42");
+    EXPECT_EQ(NLS::Editor::Debug::ExternalCodeEditor::BuildVisualStudioLineArguments("Source.cpp", 0),
+        (std::vector<std::string>{"/Edit", "Source.cpp"}));
+}
+
 TEST(ScriptRuntimeTests, VSCodeConfigurationGenerationPreservesCppLaunchEntry)
 {
     const auto root = std::filesystem::temp_directory_path() /
@@ -624,6 +638,85 @@ TEST(ScriptRuntimeTests, ManagedScriptBuildUsesRepositoryLocalDotnetWithoutResto
     EXPECT_NE(command.find("Optimize=false"), std::string::npos);
 }
 
+TEST(ScriptRuntimeTests, ManagedScriptBuildRejectsDifferentRuntimeContract)
+{
+    const auto root = FindNullusRoot();
+    ASSERT_FALSE(root.empty());
+    NLS::Editor::Scripting::ManagedScriptBuildRequest request;
+    request.projectRoot = root;
+    request.scriptApiManifest = root / "Library" / "ScriptApi" / "ScriptApi.json";
+    request.expectedSchemaHash = "different-runtime-contract";
+    const auto command = NLS::Editor::Scripting::ManagedScriptBuildService::BuildCommand(request);
+    EXPECT_NE(command.find("NullusScriptApiManifest="), std::string::npos);
+    EXPECT_NE(command.find("-m:1"), std::string::npos);
+    const auto result = NLS::Editor::Scripting::ManagedScriptBuildService::Build(request);
+    EXPECT_FALSE(result.succeeded);
+    EXPECT_NE(result.output.find("does not match the Editor runtime"), std::string::npos);
+}
+
+#if NLS_ENABLE_CSHARP_SCRIPTING
+TEST(ScriptRuntimeTests, EditorBuildsAgainstRuntimeContractBeforeLoadingStaleCache)
+{
+    const auto root = FindNullusRoot();
+    ASSERT_FALSE(root.empty());
+    const auto dotnetRoot = ResolveDotnetRoot(root);
+    ASSERT_FALSE(dotnetRoot.empty());
+    const auto project = root / "build" / "script-recovery-tests" /
+        NLS::Core::Assets::AssetId::New().ToString();
+    const auto cache = project / "Library" / "ScriptBuild" / "Managed";
+    std::filesystem::create_directories(project / "Assets");
+    std::filesystem::create_directories(cache);
+    {
+        std::ofstream script(project / "Assets" / "RecoveryScript.cs");
+        script << "using Nullus; public sealed class RecoveryScript : Behaviour { public int Value; }\n";
+        std::ofstream staleAssembly(cache / "GameScripts.stale.dll", std::ios::binary);
+        staleAssembly << "stale";
+        std::ofstream staleConfig(cache / "GameScripts.stale.runtimeconfig.json");
+        staleConfig << "{}";
+        std::ofstream staleRuntime(cache / "Nullus.Managed.dll", std::ios::binary);
+        staleRuntime << "stale";
+    }
+
+    ScriptRuntime runtime;
+    ScriptRuntimeSetupOptions options;
+    options.projectRoot = project;
+    options.scriptApiDirectory = root / "Library" / "ScriptApi";
+    options.dotnetRoot = dotnetRoot;
+    options.enableCSharp = false;
+    options.enableLua = false;
+    const auto setup = InitializeScriptRuntime(runtime, options);
+    ASSERT_TRUE(setup.status.Succeeded()) << setup.status.message;
+    ASSERT_EQ(runtime.GetBackend(ScriptLanguage::CSharp), nullptr);
+
+    {
+        NLS::Editor::Scripting::ManagedScriptDebugSession session(
+            runtime, project, options.scriptApiDirectory / "ScriptApi.json");
+        session.SetEnabled(true);
+        ASSERT_TRUE(session.StartBuild());
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::minutes(5);
+        while (session.HasPendingBuild() && std::chrono::steady_clock::now() < deadline)
+        {
+            session.Poll();
+            std::this_thread::sleep_for(std::chrono::milliseconds(50));
+        }
+        ASSERT_FALSE(session.HasPendingBuild()) << "Managed script build timed out.";
+        ASSERT_TRUE(session.GetLastStatus().Succeeded())
+            << session.GetLastStatus().message << "\n" << session.GetLastBuild().output;
+        EXPECT_TRUE(std::filesystem::is_regular_file(cache / "Nullus.Editor.dll"));
+        const auto* backend = dynamic_cast<const CoreClrScriptBackend*>(runtime.GetBackend(ScriptLanguage::CSharp));
+        ASSERT_NE(backend, nullptr);
+        const auto& behaviours = backend->GetBehaviourManifest();
+        EXPECT_NE(std::find_if(behaviours.begin(), behaviours.end(), [](const auto& entry)
+        {
+            return entry.simpleName == "RecoveryScript";
+        }), behaviours.end());
+    }
+    runtime.Shutdown();
+    std::error_code cleanupError;
+    std::filesystem::remove_all(project, cleanupError);
+}
+#endif
+
 TEST(ScriptRuntimeTests, FailedManagedScriptBuildKeepsPreviousHashedAssembly)
 {
     const auto root = FindNullusRoot();
@@ -652,8 +745,10 @@ TEST(ScriptRuntimeTests, RuntimeSetupDiscoversContentAddressedManagedArtifacts)
 {
     const auto root = FindNullusRoot();
     ASSERT_FALSE(root.empty());
-    const auto projectRoot = std::filesystem::temp_directory_path() /
-        ("NullusScriptArtifactDiscovery-" + NLS::Core::Assets::AssetId::New().ToString());
+    // Keep this nested in the checkout: its build artifacts are a fallback,
+    // and must not override this project's own content-addressed scripts.
+    const auto projectRoot = root / "build" / "script-artifact-tests" /
+        NLS::Core::Assets::AssetId::New().ToString();
     const auto outputRoot = projectRoot / "Library" / "ScriptBuild" / "Managed";
     std::filesystem::create_directories(outputRoot);
     const auto assembly = outputRoot / "GameScripts.0123456789abcdef.dll";
@@ -1711,7 +1806,10 @@ TEST(ScriptRuntimeTests, RuntimeSetupUsesRepositoryLocalSchemaAndDotnetArtifacts
 
     ScriptRuntime runtime;
     ScriptRuntimeSetupOptions options;
-    options.projectRoot = root / "TestProject";
+    const auto projectRoot = root / "build" / "script-setup-tests" /
+        NLS::Core::Assets::AssetId::New().ToString();
+    std::filesystem::create_directories(projectRoot);
+    options.projectRoot = projectRoot;
     const auto setup = InitializeScriptRuntime(runtime, options);
 
     ASSERT_TRUE(setup.status.Succeeded()) << setup.status.message;
@@ -1724,6 +1822,8 @@ TEST(ScriptRuntimeTests, RuntimeSetupUsesRepositoryLocalSchemaAndDotnetArtifacts
     EXPECT_FALSE(setup.dotnetRoot.empty());
     EXPECT_FALSE(setup.managedAssembly.empty());
     EXPECT_TRUE(runtime.IsInitialized());
+    runtime.Shutdown();
+    std::filesystem::remove_all(projectRoot);
 }
 
 #endif
@@ -2148,15 +2248,17 @@ TEST(ScriptRuntimeTests, CoreClrHotReloadPreservesFieldsRollsBackAndCollectsOldA
 
     void* diagnosticFunction = nullptr;
     const auto diagnosticStatus = backendPtr->GetHost().GetUnmanagedFunctionPointer(
-        assembly,
-        "Nullus.GameScripts.GameScriptsExports, GameScripts",
+        assembly.parent_path() / "Nullus.Managed.dll",
+        "Nullus.ManagedExports, Nullus.Managed",
         "CollectAndGetLiveProjectLoadContextCount",
         diagnosticFunction);
     ASSERT_TRUE(diagnosticStatus.Succeeded()) << diagnosticStatus.message;
     using CollectLoadContextCountFn = int (*)();
     const auto collectLoadContextCount = reinterpret_cast<CollectLoadContextCountFn>(diagnosticFunction);
     ASSERT_NE(collectLoadContextCount, nullptr);
-    EXPECT_EQ(collectLoadContextCount(), 0);
+    // Initialization now creates the first collectible project context so
+    // separate Play sessions never share project statics.
+    EXPECT_EQ(collectLoadContextCount(), 1);
 
     for (int reloadIndex = 0; reloadIndex < 3; ++reloadIndex)
     {
@@ -2198,6 +2300,7 @@ TEST(ScriptRuntimeTests, CoreClrHotReloadPreservesFieldsRollsBackAndCollectsOldA
 
     ASSERT_TRUE(backendPtr->DestroyInstance(instance).Succeeded());
     backendPtr->Shutdown();
+    EXPECT_EQ(collectLoadContextCount(), 0);
 }
 
 TEST(ScriptRuntimeTests, CoreClrBatchInvocationReducesManagedAbiBoundaries)
@@ -2442,6 +2545,42 @@ TEST(ScriptRuntimeTests, CSharpAndLuaComponentsShareOwnerLifecycleAndIsolateErro
 #endif
 
 #if NLS_ENABLE_LUA_SCRIPTING && NLS_HAS_LUA_VM
+TEST(ScriptRuntimeTests, LuaPrintFlowsToConsoleWithSourceAndStack)
+{
+    const auto previousMode = NLS::Debug::Logger::GetStackTraceMode(NLS::Debug::ELogLevel::LOG_INFO);
+    struct ModeGuard
+    {
+        NLS::Debug::StackTraceMode previous;
+        ~ModeGuard() { NLS::Debug::Logger::SetStackTraceMode(NLS::Debug::ELogLevel::LOG_INFO, previous); }
+    } modeGuard{previousMode};
+    NLS::Debug::Logger::SetStackTraceMode(NLS::Debug::ELogLevel::LOG_INFO, NLS::Debug::StackTraceMode::ScriptOnly);
+    std::vector<NLS::Debug::LogData> messages;
+    const auto listener = NLS::Debug::Logger::LogEvent += [&](const NLS::Debug::LogData& data)
+    {
+        if (data.source == NLS::Debug::ELogSource::Lua) messages.push_back(data);
+    };
+    struct ListenerGuard
+    {
+        NLS::ListenerID id;
+        ~ListenerGuard() { NLS::Debug::Logger::LogEvent -= id; }
+    } listenerGuard{listener};
+    LuaScriptBackend backend;
+    ASSERT_TRUE(backend.Initialize({}).Succeeded());
+    ScriptAsset asset;
+    asset.assetId = NLS::Core::Assets::AssetId::New();
+    asset.language = ScriptLanguage::Lua;
+    asset.sourcePath = "Assets/ConsoleProbe.lua";
+    asset.sourceText = "return { Update = function(self, dt) print('lua console', 42) end }";
+    ASSERT_TRUE(backend.LoadScript(asset).Succeeded());
+    ScriptInstanceHandle instance;
+    ASSERT_TRUE(backend.CreateInstance(asset, {}, instance).Succeeded());
+    ASSERT_TRUE(backend.Invoke(instance, ScriptCallback::Update, {}).Succeeded());
+    ASSERT_EQ(messages.size(), 1u);
+    EXPECT_EQ(messages.front().message, "lua console\t42");
+    EXPECT_NE(messages.front().scriptStack.find("ConsoleProbe.lua"), std::string::npos);
+    EXPECT_GT(messages.front().sourceLine, 0);
+}
+
 TEST(ScriptRuntimeTests, LuaSourceValidationReportsAssetLocation)
 {
     LuaScriptBackend backend;

@@ -4,6 +4,8 @@
 
 #include "Assets/EditorAssetDragPayload.h"
 #include "Core/EditorActions.h"
+#include "Core/SceneSelection.h"
+#include <Components/TransformComponent.h>
 #include "Inspector/EditorSelectionService.h"
 
 #include <Components/Component.h>
@@ -20,6 +22,7 @@
 
 #include <algorithm>
 #include <cstddef>
+#include <cmath>
 #include <limits>
 #include <memory>
 #include <optional>
@@ -43,6 +46,7 @@ using Undo::UndoValidationResult;
 using Undo::ObjectUndoTarget;
 
 constexpr size_t kNoSiblingIndex = std::numeric_limits<size_t>::max();
+uint64_t g_hierarchyOrderRevision = 0;
 
 [[nodiscard]] Undo::UndoRequestResult Failed(std::string message)
 {
@@ -415,7 +419,7 @@ struct SubtreeSnapshot
         return std::nullopt;
 
     SubtreeSnapshot snapshot;
-    snapshot.prefab = Engine::Serialize::ObjectGraphSerializer::SerializePrefab(root);
+    snapshot.prefab = Engine::Serialize::ObjectGraphSerializer::SerializeSceneSubtree(root);
     if (!NormalizeSnapshotRootParent(snapshot.prefab) ||
         !CaptureSubtreeObjectTargets(
             snapshot.prefab.graph,
@@ -737,7 +741,8 @@ struct RestoreSubtreeResult
             persistentManager.BindObjectIdentifier(
                 *found->second,
                 target.GetObjectIdentifier()) == InstanceID_None ||
-            !target.Matches(*found->second))
+            !target.Matches(*found->second) ||
+            !persistentManager.BindObjectGraphId(*scene, *found->second, objectId))
         {
             cleanupInstantiated();
             return {nullptr, "The restored hierarchy subtree could not reclaim its stable object identifiers."};
@@ -786,6 +791,7 @@ struct UndoSelectionTarget
 struct UndoSelectionSnapshot
 {
     std::vector<UndoSelectionTarget> targets;
+    std::optional<size_t> activeIndex;
 };
 
 [[nodiscard]] UndoSelectionSnapshot CaptureSelection(const Undo::UndoScopeId& scope)
@@ -809,6 +815,7 @@ struct UndoSelectionSnapshot
             if (!captured.object.has_value())
                 continue;
         }
+        if (selection.Active() && target == *selection.Active()) snapshot.activeIndex = snapshot.targets.size();
         snapshot.targets.push_back(std::move(captured));
     }
     return snapshot;
@@ -855,8 +862,9 @@ void RestoreSelection(const UndoSelectionSnapshot& snapshot)
     InspectorTargetSet selection;
     selection.targets.reserve(snapshot.targets.size());
     Engine::GameObject* primaryGameObject = nullptr;
-    for (const auto& target : snapshot.targets)
+    for (size_t index = 0; index < snapshot.targets.size(); ++index)
     {
+        const auto& target = snapshot.targets[index];
         if (target.object.has_value())
         {
             auto* object = target.object->Resolve();
@@ -865,6 +873,7 @@ void RestoreSelection(const UndoSelectionSnapshot& snapshot)
             if (target.kind == InspectorTargetKind::GameObject && primaryGameObject == nullptr)
                 primaryGameObject = dynamic_cast<Engine::GameObject*>(object);
             selection.targets.push_back(InspectorTargetHandle::FromObject(*object, target.kind));
+            if (snapshot.activeIndex == index) selection.activeTarget = selection.targets.back();
             continue;
         }
 
@@ -873,6 +882,7 @@ void RestoreSelection(const UndoSelectionSnapshot& snapshot)
             target.resourcePath,
             target.assetId,
             target.typeName));
+        if (snapshot.activeIndex == index) selection.activeTarget = selection.targets.back();
     }
     selection.Normalize();
 
@@ -1478,6 +1488,324 @@ private:
     std::vector<ObjectUndoTarget> m_afterNewParentChildren;
 };
 
+enum class ForestOperation { Delete, Duplicate, Reparent };
+
+struct ForestParentState
+{
+    ObjectUndoTarget parent;
+    std::vector<ObjectUndoTarget> children;
+};
+struct ForestTransform
+{
+    Maths::Vector3 position, scale;
+    Maths::Quaternion rotation;
+};
+ForestTransform ReadForestTransform(const Engine::GameObject& object)
+{
+    const auto& transform = *object.GetTransform();
+    return {transform.GetLocalPosition(), transform.GetLocalScale(), transform.GetLocalRotation()};
+}
+void WriteForestTransform(Engine::GameObject& object, const ForestTransform& value)
+{
+    auto& transform = *object.GetTransform();
+    transform.SetLocalPosition(value.position); transform.SetLocalRotation(value.rotation); transform.SetLocalScale(value.scale);
+}
+struct ForestEntry
+{
+    ObjectUndoTarget source;
+    SubtreeSnapshot snapshot;
+    SubtreeLocation location;
+    std::optional<ObjectUndoTarget> oldParent;
+    size_t oldIndex = kNoSiblingIndex, newIndex = kNoSiblingIndex;
+    ForestTransform before, after;
+};
+
+[[nodiscard]] std::optional<std::vector<ObjectUndoTarget>> CaptureSceneRoots(
+    const Scene& scene, const Undo::UndoScopeId& scope)
+{
+    std::vector<ObjectUndoTarget> roots;
+    for (auto* object : scene.GetGameObjects())
+    {
+        if (!object || object->HasParent() || object->IsEditorTransient()) continue;
+        auto target = ObjectUndoTarget::Capture(*object, scope);
+        if (!target) return std::nullopt;
+        roots.push_back(std::move(*target));
+    }
+    return roots;
+}
+
+[[nodiscard]] bool SceneRootsMatch(const Scene& scene, const std::vector<ObjectUndoTarget>& expected)
+{
+    size_t index = 0;
+    for (auto* object : scene.GetGameObjects())
+    {
+        if (!object || object->HasParent() || object->IsEditorTransient()) continue;
+        if (index >= expected.size() || expected[index++].ResolveAs<Engine::GameObject>() != object) return false;
+    }
+    return index == expected.size();
+}
+
+[[nodiscard]] bool RestoreSceneRootOrder(Scene& scene, const std::vector<ObjectUndoTarget>& expected)
+{
+    std::vector<Engine::GameObject*> ordered;
+    std::unordered_set<Engine::GameObject*> members;
+    ordered.reserve(expected.size());
+    for (const auto& target : expected)
+    {
+        auto* object = target.ResolveAs<Engine::GameObject>();
+        if (!object || object->GetScene() != &scene || object->HasParent() || object->IsEditorTransient() ||
+            !members.insert(object).second) return false;
+        ordered.push_back(object);
+    }
+    size_t count = 0;
+    for (auto* object : scene.GetGameObjects())
+    {
+        if (!object || object->HasParent() || object->IsEditorTransient()) continue;
+        if (!members.contains(object)) return false;
+        ++count;
+    }
+    if (count != ordered.size()) return false;
+    size_t index = 0;
+    for (auto& object : scene.GetGameObjects())
+        if (object && !object->HasParent() && !object->IsEditorTransient()) object = ordered[index++];
+    return true;
+}
+
+// A forest is one command. Parent child lists are validated at the operation
+// boundary, rather than comparing each sibling's intermediate state with the
+// final state (which makes ordinary composite subtree commands conflict).
+class ForestUndoCommand final : public IEditorUndoCommand
+{
+public:
+    ForestUndoCommand(UndoCommandInfo info, ForestOperation operation, ObjectUndoTarget scene,
+        std::vector<ForestEntry> entries, std::optional<ObjectUndoTarget> parent,
+        std::vector<ForestParentState> parents, std::vector<ObjectUndoTarget> roots, UndoSelectionSnapshot selection)
+        : m_info(std::move(info)), m_operation(operation), m_scene(std::move(scene)),
+          m_entries(std::move(entries)), m_parent(std::move(parent)),
+          m_beforeParents(std::move(parents)), m_beforeRoots(std::move(roots)), m_beforeSelection(std::move(selection)) {}
+    UndoCommandInfo GetInfo() const override { return m_info; }
+    bool TryMergeFrom(const IEditorUndoCommand&) override { return false; }
+    UndoValidationResult Validate(UndoDirection direction, const UndoExecutionContext&) const override
+    {
+        auto* scene = ResolveScene(m_scene);
+        if (!scene) return UndoValidationResult::Stale("The selected objects' Scene no longer exists.");
+        if (m_parent && !ResolveGameObject(m_parent)) return UndoValidationResult::Stale("The destination parent no longer exists.");
+        const auto& roots = m_initialized && direction == UndoDirection::Undo ? m_afterRoots : m_beforeRoots;
+        if (!SceneRootsMatch(*scene, roots)) return UndoValidationResult::Conflict("The Scene root order changed outside the Undo timeline.");
+        const auto& parents = m_initialized && direction == UndoDirection::Undo ? m_afterParents : m_beforeParents;
+        for (const auto& parent : parents)
+        {
+            const auto result = ValidateChildrenSnapshot(parent.parent, parent.children);
+            if (result.state != Undo::UndoValidationState::Ready) return result;
+        }
+        for (const auto& entry : m_entries)
+        {
+            const bool present = !m_initialized || m_operation == ForestOperation::Reparent ||
+                (m_operation == ForestOperation::Delete ? direction == UndoDirection::Redo : direction == UndoDirection::Undo);
+            const auto& target = !m_initialized || m_operation == ForestOperation::Reparent ? entry.source : entry.snapshot.root;
+            auto* object = ResolveGameObject(target);
+            if (present && (!object || object->GetScene() != scene)) return UndoValidationResult::Stale("A selected hierarchy subtree no longer exists.");
+            if (present)
+            {
+                const auto& expectedParent = !m_initialized ? entry.oldParent : m_operation == ForestOperation::Reparent
+                    ? (direction == UndoDirection::Undo ? m_parent : entry.oldParent) : entry.location.parent;
+                if (object->GetParent() != ResolveGameObject(expectedParent))
+                    return UndoValidationResult::Conflict("A selected hierarchy root moved outside the Undo timeline.");
+                if (m_operation != ForestOperation::Reparent)
+                    for (const auto& [id, member] : entry.snapshot.objectTargets)
+                        if (!member.Resolve()) return UndoValidationResult::Stale("A selected subtree object no longer exists.");
+            }
+            if (!present)
+                for (const auto& [id, member] : entry.snapshot.objectTargets)
+                    if (member.Resolve()) return UndoValidationResult::Conflict("A restored hierarchy identifier is already in use.");
+        }
+        return UndoValidationResult::Ready();
+    }
+    UndoStartResult Apply(UndoDirection direction, const UndoExecutionContext&, UndoCompletion) override
+    {
+        Inspector::EditorSelectionUpdate selectionUpdate;
+        const bool initial = !m_initialized;
+        std::vector<size_t> applied;
+        UndoStartResult failure = UndoStartResult::Completed();
+        for (size_t step = 0; step < m_entries.size(); ++step)
+        {
+            const size_t index = direction == UndoDirection::Redo ? step : m_entries.size() - 1 - step;
+            auto result = ApplyEntry(m_entries[index], direction, initial);
+            if (result.state != Undo::UndoStartState::Completed) { failure = result; break; }
+            applied.push_back(index);
+        }
+        if (failure.state != Undo::UndoStartState::Completed)
+        {
+            bool rollbackFailed = failure.rollbackFailed;
+            const auto reverse = direction == UndoDirection::Redo ? UndoDirection::Undo : UndoDirection::Redo;
+            for (auto it = applied.rbegin(); it != applied.rend(); ++it)
+                rollbackFailed |= ApplyEntry(m_entries[*it], reverse, false).state != Undo::UndoStartState::Completed;
+            if (auto* scene = ResolveScene(m_scene)) rollbackFailed |= !RestoreSceneRootOrder(*scene, direction == UndoDirection::Redo ? m_beforeRoots : m_afterRoots);
+            else rollbackFailed = true;
+            ++g_hierarchyOrderRevision;
+            RestoreSelection(direction == UndoDirection::Redo ? m_beforeSelection : m_afterSelection);
+            return UndoStartResult::Failed(failure.message, rollbackFailed);
+        }
+        if (initial)
+        {
+            m_afterParents = m_beforeParents;
+            auto* scene = ResolveScene(m_scene);
+            auto roots = scene ? CaptureSceneRoots(*scene, m_info.scopes.front()) : std::nullopt;
+            bool captured = roots.has_value();
+            if (roots) m_afterRoots = std::move(*roots);
+            for (auto& parent : m_afterParents)
+                if (auto* object = ResolveGameObject(parent.parent))
+                {
+                    if (auto children = SnapshotChildren(object, m_info.scopes.front())) parent.children = std::move(*children);
+                    else captured = false;
+                }
+                else captured = false;
+            if (!captured)
+            {
+                bool rollbackFailed = false;
+                for (auto it = applied.rbegin(); it != applied.rend(); ++it)
+                    rollbackFailed |= ApplyEntry(m_entries[*it], UndoDirection::Undo, false).state != Undo::UndoStartState::Completed;
+                if (scene) rollbackFailed |= !RestoreSceneRootOrder(*scene, m_beforeRoots);
+                else rollbackFailed = true;
+                ++g_hierarchyOrderRevision;
+                RestoreSelection(m_beforeSelection);
+                return UndoStartResult::Failed("The resulting hierarchy could not be captured for Undo.", rollbackFailed);
+            }
+            if (m_operation == ForestOperation::Duplicate) SelectDuplicates();
+            else RestoreSelection(m_beforeSelection);
+            m_afterSelection = CaptureSelection(m_info.scopes.front());
+            m_initialized = true;
+            m_info.estimatedBytes = sizeof(*this);
+            for (const auto& entry : m_entries) m_info.estimatedBytes += EstimateSnapshotBytes(entry.snapshot);
+        }
+        else
+        {
+            auto* scene = ResolveScene(m_scene);
+            if (!scene || !RestoreSceneRootOrder(*scene, direction == UndoDirection::Undo ? m_beforeRoots : m_afterRoots))
+            {
+                bool rollbackFailed = false;
+                const auto reverse = direction == UndoDirection::Redo ? UndoDirection::Undo : UndoDirection::Redo;
+                for (auto it = applied.rbegin(); it != applied.rend(); ++it)
+                    rollbackFailed |= ApplyEntry(m_entries[*it], reverse, false).state != Undo::UndoStartState::Completed;
+                if (scene) rollbackFailed |= !RestoreSceneRootOrder(*scene, direction == UndoDirection::Redo ? m_beforeRoots : m_afterRoots);
+                else rollbackFailed = true;
+                ++g_hierarchyOrderRevision;
+                RestoreSelection(direction == UndoDirection::Redo ? m_beforeSelection : m_afterSelection);
+                return UndoStartResult::Failed("The Scene root order could not be restored.", rollbackFailed);
+            }
+            RestoreSelection(direction == UndoDirection::Undo ? m_beforeSelection : m_afterSelection);
+        }
+        ++g_hierarchyOrderRevision;
+        return UndoStartResult::Completed();
+    }
+private:
+    UndoStartResult ApplyEntry(ForestEntry& entry, UndoDirection direction, bool initial)
+    {
+        auto* scene = ResolveScene(m_scene);
+        if (!scene) return UndoStartResult::Failed("The owning Scene no longer exists.");
+        if (m_operation == ForestOperation::Reparent)
+        {
+            auto* object = ResolveGameObject(entry.source);
+            if (!object || !object->GetTransform()) return UndoStartResult::Failed("The transform no longer exists.");
+            if (initial)
+            {
+                auto* oldParent = object->GetParent();
+                entry.oldIndex = oldParent ? FindSiblingIndex(*object, oldParent).value_or(kNoSiblingIndex) : kNoSiblingIndex;
+                auto* parent = ResolveGameObject(m_parent);
+                entry.newIndex = parent ? parent->GetChildren().size() : kNoSiblingIndex;
+                const auto position = object->GetTransform()->GetWorldPosition();
+                const auto rotation = object->GetTransform()->GetWorldRotation();
+                const auto scale = object->GetTransform()->GetWorldScale();
+                auto result = ApplyHierarchyState(entry.source, m_parent, entry.newIndex);
+                if (result.state != Undo::UndoStartState::Completed) return result;
+                object->GetTransform()->SetWorldPosition(position); object->GetTransform()->SetWorldRotation(rotation);
+                object->GetTransform()->SetWorldScale(scale);
+                entry.after = ReadForestTransform(*object);
+                return UndoStartResult::Completed();
+            }
+            auto result = ApplyHierarchyState(entry.source, direction == UndoDirection::Undo ? entry.oldParent : m_parent,
+                direction == UndoDirection::Undo ? entry.oldIndex : entry.newIndex);
+            if (result.state == Undo::UndoStartState::Completed)
+                WriteForestTransform(*object, direction == UndoDirection::Undo ? entry.before : entry.after);
+            return result;
+        }
+        const bool remove = m_operation == ForestOperation::Delete ? direction == UndoDirection::Redo : direction == UndoDirection::Undo;
+        if (remove)
+        {
+            auto* root = ResolveGameObject(entry.snapshot.root);
+            if (!root) return UndoStartResult::Failed("The selected subtree no longer exists.");
+            if (initial)
+            {
+                auto location = CaptureDeletionLocation(*root, m_info.scopes.front());
+                if (!location) return UndoStartResult::Failed("The subtree location could not be captured.");
+                entry.location = std::move(*location);
+            }
+            MarkOwningSceneDirty(*root);
+            return DestroySubtreeImmediately(*scene, *root) ? UndoStartResult::Completed() : UndoStartResult::Failed("The selected subtree could not be deleted.");
+        }
+        if (initial)
+        {
+            auto* source = ResolveGameObject(entry.source);
+            if (!source) return UndoStartResult::Failed("The duplicate source no longer exists.");
+            auto location = CaptureCreationLocation(*scene, source->GetParent(), m_info.scopes.front());
+            if (!location) return UndoStartResult::Failed("The duplicate location could not be captured.");
+            entry.location = std::move(*location);
+            auto* copy = InstantiateSubtreeWithoutStableIds(entry.snapshot.prefab, *scene, entry.location);
+            if (!copy) return UndoStartResult::Failed("The selected subtree could not be duplicated.");
+            copy->SetName(MakeDuplicateName(*source, *scene, source->GetParent()));
+            auto snapshot = CaptureSubtree(*copy, m_info.scopes.front());
+            if (!snapshot || !FinalizeCreationLocation(entry.location, *copy, m_info.scopes.front()))
+            {
+                const bool cleaned = DestroySubtreeImmediately(*scene, *copy);
+                return UndoStartResult::Failed("The duplicate could not be captured for Undo.", !cleaned);
+            }
+            entry.snapshot = std::move(*snapshot);
+            MarkOwningSceneDirty(*copy);
+            return UndoStartResult::Completed();
+        }
+        const auto restored = RestoreSubtree(entry.snapshot, entry.location);
+        return restored.root ? UndoStartResult::Completed() : UndoStartResult::Failed(restored.message, restored.rollbackFailed);
+    }
+    void SelectDuplicates()
+    {
+        auto selected = m_beforeSelection;
+        for (auto& target : selected.targets)
+        {
+            auto* object = target.object ? target.object->ResolveAs<Engine::GameObject>() : nullptr;
+            if (!object) continue;
+            for (const auto& entry : m_entries)
+            {
+                auto* source = ResolveGameObject(entry.source);
+                std::vector<size_t> path;
+                auto* cursor = object;
+                while (cursor && cursor != source)
+                {
+                    auto* parent = cursor->GetParent();
+                    if (!parent) break;
+                    path.push_back(FindSiblingIndex(*cursor, parent).value_or(kNoSiblingIndex));
+                    cursor = parent;
+                }
+                if (cursor != source) continue;
+                auto* copy = ResolveGameObject(entry.snapshot.root);
+                for (auto it = path.rbegin(); copy && it != path.rend(); ++it)
+                    copy = *it < copy->GetChildren().size() ? copy->GetChildren()[*it] : nullptr;
+                if (copy) target.object = ObjectUndoTarget::Capture(*copy, m_info.scopes.front());
+                break;
+            }
+        }
+        RestoreSelection(selected);
+    }
+    UndoCommandInfo m_info;
+    ForestOperation m_operation;
+    ObjectUndoTarget m_scene;
+    std::vector<ForestEntry> m_entries;
+    std::optional<ObjectUndoTarget> m_parent;
+    std::vector<ForestParentState> m_beforeParents, m_afterParents;
+    std::vector<ObjectUndoTarget> m_beforeRoots, m_afterRoots;
+    UndoSelectionSnapshot m_beforeSelection, m_afterSelection;
+    bool m_initialized = false;
+};
+
 [[nodiscard]] UndoCommandInfo BuildInfo(
     std::string label,
     Undo::UndoScopeId scope,
@@ -1493,6 +1821,93 @@ private:
     return info;
 }
 } // namespace
+
+uint64_t GetHierarchyOrderRevision() { return g_hierarchyOrderRevision; }
+
+static Undo::ExecuteResult ExecuteForest(Undo::EditorUndoService& undoService,
+    std::span<Engine::GameObject* const> objects, Engine::GameObject* newParent,
+    Undo::UndoScopeId scope, ForestOperation operation)
+{
+    if (!scope.IsValid()) return Failed("The selection has no stable Undo scope.");
+    auto roots = Core::GetSceneSelectionRoots(objects);
+    if (roots.empty()) return NoChange("No GameObjects are selected.");
+    auto* scene = roots.front()->GetScene();
+    if (!scene) return Failed("The selected GameObjects are not owned by a Scene.");
+    if (newParent && newParent->GetScene() != scene) return Failed("The destination belongs to another Scene.");
+    for (auto* root : roots)
+    {
+        if (root->GetScene() != scene || root->IsEditorTransient()) return Failed("All selected objects must belong to the same working Scene.");
+        if (operation == ForestOperation::Reparent && newParent &&
+            (newParent == root || newParent->IsDescendantOf(root))) return Failed("A selection cannot be parented to itself or its descendants.");
+    }
+    if (operation == ForestOperation::Reparent)
+    {
+        if (newParent)
+        {
+            const auto scale = newParent->GetTransform()->GetWorldScale();
+            if (std::abs(scale.x) < 1.e-6f || std::abs(scale.y) < 1.e-6f || std::abs(scale.z) < 1.e-6f)
+                return Failed("The destination parent has a non-invertible transform.");
+        }
+        std::erase_if(roots, [newParent](const auto* object) { return object->GetParent() == newParent; });
+        if (roots.empty()) return NoChange("The selected GameObjects already have that parent.");
+    }
+    auto sceneTarget = ObjectUndoTarget::Capture(*scene, scope);
+    auto sceneRoots = CaptureSceneRoots(*scene, scope);
+    auto parentTarget = newParent ? ObjectUndoTarget::Capture(*newParent, scope) : std::optional<ObjectUndoTarget>{};
+    if (!sceneTarget || !sceneRoots || (newParent && !parentTarget)) return Failed("The selection's Scene or destination could not be captured.");
+    std::vector<ForestEntry> entries;
+    std::vector<ForestParentState> parents;
+    std::unordered_set<Engine::GameObject*> capturedParents;
+    const auto captureParent = [&](Engine::GameObject* parent)
+    {
+        if (!parent || !capturedParents.insert(parent).second) return true;
+        auto target = ObjectUndoTarget::Capture(*parent, scope);
+        auto children = SnapshotChildren(parent, scope);
+        if (!target || !children) return false;
+        parents.push_back({std::move(*target), std::move(*children)});
+        return true;
+    };
+    UndoCommandInfo info;
+    info.label = operation == ForestOperation::Delete ? "Delete GameObjects" : operation == ForestOperation::Duplicate ? "Duplicate GameObjects" : "Reparent GameObjects";
+    info.sourceModule = "Hierarchy"; info.scopes = {scope};
+    for (auto* root : roots)
+    {
+        auto target = ObjectUndoTarget::Capture(*root, scope);
+        if (!target || !captureParent(root->GetParent())) return Failed("A selected hierarchy location could not be captured.");
+        ForestEntry entry;
+        entry.source = *target;
+        if (root->GetParent()) entry.oldParent = ObjectUndoTarget::Capture(*root->GetParent(), scope);
+        entry.before = ReadForestTransform(*root);
+        if (operation != ForestOperation::Reparent)
+        {
+            auto snapshot = CaptureSubtree(*root, scope);
+            if (!snapshot) return Failed("A selected subtree could not be captured for Undo.");
+            entry.snapshot = std::move(*snapshot);
+            info.estimatedBytes += EstimateSnapshotBytes(entry.snapshot);
+        }
+        info.affected.push_back(target->GetAffectedKey());
+        entries.push_back(std::move(entry));
+    }
+    if (!captureParent(newParent)) return Failed("The destination hierarchy could not be captured.");
+    return undoService.Execute(std::make_unique<ForestUndoCommand>(std::move(info), operation, std::move(*sceneTarget),
+        std::move(entries), std::move(parentTarget), std::move(parents), std::move(*sceneRoots), CaptureSelection(scope)));
+}
+
+Undo::ExecuteResult DeleteGameObjects(Undo::EditorUndoService& undoService,
+    std::span<Engine::GameObject* const> objects, Undo::UndoScopeId scope)
+{
+    return ExecuteForest(undoService, objects, nullptr, std::move(scope), ForestOperation::Delete);
+}
+Undo::ExecuteResult DuplicateGameObjects(Undo::EditorUndoService& undoService,
+    std::span<Engine::GameObject* const> objects, Undo::UndoScopeId scope)
+{
+    return ExecuteForest(undoService, objects, nullptr, std::move(scope), ForestOperation::Duplicate);
+}
+Undo::ExecuteResult ReparentGameObjects(Undo::EditorUndoService& undoService,
+    std::span<Engine::GameObject* const> objects, Engine::GameObject* parent, Undo::UndoScopeId scope)
+{
+    return ExecuteForest(undoService, objects, parent, std::move(scope), ForestOperation::Reparent);
+}
 
 Undo::ExecuteResult RenameGameObject(
     Undo::EditorUndoService& undoService,

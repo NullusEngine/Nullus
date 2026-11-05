@@ -88,8 +88,9 @@ public sealed class NullusScriptAnalyzer : DiagnosticAnalyzer
                 context.ReportDiagnostic(Diagnostic.Create(ScriptAnalysisRules.AsyncLifecycle, method.Locations.FirstOrDefault(), method.Name));
                 continue;
             }
-            if (method.IsStatic || !method.IsOverride || method.DeclaredAccessibility != Accessibility.Public ||
-                method.Parameters.Length != 0 || !method.ReturnsVoid)
+            // Behaviour messages are discovered by name by LifecycleInvoker;
+            // private methods are supported and Behaviour has no virtual hooks.
+            if (method.IsStatic || method.Parameters.Length != 0 || !method.ReturnsVoid)
                 context.ReportDiagnostic(Diagnostic.Create(ScriptAnalysisRules.InvalidLifecycle, method.Locations.FirstOrDefault(), method.Name));
         }
     }
@@ -129,6 +130,6 @@ public sealed class NullusScriptAnalyzer : DiagnosticAnalyzer
         if (type.TypeKind == TypeKind.Enum || type.SpecialType is SpecialType.System_Boolean or SpecialType.System_Byte or SpecialType.System_SByte or SpecialType.System_Int16 or SpecialType.System_UInt16 or SpecialType.System_Int32 or SpecialType.System_UInt32 or SpecialType.System_Int64 or SpecialType.System_UInt64 or SpecialType.System_Single or SpecialType.System_Double or SpecialType.System_String)
             return true;
         var display = type.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat);
-        return display is "global::Nullus.NativeObjectHandle" or "global::Nullus.GameObject" or "global::Nullus.Transform" or "global::Nullus.Vector2" or "global::Nullus.Vector3" or "global::Nullus.Vector4" or "global::Nullus.Quaternion" or "global::Nullus.Color";
+        return display is "global::Nullus.NativeObjectHandle" or "global::Nullus.GameObject" or "global::Nullus.Transform" or "global::Nullus.Vector2" or "global::Nullus.Vector3" or "global::Nullus.Vector4" or "global::Nullus.Quaternion" or "global::Nullus.Color" or "global::Nullus.InputActionReference";
     }
 }

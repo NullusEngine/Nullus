@@ -4,6 +4,7 @@
 #include <Rendering/Debug/DebugDrawPass.h>
 #include <Rendering/Debug/DebugDrawGeometry.h>
 #include <Rendering/Debug/DebugDrawService.h>
+#include <Rendering/Buffers/Framebuffer.h>
 #include <Rendering/EngineDrawableDescriptor.h>
 #include <Rendering/FrameGraph/ExternalResourceBridge.h>
 #include <Rendering/FrameGraph/FrameGraphExecutionPlan.h>
@@ -25,6 +26,7 @@
 #include "Rendering/DebugGameObjectSelectionCollector.h"
 #include "Rendering/DebugModelRenderer.h"
 #include "Rendering/DebugSceneRenderer.h"
+#include "Rendering/SceneGizmoIcons.h"
 #include "Rendering/EditorHelperLifecycle.h"
 #include "Rendering/EditorDefaultResources.h"
 #include "Rendering/EditorPipelineStatePresets.h"
@@ -50,11 +52,35 @@ const Maths::Vector3 kLightVolumeColor		= { 1.0f, 1.0f, 0.0f };
 const Maths::Vector3 kColliderColor			= { 0.0f, 1.0f, 0.0f };
 const Maths::Vector3 kFrustumColor			= { 1.0f, 1.0f, 1.0f };
 
-const Maths::Vector4 kDefaultOutlineColor{ 1.0f, 0.7f, 0.0f, 1.0f };
-const Maths::Vector4 kSelectedOutlineColor{ 1.0f, 1.0f, 0.0f, 1.0f };
+const Maths::Vector4 kDefaultOutlineColor{ 0.25f, 0.55f, 1.0f, 1.0f };
+const Maths::Vector4 kSelectedOutlineColor{ 1.0f, 0.6f, 0.0f, 1.0f };
 
 constexpr float kDefaultOutlineWidth = 2.5f;
 constexpr float kSelectedOutlineWidth = 5.0f;
+
+namespace
+{
+const Editor::Settings::EditorDebugDrawSettingsObject& GetViewDebugDrawSettings(const Render::Core::CompositeRenderer& renderer)
+{
+    using Descriptor = Editor::Rendering::DebugSceneRenderer::DebugSceneDescriptor;
+    if (renderer.HasDescriptor<Descriptor>())
+        if (const auto& settings = renderer.GetDescriptor<Descriptor>().debugDrawSettings; settings.has_value())
+            return *settings;
+    return Editor::Settings::EditorSettings::GetDebugDrawSettingsObject();
+}
+}
+
+const Editor::Settings::EditorDebugDrawSettingsObject& Editor::Rendering::GetSceneViewDebugDrawSettings(
+    const Render::Core::CompositeRenderer& renderer)
+{
+    return GetViewDebugDrawSettings(renderer);
+}
+
+bool Editor::Rendering::IsSceneObjectHidden(const Render::Core::CompositeRenderer& renderer, NLS::InstanceID id)
+{
+    using Descriptor = Engine::Rendering::BaseSceneRenderer::SceneDescriptor;
+    return renderer.HasDescriptor<Descriptor>() && renderer.GetDescriptor<Descriptor>().viewOptions.IsObjectHidden(id);
+}
 
 uint32_t Editor::Rendering::SubmitPrefabDragProxyDebugPrimitives(
     NLS::Render::Debug::DebugDrawService& debugDrawService,
@@ -345,6 +371,8 @@ public:
 		m_cameraMaterial.Set("u_Diffuse", Vector4(0.0f, 0.3f, 0.7f, 1.0f));
 	}
 
+    bool ManagesOwnRenderPass() const override { return true; }
+
     const std::optional<NLS::Render::Context::RenderPassCommandInput>& GetPreparedThreadedPassInput() const
     {
         return m_preparedThreadedPassInput;
@@ -365,38 +393,58 @@ protected:
 
 	virtual void Draw(Render::Data::PipelineState p_pso) override
 	{
-        const auto& debugSettings = Editor::Settings::EditorSettings::GetDebugDrawSettingsObject();
-        if (!debugSettings.debugDrawEnabled || !debugSettings.debugDrawCamera)
+        const auto& debugSettings = GetViewDebugDrawSettings(m_renderer);
+        if (!debugSettings.debugDrawEnabled || !debugSettings.debugDrawCameraIcons)
             return;
 
-        p_pso = Editor::Rendering::CreateEditorOverlayPipelineState(p_pso);
-        p_pso.culling = true;
-        p_pso.cullFace = NLS::Render::Settings::ECullFace::BACK;
+        p_pso = Editor::Rendering::CreateEditorCameraIconPipelineState(p_pso);
 		auto& sceneDescriptor = m_renderer.GetDescriptor<Engine::Rendering::BaseSceneRenderer::SceneDescriptor>();
+        if (sceneDescriptor.scene.GetFastAccessComponents().cameras.empty())
+            return;
+        const auto& frame = m_renderer.GetFrameDescriptor();
+        m_cameraDepthFramebuffer.Resize(frame.renderWidth, frame.renderHeight);
+        const auto depthView = m_cameraDepthFramebuffer.GetOrCreateExplicitDepthStencilView("EditorCameraIconDepthView");
+        if (depthView == nullptr)
+            return;
         if (NLS::Render::Context::DriverRendererAccess::IsThreadedRenderingEnabled(m_renderer.GetDriver()))
         {
-            m_preparedThreadedPassInput = BuildThreadedPassInput(sceneDescriptor.scene, p_pso);
+            m_preparedThreadedPassInput = BuildThreadedPassInput(sceneDescriptor.scene, p_pso, depthView);
             return;
         }
+
+        const bool startedRenderPass = m_renderer.BeginOutputRenderPass(
+            frame.renderWidth, frame.renderHeight, false, true, false, depthView, true);
+        if (!startedRenderPass)
+            return;
 
 		for (auto camera : sceneDescriptor.scene.GetFastAccessComponents().cameras)
 		{
             auto actor = camera->gameobject();
 
-			if (actor->IsActive())
+			if (actor->IsActive() && !Editor::Rendering::IsSceneObjectHidden(m_renderer, actor->GetInstanceID()))
 			{
 				auto& mesh = *EDITOR_CONTEXT(editorResources)->GetMesh("Camera");
 				auto modelMatrix = CalculateCameraModelMatrix(*actor);
+            const auto& iconSettings = GetViewDebugDrawSettings(m_renderer);
+            const auto& frame = m_renderer.GetFrameDescriptor();
+            const auto icon = Editor::Rendering::ComputeSceneIconPresentation(*frame.camera,
+                actor->GetTransform()->GetWorldPosition(), frame.renderHeight,
+                EDITOR_CONTEXT(editorResources)->GetMesh("Camera")->GetBounds().size.y,
+                iconSettings.lightBillboardScale, iconSettings.icons3D, iconSettings.fadeGizmos, 2.0f);
+            if (icon.opacity <= 0.0f) continue;
+            modelMatrix = modelMatrix * Maths::Matrix4::Scaling(Maths::Vector3(icon.scale, icon.scale, icon.scale));
 
 				m_debugModelRenderer.DrawMeshWithSingleMaterial(p_pso, mesh, m_cameraMaterial, modelMatrix);
 			}
 		}
+        m_renderer.EndOutputRenderPass(startedRenderPass);
 	}
 
 private:
     std::optional<NLS::Render::Context::RenderPassCommandInput> BuildThreadedPassInput(
         Engine::SceneSystem::Scene& scene,
-        Render::Data::PipelineState pso)
+        Render::Data::PipelineState pso,
+        const std::shared_ptr<NLS::Render::RHI::RHITextureView>& depthView)
     {
         auto* cameraMesh = EDITOR_CONTEXT(editorResources)->GetMesh("Camera");
         if (cameraMesh == nullptr)
@@ -419,14 +467,34 @@ private:
         passInput.renderHeight = frameDescriptor.renderHeight;
         passInput.usesColorAttachment = true;
         passInput.usesDepthStencilAttachment = true;
+        passInput.clearDepth = true;
+        passInput.writesDepthStencilAttachment = true;
+        passInput.depthStencilAttachmentView = depthView;
+        NLS::Render::Context::TextureResourceAccess depthAccess;
+        depthAccess.texture = depthView->GetTexture();
+        depthAccess.subresourceRange = depthView->GetDesc().subresourceRange;
+        depthAccess.mode = NLS::Render::Context::ResourceAccessMode::Write;
+        depthAccess.state = NLS::Render::RHI::ResourceState::DepthWrite;
+        depthAccess.stages = NLS::Render::RHI::PipelineStageMask::DepthStencil;
+        depthAccess.access = NLS::Render::RHI::AccessMask::DepthStencilRead |
+            NLS::Render::RHI::AccessMask::DepthStencilWrite;
+        passInput.textureResourceAccesses.push_back(std::move(depthAccess));
 
         for (auto camera : scene.GetFastAccessComponents().cameras)
         {
             auto* actor = camera != nullptr ? camera->gameobject() : nullptr;
-            if (actor == nullptr || !actor->IsActive())
+            if (actor == nullptr || !actor->IsActive() || Editor::Rendering::IsSceneObjectHidden(m_renderer, actor->GetInstanceID()))
                 continue;
 
             auto modelMatrix = CalculateCameraModelMatrix(*actor);
+            const auto& iconSettings = GetViewDebugDrawSettings(m_renderer);
+            const auto& frame = m_renderer.GetFrameDescriptor();
+            const auto icon = Editor::Rendering::ComputeSceneIconPresentation(*frame.camera,
+                actor->GetTransform()->GetWorldPosition(), frame.renderHeight,
+                EDITOR_CONTEXT(editorResources)->GetMesh("Camera")->GetBounds().size.y,
+                iconSettings.lightBillboardScale, iconSettings.icons3D, iconSettings.fadeGizmos, 2.0f);
+            if (icon.opacity <= 0.0f) continue;
+            modelMatrix = modelMatrix * Maths::Matrix4::Scaling(Maths::Vector3(icon.scale, icon.scale, icon.scale));
             m_debugModelRenderer.CaptureMeshDrawCommandsWithSingleMaterial(
                 pso,
                 *cameraMesh,
@@ -461,6 +529,7 @@ private:
 
     Editor::Rendering::DebugModelRenderer m_debugModelRenderer;
     NLS::Render::Resources::Material m_cameraMaterial;
+    NLS::Render::Buffers::Framebuffer m_cameraDepthFramebuffer;
     std::optional<NLS::Render::Context::RenderPassCommandInput> m_preparedThreadedPassInput;
 };
 
@@ -498,8 +567,8 @@ protected:
 
 	virtual void Draw(Render::Data::PipelineState p_pso) override
 	{
-        const auto& debugSettings = Editor::Settings::EditorSettings::GetDebugDrawSettingsObject();
-        if (!debugSettings.debugDrawEnabled || !debugSettings.debugDrawLighting)
+        const auto& debugSettings = GetViewDebugDrawSettings(m_renderer);
+        if (!debugSettings.debugDrawEnabled || !debugSettings.debugDrawLightIcons)
             return;
 
 		auto& sceneDescriptor = m_renderer.GetDescriptor<Engine::Rendering::BaseSceneRenderer::SceneDescriptor>();
@@ -516,7 +585,7 @@ protected:
 		{
 			auto actor = light->gameobject();
 
-			if (actor->IsActive())
+			if (actor->IsActive() && !Editor::Rendering::IsSceneObjectHidden(m_renderer, actor->GetInstanceID()))
 			{
 				auto& mesh = *EDITOR_CONTEXT(editorResources)->GetMesh("Vertical_Plane");
                 auto modelMatrix = Maths::Matrix4::Translation(actor->GetTransform()->GetWorldPosition());
@@ -528,9 +597,18 @@ protected:
 					EDITOR_CONTEXT(editorResources)->GetTexture(lightTypeTextureName.value()) :
 					nullptr;
 
-				const auto& lightColor = light->GetColor();
+				const auto& iconSettings = GetViewDebugDrawSettings(m_renderer);
+                const auto& frame = m_renderer.GetFrameDescriptor();
+                const auto icon = Editor::Rendering::ComputeSceneIconPresentation(*frame.camera,
+                    actor->GetTransform()->GetWorldPosition(), frame.renderHeight,
+                    EDITOR_CONTEXT(editorResources)->GetMesh("Vertical_Plane")->GetBounds().size.y,
+                    iconSettings.lightBillboardScale, iconSettings.icons3D, iconSettings.fadeGizmos);
+                if (icon.opacity <= 0.0f) continue;
+                m_lightMaterial.Set<float>("u_Scale", Editor::Rendering::ComputeLightBillboardShaderScale(
+                    *frame.camera, actor->GetTransform()->GetWorldPosition(), icon, iconSettings.icons3D));
+                const auto& lightColor = light->GetColor();
 				m_lightMaterial.Set<Render::Resources::Texture2D*>("u_DiffuseMap", lightTexture);
-				m_lightMaterial.Set<Maths::Vector4>("u_Diffuse", Maths::Vector4(lightColor.x, lightColor.y, lightColor.z, 0.75f));
+				m_lightMaterial.Set<Maths::Vector4>("u_Diffuse", Maths::Vector4(lightColor.x, lightColor.y, lightColor.z, 0.75f * icon.opacity));
 
 				m_debugModelRenderer.DrawMeshWithSingleMaterial(p_pso, mesh, m_lightMaterial, modelMatrix);
 			}
@@ -549,6 +627,14 @@ private:
         uint64_t deviceIdentity = 0u;
         uint64_t pipelineBits = 0u;
         float billboardScale = 0.0f;
+        bool icons3D = true;
+        bool fadeGizmos = false;
+        std::vector<int32_t> hiddenIds;
+        Maths::Vector3 eye{};
+        Maths::Quaternion rotation{};
+        bool orthographic = false;
+        float projectionScale = 0.0f;
+        uint16_t viewportHeight = 0;
 
         bool operator==(const ThreadedCommandCacheKey&) const = default;
     };
@@ -591,7 +677,15 @@ private:
             scene.GetFastAccessComponentsRevision(),
             explicitDevice != nullptr ? explicitDevice->GetCacheIdentity() : 0u,
             pso.bits.to_ullong(),
-            Editor::Settings::EditorSettings::GetDebugDrawSettingsObject().lightBillboardScale
+            GetViewDebugDrawSettings(m_renderer).lightBillboardScale,
+            GetViewDebugDrawSettings(m_renderer).icons3D,
+            GetViewDebugDrawSettings(m_renderer).fadeGizmos,
+            m_renderer.GetDescriptor<Engine::Rendering::BaseSceneRenderer::SceneDescriptor>().viewOptions.hiddenObjectIds,
+            frameDescriptor.camera->GetPosition(),
+            frameDescriptor.camera->GetRotation(),
+            frameDescriptor.camera->GetProjectionMode() == Render::Settings::EProjectionMode::ORTHOGRAPHIC,
+            frameDescriptor.camera->GetProjectionMode() == Render::Settings::EProjectionMode::ORTHOGRAPHIC ? frameDescriptor.camera->GetSize() : frameDescriptor.camera->GetFov(),
+            frameDescriptor.renderHeight
         };
         bool canReuseCachedCommands =
             m_threadedCommandCacheKey.has_value() &&
@@ -622,7 +716,7 @@ private:
             for (auto light : scene.GetFastAccessComponents().lights)
             {
                 auto* actor = light != nullptr ? light->gameobject() : nullptr;
-                if (actor == nullptr || !actor->IsActive())
+                if (actor == nullptr || !actor->IsActive() || Editor::Rendering::IsSceneObjectHidden(m_renderer, actor->GetInstanceID()))
                     continue;
 
                 auto lightTypeTextureName = GetLightTypeTextureName(light->GetData()->type);
@@ -630,9 +724,18 @@ private:
                     lightTypeTextureName ?
                     EDITOR_CONTEXT(editorResources)->GetTexture(lightTypeTextureName.value()) :
                     nullptr;
+                const auto& iconSettings = GetViewDebugDrawSettings(m_renderer);
+                const auto& frame = m_renderer.GetFrameDescriptor();
+                const auto icon = Editor::Rendering::ComputeSceneIconPresentation(*frame.camera,
+                    actor->GetTransform()->GetWorldPosition(), frame.renderHeight,
+                    EDITOR_CONTEXT(editorResources)->GetMesh("Vertical_Plane")->GetBounds().size.y,
+                    iconSettings.lightBillboardScale, iconSettings.icons3D, iconSettings.fadeGizmos);
+                if (icon.opacity <= 0.0f) continue;
+                m_lightMaterial.Set<float>("u_Scale", Editor::Rendering::ComputeLightBillboardShaderScale(
+                    *frame.camera, actor->GetTransform()->GetWorldPosition(), icon, iconSettings.icons3D));
                 const auto& lightColor = light->GetColor();
                 m_lightMaterial.Set<Render::Resources::Texture2D*>("u_DiffuseMap", lightTexture);
-                m_lightMaterial.Set<Maths::Vector4>("u_Diffuse", Maths::Vector4(lightColor.x, lightColor.y, lightColor.z, 0.75f));
+                m_lightMaterial.Set<Maths::Vector4>("u_Diffuse", Maths::Vector4(lightColor.x, lightColor.y, lightColor.z, 0.75f * icon.opacity));
 
                 auto modelMatrix = Maths::Matrix4::Translation(actor->GetTransform()->GetWorldPosition());
                 m_debugModelRenderer.CaptureMeshDrawCommandsWithSingleMaterial(
@@ -742,7 +845,11 @@ protected:
             return;
 
         auto& debugSceneDescriptor = m_renderer.GetDescriptor<Editor::Rendering::DebugSceneRenderer::DebugSceneDescriptor>();
-        auto* selectedGameObject = debugSceneDescriptor.selectedGameObject;
+        auto selectedGameObjects = debugSceneDescriptor.selectedGameObjects;
+        if (selectedGameObjects.empty() && debugSceneDescriptor.selectedGameObject)
+            selectedGameObjects.push_back(debugSceneDescriptor.selectedGameObject);
+        std::erase_if(selectedGameObjects, [this](const auto* object) { return !object || Editor::Rendering::IsSceneObjectHidden(m_renderer, object->GetInstanceID()); });
+        auto* selectedGameObject = selectedGameObjects.empty() ? nullptr : selectedGameObjects.front();
         const auto* prefabDragProxy = debugSceneDescriptor.prefabDragProxy.has_value()
             ? &*debugSceneDescriptor.prefabDragProxy
             : nullptr;
@@ -772,8 +879,8 @@ protected:
 
 		if (Editor::Rendering::OutlineRenderer::ShouldIncludeInThreadedFrame(true, selectedGameObject))
 		{
-            const auto& debugSettings = Editor::Settings::EditorSettings::GetDebugDrawSettingsObject();
-            const auto& debugDrawItems = PrepareDebugGameObjectDebugDrawItems(*selectedGameObject, debugSettings);
+            const auto& debugSettings = GetViewDebugDrawSettings(m_renderer);
+            const auto& debugDrawItems = PrepareDebugGameObjectDebugDrawItems(selectedGameObjects, debugSettings);
             ApplyDebugDrawSettings(debugSettings);
             if (prefabDragProxy != nullptr)
             {
@@ -786,6 +893,8 @@ protected:
                 NLS_PROFILE_NAMED_SCOPE("DebugGameObject::DrawDebugElements");
                 DrawGameObjectDebugElements(debugDrawItems, debugSettings);
             }
+
+            if (!debugSceneDescriptor.showSelectionOutline) return;
 
             if (usesThreadedRendering)
             {
@@ -1075,12 +1184,12 @@ protected:
 
 private:
     const Editor::Rendering::DebugGameObjectDebugDrawItems& PrepareDebugGameObjectDebugDrawItems(
-        Engine::GameObject& selectedGameObject,
+        std::span<Engine::GameObject* const> selectedGameObjects,
         const Editor::Settings::EditorDebugDrawSettingsObject& debugSettings)
     {
         NLS_PROFILE_NAMED_SCOPE("DebugGameObject::CollectSelectedItems");
-        CollectSelectedDebugGameObjectDebugDrawItems(
-            selectedGameObject,
+        CollectSelectedDebugGameObjectsDebugDrawItems(
+            selectedGameObjects,
             m_debugDrawScratchItems,
             true,
             debugSettings.debugDrawLighting,
@@ -1089,7 +1198,8 @@ private:
                 m_renderer.GetFrameDescriptor().camera != nullptr
                     ? m_renderer.GetFrameDescriptor().camera->GetGeometryFrustum()
                     : nullptr,
-                true
+                true,
+                m_renderer.GetDescriptor<Engine::Rendering::BaseSceneRenderer::SceneDescriptor>().viewOptions.hiddenObjectIds
             });
         return m_debugDrawScratchItems;
     }
@@ -1384,10 +1494,10 @@ uint64_t Editor::Rendering::DebugSceneRenderer::CountEditorHelperDraws() const
     helperState.lightPassEnabled = lightPassEnabled;
     helperState.gameObjectPassEnabled = gameObjectPassEnabled;
     helperState.debugDrawPassEnabled = debugDrawPassEnabled;
-    const auto& debugSettings = Editor::Settings::EditorSettings::GetDebugDrawSettingsObject();
+    const auto& debugSettings = GetViewDebugDrawSettings(*this);
     helperState.debugDrawEnabled = debugSettings.debugDrawEnabled;
-    helperState.debugDrawCamera = debugSettings.debugDrawCamera;
-    helperState.debugDrawLighting = debugSettings.debugDrawLighting;
+    helperState.debugDrawCamera = debugSettings.debugDrawCameraIcons;
+    helperState.debugDrawLighting = debugSettings.debugDrawLightIcons;
     helperState.gridEnabled = GridRenderPass::ShouldIncludeInThreadedFrame(
         gridPassEnabled,
         HasDescriptor<GridRenderPass::GridDescriptor>(),
@@ -1403,9 +1513,11 @@ uint64_t Editor::Rendering::DebugSceneRenderer::CountEditorHelperDraws() const
             helperState.sceneCameraCount += static_cast<uint64_t>(previewScene->GetFastAccessComponents().cameras.size());
             helperState.sceneLightCount += static_cast<uint64_t>(previewScene->GetFastAccessComponents().lights.size());
         }
-        const auto* selectedGameObject = GetDescriptor<DebugSceneDescriptor>().selectedGameObject;
+        const auto& selection = GetDescriptor<DebugSceneDescriptor>();
+        const auto* selectedGameObject = !selection.selectedGameObjects.empty() ? selection.selectedGameObjects.front() : selection.selectedGameObject;
         helperState.hasSelectedGameObject =
             !IsThreadedFramePublishSkippedForCurrentFrame() &&
+            GetDescriptor<DebugSceneDescriptor>().showSelectionOutline &&
             OutlineRenderer::ShouldIncludeInThreadedFrame(gameObjectPassEnabled, selectedGameObject);
     }
 
@@ -1493,6 +1605,8 @@ std::vector<NLS::InstanceID> Editor::Rendering::DebugSceneRenderer::GetEditorIns
         return roots;
 
     const auto& descriptor = GetDescriptor<DebugSceneDescriptor>();
+    for (const auto* object : descriptor.selectedGameObjects)
+        if (object) roots.push_back(object->GetInstanceID());
     if (descriptor.selectedGameObject != nullptr)
         roots.push_back(descriptor.selectedGameObject->GetInstanceID());
     if (descriptor.highlightedGameObject != nullptr &&
@@ -1500,6 +1614,8 @@ std::vector<NLS::InstanceID> Editor::Rendering::DebugSceneRenderer::GetEditorIns
     {
         roots.push_back(descriptor.highlightedGameObject->GetInstanceID());
     }
+    std::sort(roots.begin(), roots.end());
+    roots.erase(std::unique(roots.begin(), roots.end()), roots.end());
     return roots;
 }
 

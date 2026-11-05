@@ -1,6 +1,8 @@
-﻿#include "GameObject.h"
+#include "GameObject.h"
 #include <algorithm>
+#include <array>
 #include <cctype>
+#include <span>
 #include "Components/TransformComponent.h"
 #include "PrimitiveFactory.h"
 #include "Reflection/TypeCreator.h"
@@ -8,6 +10,29 @@
 
 namespace NLS::Engine
 {
+namespace
+{
+// Component callbacks may remove themselves or add other components. Resolve
+// IDs at each callback boundary instead of keeping iterators into ownership.
+template<class Fn> void VisitComponents(GameObject& owner, Fn fn)
+{
+    // Most objects have only a few components. Keep their ID snapshot inline,
+    // retaining the same callback mutation/lifetime checks as the heap path.
+    const auto& components = owner.GetComponents();
+    std::array<NLS::InstanceID, 8> localIds;
+    std::vector<NLS::InstanceID> overflow;
+    if (components.size() > localIds.size()) overflow.resize(components.size());
+    const auto storage = overflow.empty() ? std::span(localIds) : std::span(overflow);
+    size_t count = 0;
+    for (const auto& component : components)
+        if (component) storage[count++] = component->GetInstanceID();
+    const auto ids = storage.first(count);
+    for (auto id : ids)
+        if (auto* component = dynamic_cast<Components::Component*>(NLS::Object::IDToPointerNoThreadCheck(id));
+            component && component->gameobject() == &owner) fn(*component);
+}
+}
+
 using namespace Components;
 
 Event<GameObject&> GameObject::DestroyedEvent;
@@ -316,85 +341,42 @@ void GameObject::SetParent(GameObject& p_parent)
 
 void GameObject::OnAwake()
 {
-	m_awaked = true;
-	std::for_each(m_vComponents.begin(), m_vComponents.end(), [](auto& element)
-    {
-        if (auto* component = element.get())
-            component->OnAwake();
-    });
+    m_awaked = true;
+    VisitComponents(*this, [](Component& component) { component.RuntimeAwake(); });
 }
-
-void GameObject::OnStart()
-{
-	m_started = true;
-	std::for_each(m_vComponents.begin(), m_vComponents.end(), [](auto& element)
-    {
-        if (auto* component = element.get(); component && component->IsSelfEnabled())
-            component->OnStart();
-    });
-}
-
 void GameObject::OnEnable()
 {
-	std::for_each(m_vComponents.begin(), m_vComponents.end(), [](auto& element)
-    {
-        if (auto* component = element.get(); component && component->IsSelfEnabled())
-            component->OnEnable();
-    });
+    VisitComponents(*this, [](Component& component) { component.RuntimeEnable(); });
 }
-
+void GameObject::OnStart()
+{
+    m_started = true;
+    VisitComponents(*this, [](Component& component) { component.RuntimeStart(); });
+}
 void GameObject::OnDisable()
 {
-	std::for_each(m_vComponents.begin(), m_vComponents.end(), [](auto& element)
-    {
-        if (auto* component = element.get(); component && component->IsSelfEnabled())
-            component->OnDisable();
-    });
+    VisitComponents(*this, [](Component& component) { component.RuntimeDisable(); });
 }
-
 void GameObject::OnDestroy()
 {
-	std::for_each(m_vComponents.begin(), m_vComponents.end(), [](auto& element)
-    {
-        if (auto* component = element.get())
-            component->OnDestroy();
-    });
+    VisitComponents(*this, [](Component& component) { component.RuntimeDestroy(); });
 }
-
-void GameObject::OnUpdate(float p_deltaTime)
+void GameObject::OnUpdate(float delta)
 {
-	if (IsActive())
-	{
-		std::for_each(m_vComponents.begin(), m_vComponents.end(), [&](auto& element)
-        {
-            if (auto* component = element.get(); component && component->IsSelfEnabled())
-                component->OnUpdate(p_deltaTime);
-        });
-	}
+    if (!IsActive()) return;
+    OnAwake(); OnEnable(); OnStart();
+    VisitComponents(*this, [delta](Component& component) { if (component.IsActiveAndEnabled()) component.OnUpdate(delta); });
 }
-
-void GameObject::OnFixedUpdate(float p_deltaTime)
+void GameObject::OnFixedUpdate(float delta)
 {
-	if (IsActive())
-	{
-		std::for_each(m_vComponents.begin(), m_vComponents.end(), [&](auto& element)
-        {
-            if (auto* component = element.get(); component && component->IsSelfEnabled())
-                component->OnFixedUpdate(p_deltaTime);
-        });
-	}
+    if (!IsActive()) return;
+    OnAwake(); OnEnable(); OnStart();
+    VisitComponents(*this, [delta](Component& component) { if (component.IsActiveAndEnabled()) component.OnFixedUpdate(delta); });
 }
-
-void GameObject::OnLateUpdate(float p_deltaTime)
+void GameObject::OnLateUpdate(float delta)
 {
-	if (IsActive())
-	{
-		std::for_each(m_vComponents.begin(), m_vComponents.end(), [&](auto& element)
-        {
-            if (auto* component = element.get(); component && component->IsSelfEnabled())
-                component->OnLateUpdate(p_deltaTime);
-        });
-	}
+    if (!IsActive()) return;
+    VisitComponents(*this, [delta](Component& component) { if (component.IsActiveAndEnabled()) component.OnLateUpdate(delta); });
 }
 
 void GameObject::RecursiveActiveUpdate()
@@ -409,9 +391,6 @@ void GameObject::RecursiveActiveUpdate()
 				OnAwake();
 
 			OnEnable();
-
-			if (!m_started)
-				OnStart();
 		}
 
 		if (m_wasActive && !isActive)

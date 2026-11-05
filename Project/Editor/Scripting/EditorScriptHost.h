@@ -30,6 +30,7 @@ struct EditorScriptMenuItem
 {
     std::string menuPath;
     std::string editorTypeName;
+    std::string commandId;
 };
 
 // Implemented by the native owner of one scripted editor or window instance.
@@ -72,6 +73,7 @@ public:
     void ClearRegistrations();
     [[nodiscard]] bool RegisterComponentEditor(const EditorScriptDescriptor& descriptor, std::string& error);
     [[nodiscard]] bool RegisterMenuItem(const EditorScriptMenuItem& item, std::string& error);
+    void ApplyMenuCommandRegistrations();
     [[nodiscard]] const std::vector<EditorScriptDescriptor>& GetDescriptors() const { return m_descriptors; }
     [[nodiscard]] const std::vector<EditorScriptMenuItem>& GetMenuItems() const { return m_menuItems; }
     // Bumped whenever the loaded editor scripts change.  It is part of every
@@ -121,6 +123,7 @@ private:
 
     std::vector<EditorScriptDescriptor> m_descriptors;
     std::vector<EditorScriptMenuItem> m_menuItems;
+    std::vector<std::string> m_registeredMenuCommands;
     std::vector<HandleSlot> m_slots;
     std::vector<uint32_t> m_freeSlots;
     const ManagedEditorScriptApiTable* m_managed = nullptr;

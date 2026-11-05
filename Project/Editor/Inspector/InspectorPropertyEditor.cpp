@@ -333,6 +333,13 @@ bool InspectorPropertyEditor::PreviewSerializedProperty(const PropertyNode& prop
         }
     if (!limitsValid || !(components==~0ull?cursor.SetValue(value):cursor.SetValueComponents(value,components)))
         return false;
+    if (m_context->livePreview && !m_context->object->PreviewModifiedProperties())
+    {
+        m_error = m_context->object->GetLastError();
+        m_context->object->DiscardModifiedProperties();
+        m_result->canceled = true;
+        return false;
+    }
     m_error.clear();
     NotifyPropertyChanged(property);
     return true;
@@ -739,6 +746,9 @@ bool InspectorPropertyEditor::DrawObjectReferenceValue(
     {
         picker.acceptsAsset = [referenceType](const Assets::EditorAssetDragPayload& payload)
         {
+            if (IsCompatibleInspectorReferenceArtifact(referenceType, NLS::Core::Assets::ArtifactType::Sprite) &&
+                Assets::ResolveSpriteDragPayload(payload))
+                return true;
             return IsCompatibleInspectorReferenceArtifact(
                 referenceType,
                 Assets::GetEditorAssetDragPayloadArtifactType(payload));

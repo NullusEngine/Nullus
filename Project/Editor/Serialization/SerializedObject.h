@@ -321,6 +321,9 @@ public:
     [[nodiscard]] const SerializedSchema& GetSchema() const;
 
     [[nodiscard]] bool HasModifiedProperties() const;
+    // Opt-in live editing for Inspector controls. Keeps the original streams
+    // until Apply commits one undo entry or Discard restores the preview.
+    [[nodiscard]] bool PreviewModifiedProperties();
     [[nodiscard]] bool ApplyModifiedProperties();
     [[nodiscard]] bool ApplyModifiedPropertiesWithoutUndo();
     void DiscardModifiedProperties();

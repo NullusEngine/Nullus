@@ -15,6 +15,7 @@
 #include <vector>
 
 #include "Core/ServiceLocator.h"
+#include "Core/EditorActions.h"
 #include "Panels/FrameInfo.h"
 #include "Panels/ProfilerPanel.h"
 #include "Panels/Console.h"
@@ -1027,6 +1028,7 @@ TEST(PanelWindowHookTests, FrameInfoPanelExcludesEditorUiPanelDrawMetrics)
 
 TEST(PanelWindowHookTests, FrameInfoPanelRefreshesFromViewOwnedSnapshotAndRetainsLastSuccessfulRender)
 {
+    const bool hadEditorActions = NLS::Core::ServiceLocator::Contains<NLS::Editor::Core::EditorActions>();
     NLS::Render::Settings::DriverSettings settings;
     settings.graphicsBackend = NLS::Render::Settings::EGraphicsBackend::NONE;
     settings.enableExplicitRHI = false;
@@ -1039,6 +1041,8 @@ TEST(PanelWindowHookTests, FrameInfoPanelRefreshesFromViewOwnedSnapshotAndRetain
 
     view.RenderForTest();
     panel.RefreshForView(&view);
+
+    EXPECT_EQ(NLS::Core::ServiceLocator::Contains<NLS::Editor::Core::EditorActions>(), hadEditorActions);
 
     ExpectFrameInfoRow(panel, "Status", "Target View", "Probe View");
     ExpectFrameInfoRow(panel, "Inputs", "Opaque Drawables", "3");
@@ -1545,11 +1549,10 @@ TEST(PanelWindowHookTests, ConsoleDefersBackgroundThreadLogsUntilUiFlush)
     logData.message = "Background render thread log";
     logData.logLevel = NLS::Debug::ELogLevel::LOG_INFO;
 
-    auto& widgets = panel.GetWidgets();
-    ASSERT_FALSE(widgets.empty());
-    auto* logGroup = dynamic_cast<NLS::UI::Widgets::Group*>(widgets.back().first);
-    ASSERT_NE(logGroup, nullptr);
-    EXPECT_TRUE(logGroup->GetWidgets().empty());
+    const auto& entries = panel.GetLogModel().Entries();
+    const auto revision = panel.GetLogModel().Revision();
+    EXPECT_TRUE(entries.empty());
+    EXPECT_FALSE(panel.GetStatusSnapshot().hasMessage);
 
     std::thread worker([&panel, &logData]
     {
@@ -1557,11 +1560,21 @@ TEST(PanelWindowHookTests, ConsoleDefersBackgroundThreadLogsUntilUiFlush)
     });
     worker.join();
 
-    EXPECT_TRUE(logGroup->GetWidgets().empty());
+    EXPECT_TRUE(entries.empty());
+    EXPECT_EQ(panel.GetLogModel().Revision(), revision);
+    EXPECT_FALSE(panel.GetStatusSnapshot().hasMessage);
 
     panel.FlushPendingLogs();
 
-    EXPECT_EQ(logGroup->GetWidgets().size(), 1u);
+    EXPECT_EQ(entries.size(), 1u);
+    EXPECT_GT(panel.GetLogModel().Revision(), revision);
+    if (!entries.empty())
+    {
+        EXPECT_EQ(entries.front().message, logData.message);
+        EXPECT_EQ(entries.front().level, logData.logLevel);
+    }
+    EXPECT_TRUE(panel.GetStatusSnapshot().hasMessage);
+    EXPECT_EQ(panel.GetStatusSnapshot().message, logData.message);
 
     ImGui::DestroyContext();
 }

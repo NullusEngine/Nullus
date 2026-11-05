@@ -14,6 +14,10 @@ Inspector::Inspector(
 }
 
 Inspector::~Inspector() = default;
+bool Inspector::CanExecuteComponentCommand(const std::string& id, int32_t componentId) const
+{ return m_view && m_view->CanExecuteComponentCommand(id, componentId); }
+bool Inspector::ExecuteComponentCommand(const std::string& id, int32_t componentId)
+{ return m_view && m_view->ExecuteComponentCommand(id, componentId); }
 
 void Inspector::Refresh()
 {

@@ -15,7 +15,7 @@ namespace Detail
 // Writes the base and per-pack .npak archives into the staging tree, copies
 // raw assets, writes the runtime manifest, Game.ini, and Player.info.
 // Returns false with *error set on failure.
-bool StageContent(
+NLS_BUILD_API bool StageContent(
     const BuildContext& context,
     const DependencyCollectionResult& collection,
     BuildReport& report,
@@ -24,14 +24,14 @@ bool StageContent(
 
 // Reopens every staged package, verifies payload hashes, and confirms the
 // runtime manifest references only packaged artifacts.
-bool VerifyStagedContent(
+NLS_BUILD_API bool VerifyStagedContent(
     const BuildContext& context,
     BuildReport& report,
     const std::vector<std::string>& contentPackages,
     std::string* error);
 
 // Writes Player.info into the staging root.
-bool WritePlayerDescriptorFile(
+NLS_BUILD_API bool WritePlayerDescriptorFile(
     const BuildContext& context,
     const PlayerTemplateInfo& player,
     const std::vector<std::string>& contentPackages,

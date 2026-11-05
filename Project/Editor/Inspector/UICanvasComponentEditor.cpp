@@ -36,14 +36,6 @@ std::filesystem::path ResolveDocumentSourcePath(const Engine::UI::UIDocumentRefe
     return std::filesystem::path(resolved).lexically_normal();
 }
 
-InspectorPropertyChoice CanvasChoice(const uint32_t value, const char* label)
-{
-    InspectorPropertyChoice choice;
-    choice.value = std::to_string(value);
-    choice.label = label;
-    choice.typedValue = meta::Variant(value);
-    return choice;
-}
 } // namespace
 
 void UICanvasComponentEditor::OnInspectorGUI()
@@ -92,46 +84,35 @@ void UICanvasComponentEditor::OnInspectorGUI()
         !sourcePath.empty(),
         sourcePath.empty() ? "Assign a UI document first" : "Open this UI document in the UI Designer");
 
-    const auto readUnsigned = [this](const std::string_view path, const uint32_t fallback)
+    using Canvas = Engine::Components::UICanvasComponent;
+    const auto readEnum = [this](const std::string_view path, const auto fallback)
     {
         const auto property = serializedObject().FindProperty(path);
         const auto value = property.GetValue();
-        return value.IsValid() ? static_cast<uint32_t>(value.ToInt()) : fallback;
+        return value.IsValid() ? value.GetValue<decltype(fallback)>() : fallback;
     };
-    const uint32_t renderMode = readUnsigned("renderModeValue", 0u);
-    const uint32_t dpiScaleMode = readUnsigned("dpiScaleMode", 0u);
+    const auto renderMode = readEnum("renderModeValue", Canvas::RenderMode::ScreenOverlay);
+    const auto dpiScaleMode = readEnum("dpiScaleMode", Canvas::DpiScaleMode::ConstantPixelSize);
 
-    PropertyField("renderModeValue", ComponentEditorPropertyOptions {
-        .label = "Render Mode",
-        .kind = InspectorPropertyKind::Choice,
-        .choices = {CanvasChoice(0u, "Screen Overlay"), CanvasChoice(1u, "Screen Camera"), CanvasChoice(2u, "World")}});
-    if (renderMode == 2u)
+    PropertyField("renderModeValue", ComponentEditorPropertyOptions {.label = "Render Mode"});
+    if (renderMode == Canvas::RenderMode::World)
     {
-        PropertyField("worldRenderPathValue", ComponentEditorPropertyOptions {
-            .label = "World Render Path",
-            .kind = InspectorPropertyKind::Choice,
-            .choices = {CanvasChoice(0u, "Auto"), CanvasChoice(1u, "Direct"), CanvasChoice(2u, "Render Target")}});
+        PropertyField("worldRenderPathValue", ComponentEditorPropertyOptions {.label = "World Render Path"});
     }
 
     PropertyField("sortOrderScript", ComponentEditorPropertyOptions {.label = "Sort Order"});
     PropertyField("sortLayer", ComponentEditorPropertyOptions {.label = "Sort Layer"});
-    if (renderMode == 1u)
+    if (renderMode == Canvas::RenderMode::ScreenCamera)
         PropertyField("cameraId", ComponentEditorPropertyOptions {.label = "Camera Id"});
 
-    PropertyField("updatePolicy", ComponentEditorPropertyOptions {
-        .label = "Update Policy",
-        .kind = InspectorPropertyKind::Choice,
-        .choices = {CanvasChoice(0u, "Every Frame"), CanvasChoice(1u, "On Demand"), CanvasChoice(2u, "Manual")}});
-    PropertyField("dpiScaleMode", ComponentEditorPropertyOptions {
-        .label = "DPI Scale Mode",
-        .kind = InspectorPropertyKind::Choice,
-        .choices = {CanvasChoice(0u, "Constant Pixel Size"), CanvasChoice(1u, "Scale With Screen Size"), CanvasChoice(2u, "Constant Physical Size")}});
-    if (dpiScaleMode == 1u)
+    PropertyField("updatePolicy", ComponentEditorPropertyOptions {.label = "Update Policy"});
+    PropertyField("dpiScaleMode", ComponentEditorPropertyOptions {.label = "DPI Scale Mode"});
+    if (dpiScaleMode == Canvas::DpiScaleMode::ScaleWithScreenSize)
     {
         PropertyField("referenceResolution", ComponentEditorPropertyOptions {.label = "Reference Resolution"});
         PropertyField("dpiMatch", ComponentEditorPropertyOptions {.label = "DPI Match"});
     }
-    if (renderMode == 2u)
+    if (renderMode == Canvas::RenderMode::World)
     {
         PropertyField("worldSize", ComponentEditorPropertyOptions {.label = "World Size"});
         PropertyField("pixelsPerUnit", ComponentEditorPropertyOptions {.label = "Pixels Per Unit"});

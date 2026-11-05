@@ -138,6 +138,7 @@ namespace
         copy.targetsSwapchain = input.targetsSwapchain;
         copy.renderWidth = input.renderWidth;
         copy.renderHeight = input.renderHeight;
+        copy.outputViewport = input.outputViewport;
         copy.clearColorValue = input.clearColorValue;
         copy.clearColor = input.clearColor;
         copy.clearDepth = input.clearDepth;

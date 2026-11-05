@@ -17,7 +17,12 @@
 #include "Panels/AViewControllable.h"
 #include "Rendering/DebugSceneRenderer.h"
 #include "Panels/SceneViewPickingPolicy.h"
+#include "Panels/SceneViewSelectionCapture.h"
 #include "Core/SceneViewImGuizmo.h"
+#include "Core/SceneSelection.h"
+#include "Core/SceneViewRectTool.h"
+#include "Core/SceneViewToolbarState.h"
+#include "Core/SceneVisibilityState.h"
 #include "Undo/SceneObjectUndoTarget.h"
 
 namespace NLS::Editor::Core
@@ -87,6 +92,7 @@ namespace NLS::Editor::Panels
 		* Update the scene view
 		*/
 		virtual void Update(float p_deltaTime) override;
+        void RefreshCameraInputAfterUi();
         void EnsureRenderer() override;
         void ApplyValidationCameraForwardStep(float step);
         void SetValidationCameraMotionActive(bool active);
@@ -100,6 +106,18 @@ namespace NLS::Editor::Panels
         Editor::Core::SceneViewGizmoSpace GetCurrentGizmoSpace() const;
         void SetCurrentGizmoSpace(Editor::Core::SceneViewGizmoSpace p_space);
         void ToggleCurrentGizmoSpace();
+        Editor::Core::SceneViewToolbarState GetToolbarState() const;
+        void SetDrawMode(Editor::Core::SceneViewDrawMode mode);
+        void Set2D(bool enabled);
+        bool IsToolbarInteractionActive() const;
+        void SetObjectVisibility(Engine::GameObject& object, bool visible, bool includeChildren = true);
+        bool IsObjectHidden(const Engine::GameObject& object) const;
+        void IsolateSelection();
+        void ShowAllObjects();
+        void SelectAll();
+        void FocusSelection();
+        bool HasActiveInputGesture() const;
+        void CancelInputGesture();
 
 		/**
 		* Prepare the renderer for rendering
@@ -137,6 +155,7 @@ namespace NLS::Editor::Panels
 #endif
 
 		protected:
+        void OnBeforeDrawWidgets() override;
         virtual Engine::Rendering::BaseSceneRenderer::SceneDescriptor CreateSceneDescriptor() override;
         bool ShouldUseStaticFrameCache() const override;
         uint64_t BuildStaticFrameCacheKey(
@@ -159,11 +178,34 @@ namespace NLS::Editor::Panels
 
 		private:
             class ViewportDragDropTarget;
+        void UpdateCameraInputContext();
 
 			void CancelGizmoEditSession();
+				bool BeginGizmoEditSession(Engine::GameObject& object);
+        void DrawRectTool(Engine::GameObject& object, const Core::RectToolView& view, bool snapEnabled);
 			void HandleGameObjectPicking();
+        void DrawSceneSelectionGesture();
+        void CompleteSceneClickSelection(Engine::GameObject* object);
+        void CancelSceneSelectionGesture(bool restore);
+        std::vector<Engine::GameObject*> QueryMarqueeObjects(const std::optional<Core::SceneSelectionRect>& rectangle);
         void EnsureCameraFocus();
         bool IsCameraControlActive() const;
+        void DrawSceneToolbar();
+        bool BuildSceneDistanceFields(bool forceRebuild = false, uint32_t mipMask = 7);
+        void DrawDistanceFieldBuildControls();
+        void DrawDistanceFieldStatusOverlay();
+        std::vector<std::string> m_distanceFieldBuildAssets;
+        std::string m_distanceFieldBuildMessage;
+        void DrawSceneToolbarGroup(size_t group, bool menu);
+        void DrawSceneDrawModeMenu();
+        void DrawSceneGridSnapMenu();
+        void DrawSceneCameraMenu();
+        void DrawSceneGizmosMenu();
+        void DrawSceneEffectsMenu();
+        void DrawSceneVisibilityMenu();
+        void DrawSceneGridMenu();
+        void DrawSceneSnapMenu();
+        void SaveSceneToolbarSettings();
         bool ShouldRequestPickingFrame() const;
         void TryWriteValidationReadback();
 	        void HandleViewportAssetDragDrop();
@@ -182,10 +224,21 @@ namespace NLS::Editor::Panels
 		Editor::Core::EGizmoOperation m_currentOperation = Editor::Core::EGizmoOperation::TRANSLATE;
 		Editor::Core::SceneViewGizmoPivot m_currentPivot = Editor::Core::SceneViewGizmoPivot::Pivot;
 		Editor::Core::SceneViewGizmoSpace m_currentSpace = Editor::Core::SceneViewGizmoSpace::Global;
+        std::optional<Editor::Core::SceneViewGizmoSpace> m_savedRectSpace;
+        std::optional<Editor::Core::RectToolDrag> m_rectDrag;
+        uint32_t m_rectActiveId = 0;
 
 		Engine::GameObject* m_highlightedGameObject = nullptr;
 		uint64_t m_destroyedListener = 0;
         bool m_validationCameraMotionActive = false;
+        bool m_is2D = false;
+        bool m_toolbarPopupOpen = false;
+        bool m_toolbarSettingsDirty = false;
+        Editor::Core::SceneVisibilityState m_sceneVisibility;
+        ImGuiTextFilter m_drawModeFilter;
+        Render::Debug::SceneDebugParameters m_drawModeParameters;
+        ImGuiTextFilter m_gizmosFilter;
+        std::optional<Editor::Core::SceneViewCameraSnapshot> m_saved3DCamera;
 		Editor::Core::SceneViewGizmoInteraction m_gizmoInteraction;
 		std::optional<Editor::Undo::UndoEditSession> m_gizmoEditSession;
 		std::optional<Editor::Undo::SceneObjectUndoTarget> m_gizmoEditTarget;
@@ -197,6 +250,16 @@ namespace NLS::Editor::Panels
 			std::chrono::steady_clock::time_point m_lastPickingSampleTime {};
         uint64_t m_pendingClickMinReadablePickingFrameSerial = 0u;
         bool m_hasPickingSample = false;
+        struct SelectionGesture
+        {
+            Core::SceneSelectionDrag drag;
+            NLS::Editor::Inspector::InspectorTargetSet before;
+            Undo::UndoScopeId scope;
+            uint64_t expectedRevision = 0;
+            bool waitingForPick = false, action = false, shift = false;
+        };
+        std::optional<SelectionGesture> m_selectionGesture;
+        SceneViewSelectionCapture m_selectionCapture;
 	        bool m_requestPickingFrame = true;
 	        bool m_requestPickingFrameForClick = false;
 	        std::optional<NLS::Editor::Assets::EditorAssetDragPayload> m_activeDraggedPrefabPayload;

@@ -1,4 +1,5 @@
 #include "Rendering/RenderScene.h"
+#include "Rendering/SceneRenderOptions.h"
 
 #include <algorithm>
 #include <array>
@@ -240,6 +241,10 @@ namespace
 		const NLS::Render::Entities::Drawable& lhs,
 		const NLS::Render::Entities::Drawable& rhs)
 	{
+        const auto* lhsOverlay = lhs.TryGetDescriptor<SceneWireOverlayDescriptor>();
+        const auto* rhsOverlay = rhs.TryGetDescriptor<SceneWireOverlayDescriptor>();
+        if ((lhsOverlay && lhsOverlay->selected) != (rhsOverlay && rhsOverlay->selected)) return false;
+
 		if (!OpaqueDrawStateMatches(lhs, rhs))
 			return false;
 		if (lhs.material == nullptr || lhs.mesh == nullptr)
@@ -1234,6 +1239,13 @@ RenderSceneSyncRequest RenderScene::BeginSynchronize(
 		resolved.synchronizationStamp.scene != &scene;
 
 	request.sceneRenderContentRevision = scene.GetRenderContentRevision();
+    if (scene.IsPlaying() && scene.GetPhysicsSettings().interpolate)
+    {
+        if (const auto world = scene.PeekPhysicsWorld()) request.physicsRevision3D = world->GetRevision();
+        if (const auto world = scene.PeekPhysicsWorld2D()) request.physicsRevision2D = world->GetRevision();
+    }
+    request.physicsMutationObserved = resolved.physicsRevision3D != request.physicsRevision3D ||
+        resolved.physicsRevision2D != request.physicsRevision2D;
 	request.meshMutationEpoch = NLS::Render::Resources::Mesh::GetGlobalMutationEpoch();
 	request.trackedMaterialMutationObserved = HasTrackedMaterialMutation();
 	// One consistent snapshot: a torn read here would let this frame believe it
@@ -1254,6 +1266,7 @@ RenderSceneSyncRequest RenderScene::BeginSynchronize(
 		request.proxyStore != nullptr &&
 		!request.sceneIdentityChanged &&
 		!request.synchronizationOptionsChanged &&
+        !request.physicsMutationObserved &&
 		resolved.sceneRenderContentRevision == request.sceneRenderContentRevision &&
 		resolved.meshMutationEpoch == request.meshMutationEpoch &&
 		!request.trackedMaterialMutationObserved &&
@@ -1269,6 +1282,7 @@ RenderSceneSyncRequest RenderScene::BeginSynchronize(
 			resolved.sceneRenderContentRevision != request.sceneRenderContentRevision ||
 			request.meshMutationObserved ||
 			request.trackedMaterialMutationObserved;
+        request.sourceNeedsCollection |= request.physicsMutationObserved;
 	}
 
 	if (request.sourceNeedsCollection)
@@ -1467,6 +1481,8 @@ RenderSceneSyncStats RenderScene::CompleteSynchronize(
 	// skip collecting changes this resolve had not applied.
 	ResolvedSceneSynchronizationState resolvedAfter;
 	resolvedAfter.sceneRenderContentRevision = request.sceneRenderContentRevision;
+    resolvedAfter.physicsRevision3D = request.physicsRevision3D;
+    resolvedAfter.physicsRevision2D = request.physicsRevision2D;
 	resolvedAfter.meshMutationEpoch = request.meshMutationEpoch;
 	resolvedAfter.storeChangeSerial = observedStoreChangeSerial;
 	resolvedAfter.hasPendingDeclaredTextures = !m_pendingDeclaredTextureProxyKeys.empty();
@@ -3432,7 +3448,9 @@ bool RenderScene::IsPrimitiveVisible(
 {
 	if (!primitive.occupied || primitive.tombstoned)
 		return false;
-	if (!primitive.ownerAlive || !primitive.ownerActive)
+	if (std::binary_search(options.hiddenObjectIds.begin(), options.hiddenObjectIds.end(), primitive.ownerInstanceId))
+            return false;
+		if (!primitive.ownerAlive || !primitive.ownerActive)
 		return false;
 	if (primitive.transientRenderingSuppressed)
 		return false;
@@ -3761,6 +3779,11 @@ RenderSceneVisibilitySnapshot RenderScene::EvaluateVisibilityThroughPipeline(
 	pipelineOptions.frustum = options.frustum;
 	pipelineOptions.cameraPosition = options.cameraPosition;
 	pipelineOptions.visibleLayerMask = options.visibleLayerMask;
+        if (!options.hiddenObjectIds.empty())
+            for (const auto& primitive : m_primitives)
+                if (primitive.occupied && std::binary_search(options.hiddenObjectIds.begin(), options.hiddenObjectIds.end(), primitive.ownerInstanceId))
+                    pipelineOptions.hiddenPrimitiveIndices.push_back(primitive.handle.index);
+        std::sort(pipelineOptions.hiddenPrimitiveIndices.begin(), pipelineOptions.hiddenPrimitiveIndices.end());
 	pipelineOptions.enableSpatialIndex = false;
 	pipelineOptions.enableLOD = settings.enableLOD;
 	pipelineOptions.enableHLOD = settings.enableHLOD;
@@ -3954,6 +3977,11 @@ RenderSceneVisibilitySnapshot RenderScene::EvaluateVisibilitySpatial(
 	pipelineOptions.frustum = options.frustum;
 	pipelineOptions.cameraPosition = options.cameraPosition;
 	pipelineOptions.visibleLayerMask = options.visibleLayerMask;
+        if (!options.hiddenObjectIds.empty())
+            for (const auto& primitive : m_primitives)
+                if (primitive.occupied && std::binary_search(options.hiddenObjectIds.begin(), options.hiddenObjectIds.end(), primitive.ownerInstanceId))
+                    pipelineOptions.hiddenPrimitiveIndices.push_back(primitive.handle.index);
+        std::sort(pipelineOptions.hiddenPrimitiveIndices.begin(), pipelineOptions.hiddenPrimitiveIndices.end());
 	pipelineOptions.enableSpatialIndex = false;
 	pipelineOptions.spatialQueryRadius = queryRadius;
 	pipelineOptions.enableLOD = settings.enableLOD;
@@ -4314,6 +4342,8 @@ void RenderScene::AppendVisibleDrawable(
 			primitive.lastInputStamp.transformRenderRevision,
 			command);
 	}
+    if (std::binary_search(options.selectionWireIds.begin(), options.selectionWireIds.end(), primitive.ownerInstanceId))
+        drawable.AddDescriptor<SceneWireOverlayDescriptor>({true});
 	drawable.AddDescriptor<EngineDrawableDescriptor>(std::move(descriptor));
 
 	const float distanceToActor = Maths::Vector3::Distance(

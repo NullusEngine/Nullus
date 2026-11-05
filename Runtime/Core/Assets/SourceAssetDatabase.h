@@ -28,6 +28,7 @@ struct NLS_CORE_API SourceAssetRoot
 {
     std::filesystem::path path;
     bool readOnly = false;
+    std::string identityNamespace;
 };
 
 class NLS_CORE_API SourceAssetDatabase

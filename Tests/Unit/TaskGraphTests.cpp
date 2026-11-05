@@ -36,6 +36,7 @@ TEST(TaskGraphTests, CompletionWaitForTimesOutOnPendingNamedThreadTask)
     EXPECT_FALSE(completion.IsComplete());
     EXPECT_EQ(graph.GetNamedThreadQueueDepth(NLS::Base::TaskGraph::NamedThread::Render), 1u);
 
+    ASSERT_TRUE(graph.RegisterCurrentThread(NLS::Base::TaskGraph::NamedThread::Render));
     graph.Pump(NLS::Base::TaskGraph::NamedThread::Render);
     EXPECT_TRUE(completion.IsComplete());
     EXPECT_EQ(completion.GetStatus(), NLS::Base::TaskGraph::TaskStatus::Succeeded);
@@ -57,14 +58,13 @@ TEST(TaskGraphTests, TerminalRecordsAreRecycledPastTheRetentionBound)
     completions.reserve(64u);
     for (size_t index = 0u; index < 64u; ++index)
     {
-        const auto handle = graph.Submit(
-            [] {},
-            NLS::Base::TaskGraph::NamedThread::Any,
-            NLS::Base::TaskGraph::TaskPriority::Normal,
-            "retention-probe");
-        ASSERT_TRUE(handle.IsValid());
-        handles.push_back(handle);
-        completions.push_back(graph.GetCompletion(handle));
+        NLS::Base::TaskGraph::TaskDesc desc;
+        desc.function = [] {};
+        desc.debugName = "retention-probe";
+        auto submission = graph.SubmitTracked(std::move(desc));
+        ASSERT_TRUE(submission.handle.IsValid());
+        handles.push_back(submission.handle);
+        completions.push_back(std::move(submission.completion));
     }
 
     for (auto& completion : completions)
@@ -235,6 +235,7 @@ TEST(TaskGraphTests, LateDependentWaitsOnlyForItsPendingDependencies)
     ASSERT_TRUE(handle.IsValid());
     EXPECT_FALSE(graph.WaitFor(handle, 10ms));
     EXPECT_FALSE(ran.load());
+    ASSERT_TRUE(graph.RegisterCurrentThread(NLS::Base::TaskGraph::NamedThread::Render));
     EXPECT_EQ(graph.Pump(NLS::Base::TaskGraph::NamedThread::Render), 1u);
     EXPECT_TRUE(graph.WaitFor(handle, 1s));
     EXPECT_EQ(graph.GetCompletion(handle).GetStatus(), NLS::Base::TaskGraph::TaskStatus::Succeeded);

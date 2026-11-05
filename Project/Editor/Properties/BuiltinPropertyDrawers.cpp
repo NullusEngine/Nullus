@@ -1,7 +1,10 @@
 #include "Properties/PropertyDrawerRegistry.h"
 #include "Properties/PropertyControlState.h"
 #include "Properties/CurveValue.h"
+#include <UI/Controls/CurveControl.h>
 #include "Properties/ShortcutPropertyDrawer.h"
+#include "Inputs/InputActionReferencePicker.h"
+#include "Properties/SpritePropertyDrawers.h"
 #include "Properties/CollectionPropertyDrawer.h"
 #include "Inspector/PropertyTypeTraits.h"
 #include "Serialization/SerializedProperty.h"
@@ -35,9 +38,37 @@ using namespace Inspector;
 using namespace UI::Controls;
 ControlOptions Options(const PropertyDrawerContext& context)
 {
-    return {context.property.readOnly || context.property.metadata.readOnly,
+    ControlOptions options{context.property.readOnly || context.property.metadata.readOnly,
             context.serializedProperty && context.serializedProperty->HasMultipleDifferentValues(),
             context.uiScale};
+    if (!options.mixed) return options;
+    const auto values = context.serializedProperty->GetTargetValues();
+    if (values.empty()) return options;
+    const auto mask = [&]<class T>(size_t count)
+    {
+        uint64_t mixed = 0;
+        const auto first = values.front().GetValue<T>();
+        for (size_t index = 1; index < values.size(); ++index)
+        {
+            const auto other = values[index].GetValue<T>();
+            if (first.x != other.x) mixed |= 1;
+            if (first.y != other.y) mixed |= 2;
+            if constexpr (requires { first.z; }) if (count >= 3 && first.z != other.z) mixed |= 4;
+            if constexpr (requires { first.w; }) if (count >= 4 && first.w != other.w) mixed |= 8;
+        }
+        return mixed;
+    };
+    switch (context.property.kind)
+    {
+    case InspectorPropertyKind::Vector2: options.mixedComponents = mask.template operator()<Maths::Vector2>(2); break;
+    case InspectorPropertyKind::Vector3: options.mixedComponents = mask.template operator()<Maths::Vector3>(3); break;
+    case InspectorPropertyKind::Vector4: options.mixedComponents = mask.template operator()<Maths::Vector4>(4); break;
+    case InspectorPropertyKind::Vector2Int: options.mixedComponents = mask.template operator()<Maths::Vector2Int>(2); break;
+    case InspectorPropertyKind::Vector3Int: options.mixedComponents = mask.template operator()<Maths::Vector3Int>(3); break;
+    case InspectorPropertyKind::Quaternion: options.mixedComponents = mask.template operator()<Maths::Quaternion>(4); break;
+    default: break;
+    }
+    return options;
 }
 
 template<class T>
@@ -345,6 +376,8 @@ void EnsureBuiltinPropertyDrawers()
     std::call_once(once, []
                    {
         RegisterShortcutPropertyDrawer();
+        RegisterInputActionReferenceDrawer();
+        RegisterSpritePropertyDrawers();
         const auto add = [](InspectorPropertyKind kind, std::function<bool(PropertyDrawerContext &)> draw) {
             PropertyDrawerRegistration registration;
             registration.scope = DrawerScope::Builtin;

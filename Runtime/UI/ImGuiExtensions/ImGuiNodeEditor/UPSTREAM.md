@@ -13,5 +13,9 @@ Local changes:
 
 - Export the public node-editor and canvas APIs through NLS_UI_API.
 - Use the engine's UIDef.h for shared and static build compatibility.
+- Separate keyboard accelerators from pointer gestures. An optional host observer
+  routes focused graph commands through Input Actions and queues ordered requests
+  into the existing navigation, deletion and clipboard actions. Clipboard ownership
+  is granted only to clients using BeginShortcut. Alt+click deletion is retained.
 
 Keep additions and compatibility changes in this directory and record them here.

@@ -7,6 +7,8 @@
 #include <cstdint>
 #include <memory>
 #include <vector>
+#include <array>
+#include <optional>
 
 namespace NLS::Engine::Components
 {
@@ -43,11 +45,17 @@ namespace NLS::Engine::UI
         void Tick(float deltaSeconds, UIVector2 viewportSize, float dpiScale, uint64_t frameId);
         bool DispatchInput(const UIInputEvent& event);
         uint32_t DispatchInputQueue(InputEventQueue& queue);
+        void CancelInput(bool clearFocus = true);
+        bool WantsKeyboardInput() const;
+        bool WantsPointerInput() const;
+        std::optional<UIRect> GetTextInputRect() const;
+        void SetInputDisplay(uint32_t display);
+        void ConfigureOutput(uint32_t display,UIVector2 size,float dpi);
         [[nodiscard]] std::shared_ptr<const NLS::Render::UI::UIDrawSnapshot> BuildScreenSnapshot(
             uint32_t viewportWidth,
             uint32_t viewportHeight,
             float dpiScale,
-            uint64_t frameId) const;
+            uint64_t frameId,uint32_t display=0) const;
         [[nodiscard]] std::vector<UIWorldDrawSnapshot> BuildWorldSnapshots(
             uint32_t viewportWidth,
             uint32_t viewportHeight,
@@ -62,5 +70,8 @@ namespace NLS::Engine::UI
     private:
         std::vector<Components::UICanvasComponent*> m_canvases;
         std::shared_ptr<const NLS::Render::UI::UIDrawSnapshot> m_latestSnapshot;
+        struct Output { UIVector2 size{};float dpi=1;bool configured=false; };
+        std::array<Output,8> m_outputs{};
+        uint32_t m_inputDisplay=0;
     };
 }

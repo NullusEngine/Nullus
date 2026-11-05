@@ -16,6 +16,7 @@
 #include "Rendering/Core/RenderClearValues.h"
 #include "Rendering/Data/DrawableObjectDescriptor.h"
 #include "Rendering/Data/FrameInfo.h"
+#include "Rendering/Sprites/SpriteBatcher.h"
 #include "Rendering/RHI/Core/RHICommand.h"
 #include "Rendering/RHI/Core/RHIDevice.h"
 #include "Rendering/RHI/Core/RHIEnums.h"
@@ -77,6 +78,8 @@ namespace NLS::Render::Context
         uint64_t indirectArgumentOffset = 0;
         // Strong owners include immutable particle frames and their device lifetime.
         std::shared_ptr<const void> resourceOwner;
+        // Shared submission order for transparent mesh, Sprite and VFX streams.
+        std::optional<Sprites::SpriteSortKey> transparentSortKey;
     };
 
     struct NLS_RENDER_API RecordedComputeBindingSetInput
@@ -220,6 +223,7 @@ namespace NLS::Render::Context
         bool targetsSwapchain = false;
         uint32_t renderWidth = 0u;
         uint32_t renderHeight = 0u;
+        std::optional<Maths::Vector4> outputViewport;
         Maths::Vector4 clearColorValue = Core::DefaultOpaqueClearColor();
         bool clearColor = false;
         bool clearDepth = false;

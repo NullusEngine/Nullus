@@ -25,6 +25,9 @@ namespace
     std::condition_variable g_jobSystemLifecycleChanged;
     bool g_initialized = false;
     bool g_shutdownInProgress = false;
+    bool g_explicitOwner = false;
+    size_t g_schedulerLeaseCount = 0u;
+    JobSystemShutdownMode g_deferredShutdownMode = JobSystemShutdownMode::DrainAcceptedWork;
     uint32_t g_workerCount = 0u;
     bool g_diagnosticsEnabled = false;
     std::shared_ptr<JobQueue> g_jobQueue;
@@ -62,6 +65,9 @@ namespace
     thread_local std::vector<JobHandle> g_workerJobHandleStack;
 
     constexpr uint32_t kMaxResolvedWorkerCount = 64u;
+    // Declared after all scheduler state: destruction joins the final shutdown
+    // before the mutexes, terminal records, and queue owners are destroyed.
+    std::jthread g_shutdownReaper;
 
     uint32_t ResolveHardwareConcurrency()
     {
@@ -80,9 +86,8 @@ namespace
     /**
      * Automatic foreground workers come from the shared hardware budget.
      *
-     * The rendering TaskGraph reserves its own share through the same function,
-     * so the two pools cannot each resolve hardware - 1 and oversubscribe the
-     * machine. Callers that know their exact share pass it explicitly.
+     * Rendering TaskGraph and ordinary jobs share this pool. Blocking I/O
+     * retains a separately budgeted background lane.
      */
     uint32_t ResolveForegroundWorkerCount(const uint32_t requestedWorkerCount)
     {
@@ -309,43 +314,85 @@ namespace
 
 }
 
+namespace
+{
+    // g_jobSystemMutex protects both explicit ownership and graph leases.
+    bool InitializeJobSystemLocked(const JobSystemConfig& config)
+    {
+        g_diagnosticsEnabled = config.enableDiagnostics;
+        const uint32_t resolvedWorkerCount = ResolveForegroundWorkerCount(config.workerCount);
+        const uint32_t resolvedBackgroundWorkerCount = ResolveBackgroundWorkerCount(config.backgroundWorkerCount);
+        auto jobQueue = std::make_shared<JobQueue>();
+        if (!jobQueue->Start(resolvedWorkerCount, config.maxPendingJobCount))
+        {
+            g_diagnosticsEnabled = false;
+            return false;
+        }
+        if (!Internal::StartBackgroundJobQueue(resolvedBackgroundWorkerCount, config.maxPendingJobCount))
+        {
+            jobQueue->Shutdown(JobSystemShutdownMode::Immediate);
+            g_diagnosticsEnabled = false;
+            return false;
+        }
+        g_workerCount = resolvedWorkerCount;
+        g_jobQueue = std::move(jobQueue);
+        g_initialized = true;
+        g_deferredShutdownMode = JobSystemShutdownMode::DrainAcceptedWork;
+        Internal::SetJobDiagnosticsRuntimeState(true, g_workerCount, g_diagnosticsEnabled);
+        return true;
+    }
+
+    void FinishJobSystemShutdown(
+        const std::shared_ptr<JobQueue>& queue,
+        const JobSystemShutdownMode mode,
+        const bool diagnosticsWereEnabled)
+    {
+        if (queue != nullptr)
+            queue->StopAcceptingWork();
+        Internal::StopAcceptingBackgroundJobQueue();
+        if (mode == JobSystemShutdownMode::DrainAcceptedWork && queue != nullptr)
+            queue->KickAllPending();
+        Internal::ShutdownBackgroundJobQueue(mode);
+        if (queue != nullptr)
+            queue->Shutdown(mode);
+        {
+            std::lock_guard lock(g_jobSystemMutex);
+            g_initialized = false;
+            g_workerCount = 0u;
+            g_diagnosticsEnabled = false;
+            g_jobQueue.reset();
+            Internal::SetJobDiagnosticsRuntimeState(false, 0u, diagnosticsWereEnabled);
+            g_shutdownInProgress = false;
+        }
+        g_jobSystemLifecycleChanged.notify_all();
+    }
+}
+
 bool TryInitializeJobSystem(const JobSystemConfig& config)
 {
     std::lock_guard lock(g_jobSystemMutex);
-    if (g_shutdownInProgress)
+    if (g_shutdownInProgress || g_explicitOwner)
         return false;
-    if (g_initialized)
+    // Rendering may have acquired the scheduler before Editor/Player startup.
+    // Claim that existing pool, without creating or configuring another one.
+    if (!g_initialized && !InitializeJobSystemLocked(config))
         return false;
-
-    g_diagnosticsEnabled = config.enableDiagnostics;
-    const uint32_t resolvedWorkerCount = ResolveForegroundWorkerCount(config.workerCount);
-    const uint32_t resolvedBackgroundWorkerCount = ResolveBackgroundWorkerCount(config.backgroundWorkerCount);
-    auto jobQueue = std::make_shared<JobQueue>();
-    if (!jobQueue->Start(resolvedWorkerCount))
-    {
-        g_diagnosticsEnabled = false;
-        return false;
-    }
-    if (!Internal::StartBackgroundJobQueue(resolvedBackgroundWorkerCount))
-    {
-        jobQueue->Shutdown(JobSystemShutdownMode::Immediate);
-        g_diagnosticsEnabled = false;
-        return false;
-    }
-    g_workerCount = resolvedWorkerCount;
-    g_jobQueue = std::move(jobQueue);
-    g_initialized = true;
-    Internal::SetJobDiagnosticsRuntimeState(true, g_workerCount, g_diagnosticsEnabled);
+    Internal::SetMainThreadContinuationOwner(std::this_thread::get_id());
+    g_explicitOwner = true;
     return true;
 }
 
 bool InitializeJobSystem(const JobSystemConfig& config)
 {
-    if (TryInitializeJobSystem(config))
-        return true;
-
     std::lock_guard lock(g_jobSystemMutex);
-    return g_initialized && !g_shutdownInProgress;
+    if (g_shutdownInProgress)
+        return false;
+    if (!g_initialized && !InitializeJobSystemLocked(config))
+        return false;
+    if (!g_explicitOwner)
+        Internal::SetMainThreadContinuationOwner(std::this_thread::get_id());
+    g_explicitOwner = true;
+    return true;
 }
 
 void ShutdownJobSystem(const JobSystemShutdownMode mode)
@@ -365,39 +412,56 @@ void ShutdownJobSystem(const JobSystemShutdownMode mode)
         std::unique_lock lock(g_jobSystemMutex);
         if (g_shutdownInProgress)
         {
-            g_jobSystemLifecycleChanged.wait(
-                lock,
-                []
-                {
-                    return !g_shutdownInProgress;
-                });
+            g_jobSystemLifecycleChanged.wait(lock, [] { return !g_shutdownInProgress; });
             return;
         }
+        g_explicitOwner = false;
+        g_deferredShutdownMode = mode;
+        if (g_schedulerLeaseCount != 0u)
+            return;
         g_shutdownInProgress = true;
         queue = g_jobQueue;
         diagnosticsWereEnabled = g_diagnosticsEnabled;
     }
+    FinishJobSystemShutdown(queue, mode, diagnosticsWereEnabled);
+}
 
-    if (queue != nullptr)
-        queue->StopAcceptingWork();
-    Internal::StopAcceptingBackgroundJobQueue();
-
-    if (mode == JobSystemShutdownMode::DrainAcceptedWork && queue != nullptr)
-        queue->KickAllPending();
-
-    Internal::ShutdownBackgroundJobQueue(mode);
-    if (queue != nullptr)
-        queue->Shutdown(mode);
+void DrainAcceptedJobs(const std::function<void()>& pump)
+{
+    if (Internal::IsExecutingJobWorkerThread() || !Internal::IsMainThreadContinuationOwner())
     {
-        std::lock_guard lock(g_jobSystemMutex);
-        g_initialized = false;
-        g_workerCount = 0u;
-        g_diagnosticsEnabled = false;
-        g_jobQueue.reset();
-        g_shutdownInProgress = false;
+        Internal::RecordJobViolation(JobViolationKind::SyncWaitDisallowed, 0u,
+            "DrainAcceptedJobs must be called by a lifecycle owner outside job callbacks.");
+        return;
     }
-    Internal::SetJobDiagnosticsRuntimeState(false, 0u, diagnosticsWereEnabled);
-    g_jobSystemLifecycleChanged.notify_all();
+    auto queue = GetJobQueueSnapshot();
+    for (;;)
+    {
+        if (pump)
+            pump();
+        if (queue != nullptr)
+            queue->KickAllPending();
+        Internal::PollBackgroundDependencies();
+        DrainMainThreadContinuations();
+        const uint64_t foregroundBoundary = queue != nullptr ? queue->GetAcceptedWorkBoundary() : 0u;
+        const uint64_t backgroundBoundary = Internal::GetBackgroundAcceptedWorkBoundary();
+        const bool foregroundComplete = queue == nullptr || queue->IsAcceptedWorkComplete(foregroundBoundary);
+        const bool backgroundComplete = Internal::IsBackgroundAcceptedWorkComplete(backgroundBoundary);
+        if (foregroundComplete && backgroundComplete)
+        {
+            DrainMainThreadContinuations();
+            if (pump)
+                pump();
+            // Include fire-and-forget descendants and work published by owner
+            // continuations. A stable pair of boundaries proves that neither
+            // queue published into the other during the completion checks.
+            if ((queue == nullptr || queue->GetAcceptedWorkBoundary() == foregroundBoundary) &&
+                Internal::GetBackgroundAcceptedWorkBoundary() == backgroundBoundary)
+                break;
+        }
+        if (queue == nullptr || !queue->ExecuteOneJob())
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
 }
 
 bool IsJobSystemInitialized()
@@ -484,6 +548,9 @@ JobHandle ScheduleDifferentJobsConcurrent(
         {
             return job.priority == JobPriority::High;
         });
+    const bool allJobsLowPriority = std::all_of(
+        jobDescs.begin(), jobDescs.end(),
+        [](const JobScheduleDesc& job) { return job.priority == JobPriority::Low; });
     const bool allJobsGuaranteeNoSyncWait = std::all_of(
         jobDescs.begin(),
         jobDescs.end(),
@@ -500,7 +567,7 @@ JobHandle ScheduleDifferentJobsConcurrent(
         nullptr,
         nullptr,
         false,
-        hasHighPriorityJob ? JobPriority::High : JobPriority::Normal,
+        hasHighPriorityJob ? JobPriority::High : (allJobsLowPriority ? JobPriority::Low : JobPriority::Normal),
         allJobsGuaranteeNoSyncWait ? JobSafetyPolicy::GuaranteedNoSyncWait : JobSafetyPolicy::MaySyncWait,
         nullptr);
 
@@ -611,6 +678,27 @@ bool IsCompleted(const JobHandle handle)
     return queue->IsCompleted(handle);
 }
 
+JobCompletionStatus GetCompletionStatus(const JobHandle handle)
+{
+    return Internal::GetJobCompletionStatus(handle);
+}
+
+bool RequestCancel(const JobHandle handle)
+{
+    if (IsDefaultHandle(handle) || Internal::IsBackgroundJobHandle(handle))
+        return false;
+    auto queue = GetJobQueueSnapshot();
+    return queue != nullptr && queue->RequestCancel(handle);
+}
+
+bool IsCancellationRequested(const JobHandle handle)
+{
+    if (IsDefaultHandle(handle) || Internal::IsBackgroundJobHandle(handle))
+        return false;
+    auto queue = GetJobQueueSnapshot();
+    return queue != nullptr && queue->IsCancellationRequested(handle);
+}
+
 void ClearWithoutSync(JobHandle& handle)
 {
     if (!IsDefaultHandle(handle))
@@ -653,6 +741,8 @@ void ResetJobSystemForTesting()
         g_workerCount = 0u;
         g_diagnosticsEnabled = false;
         g_shutdownInProgress = false;
+        g_explicitOwner = false;
+        g_schedulerLeaseCount = 0u;
     }
     if (queue != nullptr)
         queue->StopAcceptingWork();
@@ -675,6 +765,109 @@ void ResetJobSystemForTesting()
 
 namespace Internal
 {
+    bool DispatchJob(const JobScheduleDesc& desc, const bool tailContinuation)
+    {
+        auto queue = GetAcceptingJobQueueSnapshot();
+        return queue != nullptr && queue->DispatchJob(desc, tailContinuation);
+    }
+
+    bool AcquireJobSystem(const JobSystemConfig& config)
+    {
+        std::lock_guard lock(g_jobSystemMutex);
+        if (g_shutdownInProgress)
+            return false;
+        if (!g_initialized && !InitializeJobSystemLocked(config))
+            return false;
+        ++g_schedulerLeaseCount;
+        return true;
+    }
+
+    void ReleaseJobSystem()
+    {
+        std::shared_ptr<JobQueue> queue;
+        bool diagnosticsWereEnabled = false;
+        JobSystemShutdownMode mode;
+        {
+            std::lock_guard lock(g_jobSystemMutex);
+            if (g_schedulerLeaseCount == 0u)
+                return;
+            --g_schedulerLeaseCount;
+            if (g_schedulerLeaseCount != 0u || g_explicitOwner || !g_initialized)
+                return;
+            g_shutdownInProgress = true;
+            queue = g_jobQueue;
+            diagnosticsWereEnabled = g_diagnosticsEnabled;
+            mode = g_deferredShutdownMode;
+            if (IsExecutingJobWorkerThread())
+            {
+                // Only the final lease released inside a callback needs a
+                // join owner. This temporary thread drains ordinary compute
+                // work and joins the pool; it never pumps main continuations.
+                // jthread ownership guarantees it is joined at process exit.
+                try
+                {
+                    g_shutdownReaper = std::jthread([queue, mode, diagnosticsWereEnabled]
+                    {
+                        FinishJobSystemShutdown(queue, mode, diagnosticsWereEnabled);
+                    });
+                }
+                catch (...)
+                {
+                    g_shutdownInProgress = false;
+                    RecordJobViolation(JobViolationKind::ShutdownSchedulingRejected, 0u,
+                        "Could not create the final scheduler join owner; call ShutdownJobSystem from the lifecycle owner.");
+                    g_jobSystemLifecycleChanged.notify_all();
+                }
+                return;
+            }
+        }
+        FinishJobSystemShutdown(queue, mode, diagnosticsWereEnabled);
+    }
+
+    bool IsForegroundWorkerThread()
+    {
+        auto queue = GetJobQueueSnapshot();
+        return queue != nullptr && queue->IsWorkerThread();
+    }
+
+    bool ExecuteOneForegroundJobForWorker()
+    {
+        auto queue = GetJobQueueSnapshot();
+        return queue != nullptr && queue->IsWorkerThread() && queue->ExecuteOneJob();
+    }
+
+#if defined(NLS_ENABLE_TEST_HOOKS)
+    size_t GetWaitingForegroundWorkerCountForTesting()
+    {
+        auto queue = GetJobQueueSnapshot();
+        return queue != nullptr ? queue->GetWaitingWorkerCountForTesting() : 0u;
+    }
+
+    DispatchReuseStats GetDispatchReuseStatsForTesting()
+    {
+        auto queue = GetJobQueueSnapshot();
+        return queue != nullptr ? queue->GetDispatchReuseStatsForTesting() : DispatchReuseStats{};
+    }
+#endif
+
+    size_t GetJobWorkerStealCount()
+    {
+        auto queue = GetJobQueueSnapshot();
+        return queue != nullptr ? queue->GetWorkerStealCount() : 0u;
+    }
+
+    size_t GetJobWorkerLocalExecutionCount()
+    {
+        auto queue = GetJobQueueSnapshot();
+        return queue != nullptr ? queue->GetWorkerLocalExecutionCount() : 0u;
+    }
+
+    size_t GetJobWorkerInjectionExecutionCount()
+    {
+        auto queue = GetJobQueueSnapshot();
+        return queue != nullptr ? queue->GetWorkerInjectionExecutionCount() : 0u;
+    }
+
     bool IsKnownJobHandle(const JobHandle handle)
     {
         if (IsDefaultHandle(handle))
@@ -895,6 +1088,8 @@ namespace Internal
 
     bool IsCurrentJobWorkerHandle(const JobHandle handle)
     {
+        if (IsDefaultHandle(handle))
+            return false;
         return std::any_of(
             g_workerJobHandleStack.begin(),
             g_workerJobHandleStack.end(),

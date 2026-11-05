@@ -1,0 +1,404 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  UI Designer 重建设计图（示意，非等比）。
+  与 Docs/Plans/UIDesignerRebuild.md 配套：
+    主窗口：标签栏 / 工具栏 / 层级+调色板 / 画布（设备框、选中手柄、吸附参考线）/ 属性面板 / 诊断条
+    底部三张细节图：① 锚点预设 ② 层级拖拽 ③ 手柄与吸附
+-->
+<svg xmlns="http://www.w3.org/2000/svg" width="1560" height="1180" viewBox="0 0 1560 1180"
+     font-family="'Segoe UI','Microsoft YaHei',Roboto,sans-serif">
+  <defs>
+    <style>
+      .win   { fill:#121016; stroke:#2C2A33; }
+      .bar   { fill:#17151C; }
+      .panel { fill:#0F0D12; }
+      .div   { stroke:#2C2A33; }
+      .t     { font-size:12px; fill:#CCCBD2; }
+      .t11   { font-size:11px; fill:#CCCBD2; }
+      .dim   { font-size:11px; fill:#8A8794; }
+      .dim10 { font-size:10px; fill:#8A8794; }
+      .hdr   { font-size:12px; fill:#E8E6EE; font-weight:600; }
+      .title { font-size:13px; fill:#E8E6EE; font-weight:600; }
+      .acc   { font-size:11px; fill:#7FB2FF; }
+      .warn  { font-size:11px; fill:#E0B65A; }
+      .err   { font-size:11px; fill:#EC685C; }
+      .mono  { font-family:Consolas,monospace; font-size:10px; fill:#9AA3B2; }
+      .field { fill:#1A171F; stroke:#33303B; rx:3; }
+      .btn   { fill:#1E1B24; stroke:#3A3742; rx:3; }
+      .btnOn { fill:#23304C; stroke:#4C8DFF; rx:3; }
+      .chip  { fill:#1B1822; stroke:#33303B; rx:3; }
+      .canvasBg { fill:#0B0A0E; }
+      .device { fill:#14171D; stroke:#3A3742; }
+      .sel   { fill:none; stroke:#4C8DFF; stroke-width:2; }
+      .hover { fill:none; stroke:#8A93A6; stroke-width:1; stroke-dasharray:3 3; }
+      .guide { fill:none; stroke:#E0B65A; stroke-width:1; stroke-dasharray:6 4; }
+      .handle{ fill:#EAF1FF; stroke:#4C8DFF; stroke-width:1.5; }
+      .badge { fill:#1B2334; stroke:#3C5480; rx:3; }
+      .okRow { fill:#1E2A45; stroke:#4C8DFF; stroke-width:1; rx:3; }
+      .treeRow { fill:none; }
+      .inset { fill:#121016; stroke:#2C2A33; rx:6; }
+      .insetBg { fill:#0F0D12; rx:4; }
+      .check { fill:#4C8DFF; rx:2; }
+    </style>
+    <pattern id="checker" width="12" height="12" patternUnits="userSpaceOnUse">
+      <rect width="12" height="12" fill="#20242C"/>
+      <rect width="6" height="6" fill="#181C23"/>
+      <rect x="6" y="6" width="6" height="6" fill="#181C23"/>
+    </pattern>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#4C8DFF"/>
+    </marker>
+    <marker id="arrowAmber" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#E0B65A"/>
+    </marker>
+  </defs>
+
+  <!-- ============================ 主窗口 ============================ -->
+  <rect class="win" x="16" y="16" width="1528" height="916" rx="6"/>
+  <rect class="bar" x="17" y="17" width="1526" height="30" rx="6"/>
+  <line class="div" x1="16" y1="46" x2="1544" y2="46" stroke-width="1" stroke="#2C2A33"/>
+  <text class="title" x="30" y="37">UI Designer</text>
+  <text class="dim" x="1440" y="37">—</text>
+  <text class="dim" x="1478" y="37">▢</text>
+  <text class="dim" x="1512" y="37">✕</text>
+
+  <!-- 文档标签（P1） -->
+  <rect class="bar" x="17" y="46" width="1526" height="32"/>
+  <rect x="24" y="50" width="150" height="24" rx="4" fill="#23304C" stroke="#4C8DFF"/>
+  <text class="t11" x="36" y="66">HUD.ui</text>
+  <circle cx="152" cy="62" r="4" fill="#E0B65A"/>
+  <rect class="btn" x="182" y="50" width="110" height="24"/>
+  <text class="dim" x="196" y="66">Options.ui</text>
+  <rect class="btn" x="300" y="50" width="26" height="24"/>
+  <text class="t11" x="311" y="66">+</text>
+  <text class="dim10" x="350" y="66">（P1：多文档标签，P0 单文档 + 未保存守卫）</text>
+
+  <!-- 工具栏 -->
+  <rect class="bar" x="17" y="78" width="1526" height="36"/>
+  <line class="div" x1="16" y1="114" x2="1544" y2="114" stroke="#2C2A33"/>
+  <g class="btn">
+    <rect x="24" y="84" width="52" height="24"/>
+    <rect x="82" y="84" width="58" height="24"/>
+    <rect x="152" y="84" width="30" height="24"/>
+    <rect x="188" y="84" width="30" height="24"/>
+    <rect x="232" y="84" width="42" height="24"/>
+    <rect x="292" y="84" width="34" height="24"/>
+    <rect x="332" y="84" width="34" height="24"/>
+    <rect x="386" y="84" width="130" height="24"/>
+    <rect x="530" y="84" width="62" height="24"/>
+    <rect x="598" y="84" width="52" height="24"/>
+    <rect x="656" y="84" width="86" height="24"/>
+    <rect x="790" y="84" width="92" height="24"/>
+  </g>
+  <text class="t11" x="38" y="100">Save</text>
+  <text class="t11" x="92" y="100">Revert</text>
+  <text class="t11" x="161" y="100">↶</text>
+  <text class="t11" x="197" y="100">↷</text>
+  <text class="acc" x="243" y="100">Fit</text>
+  <text class="t11" x="298" y="100">−</text>
+  <text class="t11" x="338" y="100">+</text>
+  <text class="t11" x="396" y="100">1920 × 1080 ▾</text>
+  <text class="t11" x="540" y="100">▦ Grid</text>
+  <text class="t11" x="606" y="100">Snap</text>
+  <text class="t11" x="666" y="100">8 px ▾</text>
+  <text class="t11" x="800" y="100">Wireframe</text>
+
+  <!-- ============================ 左列 ============================ -->
+  <rect class="panel" x="17" y="115" width="255" height="392"/>
+  <line class="div" x1="272" y1="114" x2="272" y2="884" stroke="#2C2A33"/>
+  <text class="hdr" x="28" y="140">Hierarchy</text>
+  <rect class="field" x="110" y="126" width="150" height="20"/>
+  <text class="dim10" x="118" y="140">搜索…</text>
+
+  <!-- 层级树 -->
+  <g class="t11">
+    <text x="30" y="172">▾ ⬚ Root</text><text class="dim10" x="120" y="172">1920 × 1080</text>
+    <text x="46" y="196">▾ ⬚ HUD</text>
+    <text x="62" y="220">▾ ⬚ HealthPanel</text>
+  </g>
+  <rect class="okRow" x="56" y="208" width="204" height="18"/>
+  <text class="t11" x="62" y="220" fill="#DCE7FF">▾ ⬚ HealthPanel</text>
+  <g class="t11">
+    <text x="80" y="244">▪ BarBg</text><text class="dim10" x="206" y="244">👁</text>
+    <text x="80" y="268">▪ BarFill</text><text class="dim10" x="206" y="268">👁</text>
+    <text x="62" y="292">▾ 🖹 AmmoLabel</text><text class="dim10" x="206" y="292">👁</text>
+    <text x="62" y="316">▾ ⬓ ReloadButton</text><text class="dim10" x="206" y="316">👁</text>
+    <text x="62" y="340">▸ ▢ Crosshair</text><text class="dim10" x="206" y="340">👁</text>
+    <text x="62" y="364">▸ ▢ Minimap</text><text class="dim10" x="206" y="364">👁</text>
+  </g>
+  <text class="dim10" x="30" y="396">右键：新建 / 复制 / 删除 / 排序 / 显隐</text>
+  <text class="dim10" x="30" y="414">拖拽：行间排序 · 行上换父（自身子树禁止）</text>
+  <text class="dim10" x="30" y="432">F2 / 双击：内联重命名</text>
+  <text class="dim10" x="30" y="470" fill="#7FB2FF">▼ 与画布选择双向同步</text>
+  <text class="dim10" x="30" y="488">Shift 区间 · Ctrl 追加</text>
+
+  <!-- 调色板 -->
+  <rect class="panel" x="17" y="507" width="255" height="377"/>
+  <text class="hdr" x="28" y="532">Palette</text>
+  <rect class="field" x="110" y="518" width="150" height="20"/>
+  <text class="dim10" x="118" y="532">搜索…</text>
+  <g>
+    <rect class="chip" x="26" y="546" width="116" height="26"/><text class="t11" x="40" y="563">⬚ Panel</text>
+    <rect class="chip" x="148" y="546" width="116" height="26"/><text class="t11" x="162" y="563">▢ Image</text>
+    <rect class="chip" x="26" y="578" width="116" height="26"/><text class="t11" x="40" y="595">⬓ NineSlice</text>
+    <rect class="chip" x="148" y="578" width="116" height="26"/><text class="t11" x="162" y="595">🖹 Text</text>
+    <rect class="chip" x="26" y="610" width="116" height="26"/><text class="t11" x="40" y="627">🖹 RichText</text>
+    <rect class="chip" x="148" y="610" width="116" height="26"/><text class="t11" x="162" y="627">⬓ Button</text>
+    <rect class="chip" x="26" y="642" width="116" height="26"/><text class="t11" x="40" y="659">☑ Toggle</text>
+    <rect class="chip" x="148" y="642" width="116" height="26"/><text class="t11" x="162" y="659">◉ Radio</text>
+    <rect class="chip" x="26" y="674" width="116" height="26"/><text class="t11" x="40" y="691">⇔ Slider</text>
+    <rect class="chip" x="148" y="674" width="116" height="26"/><text class="t11" x="162" y="691">▬ ProgressBar</text>
+    <rect class="chip" x="26" y="706" width="116" height="26"/><text class="t11" x="40" y="723">▭ TextField</text>
+    <rect class="chip" x="148" y="706" width="116" height="26"/><text class="t11" x="162" y="723">▼ Dropdown</text>
+    <rect class="chip" x="26" y="738" width="116" height="26"/><text class="t11" x="40" y="755">▤ ScrollView</text>
+    <rect class="chip" x="148" y="738" width="116" height="26"/><text class="t11" x="162" y="755">▥ Scrollbar</text>
+    <rect class="chip" x="26" y="770" width="116" height="26"/><text class="t11" x="40" y="787">☰ ListView</text>
+  </g>
+  <text class="dim10" x="28" y="822">单击：追加到选中节点（无选中 → 根）</text>
+  <text class="acc" x="28" y="840">拖到画布：按落点父级与坐标创建</text>
+  <text class="dim10" x="28" y="864" fill="#8A8794">（纹理/字体资源拖放：P2）</text>
+
+  <!-- ============================ 画布 ============================ -->
+  <rect class="canvasBg" x="273" y="115" width="918" height="769"/>
+  <!-- 标尺 -->
+  <rect fill="#161419" x="289" y="115" width="902" height="18"/>
+  <g stroke="#3A3742" stroke-width="1">
+    <line x1="329" y1="133" x2="329" y2="124"/><line x1="409" y1="133" x2="409" y2="121"/>
+    <line x1="489" y1="133" x2="489" y2="124"/><line x1="569" y1="133" x2="569" y2="121"/>
+    <line x1="649" y1="133" x2="649" y2="124"/><line x1="729" y1="133" x2="729" y2="121"/>
+    <line x1="809" y1="133" x2="809" y2="124"/><line x1="889" y1="133" x2="889" y2="121"/>
+    <line x1="969" y1="133" x2="969" y2="124"/><line x1="1049" y1="133" x2="1049" y2="121"/>
+    <line x1="1129" y1="133" x2="1129" y2="124"/>
+  </g>
+  <g class="dim10">
+    <text x="326" y="128">0</text><text x="486" y="128">200</text><text x="646" y="128">400</text>
+    <text x="806" y="128">600</text><text x="966" y="128">800</text><text x="1126" y="128">1000</text>
+  </g>
+  <rect fill="#161419" x="273" y="133" width="16" height="751"/>
+  <g stroke="#3A3742" stroke-width="1">
+    <line x1="289" y1="173" x2="281" y2="173"/><line x1="289" y1="253" x2="278" y2="253"/>
+    <line x1="289" y1="333" x2="281" y2="333"/><line x1="289" y1="413" x2="278" y2="413"/>
+    <line x1="289" y1="493" x2="281" y2="493"/><line x1="289" y1="573" x2="278" y2="573"/>
+    <line x1="289" y1="653" x2="281" y2="653"/><line x1="289" y1="733" x2="278" y2="733"/>
+    <line x1="289" y1="813" x2="281" y2="813"/>
+  </g>
+
+  <!-- 设备框 1920×1080 @45% -->
+  <rect class="device" x="318" y="250" width="864" height="486" rx="2"/>
+  <rect fill="none" stroke="#4C8DFF" stroke-width="1" stroke-dasharray="5 4" x="326" y="258" width="848" height="470"/>
+  <text class="acc" x="330" y="274">Root · Overlay · 1920 × 1080</text>
+
+  <!-- 吸附参考线 -->
+  <line class="guide" x1="352" y1="250" x2="352" y2="736"/>
+  <rect class="badge" x="286" y="300" width="60" height="16"/>
+  <text class="warn" x="293" y="312">父左边 0</text>
+  <line class="guide" x1="318" y1="600" x2="1182" y2="600"/>
+  <rect class="badge" x="700" y="584" width="40" height="16"/>
+  <text class="warn" x="708" y="596">8 px</text>
+
+  <!-- AmmoLabel（悬停） -->
+  <text x="352" y="562" font-size="16" fill="#E8E6EE">12 / 30</text>
+  <rect class="hover" x="344" y="544" width="86" height="28"/>
+  <text class="dim10" x="344" y="538">AmmoLabel（悬停描边）</text>
+
+  <!-- HealthPanel（选中 + 手柄 + 尺寸徽标） -->
+  <rect x="352" y="600" width="340" height="78" fill="#1E222B"/>
+  <text class="acc" x="352" y="592">HealthPanel · 320 × 64</text>
+  <rect class="sel" x="352" y="600" width="340" height="78"/>
+  <rect class="handle" x="349" y="597" width="7" height="7"/>
+  <rect class="handle" x="518" y="597" width="7" height="7"/>
+  <rect class="handle" x="686" y="597" width="7" height="7"/>
+  <rect class="handle" x="349" y="636" width="7" height="7"/>
+  <rect class="handle" x="686" y="636" width="7" height="7"/>
+  <rect class="handle" x="349" y="674" width="7" height="7"/>
+  <rect class="handle" x="518" y="674" width="7" height="7"/>
+  <rect class="handle" x="686" y="674" width="7" height="7"/>
+  <rect class="badge" x="698" y="682" width="58" height="17"/>
+  <text class="acc" x="705" y="695">320 × 64</text>
+
+  <!-- 内容示例 -->
+  <rect x="368" y="620" width="308" height="40" rx="2" fill="#2B303B"/>
+  <rect x="368" y="620" width="186" height="40" rx="2" fill="#3E9C6B"/>
+  <text class="dim10" x="376" y="645" fill="#C9EAD8">BarFill · 60%</text>
+  <rect x="830" y="620" width="120" height="40" rx="3" fill="#22355E" stroke="#35507F"/>
+  <text class="acc" x="862" y="645" font-size="12" fill="#BFD4FF">RELOAD</text>
+  <text class="dim10" x="830" y="680">ReloadButton · Button</text>
+  <rect x="1000" y="300" width="150" height="110" fill="url(#checker)" stroke="#3A3742"/>
+  <text class="dim10" x="1008" y="424">Minimap（Image · 纹理，P2）</text>
+  <line x1="916" y1="430" x2="944" y2="430" stroke="#8A93A6"/>
+  <line x1="930" y1="416" x2="930" y2="444" stroke="#8A93A6"/>
+  <text class="dim10" x="952" y="434">Crosshair（Image）</text>
+
+  <!-- 画布状态与缩放 -->
+  <text class="dim10" x="300" y="856">x 120 · y 340 ·（单位：文档像素）</text>
+  <g class="btn">
+    <rect x="1004" y="842" width="26" height="20"/>
+    <rect x="1034" y="842" width="56" height="20"/>
+    <rect x="1094" y="842" width="26" height="20"/>
+    <rect x="1124" y="842" width="46" height="20"/>
+  </g>
+  <text class="t11" x="1011" y="856">−</text>
+  <text class="acc" x="1044" y="856">45%</text>
+  <text class="t11" x="1102" y="856">+</text>
+  <text class="t11" x="1133" y="856">Fit</text>
+  <text class="dim10" x="300" y="876">Ctrl+滚轮 以光标为锚点缩放 · Space/中键 平移 · F 适配 · 框选多选</text>
+
+  <!-- ============================ 属性面板 ============================ -->
+  <rect class="panel" x="1192" y="115" width="351" height="769"/>
+  <line class="div" x1="1192" y1="114" x2="1192" y2="884" stroke="#2C2A33"/>
+  <text class="hdr" x="1204" y="140">Inspector</text>
+  <text class="dim10" x="1440" y="140">多选显示混合值 —</text>
+
+  <text class="hdr" x="1204" y="168">▾ Element</text>
+  <g class="dim">
+    <text x="1204" y="190">Type</text><text x="1204" y="214">Name</text>
+    <text x="1204" y="238">Class</text><text x="1204" y="262">GUID</text>
+  </g>
+  <g>
+    <rect class="field" x="1290" y="178" width="240" height="20"/><text class="t11" x="1298" y="192">Panel（只读）</text>
+    <rect class="field" x="1290" y="202" width="240" height="20"/><text class="t11" x="1298" y="216">HealthPanel</text>
+    <rect class="field" x="1290" y="226" width="240" height="20"/><text class="t11" x="1298" y="240">hud.panel</text>
+    <rect class="field" x="1290" y="250" width="212" height="20"/><text class="mono" x="1298" y="264">a1b2c3d4-…-9f0e</text>
+    <rect class="btn" x="1506" y="250" width="24" height="20"/><text class="t11" x="1512" y="264">⧉</text>
+  </g>
+
+  <text class="hdr" x="1204" y="292">▾ Rect &amp; Anchors</text>
+  <!-- 3×3 锚点预设 -->
+  <g stroke="#3A3742" fill="#1A171F">
+    <rect x="1204" y="302" width="18" height="15"/><rect x="1224" y="302" width="18" height="15"/><rect x="1244" y="302" width="18" height="15"/>
+    <rect x="1204" y="319" width="18" height="15"/><rect x="1224" y="319" width="18" height="15" fill="#23304C" stroke="#4C8DFF"/>
+    <rect x="1244" y="319" width="18" height="15"/>
+    <rect x="1204" y="336" width="18" height="15"/><rect x="1224" y="336" width="18" height="15"/><rect x="1244" y="336" width="18" height="15"/>
+  </g>
+  <text class="dim10" x="1274" y="312">Anchor  Min 0.5 / 0.5 · Max 0.5 / 0.5</text>
+  <text class="dim10" x="1274" y="328">Pivot  0.5 / 0.5　（点击后保持当前矩形）</text>
+  <text class="dim10" x="1274" y="344">拉伸轴在预设中以“边”表示</text>
+  <g class="dim">
+    <text x="1204" y="374">Pos X / Y</text><text x="1204" y="398">Size W / H</text>
+  </g>
+  <g>
+    <rect class="field" x="1290" y="362" width="115" height="20"/><text class="t11" x="1298" y="376">120</text>
+    <rect class="field" x="1411" y="362" width="119" height="20"/><text class="t11" x="1419" y="376">340</text>
+    <rect class="field" x="1290" y="386" width="115" height="20"/><text class="t11" x="1298" y="400">320</text>
+    <rect class="field" x="1411" y="386" width="119" height="20"/><text class="t11" x="1419" y="400">64</text>
+  </g>
+
+  <text class="hdr" x="1204" y="428">▾ Layout</text>
+  <g class="dim">
+    <text x="1204" y="450">Mode</text><text x="1204" y="474">Padding</text><text x="1204" y="498">Margin</text>
+  </g>
+  <g>
+    <rect class="field" x="1290" y="438" width="240" height="20"/><text class="t11" x="1298" y="452">Absolute ▾</text>
+    <rect class="field" x="1290" y="462" width="240" height="20"/><text class="t11" x="1298" y="476">0 / 0</text>
+    <rect class="field" x="1290" y="486" width="240" height="20"/><text class="t11" x="1298" y="500">0 / 0</text>
+  </g>
+  <rect class="field" x="1290" y="510" width="14" height="14"/><text class="dim" x="1310" y="521">Clip children</text>
+  <rect class="field" x="1204" y="510" width="14" height="14"/><text class="dim" x="1224" y="521">Dir</text>
+
+  <text class="hdr" x="1204" y="550">▾ Style</text>
+  <g class="dim">
+    <text x="1204" y="572">Background</text><text x="1204" y="596">Text color</text><text x="1204" y="620">Opacity</text>
+  </g>
+  <g>
+    <rect x="1290" y="561" width="24" height="16" fill="#1E222B" stroke="#3A3742"/><rect class="field" x="1320" y="559" width="210" height="20"/><text class="mono" x="1328" y="573">0.12 0.13 0.16 1.0</text>
+    <rect x="1290" y="585" width="24" height="16" fill="#E8E6EE" stroke="#3A3742"/><rect class="field" x="1320" y="583" width="210" height="20"/><text class="mono" x="1328" y="597">1.0 1.0 1.0 1.0</text>
+    <rect class="field" x="1290" y="607" width="180" height="20"/><rect x="1290" y="607" width="180" height="20" fill="#4C8DFF" opacity="0.35"/><text class="t11" x="1478" y="621">1.0</text>
+  </g>
+  <rect class="field" x="1204" y="636" width="14" height="14"/><text class="dim" x="1224" y="647">Visible</text>
+  <rect class="field" x="1290" y="636" width="14" height="14"/><text class="dim" x="1310" y="647">Enabled</text>
+  <rect class="field" x="1376" y="636" width="14" height="14"/><text class="dim" x="1396" y="647">Interactive</text>
+
+  <text class="hdr" x="1204" y="676">▾ Content</text>
+  <g class="dim"><text x="1204" y="698">Text</text><text x="1204" y="738">Font</text><text x="1204" y="762">Pixel size</text></g>
+  <rect class="field" x="1290" y="682" width="240" height="44"/><text class="t11" x="1298" y="700">12 / 30</text>
+  <rect class="field" x="1290" y="726" width="212" height="20"/><text class="t11" x="1298" y="740">Default (1)（P2 资源选择）</text>
+  <rect class="btn" x="1506" y="726" width="24" height="20"/><text class="t11" x="1512" y="740">…</text>
+  <rect class="field" x="1290" y="750" width="90" height="20"/><text class="t11" x="1298" y="764">16</text>
+
+  <text class="hdr" x="1204" y="794">▾ Advanced</text>
+  <rect class="field" x="1204" y="806" width="14" height="14"/><text class="dim" x="1224" y="817">requiresRenderTarget</text>
+
+  <text class="hdr" x="1204" y="846">▾ Actions</text>
+  <rect class="btn" x="1204" y="854" width="86" height="22"/><text class="t11" x="1216" y="869">Duplicate</text>
+  <rect class="btn" x="1298" y="854" width="74" height="22"/><text class="t11" x="1312" y="869">Delete</text>
+  <rect class="btn" x="1380" y="854" width="64" height="22"/><text class="t11" x="1394" y="869">Hide</text>
+
+  <!-- ============================ 诊断条 ============================ -->
+  <rect class="bar" x="17" y="885" width="1526" height="46"/>
+  <line class="div" x1="16" y1="885" x2="1544" y2="885" stroke="#2C2A33"/>
+  <text class="hdr" x="28" y="913">问题</text>
+  <rect class="btn" x="70" y="898" width="58" height="20"/><text class="err" x="80" y="912">✖ 0 错误</text>
+  <rect class="btn" x="134" y="898" width="76" height="20"/><text class="warn" x="144" y="912">⚠ 1 警告</text>
+  <text class="warn" x="230" y="912">$.root.children[0].children[1] · 文本为空（warning）</text>
+  <text class="dim10" x="760" y="912">→ 点击定位到节点并把画布框到该元素</text>
+  <text class="dim10" x="1320" y="912">仅 warning 的文档允许保存（修正现有 canSave）</text>
+
+  <!-- ============================ 细节图 ============================ -->
+  <!-- ① 锚点预设 -->
+  <rect class="inset" x="16" y="950" width="496" height="210"/>
+  <text class="title" x="32" y="976">① 锚点预设控件</text>
+  <text class="dim10" x="32" y="996">点击预设后重算 offsetMin / offsetMax，保持元素当前矩形不动</text>
+  <g stroke="#3A3742" fill="#1A171F">
+    <rect x="40" y="1016" width="52" height="40"/><rect x="96" y="1016" width="52" height="40"/><rect x="152" y="1016" width="52" height="40"/>
+    <rect x="40" y="1060" width="52" height="40"/><rect x="96" y="1060" width="52" height="40" fill="#23304C" stroke="#4C8DFF"/><rect x="152" y="1060" width="52" height="40"/>
+    <rect x="40" y="1104" width="52" height="40"/><rect x="96" y="1104" width="52" height="40"/><rect x="152" y="1104" width="52" height="40"/>
+  </g>
+  <g class="dim10">
+    <text x="52" y="1040">左上</text><text x="110" y="1040">上中</text><text x="166" y="1040">右上</text>
+    <text x="52" y="1084">左中</text><text x="110" y="1084">中心</text><text x="166" y="1084">右中</text>
+    <text x="52" y="1128">左下</text><text x="110" y="1128">下中</text><text x="166" y="1128">右下</text>
+  </g>
+  <line x1="222" y1="1076" x2="256" y2="1076" stroke="#4C8DFF" stroke-width="1.5" marker-end="url(#arrow)"/>
+  <text class="t11" x="268" y="1036">选中“中心” → anchorMin = anchorMax = (0.5, 0.5)</text>
+  <text class="mono" x="268" y="1056">offsetMin = rect.min − anchor</text>
+  <text class="mono" x="268" y="1072">offsetMax = rect.max − anchor</text>
+  <text class="mono" x="268" y="1088">拉伸轴：anchorMin ≠ anchorMax，</text>
+  <text class="mono" x="268" y="1104">由 offsets 推出尺寸（Size 行禁用并提示）</text>
+  <text class="dim10" x="268" y="1128">数字框可直接编辑；右键行可 Reset to default</text>
+
+  <!-- ② 层级拖拽 -->
+  <rect class="inset" x="532" y="950" width="496" height="210"/>
+  <text class="title" x="548" y="976">② 层级拖拽</text>
+  <text class="dim10" x="548" y="996">行间插入 = 同级排序；行上悬停 = 换父（追加为末子）</text>
+  <g class="dim">
+    <text x="548" y="1024">▾ HUD</text>
+    <text x="564" y="1048">▾ HealthPanel</text>
+    <text x="564" y="1072">▾ AmmoLabel</text>
+    <text x="564" y="1096">▾ ReloadButton</text>
+  </g>
+  <rect class="okRow" x="558" y="1052" width="220" height="18"/>
+  <text class="t11" x="564" y="1066" fill="#DCE7FF">▾ AmmoLabel</text>
+  <line x1="558" y1="1046" x2="778" y2="1046" stroke="#4C8DFF" stroke-width="2"/>
+  <circle cx="558" cy="1046" r="3" fill="#4C8DFF"/>
+  <text class="acc" x="790" y="1050">← 插入指示线（同级）</text>
+  <text class="dim10" x="790" y="1070">换父目标行显示虚线高亮</text>
+  <text class="err" x="790" y="1092">🚫 拖入自身子树：拒绝 + 提示</text>
+  <text class="dim10" x="790" y="1114">释放后产生一条 Undo 命令</text>
+  <text class="dim10" x="548" y="1136">F2 / 双击内联重命名 · 眼睛图标切换 style.visible</text>
+
+  <!-- ③ 手柄与吸附 -->
+  <rect class="inset" x="1048" y="950" width="496" height="210"/>
+  <text class="title" x="1064" y="976">③ 缩放手柄与吸附</text>
+  <text class="dim10" x="1064" y="996">父布局为 Absolute / Overlay / Scroll 时可直接操作</text>
+  <rect x="1100" y="1020" width="180" height="80" fill="#1E222B"/>
+  <rect class="sel" x="1100" y="1020" width="180" height="80"/>
+  <g class="handle">
+    <rect x="1097" y="1017" width="7" height="7"/><rect x="1186" y="1017" width="7" height="7"/><rect x="1273" y="1017" width="7" height="7"/>
+    <rect x="1097" y="1057" width="7" height="7"/><rect x="1273" y="1057" width="7" height="7"/>
+    <rect x="1097" y="1096" width="7" height="7"/><rect x="1186" y="1096" width="7" height="7"/><rect x="1273" y="1096" width="7" height="7"/>
+  </g>
+  <line x1="1276" y1="1060" x2="1330" y2="1060" stroke="#4C8DFF" stroke-width="1.5" marker-end="url(#arrow)"/>
+  <line class="guide" x1="1340" y1="1000" x2="1340" y2="1120"/>
+  <line class="guide" x1="1080" y1="1120" x2="1360" y2="1120"/>
+  <rect class="badge" x="1348" y="1052" width="40" height="16"/>
+  <text class="warn" x="1356" y="1064">8 px</text>
+  <rect class="badge" x="1196" y="1124" width="44" height="16"/>
+  <text class="warn" x="1204" y="1136">12 px</text>
+  <text class="dim10" x="1420" y="1032">吸附目标：</text>
+  <text class="dim10" x="1420" y="1050">父/同级/文档</text>
+  <text class="dim10" x="1420" y="1068">的边与中心、网格</text>
+  <text class="dim10" x="1420" y="1092">Shift 锁定比例</text>
+  <text class="dim10" x="1420" y="1110">Alt 关闭吸附</text>
+  <text class="dim10" x="1420" y="1128">Esc 取消手势</text>
+  <text class="dim10" x="1064" y="1136">左/上手柄改变 offsetMin，右/下手柄改变 offsetMax（拉伸轴）</text>
+</svg>

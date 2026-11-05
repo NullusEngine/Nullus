@@ -4,12 +4,15 @@
 #include "Components/MeshFilter.h"
 #include "Components/MeshRenderer.h"
 #include "Components/SkyBoxComponent.h"
+#include "Components/SpriteRendererComponent.h"
+#include "Rendering/SpriteSceneRenderer.h"
 #include "Core/ResourceManagement/MaterialManager.h"
 #include "Core/ResourceManagement/MeshManager.h"
 #include "Core/ResourceManagement/ResourceLifetimeRegistry.h"
 #include "Core/ServiceLocator.h"
 #include "GameObject.h"
 #include "SceneSystem/Scene.h"
+#include <Profiling/Profiler.h>
 
 #include <algorithm>
 #include <cstring>
@@ -161,6 +164,14 @@ namespace NLS::Engine::Rendering
                 stamp.worldRotation = transform->GetWorldRotation();
                 stamp.worldScale = transform->GetWorldScale();
                 stamp.transformRevision = transform->GetRenderRevision();
+                if (const auto* scene = owner.GetScene(); scene && scene->IsPlaying() && scene->GetPhysicsSettings().interpolate)
+                {
+                    const auto presented = scene->CapturePhysicsPresentationTransform(owner);
+                    stamp.worldMatrix = presented.worldMatrix;
+                    stamp.worldPosition = presented.worldPosition;
+                    stamp.worldRotation = presented.worldRotation;
+                    stamp.worldScale = presented.worldScale;
+                }
                 if (previous != nullptr)
                 {
                     stamp.transformRevision = stamp.HasSameWorldTransform(*previous)
@@ -337,6 +348,7 @@ namespace NLS::Engine::Rendering
             uint64_t sceneId = 0u;
             uint64_t sceneRevision = 0u;
             uint64_t fastAccessRevision = 0u;
+            uint64_t physicsRevision3D = 0u, physicsRevision2D = 0u;
             uint64_t meshMutationEpoch = 0u;
             uint64_t materialMutationEpoch = 0u;
             const NLS::Render::Resources::Material* defaultMaterial = nullptr;
@@ -374,6 +386,7 @@ namespace NLS::Engine::Rendering
         std::unordered_map<const void*, PrimitiveEntry> primitives;
         std::unordered_map<const void*, LightEntry> lights;
         std::unordered_map<const void*, SkyBoxEntry> skyboxes;
+        std::unordered_map<const void*, std::shared_ptr<const SpriteRenderProxy>> sprites;
         CollectionStamp lastCollectionStamp;
         uint64_t collectionScanCount = 0u;
         bool hasLastCollectionStamp = false;
@@ -394,6 +407,7 @@ namespace NLS::Engine::Rendering
                 primitives.clear();
                 lights.clear();
                 skyboxes.clear();
+                sprites.clear();
                 nextProxyIndex = 0u;
                 sceneId = newSceneId;
                 hasLastCollectionStamp = false;
@@ -413,11 +427,38 @@ namespace NLS::Engine::Rendering
         m_impl->primitives.clear();
         m_impl->lights.clear();
         m_impl->skyboxes.clear();
+        m_impl->sprites.clear();
         m_impl->nextProxyIndex = 0u;
         m_impl->sceneId = 0u;
         m_impl->lastCollectionStamp = {};
         m_impl->collectionScanCount = 0u;
         m_impl->hasLastCollectionStamp = false;
+    }
+
+    std::vector<std::shared_ptr<const SpriteRenderProxy>> SceneProxySourceRegistry::CaptureSprites(SceneSystem::Scene& scene)
+    {
+        NLS_PROFILE_NAMED_SCOPE("Sprite2D::CaptureSceneProxies");
+        m_impl->ResetForScene(scene.GetInstanceID());
+        std::vector<std::shared_ptr<const SpriteRenderProxy>> result;
+        std::unordered_set<const void*> live;
+        const auto& components=scene.GetFastAccessComponents().sprites;
+        const auto capturedSprites=CaptureSpriteRenderProxies(components);
+        result.reserve(components.size());live.reserve(components.size());
+        for(size_t index=0;index<components.size();++index)
+        {
+            auto* component=components[index];
+            if(!component||!component->IsActiveAndEnabled())continue;
+            auto captured=capturedSprites[index];if(!captured)continue;
+            live.insert(component);auto& previous=m_impl->sprites[component];
+            if(!previous||previous->sprite!=captured->sprite||previous->program!=captured->program||previous->texture!=captured->texture||
+                previous->ownerId!=captured->ownerId||previous->color!=captured->color||previous->flipX!=captured->flipX||previous->flipY!=captured->flipY||
+                previous->layerOrder!=captured->layerOrder||previous->orderInLayer!=captured->orderInLayer||previous->visibilityLayer!=captured->visibilityLayer||
+                previous->sampler.minFilter!=captured->sampler.minFilter||previous->sampler.magFilter!=captured->sampler.magFilter||
+                !ValueEquals(previous->world,captured->world))previous=std::move(captured);
+            result.push_back(previous);
+        }
+        std::erase_if(m_impl->sprites,[&](const auto& entry){return !live.contains(entry.first);});
+        return result;
     }
 
     SceneProxyUpdateBatch SceneProxySourceRegistry::Collect(
@@ -436,6 +477,11 @@ namespace NLS::Engine::Rendering
         collectionStamp.sceneId = batch.sceneId;
         collectionStamp.sceneRevision = batch.sceneRevision;
         collectionStamp.fastAccessRevision = scene.GetFastAccessComponentsRevision();
+        if (scene.IsPlaying() && scene.GetPhysicsSettings().interpolate)
+        {
+            if (const auto world = scene.PeekPhysicsWorld()) collectionStamp.physicsRevision3D = world->GetRevision();
+            if (const auto world = scene.PeekPhysicsWorld2D()) collectionStamp.physicsRevision2D = world->GetRevision();
+        }
         collectionStamp.meshMutationEpoch = NLS::Render::Resources::Mesh::GetGlobalMutationEpoch();
         collectionStamp.materialMutationEpoch = NLS::Render::Resources::Material::GetGlobalMutationEpoch();
         collectionStamp.defaultMaterial = options.defaultMaterial;

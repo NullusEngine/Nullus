@@ -41,6 +41,9 @@ nls_target_precompile_headers(LauncherProject "${NLS_ROOT_DIR}/Project/NullusPro
 add_executable(Launcher ${LAUNCHER_ENTRY_SOURCE})
 nls_add_windows_app_icon(Launcher)
 nls_copy_editor_resources_to_target(Launcher)
+add_custom_command(TARGET Launcher POST_BUILD
+  COMMAND ${CMAKE_COMMAND} -E copy_directory "${NLS_ROOT_DIR}/Templates" "$<TARGET_FILE_DIR:Launcher>/Assets/Templates"
+  VERBATIM COMMENT "Copying Nullus project templates")
 
 # Configure output path
 ###############################################################################

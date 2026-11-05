@@ -6,6 +6,7 @@
 #include "ScriptApiManifest.h"
 
 #include <Debug/Logger.h>
+#include <Platform/Process/Process.h>
 
 #include <algorithm>
 #include <cstdlib>
@@ -46,6 +47,13 @@ std::vector<std::filesystem::path> SearchRoots(const std::filesystem::path& proj
         }
     };
 
+    if (!projectRoot.empty())
+    {
+        std::error_code error;
+        const auto normalized = std::filesystem::weakly_canonical(projectRoot, error);
+        roots.push_back(error ? projectRoot.lexically_normal() : normalized);
+    }
+    appendAncestors(NLS::Platform::Process::ResolveInstallResourceRoots().installRoot);
     appendAncestors(projectRoot);
     appendAncestors(std::filesystem::current_path());
     return roots;
@@ -139,10 +147,13 @@ void ResolveManagedArtifacts(
         assembly = managed;
     }
 
-    std::vector<std::filesystem::path> outputDirectories;
+    std::vector<std::pair<std::filesystem::path, size_t>> outputDirectories;
     constexpr const char* configurations[] = {"Debug", "RelWithDebInfo", "Release"};
-    for (const auto& root : roots)
+    for (size_t rootIndex = 0; rootIndex < roots.size(); ++rootIndex)
     {
+        const auto& root = roots[rootIndex];
+        const auto append = [&](std::filesystem::path directory)
+        { outputDirectories.emplace_back(std::move(directory), rootIndex); };
         // Prefer artifacts produced by the active CMake build.  Older
         // checkouts may still contain build-scripting-vs5 output with a
         // different Script API schema; selecting it first makes the CoreCLR
@@ -154,7 +165,7 @@ void ResolveManagedArtifacts(
         // treating "Managed" itself as a build root would otherwise produce
         // the invalid <repo>/build/Managed/Managed/<config> path.
         for (const auto configuration : configurations)
-            outputDirectories.push_back(root / "build" / "Managed" / configuration);
+            append(root / "build" / "Managed" / configuration);
         const auto buildDirectory = root / "build";
         std::error_code buildError;
         for (const auto& entry : std::filesystem::directory_iterator(buildDirectory, buildError))
@@ -167,16 +178,16 @@ void ResolveManagedArtifacts(
         for (const auto& buildRoot : buildRoots)
         {
             for (const auto configuration : configurations)
-                outputDirectories.push_back(buildRoot / "Managed" / configuration);
+                append(buildRoot / "Managed" / configuration);
         }
         for (const auto configuration : configurations)
         {
-            outputDirectories.push_back(root / "build-scripting-vs5" / "Managed" / configuration);
-            outputDirectories.push_back(root / "Managed" / "Nullus.GameScripts" / "bin" / configuration / "net8.0");
+            append(root / "build-scripting-vs5" / "Managed" / configuration);
+            append(root / "Managed" / "Nullus.GameScripts" / "bin" / configuration / "net8.0");
         }
         // Debug builds initiated by the Editor are content-addressed and live
         // in one stable directory instead of timestamped folders.
-        outputDirectories.push_back(root / "Library" / "ScriptBuild" / "Managed");
+        append(root / "Library" / "ScriptBuild" / "Managed");
     }
     const auto findHashedPair = [](const std::filesystem::path& directory)
         -> std::pair<std::filesystem::path, std::filesystem::path>
@@ -313,6 +324,7 @@ void ResolveManagedArtifacts(
     std::filesystem::path newestFallbackRuntimeConfig;
     std::filesystem::path newestFallbackAssembly;
     std::filesystem::file_time_type newestFallbackRuntimeTime{};
+    size_t fallbackRootIndex = roots.size();
     const auto canonicalProjectRoot = [&]()
     {
         std::error_code error;
@@ -329,25 +341,7 @@ void ResolveManagedArtifacts(
         const auto first = relative.begin();
         return first == relative.end() || *first != "..";
     };
-    const auto findRepositoryRoot = [](std::filesystem::path path)
-    {
-        std::error_code error;
-        path = std::filesystem::weakly_canonical(path, error);
-        if (error)
-            return std::filesystem::path{};
-        for (;;)
-        {
-            if (std::filesystem::is_directory(path / "Library" / "ScriptApi", error))
-                return path;
-            error.clear();
-            const auto parent = path.parent_path();
-            if (parent == path || parent.empty())
-                break;
-            path = parent;
-        }
-        return std::filesystem::path{};
-    };
-    for (const auto& directory : outputDirectories)
+    for (const auto& [directory, rootIndex] : outputDirectories)
     {
         auto pair = findSelfContainedPair(directory);
         if (pair.first.empty())
@@ -362,9 +356,10 @@ void ResolveManagedArtifacts(
         const auto normalizedDirectory = directory.generic_string();
         const bool isProjectCache = normalizedDirectory.find("/Library/ScriptBuild/Managed") != std::string::npos;
         const bool belongsToProject = isAncestor(canonicalProjectRoot, directory);
-        const auto repositoryRoot = findRepositoryRoot(directory);
-        const bool repositoryBelongsToProject = !repositoryRoot.empty() &&
-            (repositoryRoot == canonicalProjectRoot || isAncestor(repositoryRoot, canonicalProjectRoot));
+        // A containing checkout supplies SDK/build fallbacks, not the nested
+        // project's scripts. Never select another project's Editor cache.
+        if (isProjectCache && !belongsToProject)
+            continue;
         auto* selectedRuntimeConfig = &newestFallbackRuntimeConfig;
         auto* selectedAssembly = &newestFallbackAssembly;
         auto* selectedRuntimeTime = &newestFallbackRuntimeTime;
@@ -374,11 +369,22 @@ void ResolveManagedArtifacts(
             selectedAssembly = &newestProjectCachedAssembly;
             selectedRuntimeTime = &newestProjectCachedRuntimeTime;
         }
-        else if (!isProjectCache && repositoryBelongsToProject)
+        else if (!isProjectCache && belongsToProject)
         {
             selectedRuntimeConfig = &newestProjectStableRuntimeConfig;
             selectedAssembly = &newestProjectStableAssembly;
             selectedRuntimeTime = &newestProjectStableRuntimeTime;
+        }
+        if (selectedRuntimeConfig == &newestFallbackRuntimeConfig)
+        {
+            // Select revisions within the first matching SDK root. A newer
+            // containing checkout may expose a different native API contract.
+            if (rootIndex > fallbackRootIndex) continue;
+            if (rootIndex < fallbackRootIndex)
+            {
+                fallbackRootIndex = rootIndex;
+                newestFallbackRuntimeConfig.clear();
+            }
         }
         if (!selectedRuntimeConfig->empty() && time <= *selectedRuntimeTime)
             continue;

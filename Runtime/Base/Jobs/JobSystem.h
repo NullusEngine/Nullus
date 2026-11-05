@@ -4,6 +4,7 @@
 #include "Jobs/JobTypes.h"
 
 #include <algorithm>
+#include <functional>
 #include <limits>
 #include <memory>
 #include <type_traits>
@@ -15,6 +16,10 @@ namespace NLS::Base::Jobs
     NLS_BASE_API bool InitializeJobSystem(const JobSystemConfig& config = {});
     NLS_BASE_API bool TryInitializeJobSystem(const JobSystemConfig& config = {});
     NLS_BASE_API void ShutdownJobSystem(JobSystemShutdownMode mode = JobSystemShutdownMode::DrainAcceptedWork);
+    /** Drains accepted work and its descendants without closing the shared scheduler.
+     * Stop producers first for teardown. The owner-thread pump may service
+     * affinity queues; it is invoked without scheduler locks held. */
+    NLS_BASE_API void DrainAcceptedJobs(const std::function<void()>& pump = {});
     NLS_BASE_API bool IsJobSystemInitialized();
     NLS_BASE_API uint32_t GetJobWorkerCount();
     NLS_BASE_API uint32_t GetBackgroundJobWorkerCount();
@@ -189,6 +194,13 @@ namespace NLS::Base::Jobs
     NLS_BASE_API void CompleteNoClear(JobHandle handle);
     NLS_BASE_API void CompleteAll(JobHandle* handles, size_t handleCount);
     NLS_BASE_API bool IsCompleted(JobHandle handle);
+    NLS_BASE_API JobCompletionStatus GetCompletionStatus(JobHandle handle);
+    /** Cancels an unstarted foreground job/group and its dependents. For a
+     * started group, records a cooperative request; running callbacks are never
+     * terminated and their result remains authoritative. Background I/O jobs
+     * currently support lifecycle shutdown cancellation only (returns false). */
+    NLS_BASE_API bool RequestCancel(JobHandle handle);
+    NLS_BASE_API bool IsCancellationRequested(JobHandle handle);
     NLS_BASE_API void ClearWithoutSync(JobHandle& handle);
     NLS_BASE_API bool HasBeenSynced(JobHandle handle);
 
@@ -198,6 +210,28 @@ namespace NLS::Base::Jobs
 
     namespace Internal
     {
+        /** Shared engine consumers retain the one foreground scheduler. The
+         * first configuration wins until the last owner releases it. */
+        NLS_BASE_API bool AcquireJobSystem(const JobSystemConfig& config);
+        /** Dispatches an independently tracked owner's ready callback through
+         * the same scheduler without a second JobHandle/dependency record.
+         * Dependencies must be empty. On rejection the caller keeps payload
+         * ownership; accepted queued work uses cancelFunction on shutdown.
+         * The owner supplies completion/error state and task profiling. */
+        // tailContinuation is reserved for owners that have finished the current
+        // callback body and all user destructors: a single local successor may
+        // stay on this worker instead of waking another worker to steal it.
+        NLS_BASE_API bool DispatchJob(const JobScheduleDesc& desc, bool tailContinuation = false);
+        NLS_BASE_API void ReleaseJobSystem();
+        NLS_BASE_API bool IsForegroundWorkerThread();
+        NLS_BASE_API bool ExecuteOneForegroundJobForWorker();
+#if defined(NLS_ENABLE_TEST_HOOKS)
+        NLS_BASE_API size_t GetWaitingForegroundWorkerCountForTesting();
+        NLS_BASE_API DispatchReuseStats GetDispatchReuseStatsForTesting();
+#endif
+        NLS_BASE_API size_t GetJobWorkerStealCount();
+        NLS_BASE_API size_t GetJobWorkerLocalExecutionCount();
+        NLS_BASE_API size_t GetJobWorkerInjectionExecutionCount();
         NLS_BASE_API JobHandle CreatePendingJobForBatch(const JobScheduleDesc& desc);
         NLS_BASE_API JobHandle CreatePendingForEachJobForBatch(const JobForEachDesc& desc);
         NLS_BASE_API JobHandle ScheduleMultiDependencyFence(

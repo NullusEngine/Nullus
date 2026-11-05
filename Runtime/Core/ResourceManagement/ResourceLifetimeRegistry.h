@@ -23,7 +23,9 @@ enum class ResourceLifetimeOwnerKind : uint8_t
     SceneInstance,
     Preview,
     Inspector,
-    AsyncPrewarm
+    AsyncPrewarm,
+    // Retained by immutable frames until GPU retirement, including scene swaps.
+    RenderSnapshot
 };
 
 struct ResourceLifetimeAcquireRequest

@@ -1,0 +1,8 @@
+{
+  "name": "2D Core",
+  "description": "Orthographic scene, Sprite import defaults and a source-contained Sprite rendering sample.",
+  "category": "Core",
+  "sortOrder": 10,
+  "sceneMode": "2d",
+  "startScene": "Scenes/Main.scene"
+}

@@ -9,6 +9,7 @@
 #include "Engine/Assets/PrefabAsset.h"
 #include "Engine/Serialize/ObjectGraphReader.h"
 #include "Guid.h"
+#include "CookTypes.h"
 
 #include <algorithm>
 #include <cctype>
@@ -207,7 +208,8 @@ bool BuildDependencyCollector::Collect(
     const BuildProfile& profile,
     const std::filesystem::path& artifactDatabasePath,
     DependencyCollectionResult& result,
-    BuildReport& report)
+    BuildReport& report,
+    const std::filesystem::path& additionalAssetsRoot)
 {
     result = {};
 
@@ -233,7 +235,13 @@ bool BuildDependencyCollector::Collect(
     std::unordered_map<std::string, NLS::Core::Assets::AssetType> typeByGuid;
     {
         std::unordered_map<std::string, std::string> idToSource;
-        for (const auto& metaFile : EnumerateAssetFiles(projectAssetsPath, true))
+        auto metadata = EnumerateAssetFiles(projectAssetsPath,true);
+        if (!additionalAssetsRoot.empty())
+        {
+            const auto additional = EnumerateAssetFiles(additionalAssetsRoot,true);
+            metadata.insert(metadata.end(),additional.begin(),additional.end());
+        }
+        for (const auto& metaFile : metadata)
         {
             if (metaFile.extension() != ".meta")
                 continue;
@@ -361,7 +369,8 @@ bool BuildDependencyCollector::Collect(
         return true;
     };
 
-    const auto startSceneRelative = NormalizeRelative(profile.startScene);
+    auto startSceneRelative = NormalizeRelative(profile.startScene);
+    if (startSceneRelative.rfind("Assets/", 0u) == 0u) startSceneRelative.erase(0u, 7u);
     if (startSceneRelative.empty())
     {
         report.AddDiagnostic(
@@ -383,7 +392,21 @@ bool BuildDependencyCollector::Collect(
             startScenePath.string());
         return false;
     }
-    addRawDocument(startScenePath, "start-scene");
+    if (NLS::Core::Assets::InferAssetType(startScenePath) == NLS::Core::Assets::AssetType::ECSScene)
+    {
+        std::string error;
+        const auto id = LoadAssetIdForPath(projectAssetsPath, startSceneRelative, &error);
+        const auto* record = id ? findCookedRecord(*id, 0, true) : nullptr;
+        if (!record || record->artifactType != NLS::Core::Assets::ArtifactType::ECSScene || record->loaderId != "ecs-scene")
+        {
+            report.AddDiagnostic(DiagnosticSeverity::Error, "build-ecs-start-scene-not-cooked",
+                "The ECS start scene requires a valid .meta and an up-to-date ECS scene artifact for target '" + targetPlatform + "'.",
+                error.empty() ? startScenePath.string() : error);
+            return false;
+        }
+        addRoot({*id, record->subAssetKey}, "start-scene");
+    }
+    else addRawDocument(startScenePath, "start-scene");
 
     // Keep rules add documents or cooked roots. A rule may name a GUID, a file,
     // a directory, or a wildcard pattern.
@@ -590,6 +613,29 @@ bool BuildDependencyCollector::Collect(
     }
 
     auto buildResult = builder.Build(rootRefs, targetPlatform);
+    // The renderer chooses this built-in program implicitly. Keep its cooked
+    // artifact whenever the reachable content contains Sprites, including
+    // Sprite assets kept for objects that scripts create at runtime.
+    if (std::any_of(buildResult.manifest.entries.begin(), buildResult.manifest.entries.end(), [](const auto& entry)
+        { return entry.artifactType == NLS::Core::Assets::ArtifactType::Sprite; }))
+    {
+        const AssetId shaderId(NLS::Cook::MakeEngineAssetGuid("Assets/Engine/Shaders/ShaderLab/SpriteUnlit.shader"));
+        const RuntimeAssetRef shader{shaderId,"shader:SpriteUnlit"};
+        const auto* record=database.Find(shaderId,shader.subAssetKey,targetPlatform);
+        if (!record || record->status != NLS::Core::Assets::ArtifactRecordStatus::UpToDate ||
+            record->artifactType != NLS::Core::Assets::ArtifactType::Shader)
+        {
+            report.AddDiagnostic(DiagnosticSeverity::Error,"build-sprite-shader-not-cooked",
+                "Sprite content requires the cooked built-in SpriteUnlit shader for the selected target.",targetPlatform);
+            return false;
+        }
+        if (!reasonByReference.contains(ReferenceText(shader)))
+        {
+            rootRefs.push_back(shader);
+            reasonByReference[ReferenceText(shader)]="Sprite renderer default shader";
+            buildResult=builder.Build(rootRefs,targetPlatform);
+        }
+    }
 
     // The builder normalises GUID-only roots to their manifest primary
     // sub-asset. Re-key the recorded reasons so attribution starts from the

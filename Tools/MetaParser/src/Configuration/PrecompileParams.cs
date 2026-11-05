@@ -17,6 +17,12 @@ internal sealed class PrecompileParams
     public List<string> SystemIncludeDirs { get; set; } = [];
     public List<string> Defines { get; set; } = [];
     public List<string> CompilerOptions { get; set; } = [];
+    public string ParseMode { get; set; } = "threads";
+    public int ParseJobs { get; set; }
+    public bool UseCache { get; set; } = true;
+    public string CacheDirectory { get; set; } = string.Empty;
+    public List<string> VisibilityDefines { get; set; } = [];
+    public int TotalParseJobs { get; set; }
 
     public static PrecompileParams? Load(string path)
     {

@@ -342,6 +342,34 @@ TEST(SceneObjectGraphSerializationTests, SceneIsReflectedObjectRoot)
     EXPECT_TRUE((std::is_base_of_v<NLS::Object, NLS::Engine::SceneSystem::Scene>));
 }
 
+TEST(SceneObjectGraphSerializationTests, MissingPluginComponentBlocksDefaultInstantiationAndAllRecoveryWrites)
+{
+    using namespace NLS::Engine::Serialize;
+    auto document = MakeSimpleSceneDocument();
+    ObjectRecord missing; missing.id = ObjectId(NLS::Guid::New()); missing.localIdentifierInFile = MakeLocalIdentifierInFile(missing.id);
+    missing.typeName = "Vendor::MissingPlugin::Component"; missing.debugPath = "/Player/MissingComponent";
+    missing.properties.push_back({"originalPluginData",PropertyValue::String("must survive every save path")});
+    auto* components = FindMutableProperty(document.objects.front(),"components"); ASSERT_NE(components,nullptr);
+    auto references = components->value.GetArray(); references.push_back(PropertyValue::OwnedReference(missing.id));
+    components->value = PropertyValue::Array(std::move(references)); document.objects.push_back(std::move(missing));
+    const auto original = ObjectGraphWriter::Write(document);
+    EXPECT_EQ(ObjectGraphInstantiator::InstantiateScene(document),nullptr);
+    LoadPolicy recovery; recovery.unknownTypePolicy = UnknownTypePolicy::Preserve;
+    auto partial = ObjectGraphInstantiator::InstantiateScene(document,recovery);
+    ASSERT_NE(partial.scene,nullptr); ASSERT_TRUE(partial.scene->IsSerializationReadOnly());
+    EXPECT_EQ(partial.scene->GetSerializationRecoveryDocument(),original);
+    EXPECT_THROW(ObjectGraphSerializer::SerializeScene(*partial.scene),std::exception);
+    auto* player = partial.scene->FindGameObjectByName("Player"); ASSERT_NE(player,nullptr);
+    EXPECT_THROW(ObjectGraphSerializer::SerializePrefab(*player),std::exception);
+    const auto directory = std::filesystem::temp_directory_path() / ("NullusMissingPlugin-" + NLS::Guid::New().ToString());
+    std::filesystem::create_directories(directory);
+    const auto originalPath = directory / "Original.scene"; { std::ofstream output(originalPath); output << original; }
+    for (const auto& name : {"Original.scene","SaveAs.scene","Autosave.scene","Prefab.prefab"})
+        EXPECT_FALSE(NLS::Engine::SceneSystem::SceneManager::SaveSceneToPath(*partial.scene,(directory / name).generic_string()));
+    EXPECT_EQ(ReadTextFile(originalPath),original); EXPECT_FALSE(std::filesystem::exists(directory / "SaveAs.scene"));
+    std::filesystem::remove_all(directory);
+}
+
 TEST(SceneObjectGraphSerializationTests, GameObjectReflectionDoesNotExposeWorldId)
 {
     const auto gameObjectType = NLS::meta::Type::GetFromName("NLS::Engine::GameObject");

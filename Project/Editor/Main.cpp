@@ -3,6 +3,9 @@
 #include "Utils/PathParser.h"
 #include "Core/Utils/String.h"
 #include "Core/Application.h"
+#include "Plugins/ApplicationPlugins.h"
+#include "Plugins/SourcePluginRegistry.h"
+#include "Platform/Process/Process.h"
 #include "Core/EditorLaunchArgs.h"
 #include "Assets/EditorStartupAssetPreimport.h"
 #include "Debug/Logger.h"
@@ -25,6 +28,10 @@ static bool TryRun(const std::string& projectPath, const std::string& projectNam
 
 namespace
 {
+	struct LoggerShutdownGuard
+	{
+		~LoggerShutdownGuard() { NLS::Debug::Logger::Shutdown(); }
+	};
 	std::filesystem::path ResolveLaunchPathArgument(
 		const std::filesystem::path& launchWorkingDirectory,
 		const std::string& argument)
@@ -41,6 +48,7 @@ namespace
 
 int main(int argc, char** argv)
 {
+	LoggerShutdownGuard loggerShutdown;
 		const Render::Context::ScopedGameThread gameThread;
 	const auto launchBegin = std::chrono::steady_clock::now();
 	const auto launchWorkingDirectory = std::filesystem::current_path();
@@ -168,10 +176,14 @@ static bool TryRun(const std::string& projectPath, const std::string& projectNam
 			NLS_LOG_ERROR(errMsg);
 		};
 
-	std::unique_ptr<Editor::Core::Application> app;
+    std::unique_ptr<Plugins::ApplicationPlugins> plugins;
+    std::unique_ptr<Editor::Core::Application> app;
 
 	try
 	{
+        plugins = std::make_unique<Plugins::ApplicationPlugins>(
+            NLS::Core::Modules::HostKind::Editor, projectPath, NLS::Platform::Process::ResolveInstallResourceRoots().installRoot / "Plugins", false,
+            NLS::Plugins::RegisterCompiledSourcePlugins);
 		auto listenerId = NLS::Context::Device::ErrorEvent += errorEvent;
 		app = std::make_unique<Editor::Core::Application>(
 			projectPath,

@@ -1,4 +1,5 @@
 #include "Assets/SourceAssetDatabase.h"
+#include "Assets/PluginAssetPath.h"
 
 #include <algorithm>
 #include <system_error>
@@ -460,8 +461,14 @@ bool SourceAssetDatabase::RegisterSourceAssetEntry(
     const auto relativePath = std::filesystem::relative(absolutePath, normalizedRoot);
     if (readOnly && !loadedMeta.has_value())
     {
-        meta.id = AssetId(NLS::Guid::NewDeterministic(
-            "readonly-asset:" + relativePath.lexically_normal().generic_string()));
+        std::string identityNamespace;
+        for (const auto& mountedRoot : mountedRoots)
+            if (NormalizeAssetPath(mountedRoot.path) == normalizedRoot) identityNamespace = mountedRoot.identityNamespace;
+        const auto relativeUtf8 = relativePath.generic_u8string();
+        const auto relativeText = std::string(reinterpret_cast<const char*>(relativeUtf8.data()), relativeUtf8.size());
+        meta.id = AssetId(NLS::Guid::NewDeterministic(identityNamespace.empty()
+            ? "readonly-asset:" + relativePath.lexically_normal().generic_string()
+            : identityNamespace + ":" + NormalizePluginAssetPath(relativeText)));
     }
 
     const auto inferredType = InferAssetType(absolutePath);

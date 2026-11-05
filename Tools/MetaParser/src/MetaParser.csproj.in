@@ -16,10 +16,13 @@
     <RestoreSources>@NLS_META_PARSER_NUGET_SOURCE@</RestoreSources>
     <RestorePackagesPath>@NLS_META_PARSER_NUGET_PACKAGES@</RestorePackagesPath>
     <RestoreIgnoreFailedSources>true</RestoreIgnoreFailedSources>
+    <NlsGeneratedTemplatesDir>$([System.IO.Path]::Combine('$(MSBuildProjectDirectory)', '$(BaseIntermediateOutputPath)', 'MetaTemplates', '$(Configuration)', '$(TargetFramework)', '$(RuntimeIdentifier)'))</NlsGeneratedTemplatesDir>
   </PropertyGroup>
 
   <ItemGroup>
     <ProjectReference Include="@NLS_META_PARSER_CPPAST_CSPROJ@" GlobalPropertiesToRemove="AssemblyName;TargetName" AdditionalProperties="AssemblyName=CppAst;TargetName=CppAst" />
+    <ProjectReference Include="@NLS_META_PARSER_TEMPLATE_COMPILER@" ReferenceOutputAssembly="false" Private="false" PrivateAssets="all" OutputItemType="NlsTemplateCompiler"
+                      GlobalPropertiesToRemove="AssemblyName;TargetName;RuntimeIdentifier;SelfContained;PublishDir" />
   </ItemGroup>
 
   <ItemGroup>
@@ -28,7 +31,16 @@
 
   <ItemGroup>
     <Compile Include="@NLS_META_PARSER_SOURCE_DIR@/**/*.cs" Exclude="@NLS_META_PARSER_SOURCE_DIR@/bin/**/*.cs;@NLS_META_PARSER_SOURCE_DIR@/obj/**/*.cs" Link="%(RecursiveDir)%(Filename)%(Extension)" />
+    <NlsGeneratedTemplate Include="$(NlsGeneratedTemplatesDir)/HeaderGeneratedHeader.g.cs;$(NlsGeneratedTemplatesDir)/HeaderGeneratedSource.g.cs;$(NlsGeneratedTemplatesDir)/ModuleGeneratedHeader.g.cs;$(NlsGeneratedTemplatesDir)/ModuleGeneratedSource.g.cs;$(NlsGeneratedTemplatesDir)/EditorExtensionDescriptors.g.cs" />
+    <Compile Include="@(NlsGeneratedTemplate)" Link="Generated/Templates/%(Filename)%(Extension)" />
+    <NlsTemplateInput Include="@NLS_META_PARSER_TEMPLATES_DIR@/*.tt" />
   </ItemGroup>
+
+  <Target Name="NlsPrecompileTemplates" BeforeTargets="CoreCompile" DependsOnTargets="ResolveProjectReferences"
+          Inputs="@(NlsTemplateInput);@(NlsTemplateCompiler);@NLS_META_PARSER_TEMPLATE_COMPILER@;@NLS_META_PARSER_TEMPLATE_COMPILER_SOURCE@"
+          Outputs="@(NlsGeneratedTemplate)">
+    <Exec Command="&quot;@NLS_DOTNET_EXECUTABLE@&quot; &quot;@(NlsTemplateCompiler)&quot; &quot;@NLS_META_PARSER_TEMPLATES_DIR@&quot; &quot;$(NlsGeneratedTemplatesDir)&quot;" />
+  </Target>
 
   <ItemGroup>
     <None Include="@NLS_META_PARSER_TEMPLATES_DIR@/MetaGenerated.cpp.tt" Link="Templates/MetaGenerated.cpp.tt" CopyToOutputDirectory="PreserveNewest" />

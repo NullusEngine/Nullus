@@ -23,6 +23,82 @@ void PersistentManager::Clear()
     m_serializedFileIndexByFileIdentifier.clear();
     m_fileIdentifierBySerializedFileIndex.clear();
     m_nextSerializedFileIndex = 1;
+    m_objectGraphScopes.clear();
+}
+
+std::optional<ObjectId> PersistentManager::FindObjectGraphId(
+    const NLS::Object& scope, const NLS::Object& object) const
+{
+    std::lock_guard lock(m_mutex);
+    const auto found = m_objectGraphScopes.find(scope.GetInstanceID());
+    if (found == m_objectGraphScopes.end()) return std::nullopt;
+    const auto entry = found->second.byInstance.find(object.GetInstanceID());
+    return entry == found->second.byInstance.end() ? std::nullopt : std::optional(entry->second);
+}
+
+ObjectId PersistentManager::GetOrCreateObjectGraphId(
+    const NLS::Object& scope, const NLS::Object& object)
+{
+    std::lock_guard lock(m_mutex);
+    auto& ids = m_objectGraphScopes[scope.GetInstanceID()];
+    if (const auto found = ids.byInstance.find(object.GetInstanceID()); found != ids.byInstance.end())
+        return found->second;
+    const ObjectId id(NLS::Guid::New());
+    ids.byInstance.emplace(object.GetInstanceID(), id);
+    ids.byId.emplace(id, object.GetInstanceID());
+    return id;
+}
+
+bool PersistentManager::BindObjectGraphId(
+    const NLS::Object& scope, const NLS::Object& object, ObjectId id)
+{
+    if (!id.IsValid()) return false;
+    std::lock_guard lock(m_mutex);
+    auto& ids = m_objectGraphScopes[scope.GetInstanceID()];
+    if (const auto owner = ids.byId.find(id); owner != ids.byId.end() && owner->second != object.GetInstanceID())
+    {
+        if (NLS::Object::IDToPointer(owner->second) != nullptr) return false;
+        ids.byInstance.erase(owner->second);
+        ids.byId.erase(owner);
+    }
+    if (const auto old = ids.byInstance.find(object.GetInstanceID()); old != ids.byInstance.end())
+        ids.byId.erase(old->second);
+    ids.byInstance[object.GetInstanceID()] = id;
+    ids.byId[id] = object.GetInstanceID();
+    return true;
+}
+
+void PersistentManager::PruneObjectGraphIds(const NLS::Object& scope)
+{
+    std::lock_guard lock(m_mutex);
+    const auto found = m_objectGraphScopes.find(scope.GetInstanceID());
+    if (found == m_objectGraphScopes.end()) return;
+    auto& ids = found->second;
+    for (auto entry = ids.byInstance.begin(); entry != ids.byInstance.end();)
+    {
+        if (NLS::Object::IDToPointer(entry->first) != nullptr) { ++entry; continue; }
+        ids.byId.erase(entry->second);
+        entry = ids.byInstance.erase(entry);
+    }
+}
+
+void PersistentManager::ClearObjectGraphIds(const NLS::Object& scope)
+{
+    std::lock_guard lock(m_mutex);
+    m_objectGraphScopes.erase(scope.GetInstanceID());
+}
+
+std::optional<NLS::Guid> PersistentManager::FindObjectGraphDocumentId(const NLS::Object& scope) const
+{
+    std::lock_guard lock(m_mutex);
+    const auto found = m_objectGraphScopes.find(scope.GetInstanceID());
+    return found == m_objectGraphScopes.end() ? std::nullopt : found->second.documentId;
+}
+
+void PersistentManager::BindObjectGraphDocumentId(const NLS::Object& scope, const NLS::Guid& id)
+{
+    std::lock_guard lock(m_mutex);
+    m_objectGraphScopes[scope.GetInstanceID()].documentId = id;
 }
 
 bool PersistentManager::SamePersistentIdentity(
@@ -222,6 +298,29 @@ InstanceID PersistentManager::BindObjectIdentifier(NLS::Object& object, const Ob
     m_identifierByInstanceID[instanceID] = identifier;
     m_instanceIDByIdentifier[identifier] = instanceID;
     RegisterExternalFileLocked(identifier);
+    if (oldObjectInstanceID != instanceID)
+    {
+        for (auto& [scope, ids] : m_objectGraphScopes)
+        {
+            if (const auto old = ids.byInstance.find(oldObjectInstanceID); old != ids.byInstance.end())
+            {
+                const auto id = old->second;
+                ids.byInstance.erase(old);
+                if (const auto occupied = ids.byInstance.find(instanceID); occupied != ids.byInstance.end())
+                {
+                    ids.byId.erase(occupied->second);
+                    ids.byInstance.erase(occupied);
+                }
+                ids.byInstance[instanceID] = id;
+                ids.byId[id] = instanceID;
+            }
+        }
+        if (auto scope = m_objectGraphScopes.extract(oldObjectInstanceID); !scope.empty())
+        {
+            scope.key() = instanceID;
+            m_objectGraphScopes.insert(std::move(scope));
+        }
+    }
     NLS::Object::AssignInstanceID(&object, instanceID);
     return instanceID;
 }

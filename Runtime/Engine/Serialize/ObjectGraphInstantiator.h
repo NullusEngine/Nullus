@@ -33,6 +33,7 @@
 #include "Serialize/ObjectGraphWriter.h"
 #include "Serialize/ObjectReferenceResolver.h"
 #include "Serialize/PrefabDocument.h"
+#include "Serialize/ScenePhysicsSettingsSerialization.h"
 #include "Vector2.h"
 #include "Vector4.h"
 
@@ -206,6 +207,7 @@ namespace NLS::Engine::Serialize
             DocumentAnalysisResult result;
             result.diagnostics = document.Validate();
 
+            AnalyzeScenePhysicsSettings(document, result.diagnostics);
             AnalyzeObjectTypes(document, policy, result.diagnostics);
             AnalyzeReflectedObjectReferenceShapes(document, policy, result.diagnostics);
             AnalyzeAssetReferences(document, policy, result.diagnostics);
@@ -261,7 +263,9 @@ namespace NLS::Engine::Serialize
             const InstantiationProgressCallback& progressCallback,
             const LoadPolicy& policy)
         {
-            if (document.Validate().HasErrors())
+            auto diagnostics = document.Validate();
+            AnalyzeScenePhysicsSettings(document, diagnostics);
+            if (diagnostics.HasErrors())
                 return nullptr;
 
             return InstantiateValidatedScene(document, progressCallback, policy);
@@ -278,6 +282,24 @@ namespace NLS::Engine::Serialize
                 return nullptr;
 
             auto scene = std::make_unique<SceneSystem::Scene>();
+            if (!PersistentManager::Instance().BindObjectGraphId(*scene, *scene, document.root))
+                return nullptr;
+            PersistentManager::Instance().BindObjectGraphDocumentId(*scene, document.documentId);
+            auto requiredTypes = policy;
+            requiredTypes.unknownTypePolicy = UnknownTypePolicy::Fail;
+            SerializationDiagnosticList unknownTypes;
+            AnalyzeObjectTypes(document, requiredTypes, unknownTypes);
+            if (unknownTypes.HasErrors())
+            {
+                if (policy.unknownTypePolicy == UnknownTypePolicy::Fail) return nullptr;
+                scene->MarkSerializationRecovery(ObjectGraphWriter::Write(document));
+            }
+            if (const auto* physics = FindProperty(*sceneRecord, "physics"))
+            {
+                SceneSystem::ScenePhysicsSettings settings;
+                std::string error;
+                if (!ReadScenePhysicsSettings(physics->value, settings, error) || !scene->SetPhysicsSettings(settings, error)) return nullptr;
+            }
             InstanceContext context;
             context.document = &document;
             BuildObjectRecordIndex(context, document);
@@ -368,6 +390,11 @@ namespace NLS::Engine::Serialize
 
             BindLocalObjectReferences(context);
             scene->AddGameObjects(sceneGameObjects);
+            auto& identities = PersistentManager::Instance();
+            for (const auto& [id, object] : context.gameObjects)
+                if (!identities.BindObjectGraphId(*scene, *object, id)) return nullptr;
+            for (const auto& [id, component] : context.components)
+                if (!identities.BindObjectGraphId(*scene, *component, id)) return nullptr;
 
             if (progressCallback)
                 ReportProgress(progressCallback, 0.92f, "Rebuilding scene runtime caches");
@@ -376,6 +403,13 @@ namespace NLS::Engine::Serialize
         }
 
     public:
+        static ObjectGraphDocument ResolvePrefabOverrides(ObjectGraphDocument graph)
+        {
+            ApplyOverrides(graph);
+            graph.overrides.clear();
+            return graph;
+        }
+
         static PrefabInstantiationResult InstantiatePrefab(const PrefabDocument& prefab, SceneSystem::Scene& scene)
         {
             return InstantiatePrefab(prefab, scene, {});
@@ -419,7 +453,9 @@ namespace NLS::Engine::Serialize
                     Profiling::PerformanceStageDomain::Prefab,
                     "ResolveDependencies",
                     Profiling::PerformanceStageThread::Main);
-                AnalyzeObjectTypes(graph, policy, result.diagnostics);
+                auto requiredTypes = policy;
+                requiredTypes.unknownTypePolicy = UnknownTypePolicy::Fail;
+                AnalyzeObjectTypes(graph, requiredTypes, result.diagnostics);
                 AnalyzeReflectedObjectReferenceShapes(graph, policy, result.diagnostics);
                 AnalyzeAssetReferences(graph, policy, result.diagnostics);
                 resolveScope.AddCounter("objectCount", graph.objects.size());
@@ -776,6 +812,13 @@ namespace NLS::Engine::Serialize
 
             if (policy.rebuildRuntimeCachesAfterLoad)
                 scene.RebuildRuntimeCachesAfterLoad();
+            auto& identities = PersistentManager::Instance();
+            for (const auto& [id, object] : context.gameObjects)
+                if (!identities.BindObjectGraphId(scene, *object, result.sourceToInstance.at(id)))
+                    throw std::runtime_error("Prefab instance ObjectGraph identity collision");
+            for (const auto& [id, component] : context.components)
+                if (!identities.BindObjectGraphId(scene, *component, result.sourceToInstance.at(id)))
+                    throw std::runtime_error("Prefab component ObjectGraph identity collision");
             {
                 Profiling::PerformanceStageScope lifecycleScope(
                     Profiling::PerformanceStageDomain::Prefab,
@@ -2006,10 +2049,13 @@ namespace NLS::Engine::Serialize
 
                 if (policy &&
                     policy->deferAssetReferenceResolution &&
-                    // Animation components retain stable IDs themselves and
-                    // retry resolution during their scene animation update.
-                    // The mesh/material hint pass does not handle these IDs.
+                    // Animation, audio, input and Sprite components retain stable IDs and
+                    // resolve them when used. The mesh/material hint pass
+                    // does not handle these references.
                     field.GetType() != NLS_TYPEOF(PPtr<Assets::AnimationAsset>) &&
+                    field.GetType() != NLS_TYPEOF(PPtr<Assets::AudioClip>) &&
+                    field.GetType() != NLS_TYPEOF(PPtr<Assets::InputActionsAsset>) &&
+                    field.GetType() != NLS_TYPEOF(PPtr<Assets::SpriteAsset>) &&
                     (ContainsAssetReference(property.value) || IsDeferredAssetProperty(record, property.name)))
                 {
                     continue;
@@ -3125,6 +3171,22 @@ namespace NLS::Engine::Serialize
                     return cached->second;
             }
             return ResourcePointerForManager<ResourceManagerType> {};
+        }
+
+        static void AnalyzeScenePhysicsSettings(const ObjectGraphDocument& document, SerializationDiagnosticList& diagnostics)
+        {
+            const auto* root = FindRecord(document, document.root);
+            if (!root || !RecordTypeMatches<SceneSystem::Scene>(*root)) return;
+            size_t count = 0;
+            for (const auto& property : root->properties)
+            {
+                if (property.name != "physics") continue;
+                SceneSystem::ScenePhysicsSettings settings;
+                std::string error;
+                if (++count > 1 || !ReadScenePhysicsSettings(property.value, settings, error))
+                    diagnostics.Add({SerializationDiagnosticCode::InvalidPropertyType, SerializationDiagnosticSeverity::Error,
+                        count > 1 ? "Duplicate scene physics settings." : error});
+            }
         }
 
         static void AnalyzeObjectTypes(

@@ -40,6 +40,15 @@ enum class ArtifactType
     AnimationGraph,
     BlendSpace,
     BoneMask,
+    InputActions,
+    InputProfile,
+    Sprite,
+    ECSScene,
+    ECSPrefab,
+    PhysicsMaterial,
+    CollisionMesh,
+    PhysicsShape,
+    MeshDistanceFieldSource,
     Count
 };
 

@@ -1,6 +1,6 @@
 # Jobs and Threading
 
-Nullus has two parallel scheduling facilities: the **JobSystem** for general CPU work and the **TaskGraph** for rendering and engine phase tasks. The first answers "how do I hand work off", the second answers "how do phases hand off to each other".
+Nullus retains two logical layers sharing one compute scheduler: **JobSystem** executes jobs and owns the worker pool; **TaskGraph** manages dependencies and named execution queues. Blocking background I/O has a separately budgeted pool. See the [unification audit, contracts and examples](../../TaskSystemUnification.md).
 
 ## JobSystem
 
@@ -15,7 +15,7 @@ config.backgroundWorkerCount = 1;
 NLS::Base::Jobs::InitializeJobSystem(config);
 ```
 
-`TryInitializeJobSystem` is the ownership-aware variant: it returns `true` only when that call actually created the runtime. Code using it must call `ShutdownJobSystem` only on the `true` branch.
+`TryInitializeJobSystem` is the ownership-aware variant: it returns `true` when the caller acquires explicit ownership, including when a graph lease already started the runtime. Code using it must call `ShutdownJobSystem` only on the `true` branch. The first initializer fixes the worker configuration; later graphs reuse it. The last application owner and graph lease jointly determine shutdown.
 
 `JobHandle{}` is always complete.
 
@@ -34,6 +34,7 @@ NLS::Base::Jobs::InitializeJobSystem(config);
 - `Complete` waits and clears the handle.
 - `CompleteNoClear` keeps the caller's copy valid for later queries.
 - `HasBeenSynced` reports whether the handle reached a terminal state.
+- `GetCompletionStatus` distinguishes success, failure, cancellation and pending work. `RequestCancel` cancels unstarted compute groups; a started group observes a cooperative request through `IsCancellationRequested`. Background I/O retains shutdown cancellation only.
 - Foreground jobs may supply a cancel callback to release their payload. It runs at most once for queued or dependency-waiting work cancelled by immediate shutdown or by a failed or cancelled dependency, and never once the job has started executing.
 
 ### Batching and fan-in
@@ -52,7 +53,7 @@ NLS::Base::Jobs::InitializeJobSystem(config);
 ### Known limits
 
 - `ScheduleJobForEach` rejects iteration counts or batch sizes beyond the native `int` range planner.
-- Foreground and background queues still use mutex-protected central registries; throughput work is deferred until the semantics are stable.
+- Compute workers use per-worker priority queues and work stealing. Group state still uses a mutex-protected registry. `maxPendingJobCount` bounds accepted foreground callbacks and, separately, background jobs plus main continuations; saturation rejects without taking caller payload ownership.
 - Cross-queue dependency promotion uses explicit notifications plus a bounded timed fallback. Correctness does not depend on the fallback, but heavy cross-queue traffic can still pay the polling latency.
 
 ### Memory and data safety
@@ -66,7 +67,7 @@ Callbacks should not throw. If a foreground, background, combine, cancel, or cle
 ### Background work and main-thread continuations
 
 - Long-running or IO-heavy work uses `ScheduleBackgroundJob`.
-- Main-thread follow-up work uses `ScheduleMainThreadContinuation` and only executes from `DrainMainThreadContinuations`.
+- Main-thread follow-up work uses `ScheduleMainThreadContinuation` and only executes from `DrainMainThreadContinuations` on the registered owner thread.
 - Ready continuations are promoted into a dedicated ready queue so each drain consumes ready work instead of scanning every blocked continuation.
 - The editor update loop drains a bounded budget once per frame after delayed editor actions.
 - Shutdown does not implicitly execute main-thread continuations; owners must drain what they need before stopping the JobSystem.
@@ -89,13 +90,15 @@ Binding structs are plain ABI types holding no STL objects. The native C++ heade
 
 ## TaskGraph
 
-The TaskGraph carries render scheduling and engine phase tasks:
+The TaskGraph carries render scheduling and engine phase dependencies:
 
-- Each worker keeps priority-partitioned local queues.
-- External submissions enter a shared injection queue.
-- Idle workers steal work.
-- `TaskCompletion::Wait()` helps execute runnable tasks on a worker to avoid nested-wait deadlocks.
+- Ready Any tasks enter the same `JobQueue` through `Jobs::Internal::DispatchJob`; TaskGraph owns no compute threads or worker queues. The bridge reuses active-group, capacity and shutdown accounting without adding a second JobHandle completion history to the graph's own TaskCompletion state.
+- Jobs workers use local LIFO queues, an external injection FIFO and cross-worker stealing. Completion observers use a separate condition variable, so finishing a job does not wake idle workers unless runnable work needs them.
+- Only `Finalize`, after an Any task body and user payload destructors have finished, may retain a single successor on the same worker. Fan-out wakes other workers. Submission inside a task body and named-lane completion keep their normal wakeup behavior, including a parent that submits one child and then blocks.
+- `TaskGraphBatch` validates a one-shot DAG before execution; `GraphCompletion` waits for all branches, including independent work after failure.
+- `TaskCompletion::Wait()` assists the shared pool on workers and pumps registered named lanes. Self/dependency-stack waits are rejected; user mutex cycles and unpumped named lanes remain caller errors.
 - `RequestCancel` propagates along the dependency graph and wakes every waiter.
+- Named Pump requires registration; completion waits and `PumpCurrentThread` service every named lane owned by the caller. Shutdown waits for running bodies and cancels unstarted orphan-lane work; explicit Start is required after shutdown.
 
 ## Execution lanes
 
@@ -138,7 +141,7 @@ The async pipe only carries independent resource preparation and merges it expli
 
 ## Thread naming
 
-Thread names are registered at startup and are visible to profilers. Named entries include the Game Thread, `Render Thread`, a dedicated `RHI Thread`, `TaskGraph Worker <n>`, `Background Job Worker <n>`, and the editor's metadata/import, startup cache, Prefab preparation, shader compile and reflect, file watcher, managed script build, debug endpoint, progress dialog, and trace writer workers.
+Thread names are registered at startup and are visible to profilers. Named entries include the Game Thread, `Render Thread`, a dedicated `RHI Thread`, the shared `Job Worker <n>`, `Background Job Worker <n>`, and the editor's metadata/import, startup cache, Prefab preparation, shader compile and reflect, file watcher, managed script build, debug endpoint, progress dialog, and trace writer workers.
 
 In `tasks` mode, RHI work keeps the physical worker's name instead of claiming a dedicated RHI thread.
 

@@ -1,0 +1,169 @@
+{
+  "format": "Nullus.ObjectGraph.Scene",
+  "version": 2,
+  "documentId": "e274bc55-778f-56b8-a639-07eb0f48a992",
+  "root": "6d003eec-33a1-5d61-b522-fc5149ffdce4",
+  "objects": [
+    {
+      "id": "f15c0777-5d1a-577a-8a60-e5514643c7d0",
+      "fileID": 11,
+      "type": "NLS::Engine::Components::TransformComponent",
+      "debugName": "Camera Transform",
+      "state": "Alive",
+      "properties": {
+        "enabled": true,
+        "localPosition": {
+          "x": 0,
+          "y": 0,
+          "z": 5
+        },
+        "localRotation": {
+          "x": 0,
+          "y": 1,
+          "z": 0,
+          "w": 0
+        },
+        "localScale": {
+          "x": 1,
+          "y": 1,
+          "z": 1
+        }
+      }
+    },
+    {
+      "id": "fc48b405-ca8d-5716-ae64-e7fc16625db4",
+      "fileID": 12,
+      "type": "NLS::Engine::Components::CameraComponent",
+      "debugName": "Camera Lens",
+      "state": "Alive",
+      "properties": {
+        "enabled": true,
+        "fov": 45,
+        "size": 2,
+        "nearClip": 0.1,
+        "farClip": 100,
+        "projectionMode": "ORTHOGRAPHIC",
+        "clearColor": {
+          "x": 0.025,
+          "y": 0.035,
+          "z": 0.055
+        },
+        "frustumGeometryCulling": true,
+        "frustumLightCulling": false
+      }
+    },
+    {
+      "id": "40a28861-b5d4-5572-bc1e-6321ff604c04",
+      "fileID": 10,
+      "type": "NLS::Engine::GameObject",
+      "debugName": "Main Camera",
+      "state": "Alive",
+      "properties": {
+        "name": "Main Camera",
+        "active": true,
+        "tag": "MainCamera",
+        "layer": 0,
+        "parent": null,
+        "components": [
+          {
+            "$owned": "f15c0777-5d1a-577a-8a60-e5514643c7d0"
+          },
+          {
+            "$owned": "fc48b405-ca8d-5716-ae64-e7fc16625db4"
+          }
+        ]
+      }
+    },
+    {
+      "id": "be2a6142-5af5-5d30-82ee-0b32e194dfe9",
+      "fileID": 21,
+      "type": "NLS::Engine::Components::TransformComponent",
+      "debugName": "Hero Transform",
+      "state": "Alive",
+      "properties": {
+        "enabled": true,
+        "localPosition": {
+          "x": 0,
+          "y": 0,
+          "z": 0
+        },
+        "localRotation": {
+          "x": 0,
+          "y": 0,
+          "z": 0,
+          "w": 1
+        },
+        "localScale": {
+          "x": 1,
+          "y": 1,
+          "z": 1
+        }
+      }
+    },
+    {
+      "id": "e1dc65e3-357b-5e3c-81f6-831b43f479bc",
+      "fileID": 22,
+      "type": "NLS::Engine::Components::SpriteRendererComponent",
+      "debugName": "Hero Sprite Renderer",
+      "state": "Alive",
+      "properties": {
+        "enabled": true,
+        "sprite": {
+          "fileID": 6552448131988318512,
+          "guid": "cd8aee11-5f2b-54f4-91d1-ec812a4a6aef",
+          "type": 2,
+          "filePath": "sprite:c4b07aa9-70d2-5286-9e42-4e91d6e5df35"
+        },
+        "color": {
+          "x": 1,
+          "y": 1,
+          "z": 1,
+          "w": 1
+        },
+        "flipX": false,
+        "flipY": false,
+        "sortingLayer": "Default",
+        "orderInLayer": 0
+      }
+    },
+    {
+      "id": "2c92971c-87f5-5dc0-a7a6-d7d8aaf1af1e",
+      "fileID": 20,
+      "type": "NLS::Engine::GameObject",
+      "debugName": "Hero",
+      "state": "Alive",
+      "properties": {
+        "name": "Hero",
+        "active": true,
+        "tag": "Untagged",
+        "layer": 0,
+        "parent": null,
+        "components": [
+          {
+            "$owned": "be2a6142-5af5-5d30-82ee-0b32e194dfe9"
+          },
+          {
+            "$owned": "e1dc65e3-357b-5e3c-81f6-831b43f479bc"
+          }
+        ]
+      }
+    },
+    {
+      "id": "6d003eec-33a1-5d61-b522-fc5149ffdce4",
+      "fileID": 1,
+      "type": "NLS::Engine::SceneSystem::Scene",
+      "debugName": "2D Main Scene",
+      "state": "Alive",
+      "properties": {
+        "gameObjects": [
+          {
+            "$owned": "40a28861-b5d4-5572-bc1e-6321ff604c04"
+          },
+          {
+            "$owned": "2c92971c-87f5-5dc0-a7a6-d7d8aaf1af1e"
+          }
+        ]
+      }
+    }
+  ]
+}

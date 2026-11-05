@@ -18,6 +18,11 @@
 
 #include <memory>
 #include <vector>
+#include <imgui.h>
+#include <ImGuiExtensions/ImGuizmo/ImGuizmo.h>
+#include <Serialize/ObjectGraphInstantiator.h>
+#include <Serialize/ObjectGraphSerializer.h>
+#include <limits>
 
 using namespace NLS;
 
@@ -70,6 +75,89 @@ void AttachCenteredRenderableBounds(Engine::GameObject& actor, NLS::Render::Reso
     ASSERT_NE(meshRenderer, nullptr);
     meshFilter->SetMesh(&mesh);
 }
+}
+
+TEST(ImGuizmoTransformAdapterTests, MouseDragUpdatesTheTransformWithFiniteValuesWhileHeld)
+{
+    const auto previous = ImGui::GetCurrentContext();
+    auto* context = ImGui::CreateContext();
+    struct Cleanup
+    {
+        ImGuiContext* current;
+        ImGuiContext* previous;
+        ~Cleanup() { ImGuizmo::Enable(false); ImGuizmo::Enable(true); ImGui::DestroyContext(current); ImGui::SetCurrentContext(previous); }
+    } cleanup {context, previous};
+    auto& io = ImGui::GetIO();
+    io.IniFilename = nullptr;
+    io.DisplaySize = {1000, 800};
+    io.DeltaTime = 1.f / 60;
+    unsigned char* pixels; int width, height;
+    io.Fonts->GetTexDataAsRGBA32(&pixels, &width, &height);
+    Engine::SceneSystem::Scene authoredScene;
+    auto& authored = authoredScene.CreateGameObject("Mouse drag");
+    authored.GetTransform()->SetLocalPosition({0.474f, 0, 2});
+    authored.GetTransform()->SetLocalScale({4, 3, 1});
+    const auto document = Engine::Serialize::ObjectGraphSerializer::SerializeScene(authoredScene);
+    auto loadedScene = Engine::Serialize::ObjectGraphInstantiator::InstantiateScene(document);
+    ASSERT_NE(loadedScene, nullptr);
+    auto* loaded = loadedScene->FindGameObjectByName("Mouse drag");
+    ASSERT_NE(loaded, nullptr);
+    auto& object = *loaded;
+    auto view = Editor::Core::ToImGuizmoMatrix(Maths::Matrix4::CreateView(0, 0, 12, 0, 0, 11, 0, 1, 0));
+    auto projection = Editor::Core::ToImGuizmoMatrix(Maths::Matrix4::CreatePerspective(60, 800.f / 600, 0.01f, 1000));
+    const auto draw = [&](const ImVec2 mouse, const bool down)
+    {
+        io.AddMousePosEvent(mouse.x, mouse.y);
+        io.AddMouseButtonEvent(0, down);
+        ImGui::NewFrame();
+        ImGuizmo::BeginFrame();
+        ImGui::SetNextWindowPos({0, 0});
+        ImGui::SetNextWindowSize({1000, 800});
+        ImGui::Begin("Gizmo drag", nullptr, ImGuiWindowFlags_NoTitleBar);
+        ImGuizmo::SetDrawlist();
+        ImGuizmo::SetRect(100, 100, 800, 600);
+        ImGuizmo::SetOrthographic(false);
+        auto model = Editor::Core::GetGameObjectWorldGizmoMatrix(object, Editor::Core::SceneViewGizmoPivot::Pivot);
+        auto cubeModel = Editor::Core::ToImGuizmoMatrix(Maths::Matrix4::Identity);
+        ImGuizmo::ViewManipulate(view.data(), projection.data(), ImGuizmo::TRANSLATE, ImGuizmo::WORLD,
+            cubeModel.data(), 8.f, {850, 100}, {96, 96}, 0);
+        const auto changed = ImGuizmo::Manipulate(view.data(), projection.data(), ImGuizmo::TRANSLATE,
+            ImGuizmo::WORLD, model.data());
+        if (changed)
+            Editor::Core::ApplyGameObjectWorldGizmoMatrix(object, model, Editor::Core::EGizmoOperation::TRANSLATE,
+                Editor::Core::SceneViewGizmoPivot::Pivot);
+        ImGui::End();
+        ImGui::Render();
+        return changed;
+    };
+    // The object projects to x=524.6, and the X handle extends 40 pixels.
+    draw({550, 400}, false);
+    draw({550, 400}, false);
+    draw({550, 400}, true);
+    ASSERT_TRUE(ImGuizmo::IsUsing());
+    ASSERT_TRUE(draw({590, 400}, true));
+    const auto position = object.GetTransform()->GetLocalPosition();
+    EXPECT_TRUE(std::isfinite(position.x) && std::isfinite(position.y) && std::isfinite(position.z));
+    EXPECT_GT(position.x, 0.5f);
+    EXPECT_NEAR(position.y, 0, kTolerance);
+    EXPECT_NEAR(position.z, 2, kTolerance);
+    draw({590, 400}, false);
+}
+
+TEST(ImGuizmoTransformAdapterTests, InvalidGizmoMatrixDoesNotOverwriteNativeTransform)
+{
+    Engine::GameObject object("Invalid matrix");
+    object.GetTransform()->SetLocalTransform({1, 2, 3}, Maths::Quaternion::Identity, {4, 3, 1});
+    auto model = Editor::Core::GetGameObjectWorldGizmoMatrix(object, Editor::Core::SceneViewGizmoPivot::Pivot);
+    model[0] = std::numeric_limits<float>::quiet_NaN();
+    for (const auto operation : {Editor::Core::EGizmoOperation::TRANSLATE,
+        Editor::Core::EGizmoOperation::ROTATE, Editor::Core::EGizmoOperation::SCALE})
+    {
+        Editor::Core::ApplyGameObjectWorldGizmoMatrix(object, model, operation, Editor::Core::SceneViewGizmoPivot::Pivot);
+        EXPECT_EQ(object.GetTransform()->GetLocalPosition(), (Maths::Vector3 {1, 2, 3}));
+        EXPECT_EQ(object.GetTransform()->GetLocalScale(), (Maths::Vector3 {4, 3, 1}));
+        EXPECT_FLOAT_EQ(object.GetTransform()->GetLocalRotation().w, 1.f);
+    }
 }
 
 TEST(ImGuizmoTransformAdapterTests, MapsEditorOperationsToImGuizmoOperations)

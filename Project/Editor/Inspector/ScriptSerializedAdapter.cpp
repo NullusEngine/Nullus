@@ -325,6 +325,8 @@ void ScriptSerializedAdapter::ApplyPropertyPresentation(
     node.ownerTypeName = descriptor->name;
     node.aliases = field->aliases;
     node.metadata = BuildEditorPropertyMetadata(*field, descriptor->name);
+    if (field->type.name == "Nullus.InputActionReference" || field->type.name == "global::Nullus.InputActionReference")
+        node.metadata.customDrawer = "InputActionReference";
     if (!node.metadata.displayName.empty())
         node.displayName = node.metadata.displayName;
     else

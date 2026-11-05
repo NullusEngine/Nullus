@@ -52,6 +52,27 @@ TEST(EditorPipelineStatePresetsTests, TransparentOverlayPresetEnablesBlending)
     EXPECT_EQ(overlayState.rasterizationMode, NLS::Render::Settings::ERasterizationMode::FILL);
 }
 
+TEST(EditorPipelineStatePresetsTests, CameraIconPresetUsesDepthForSelfOcclusion)
+{
+    NLS::Render::Data::PipelineState baseState;
+    baseState.rasterizationMode = NLS::Render::Settings::ERasterizationMode::LINE;
+    baseState.depthTest = false;
+    baseState.depthWriting = false;
+    baseState.depthFunc = NLS::Render::Settings::EComparaisonAlgorithm::GREATER;
+    baseState.blending = true;
+    baseState.culling = false;
+
+    const auto state = NLS::Editor::Rendering::CreateEditorCameraIconPipelineState(baseState);
+
+    EXPECT_TRUE(state.depthTest);
+    EXPECT_TRUE(state.depthWriting);
+    EXPECT_EQ(state.depthFunc, NLS::Render::Settings::EComparaisonAlgorithm::LESS);
+    EXPECT_FALSE(state.blending);
+    EXPECT_TRUE(state.culling);
+    EXPECT_EQ(state.cullFace, NLS::Render::Settings::ECullFace::BACK);
+    EXPECT_EQ(state.rasterizationMode, NLS::Render::Settings::ERasterizationMode::FILL);
+}
+
 TEST(EditorPipelineStatePresetsTests, NoDepthPresetOnlyDisablesDepthTest)
 {
     NLS::Render::Data::PipelineState baseState;

@@ -1,6 +1,7 @@
 #pragma once
 
 #include "IScriptBackend.h"
+#include "Core/Modules/ModuleServices.h"
 
 #include <functional>
 #include <memory>
@@ -19,6 +20,7 @@ NLS_SCRIPTING_API const ScriptAsset* FindRegisteredScriptAsset(ScriptTypeId scri
 
 class NLS_SCRIPTING_API ScriptRuntime final
 {
+    Core::Modules::ScriptModuleProvider m_pluginModuleProvider;
 public:
     using ErrorSink = std::function<void(const ScriptError&)>;
 
@@ -37,6 +39,9 @@ public:
     IScriptBackend* GetBackend(ScriptLanguage language) const;
 
     ScriptStatus Initialize(const ScriptApiDatabase& api);
+    ScriptStatus BeginPlaySession(uint64_t sessionId);
+    ScriptStatus EndPlaySession(bool restoreScriptHost = true);
+    uint64_t GetPlaySessionId() const { return m_playSessionId; }
     void Shutdown();
     bool IsInitialized() const { return m_initialized; }
     const std::vector<ScriptError>& GetErrors() const { return m_errors; }
@@ -126,5 +131,6 @@ private:
     ScriptFrameContext m_scheduledFrame;
     bool m_scheduledFrameActive = false;
     bool m_initialized = false;
+    uint64_t m_playSessionId = 0;
 };
 }

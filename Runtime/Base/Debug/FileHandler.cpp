@@ -1,12 +1,22 @@
 #include <Time/Date.h>
 
 #include "Debug/FileHandler.h"
+#include "Debug/StackTrace.h"
 
 #include <fstream>
 #include <iostream>
+#include <mutex>
 
 namespace NLS::Debug
 {
+namespace
+{
+std::mutex& FileMutex()
+{
+    static auto* mutex = new std::mutex;
+    return *mutex;
+}
+}
 std::string const FileHandler::__DEFAULT_HEADER;
 std::string const FileHandler::__INFO_HEADER = "[INFO] ";
 std::string const FileHandler::__WARNING_HEADER = "[WARNING] ";
@@ -19,6 +29,7 @@ std::string FileHandler::LOG_FILE_PATH = __APP_LAUNCH_DATE + __LOG_EXTENSION;
 
 void FileHandler::Log(const LogData& logData)
 {
+	std::lock_guard lock(FileMutex());
 	if (!OUTPUT_FILE.is_open())
 	{
 		OUTPUT_FILE.open(LOG_FILE_PATH, std::ios_base::app);
@@ -26,7 +37,16 @@ void FileHandler::Log(const LogData& logData)
 
 	if (OUTPUT_FILE.is_open())
 	{
-		OUTPUT_FILE << GetLogHeader(logData.logLevel) << logData.date << " " << logData.message << std::endl;
+		OUTPUT_FILE << GetLogHeader(logData.logLevel) << logData.date << " " << logData.message << '\n';
+		if (!logData.sourceFile.empty())
+		{
+			OUTPUT_FILE << logData.sourceFile;
+			if (logData.sourceLine > 0) OUTPUT_FILE << ':' << logData.sourceLine;
+			OUTPUT_FILE << '\n';
+		}
+		if (!logData.scriptStack.empty()) OUTPUT_FILE << logData.scriptStack << '\n';
+		if (logData.nativeStack) OUTPUT_FILE << StackTrace::RawText(logData.nativeStack->frames);
+		OUTPUT_FILE.flush();
 	}
 	else
 	{
@@ -42,7 +62,16 @@ std::string& FileHandler::GetLogFilePath()
 
 void FileHandler::SetLogFilePath(const std::string& path)
 {
-	LOG_FILE_PATH = path + "/" + __APP_LAUNCH_DATE + __LOG_EXTENSION;
+	std::lock_guard lock(FileMutex());
+	const auto next = path + "/" + __APP_LAUNCH_DATE + __LOG_EXTENSION;
+	if (next != LOG_FILE_PATH && OUTPUT_FILE.is_open()) { OUTPUT_FILE.flush(); OUTPUT_FILE.close(); }
+	LOG_FILE_PATH = next;
+}
+
+void FileHandler::Flush()
+{
+	std::lock_guard lock(FileMutex());
+	if (OUTPUT_FILE.is_open()) OUTPUT_FILE.flush();
 }
 
 std::string FileHandler::GetLogHeader(ELogLevel logLevel)

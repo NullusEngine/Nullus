@@ -108,6 +108,8 @@ namespace NLS::Editor::Rendering
             NLS::Render::Data::PipelineState p_pso,
             Engine::SceneSystem::Scene& p_scene,
             std::vector<NLS::Render::Context::RecordedDrawCommandInput>& outDrawCommands);
+        void AppendPickableSprites(Engine::SceneSystem::Scene& scene,
+            NLS::Render::Context::RenderPassCommandInput& input);
         void CapturePickableModelSources(
             const std::vector<Engine::Rendering::ScenePickablePrimitiveDrawSource>& sources,
             std::vector<NLS::Render::Context::RecordedDrawCommandInput>& outDrawCommands);
@@ -129,6 +131,7 @@ namespace NLS::Editor::Rendering
 
 	private:
         DebugModelRenderer m_debugModelRenderer;
+        Engine::Rendering::SpriteSceneRenderer m_spritePickingRenderer;
 		NLS::Render::Buffers::Framebuffer m_gameObjectPickingFramebuffer;
 		NLS::Render::Resources::Material m_gameObjectPickingMaterial;
         NLS::Render::Resources::Material m_lightMaterial;
@@ -156,6 +159,8 @@ namespace NLS::Editor::Rendering
             const NLS::Render::Resources::Mesh* cameraHelperMesh = nullptr;
             const NLS::Render::Resources::Mesh* lightHelperMesh = nullptr;
             float lightBillboardScale = 0.0f;
+            bool showCameras = true;
+            bool showLights = true;
 
             bool operator==(const PickingCaptureGuards&) const = default;
         };

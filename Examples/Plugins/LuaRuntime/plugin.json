@@ -1,0 +1,9 @@
+{
+  "schemaVersion": 1,
+  "id": "org.nullus.sample.lua",
+  "name": "Lua Runtime Extension",
+  "version": "1.0.0",
+  "engineVersion": "^1.0.0",
+  "pluginApiVersion": 1,
+  "modules": [{"name":"Runtime","type":"Runtime","loadingPhase":"PostEngine","scriptBackend":"Lua","script":"Runtime.lua","safeUnload":true}]
+}

@@ -1021,13 +1021,28 @@ TEST_F(JobSystemParallelTests, ImmediateShutdownCancelsQueuedSiblingJobsWhenGrou
         std::this_thread::sleep_for(std::chrono::milliseconds(1));
     ASSERT_GT(started.load(std::memory_order_acquire), 0);
 
+    std::atomic<int> shutdownReached = 0;
+    NLS::Base::Jobs::JobScheduleDesc cancellationMarker;
+    cancellationMarker.function = [](void*) {};
+    cancellationMarker.cancelFunction = CountCancel;
+    cancellationMarker.cancelUserData = &shutdownReached;
+    const auto marker = NLS::Base::Jobs::ScheduleJob(cancellationMarker);
+    EXPECT_NE(marker.id, 0u);
+
     std::thread shutdownThread(
         []
         {
             NLS::Base::Jobs::ShutdownJobSystem(NLS::Base::Jobs::JobSystemShutdownMode::Immediate);
         });
 
-    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    // The independent queued marker is cancelled after shutdown marks every
+    // group. The running group's sibling cleanup is deferred until it returns.
+    // A sleep cannot guarantee that the shutdown thread has been scheduled.
+    const auto cancelDeadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+    while (shutdownReached.load(std::memory_order_acquire) == 0 &&
+        std::chrono::steady_clock::now() < cancelDeadline)
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    EXPECT_EQ(shutdownReached.load(std::memory_order_acquire), 1);
     EXPECT_FALSE(NLS::Base::Jobs::IsCompleted(handle));
 
     release.store(true, std::memory_order_release);

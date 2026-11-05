@@ -16,6 +16,8 @@
 
 #include "Engine/PrimitiveType.h"
 #include "Context.h"
+#include "Core/PlayModeController.h"
+#include <Scripting/RuntimePlaySession.h>
 #include "PanelsManager.h"
 #include "Core/EditorBackgroundTaskTracker.h"
 #include "Core/EditorProgressTargets.h"
@@ -23,6 +25,7 @@
 #include "Core/RendererResourceStreamingBudget.h"
 #include "Assets/EditorAssetDragDropBridge.h"
 #include "Undo/EditorUndoService.h"
+#include "Inspector/InspectorTypes.h"
 
 #define EDITOR_EXEC(action)                 NLS::Core::ServiceLocator::Get<NLS::Editor::Core::EditorActions>().action
 #define EDITOR_BIND(method, ...)            std::bind(&NLS::Editor::Core::EditorActions::method, &NLS::Core::ServiceLocator::Get<NLS::Editor::Core::EditorActions>(), ##__VA_ARGS__)
@@ -127,6 +130,8 @@ namespace NLS::Editor::Core
 		*/
 		EditorActions(Context& p_context, PanelsManager& p_panelsManager);
 		~EditorActions();
+            // Stop asynchronous producers while their panels and Context remain alive.
+            void StopBackgroundTasks();
 
 		#pragma region TOOLS
 		/**
@@ -170,6 +175,10 @@ namespace NLS::Editor::Core
 		* Start playing the current scene and update the editor mode
 		*/
 		void StartPlaying();
+        void TogglePlaying() { m_playController.RequestTogglePlay(); }
+        void PumpPlayRequests() { m_playController.ProcessRequests(); }
+        PlayModeController& GetPlayModeController() { return m_playController; }
+        NLS::Scripting::RuntimePlaySession& GetRuntimePlaySession() { return m_runtimePlaySession; }
 
 		/**
 		* Pause the current playing scene and update the editor mode
@@ -282,6 +291,11 @@ namespace NLS::Editor::Core
 		* @param p_target
 		*/
         void SelectGameObject(Engine::GameObject& p_target);
+        void SelectGameObjects(const std::vector<Engine::GameObject*>& targets, Engine::GameObject* active = nullptr);
+        [[nodiscard]] std::vector<Engine::GameObject*> GetSelectedGameObjects() const;
+        [[nodiscard]] Engine::GameObject* GetActiveGameObject() const;
+        [[nodiscard]] bool IsGameObjectSelected(const Engine::GameObject& object) const;
+        void RemoveGameObjectFromSelection(const Engine::GameObject& object);
 
 		/**
 		* Unselect any selected GameObject and clearing the inspector
@@ -294,8 +308,8 @@ namespace NLS::Editor::Core
 		bool IsAnyGameObjectSelected() const;
 
 		/**
-		* Returns the selected GameObject. Make sur you verified that an GameObject is selected
-		* with IsAnyGameObjectSelected() before calling this method
+		* Returns the GameObject only for a single selection; use GetActiveGameObject
+		* or GetSelectedGameObjects for multi-selection.
 		*/
         Engine::GameObject* GetSelectedGameObject() const;
 
@@ -518,12 +532,25 @@ namespace NLS::Editor::Core
         Event<Engine::GameObject&> GameObjectUnselectedEvent;
 		Event<EEditorMode> EditorModeChangedEvent;
 		Event<> PlayEvent;
+        Event<> BuildEvent;
 
 	private:
 		Context& m_context;
 		PanelsManager& m_panelsManager;
 
 		EEditorMode m_editorMode = EEditorMode::EDIT;
+        PlayModeController m_playController;
+        NLS::Scripting::RuntimePlaySession m_runtimePlaySession;
+        bool EnterPlaySession(uint64_t sessionId, std::string& error);
+        bool ExitPlaySession(std::string& error);
+        std::optional<NLS::Editor::Assets::PrefabStageState> m_prefabStageBeforePlay;
+        std::string m_layoutBeforePlay;
+        std::string m_focusedWindowBeforePlay;
+        std::vector<NLS::InstanceID> m_expandedBeforePlay;
+        NLS::InstanceID m_selectionBeforePlay = NLS::InstanceID_None;
+        NLS::Editor::Inspector::InspectorTargetSet m_inspectorSelectionBeforePlay;
+        bool m_playActivationFrozen = false;
+        bool m_playMementoValid = false;
 
 		std::vector<std::pair<uint32_t, std::function<void()>>> m_delayedActions;
 		std::mutex m_delayedActionsMutex;

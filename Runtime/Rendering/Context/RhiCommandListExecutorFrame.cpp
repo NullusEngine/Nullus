@@ -1364,7 +1364,8 @@ namespace NLS::Render::Context
             (void)Detail::RecordPendingTextureRuntimeUploads(impl, frameContext, commandBuffer);
 
             impl.uiOverlayRenderer.SetTextureRegistry(&impl.uiTextureRegistry);
-            const auto& backbufferView = frameContext.swapchainBackbufferView;
+            const auto backbufferView = passInput.targetsSwapchain ? frameContext.swapchainBackbufferView
+                : (passInput.colorAttachmentViews.empty() ? nullptr : passInput.colorAttachmentViews.front());
             if (backbufferView == nullptr || backbufferView->GetTexture() == nullptr)
             {
                 errorMessage = "UI overlay pass cannot resolve the acquired swapchain backbuffer";
@@ -6216,6 +6217,10 @@ namespace NLS::Render::Context
 
         Render::RHI::RHIPresentDesc presentDesc;
         presentDesc.swapchain = impl.explicitSwapchain;
+        const int previewVsync=impl.previewPresentVsync.load(std::memory_order_acquire);
+        if(previewVsync>=0)presentDesc.vsyncOverride=previewVsync!=0;
+        if(presentDesc.swapchain)impl.effectivePresentVsync.store(
+            presentDesc.vsyncOverride.value_or(presentDesc.swapchain->GetDesc().vsync)?1:0,std::memory_order_release);
         presentDesc.imageIndex = frameContext.swapchainImageIndex;
         if (frameContext.renderFinishedSemaphore != nullptr)
             presentDesc.waitSemaphores.push_back(frameContext.renderFinishedSemaphore);

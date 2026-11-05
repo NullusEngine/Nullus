@@ -68,6 +68,7 @@ public:
     size_t GetEventSubscriptionCount() const { return m_eventSubscriptions.size(); }
     bool WasDestroyed(ScriptInstanceHandle instance) const { return m_destroyed.contains(instance); }
     bool IsInitialized() const { return m_initialized; }
+    void FailNextInitializeForTesting() { m_failNextInitialize = true; }
     void ClearTrace();
 
 private:
@@ -101,5 +102,6 @@ private:
     uint32_t m_nextIndex = 1;
     uint16_t m_nextGeneration = 1;
     bool m_initialized = false;
+    bool m_failNextInitialize = false;
 };
 }

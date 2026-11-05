@@ -1433,7 +1433,7 @@ void Launcher::SetupContext()
 
     m_device = std::make_unique<Context::Device>(deviceSettings);
     m_window = std::make_unique<Windowing::Window>(*m_device, windowSettings);
-    const std::string brandIconPath = (assetsRoot / "Engine" / "Brand" / "NullusLogoMark.png").string();
+    const std::string brandIconPath = (assetsRoot / "Engine" / "Brand" / "NullusLogoMark.svg").string();
     m_window->SetIcon(brandIconPath);
 
     auto monSize = m_device->GetMonitorSize();

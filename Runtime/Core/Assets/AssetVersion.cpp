@@ -199,8 +199,16 @@ AssetHotReloadPolicy GetHotReloadPolicy(ArtifactType artifactType)
     case ArtifactType::AnimationGraph:
     case ArtifactType::BlendSpace:
     case ArtifactType::BoneMask:
+    case ArtifactType::InputActions:
+    case ArtifactType::InputProfile:
+    case ArtifactType::Sprite:
+    case ArtifactType::PhysicsMaterial:
+    case ArtifactType::CollisionMesh:
+    case ArtifactType::PhysicsShape:
         return AssetHotReloadPolicy::MarkInstancesDirty;
     case ArtifactType::Scene:
+    case ArtifactType::ECSScene:
+    case ArtifactType::ECSPrefab:
     case ArtifactType::Audio:
     case ArtifactType::UIDocument:
     case ArtifactType::UIStyleSheet:

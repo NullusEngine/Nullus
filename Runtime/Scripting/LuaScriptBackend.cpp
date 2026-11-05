@@ -1,4 +1,9 @@
 #include "LuaScriptBackend.h"
+#include "InputScriptApi.h"
+#include "PlayScriptBindings.h"
+#include <Engine/Components/RigidbodyComponent.h>
+#include <Engine/Components/PhysicsColliderComponent.h>
+#include <Engine/Components/AudioSourceComponent.h>
 #include "ScriptEngineApi.h"
 
 #include "Base/Object/Object.h"
@@ -110,13 +115,51 @@ struct LuaDiagnosticData
     int column = 0;
 };
 
+int LuaPrint(lua_State* state)
+{
+    const int arguments = lua_gettop(state);
+    luaL_Buffer buffer;
+    luaL_buffinit(state, &buffer);
+    for (int i = 1; i <= arguments; ++i)
+    {
+        if (i > 1) luaL_addchar(&buffer, '\t');
+        luaL_tolstring(state, i, nullptr);
+        luaL_addvalue(&buffer);
+    }
+    luaL_pushresult(&buffer);
+    const int messageIndex = lua_gettop(state);
+    const auto mode = NLS::Debug::Logger::GetStackTraceMode(NLS::Debug::ELogLevel::LOG_INFO);
+    if (mode != NLS::Debug::StackTraceMode::None) luaL_traceback(state, state, nullptr, 1);
+    const char* message = lua_tostring(state, messageIndex);
+    const char* stack = mode == NLS::Debug::StackTraceMode::None ? nullptr : lua_tostring(state, -1);
+    lua_Debug frame{};
+    const char* source = nullptr;
+    int line = 0;
+    if (lua_getstack(state, 1, &frame) && lua_getinfo(state, "Sl", &frame))
+    {
+        source = frame.source;
+        if (source && (*source == '@' || *source == '=')) ++source;
+        line = frame.currentline;
+    }
+    try
+    {
+        NLS::Debug::Logger::LogWithContext(message ? message : "", NLS::Debug::ELogLevel::LOG_INFO,
+            NLS::Debug::ELogMode::CONSOLE_AND_FILE, source, line, nullptr,
+            NLS::Debug::ELogSource::Lua, stack ? stack : "");
+    }
+    catch (...) { /* Do not unwind a C++ exception through the Lua VM. */ }
+    lua_settop(state, arguments);
+    return 0;
+}
+
 LuaDiagnosticData LuaError(lua_State* state, const ScriptAsset& asset, const char* fallback)
 {
     LuaDiagnosticData result;
     const auto* text = lua_tostring(state, -1);
     result.message = text && *text ? text : fallback;
     result.sourcePath = asset.sourcePath;
-    if (lua_gettop(state) > 0)
+    if (lua_gettop(state) > 0 &&
+        NLS::Debug::Logger::GetStackTraceMode(NLS::Debug::ELogLevel::LOG_ERROR) != NLS::Debug::StackTraceMode::None)
     {
         luaL_traceback(state, state, result.message.c_str(), 1);
         if (const auto* trace = lua_tostring(state, -1))
@@ -175,6 +218,8 @@ void OpenSafeLibraries(lua_State* state)
     // Do not call luaL_openlibs: io/os/debug/package are deliberately absent.
     luaL_requiref(state, "_G", luaopen_base, 1);
     lua_pop(state, 1);
+    lua_pushcfunction(state, &LuaPrint);
+    lua_setglobal(state, "print");
     luaL_requiref(state, LUA_TABLIBNAME, luaopen_table, 1);
     lua_pop(state, 1);
     luaL_requiref(state, LUA_STRLIBNAME, luaopen_string, 1);
@@ -485,6 +530,8 @@ int NativeGetComponent(lua_State* state)
     if (!gameObject || typeId == 0)
         return luaL_error(state, "GetComponent requires a live GameObject and registered component type.");
     NLS::Engine::Components::Component* component = nullptr;
+    if(ResolvePlayComponent(*gameObject,typeId,false,component))
+    {if(component)PushNativeObject(state,NativeObjectHandle::FromInstanceId(component->GetInstanceID()));else lua_pushnil(state);return 1;}
     if (typeId == StableScriptId("Nullus.Transform")) component = gameObject->GetTransform();
     else if (typeId == StableScriptId("Nullus.Camera")) component = gameObject->GetComponent<NLS::Engine::Components::CameraComponent>();
     else if (typeId == StableScriptId("Nullus.Light")) component = gameObject->GetComponent<NLS::Engine::Components::LightComponent>();
@@ -508,11 +555,14 @@ int NativeGetComponent(lua_State* state)
 
 int NativeAddComponent(lua_State* state)
 {
+    if(!ScriptEngineApi::IsAcceptingPlayRequests())return luaL_error(state,"The Play session is stopping.");
     auto* gameObject = NativeGameObject(state, 1);
     const auto typeId = LuaComponentTypeId(state, 2);
     if (!gameObject || typeId == 0)
         return luaL_error(state, "AddComponent requires a live GameObject and registered component type.");
     NLS::Engine::Components::Component* component = nullptr;
+    if(ResolvePlayComponent(*gameObject,typeId,true,component))
+    {if(component)PushNativeObject(state,NativeObjectHandle::FromInstanceId(component->GetInstanceID()));else lua_pushnil(state);return 1;}
     if (typeId == StableScriptId("Nullus.Transform")) component = gameObject->GetTransform();
     else if (typeId == StableScriptId("Nullus.Camera"))
     {
@@ -563,22 +613,12 @@ int NativeSetParent(lua_State* state)
 
 int NativeDestroyObject(lua_State* state)
 {
-    auto* userdata = TestNativeObject(state, 1);
-    auto* object = NativeObjectPointer(state, 1);
-    const auto delay = lua_isnumber(state, 2) ? static_cast<float>(lua_tonumber(state, 2)) : 0.0f;
-    if (!userdata || !object) return luaL_error(state, "Destroy requires a live Object.");
-    const NativeObjectHandle handle{userdata->handle};
-    if (delay > 0.0f)
-    {
-        if (!ScriptEngineApi::QueueDestroy(handle, delay)) return luaL_error(state, "Invalid delayed destruction request.");
-        return 0;
-    }
-    if (auto* gameObject = dynamic_cast<NLS::Engine::GameObject*>(object)) gameObject->MarkAsDestroy();
-    else if (auto* component = dynamic_cast<NLS::Engine::Components::Component*>(object))
-    {
-        if (!component->gameobject() || component->GetType() == NLS_TYPEOF(NLS::Engine::Components::TransformComponent)) return luaL_error(state, "Transform cannot be destroyed.");
-        component->gameobject()->RemoveComponent(component);
-    }
+    auto* userdata=TestNativeObject(state,1);
+    auto* object=NativeObjectPointer(state,1);
+    if(!userdata||!object)return luaL_error(state,"Destroy requires a live Object.");
+    if(dynamic_cast<NLS::Engine::Components::TransformComponent*>(object))return luaL_error(state,"Transform cannot be destroyed.");
+    const float delay=lua_isnumber(state,2)?float(lua_tonumber(state,2)):0;
+    if(!ScriptEngineApi::QueueDestroy({userdata->handle},delay))return luaL_error(state,"The Play session does not accept destruction requests.");
     return 0;
 }
 
@@ -667,6 +707,7 @@ NLS::Engine::GameObject* LuaCloneGameObjectTree(
 
 int LuaInstantiate(lua_State* state)
 {
+    if(!ScriptEngineApi::IsAcceptingPlayRequests())return luaL_error(state,"The Play session is stopping.");
     auto* source = dynamic_cast<NLS::Engine::GameObject*>(NativeObjectPointer(state, 1));
     if (!source || !source->GetScene()) return luaL_error(state, "Instantiate requires a scene GameObject.");
     auto* clone = LuaCloneGameObjectTree(*source, *source->GetScene(), nullptr);
@@ -675,51 +716,83 @@ int LuaInstantiate(lua_State* state)
     return 1;
 }
 
+uint64_t LuaInputHandle(lua_State* state, int argument)
+{
+    const auto value = luaL_optnumber(state, argument, 0);
+    if (!std::isfinite(value) || value < 0 || value > 9007199254740991.0 || std::floor(value) != value)
+        luaL_argerror(state, argument, "Input handles require an exact non-negative number");
+    return static_cast<uint64_t>(value);
+}
+int LuaReadInputAction(lua_State* state)
+{
+    const char* id = luaL_checkstring(state, 1);
+    const auto user = LuaInputHandle(state, 2);
+    const auto operation = static_cast<uint32_t>(luaL_optinteger(state, 3, 0));
+    const auto after = LuaInputHandle(state, 4);
+    ScriptInputValue value;
+    if (!InputScriptApi::Read(user, id, operation, after, value)) return luaL_error(state, "Input user or ActionId is invalid");
+    lua_createtable(state, 0, 10);
+    lua_pushnumber(state, value.x); lua_setfield(state, -2, "x");
+    lua_pushnumber(state, value.y); lua_setfield(state, -2, "y");
+    lua_pushnumber(state, value.z); lua_setfield(state, -2, "z");
+    lua_pushinteger(state, value.flags); lua_setfield(state, -2, "flags");
+    lua_pushnumber(state, static_cast<lua_Number>(value.sequence)); lua_setfield(state, -2, "sequence");
+    lua_pushnumber(state, static_cast<lua_Number>(value.tick)); lua_setfield(state, -2, "tick");
+    lua_pushnumber(state, static_cast<lua_Number>(value.epoch)); lua_setfield(state, -2, "epoch");
+    lua_pushnumber(state, value.timestamp); lua_setfield(state, -2, "timestamp");
+    lua_pushinteger(state, value.phase); lua_setfield(state, -2, "phase");
+    lua_pushinteger(state, value.reason); lua_setfield(state, -2, "cancelReason"); return 1;
+}
+int LuaInputCommand(lua_State* state)
+{
+    const auto operation = static_cast<uint32_t>(luaL_checkinteger(state, 1));
+    const char* id = luaL_optstring(state, 2, "");
+    const auto user = LuaInputHandle(state, 3);
+    const auto argument = operation == 0 ? static_cast<uint64_t>(luaL_optinteger(state, 4, 0)) : LuaInputHandle(state, 4);
+    uint64_t result = 0; bool ok;
+    { std::string error; try { ok = InputScriptApi::Command(user, operation, id, argument, result, error); } catch (const std::exception& exception) { ok = false; error = exception.what(); }
+      if (!ok) lua_pushstring(state, error.c_str()); }
+    if (!ok) return lua_error(state);
+    lua_pushnumber(state, static_cast<lua_Number>(result)); return 1;
+}
+int LuaInputBindingName(lua_State* state)
+{
+    const auto id = luaL_checkstring(state, 1); const auto user = LuaInputHandle(state, 2);
+    const auto name = InputScriptApi::BindingDisplayName(user, id); lua_pushlstring(state, name.data(), name.size()); return 1;
+}
 int LuaGetKey(lua_State* state)
 {
-    const auto* input = ScriptEngineApi::GetInputManager();
-    const auto key = static_cast<NLS::Windowing::Inputs::EKey>(luaL_optinteger(state, 1, 0));
-    lua_pushboolean(state, input && input->GetKeyState(key) == NLS::Windowing::Inputs::EKeyState::KEY_DOWN);
+    lua_pushboolean(state, ScriptEngineApi::ReadKey(static_cast<int>(luaL_optinteger(state, 1, 0)), 0));
     return 1;
 }
 
 int LuaGetKeyDown(lua_State* state)
 {
-    const auto* input = ScriptEngineApi::GetInputManager();
-    const auto key = static_cast<NLS::Windowing::Inputs::EKey>(luaL_optinteger(state, 1, 0));
-    lua_pushboolean(state, input && input->IsKeyPressed(key));
+    lua_pushboolean(state, ScriptEngineApi::ReadKey(static_cast<int>(luaL_optinteger(state, 1, 0)), 1));
     return 1;
 }
 
 int LuaGetKeyUp(lua_State* state)
 {
-    const auto* input = ScriptEngineApi::GetInputManager();
-    const auto key = static_cast<NLS::Windowing::Inputs::EKey>(luaL_optinteger(state, 1, 0));
-    lua_pushboolean(state, input && input->IsKeyReleased(key));
+    lua_pushboolean(state, ScriptEngineApi::ReadKey(static_cast<int>(luaL_optinteger(state, 1, 0)), 2));
     return 1;
 }
 
 int LuaGetMouseButton(lua_State* state)
 {
-    const auto* input = ScriptEngineApi::GetInputManager();
-    const auto button = static_cast<NLS::Windowing::Inputs::EMouseButton>(luaL_optinteger(state, 1, 0));
-    lua_pushboolean(state, input && input->GetMouseButtonState(button) == NLS::Windowing::Inputs::EMouseButtonState::MOUSE_DOWN);
+    lua_pushboolean(state, ScriptEngineApi::ReadMouseButton(static_cast<int>(luaL_optinteger(state, 1, 0)), 0));
     return 1;
 }
 
 int LuaGetMouseButtonDown(lua_State* state)
 {
-    const auto* input = ScriptEngineApi::GetInputManager();
-    const auto button = static_cast<NLS::Windowing::Inputs::EMouseButton>(luaL_optinteger(state, 1, 0));
-    lua_pushboolean(state, input && input->IsMouseButtonPressed(button));
+    lua_pushboolean(state, ScriptEngineApi::ReadMouseButton(static_cast<int>(luaL_optinteger(state, 1, 0)), 1));
     return 1;
 }
 
 int LuaGetMouseButtonUp(lua_State* state)
 {
-    const auto* input = ScriptEngineApi::GetInputManager();
-    const auto button = static_cast<NLS::Windowing::Inputs::EMouseButton>(luaL_optinteger(state, 1, 0));
-    lua_pushboolean(state, input && input->IsMouseButtonReleased(button));
+    lua_pushboolean(state, ScriptEngineApi::ReadMouseButton(static_cast<int>(luaL_optinteger(state, 1, 0)), 2));
     return 1;
 }
 
@@ -748,6 +821,7 @@ int NativeGetLocalPosition(lua_State* state)
 
 int NativeCreatePrimitive(lua_State* state)
 {
+    if(!ScriptEngineApi::IsAcceptingPlayRequests())return luaL_error(state,"The Play session is stopping.");
     auto* userdata = TestNativeObject(state, 1);
     auto* object = userdata
         ? NLS::Object::IDToPointerNoThreadCheck(static_cast<NLS::InstanceID>(userdata->handle & 0xFFFFFFFFu))
@@ -866,6 +940,8 @@ int NativeCanvasGetDocumentGeneration(lua_State* state)
     return 1;
 }
 
+#include "LuaPlayBindings.inl"
+
 int NativeObjectIndex(lua_State* state)
 {
     auto* userdata = TestNativeObject(state, 1);
@@ -876,6 +952,7 @@ int NativeObjectIndex(lua_State* state)
     if (!object)
         return luaL_error(state, "Native object handle %llu is no longer alive.", static_cast<unsigned long long>(userdata->handle));
     // UI Canvas members are exposed as methods on the component userdata and
+    if(TryGetLuaPlayProperty(state,object,key))return 1;
     // address elements by name; see NativeCanvasSetText for why the 64-bit
     // element handle never crosses into Lua.
     if (auto* canvas = dynamic_cast<NLS::Engine::Components::UICanvasComponent*>(object))
@@ -1195,6 +1272,7 @@ int NativeObjectNewIndex(lua_State* state)
     auto* object = NLS::Object::IDToPointerNoThreadCheck(static_cast<NLS::InstanceID>(userdata->handle & 0xFFFFFFFFu));
     if (!object)
         return luaL_error(state, "Native object handle %llu is no longer alive.", static_cast<unsigned long long>(userdata->handle));
+    if(TrySetLuaPlayProperty(state,object,key))return 0;
     if (std::strcmp(key, "active") == 0)
     {
         auto* gameObject = dynamic_cast<NLS::Engine::GameObject*>(object);
@@ -1465,6 +1543,9 @@ ScriptStatus LuaScriptBackend::Initialize(const ScriptApiDatabase& api)
     lua_setfield(m_state, -2, "Time");
     lua_newtable(m_state);
     lua_pushcfunction(m_state, &LuaGetKey);
+    lua_pushcfunction(m_state, &LuaReadInputAction); lua_setfield(m_state, -3, "ReadAction");
+    lua_pushcfunction(m_state, &LuaInputCommand); lua_setfield(m_state, -3, "Command");
+    lua_pushcfunction(m_state, &LuaInputBindingName); lua_setfield(m_state, -3, "GetBindingDisplayName");
     lua_setfield(m_state, -2, "GetKey");
     lua_pushcfunction(m_state, &LuaGetKeyDown);
     lua_setfield(m_state, -2, "GetKeyDown");
@@ -1500,6 +1581,90 @@ ScriptStatus LuaScriptBackend::Initialize(const ScriptApiDatabase& api)
     lua_pushcfunction(m_state, &NativeAddComponent);
     lua_setfield(m_state, -2, "AddComponent");
     lua_setglobal(m_state, "Nullus");
+    if (luaL_dostring(m_state, R"lua(
+local I = Nullus.Input
+I.ActionPhase = {Started=0,Pressed=1,Released=2,Performed=3,Canceled=4,ValueChanged=5}
+I.DeviceKind = {Keyboard=0,Mouse=1,Gamepad=2,Unknown=3}
+I.RebindingStatus = {WaitingForRelease=0,Listening=1,Completed=2,Canceled=3,TimedOut=4}
+function I.GetDevices()
+    local devices,index={},0
+    while true do
+        local id=I.Command(15,'',0,index)
+        if id==0 then return devices end
+        devices[#devices+1]={id=id,kind=I.Command(16,'',0,id),connected=I.Command(17,'',0,id)~=0,mapped=I.Command(18,'',0,id)~=0}
+        index=index+1
+    end
+end
+function I.GetUsers()
+    local users,index={},0
+    while true do local id=I.Command(14,'',0,index); if id==0 then return users end; users[#users+1]=id; index=index+1 end
+end
+function I.PairDevice(device,user) return I.Command(6,'',user or 0,device) end
+function I.UnpairDevice(device,user) return I.Command(7,'',user or 0,device) end
+function I.BeginRebinding(binding,user) return I.Command(8,binding,user or 0) end
+function I.GetRebindingStatus(token,user) return I.Command(9,'',user or 0,token) end
+function I.GetRebindingConflictCount(token,user) return I.Command(19,'',user or 0,token) end
+function I.ApplyRebinding(token,user) return I.Command(10,'',user or 0,token) end
+function I.CancelRebinding(token,user) return I.Command(11,'',user or 0,token) end
+function I.GetActionValue(id, user, fixed) return I.ReadAction(id, user or 0, fixed and 1 or 0) end
+function I.WasActionPressed(id, user, fixed) return (I.GetActionValue(id,user,fixed).flags & 2) ~= 0 end
+function I.WasActionReleased(id, user, fixed) return (I.GetActionValue(id,user,fixed).flags & 4) ~= 0 end
+function I.PushContext(id,user,offset) return I.Command(0,id,user or 0,offset or 0) end
+function I.PopContext(id,user) return I.Command(1,id,user or 0) end
+function I.EnableContext(id,user) return I.Command(2,id,user or 0) end
+function I.DisableContext(id,user) return I.Command(3,id,user or 0) end
+function I.RestoreBindingDefault(id,user) return I.Command(4,id,user or 0) end
+function I.ClearBinding(id,user) return I.Command(5,id,user or 0) end
+function I.SaveProfile(path,user) return I.Command(12,path,user or 0) end
+function I.LoadProfile(path,user) return I.Command(13,path,user or 0) end
+function I.BindAction(owner,id,phase,callback,user,fixed)
+    assert(type(owner)=='table' and type(callback)=='function')
+    local slots = rawget(owner,'__nullusInput') or {}
+    owner.__nullusInput = slots
+    local token = {id=id,phase=phase,callback=callback,user=user or 0,fixed=fixed or false,sequence=0}
+    while true do
+        local value=I.ReadAction(id,token.user,token.fixed and 3 or 2,token.sequence)
+        if (value.flags & 32)==0 then break end
+        token.sequence=value.sequence
+    end
+    function token:Dispose() self.callback=nil end
+    slots[#slots+1] = token
+    return token
+end
+function I._Resume(owner)
+    local slots=rawget(owner,'__nullusInput') or {}
+    for _,slot in ipairs(slots) do
+        if slot.callback then
+            while true do
+                local ok,value=pcall(I.ReadAction,slot.id,slot.user,slot.fixed and 3 or 2,slot.sequence)
+                if not ok or (value.flags & 32)==0 then break end
+                slot.sequence=value.sequence
+            end
+        end
+    end
+end
+function I._Dispatch(owner,fixed)
+    local slots = rawget(owner,'__nullusInput')
+    if not slots then return end
+    local count = #slots
+    for index=1,count do
+        local slot=slots[index]
+        if slot.callback and slot.fixed==fixed then
+            while slot.callback and rawget(owner,'__nullusInput')==slots and rawget(owner,'__nullusInputEnabled')~=false do
+                local value=I.ReadAction(slot.id,slot.user,fixed and 3 or 2,slot.sequence)
+                if (value.flags & 32)==0 then break end
+                slot.sequence=value.sequence
+                if value.phase==slot.phase then
+                    local ok,error=pcall(slot.callback,value)
+                    if not ok then print(error) end
+                end
+            end
+        end
+    end
+    for index=#slots,1,-1 do if not slots[index].callback then table.remove(slots,index) end end
+end
+)lua") != LUA_OK)
+    { const auto error = std::string(lua_tostring(m_state, -1)); lua_close(m_state); m_state = nullptr; return ScriptStatus::Error(ScriptStatusCode::RuntimeError, error); }
     m_lastPublishedTimeScale = ScriptEngineApi::GetTimeScale();
     if (m_luaPandaEnabled)
     {
@@ -1511,6 +1676,7 @@ ScriptStatus LuaScriptBackend::Initialize(const ScriptApiDatabase& api)
             return debugStatus;
         }
     }
+    m_pluginVm = std::shared_ptr<lua_State>(m_state,[](lua_State* state) { lua_close(state); });
     m_initialized = true;
     return ScriptStatus::Ok();
 #endif
@@ -1537,7 +1703,7 @@ void LuaScriptBackend::Shutdown()
             (void)assetId;
             ReleaseModule(artifact);
         }
-        lua_close(m_state);
+        m_pluginVm.reset();
         m_state = nullptr;
     }
 #endif
@@ -2164,8 +2330,8 @@ ScriptStatus LuaScriptBackend::InvokeLua(ScriptInstanceHandle instance, ScriptCa
     if (lua_istable(m_state, -1))
     {
         const auto* input = ScriptEngineApi::GetInputManager();
-        const auto mousePosition = input ? input->GetMousePosition() : NLS::Maths::Vector2{};
-        const auto mouseScroll = input ? input->GetWheelMovement() : NLS::Maths::Vector2{};
+        const auto mousePosition = ScriptEngineApi::ReadMousePosition();
+        const auto mouseScroll = ScriptEngineApi::ReadMouseScroll();
         PushVector3(m_state, {mousePosition.x, mousePosition.y, 0.0f});
         lua_setfield(m_state, -2, "mousePosition");
         PushVector2(m_state, mouseScroll);
@@ -2174,7 +2340,30 @@ ScriptStatus LuaScriptBackend::InvokeLua(ScriptInstanceHandle instance, ScriptCa
     lua_pop(m_state, 1);
     m_lastPublishedTimeScale = timeScale;
     lua_pop(m_state, 2);
+    lua_getglobal(m_state,"Nullus");lua_createtable(m_state,0,2);
+    lua_pushinteger(m_state,ScriptEngineApi::GetScreenWidth());lua_setfield(m_state,-2,"width");
+    lua_pushinteger(m_state,ScriptEngineApi::GetScreenHeight());lua_setfield(m_state,-2,"height");
+    lua_setfield(m_state,-2,"Screen");lua_pop(m_state,1);
     lua_rawgeti(m_state, LUA_REGISTRYINDEX, found->second.tableReference);
+    bool resumeInput = false;
+    if (callback == ScriptCallback::OnEnable)
+    {
+        lua_getfield(m_state, -1, "__nullusInputEnabled");
+        resumeInput = lua_isboolean(m_state, -1) && !lua_toboolean(m_state, -1); lua_pop(m_state, 1);
+    }
+    if (callback == ScriptCallback::OnEnable || callback == ScriptCallback::OnDisable)
+    { lua_pushboolean(m_state, callback == ScriptCallback::OnEnable); lua_setfield(m_state, -2, "__nullusInputEnabled"); }
+    if (callback == ScriptCallback::OnDestroy)
+    { lua_pushnil(m_state); lua_setfield(m_state, -2, "__nullusInput"); }
+    if (resumeInput || callback == ScriptCallback::Update || callback == ScriptCallback::FixedUpdate)
+    {
+        lua_getglobal(m_state, "Nullus"); lua_getfield(m_state, -1, "Input"); lua_getfield(m_state, -1, resumeInput ? "_Resume" : "_Dispatch");
+        lua_pushvalue(m_state, -4);
+        if (!resumeInput) lua_pushboolean(m_state, callback == ScriptCallback::FixedUpdate);
+        if (lua_pcall(m_state, resumeInput ? 1 : 2, 0, 0) != LUA_OK)
+        { const auto error = std::string(lua_tostring(m_state, -1)); lua_settop(m_state, 0); return ScriptStatus::Error(ScriptStatusCode::RuntimeError, error); }
+        lua_pop(m_state, 2);
+    }
     lua_getfield(m_state, -1, CallbackName(callback));
     if (lua_isnil(m_state, -1))
     {
@@ -2187,9 +2376,22 @@ ScriptStatus LuaScriptBackend::InvokeLua(ScriptInstanceHandle instance, ScriptCa
         return ScriptStatus::Error(ScriptStatusCode::RuntimeError, "Lua lifecycle member is not callable.");
     }
     lua_pushvalue(m_state, -2);
-    // All lifecycle methods use the same no-argument contract as C#; scripts
-    // read scaled and unscaled values from Nullus.Time.
-    if (lua_pcall(m_state, 1, 0, 0) != LUA_OK)
+    int arguments=1;
+    if(callback>=ScriptCallback::OnCollisionEnter&&callback<=ScriptCallback::OnTriggerExit)
+    {
+        const auto other=ScriptEngineApi::GetEventOther();
+        if(callback<=ScriptCallback::OnCollisionExit)
+        {
+            lua_createtable(m_state,0,2);PushNativeObject(m_state,other);lua_setfield(m_state,-2,"collider");
+            auto* component=dynamic_cast<NLS::Engine::Components::Component*>(NLS::Object::IDToPointerNoThreadCheck(other.GetInstanceId()));
+            if(component&&component->gameobject()){PushNativeObject(m_state,NativeObjectHandle::FromInstanceId(component->gameobject()->GetInstanceID()));lua_setfield(m_state,-2,"gameObject");}
+        }
+        else PushNativeObject(m_state,other);
+        ++arguments;
+    }
+    else if(callback==ScriptCallback::OnApplicationFocus||callback==ScriptCallback::OnApplicationPause)
+    {lua_pushboolean(m_state,ScriptEngineApi::GetEventBoolean());++arguments;}
+    if (lua_pcall(m_state, arguments, 0, 0) != LUA_OK)
     {
         const auto diagnostic = LuaError(m_state, found->second.asset, "Lua lifecycle callback failed.");
         m_lastDiagnostic = MakeLuaScriptError(found->second.asset, instance, diagnostic);
@@ -2231,6 +2433,7 @@ ScriptStatus LuaScriptBackend::Reload(const NLS::Core::Assets::AssetId& assetId,
             continue;
         state.asset = old->second.asset;
         lua_rawgeti(m_state, LUA_REGISTRYINDEX, state.tableReference);
+        lua_pushnil(m_state); lua_setfield(m_state, -2, "__nullusInput");
         if (lua_getmetatable(m_state, -1) != 0)
         {
             lua_rawgeti(m_state, LUA_REGISTRYINDEX, replacement.moduleReference);

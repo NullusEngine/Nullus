@@ -224,6 +224,8 @@ namespace NLS::Render::Context
         std::vector<CompletedReadbackTextureRecord> completedReadbackTextureHistory;
         // Only the render pipe mutates the request; publication polls this flag.
         std::atomic_bool hasPendingSwapchainResize{ false };
+        std::atomic_int previewPresentVsync{ -1 };
+        std::atomic_int effectivePresentVsync{ -1 };
         uint32_t pendingSwapchainWidth = 0u;
         uint32_t pendingSwapchainHeight = 0u;
         /**

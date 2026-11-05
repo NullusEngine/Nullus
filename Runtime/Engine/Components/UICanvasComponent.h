@@ -24,28 +24,28 @@ namespace NLS::Engine::Components
     public:
         GENERATED_BODY()
 
-        enum class RenderMode : uint8_t
+        ENUM(RenderMode) : uint8_t
         {
             ScreenOverlay,
             ScreenCamera,
             World
         };
 
-        enum class WorldRenderPath : uint8_t
+        ENUM(WorldRenderPath) : uint8_t
         {
             Auto,
             Direct,
             RenderTarget
         };
 
-        enum class UpdatePolicy : uint8_t
+        ENUM(UpdatePolicy) : uint8_t
         {
             EveryFrame,
             OnDemand,
             Manual
         };
 
-        enum class DpiScaleMode : uint8_t
+        ENUM(DpiScaleMode) : uint8_t
         {
             ConstantPixelSize,
             ScaleWithScreenSize,
@@ -97,10 +97,14 @@ namespace NLS::Engine::Components
             uint32_t viewportHeight,
             float dpiScale) const;
 
-        void SetRenderMode(RenderMode mode) { renderModeValue = mode; }
-        RenderMode GetRenderMode() const { return renderModeValue; }
-        void SetWorldRenderPath(WorldRenderPath path) { worldRenderPathValue = path; }
-        WorldRenderPath GetWorldRenderPath() const { return worldRenderPathValue; }
+        FUNCTION() void SetRenderMode(RenderMode mode) { renderModeValue = mode; }
+        FUNCTION() RenderMode GetRenderMode() const { return renderModeValue; }
+        FUNCTION(Scriptable)
+        void SetTargetDisplay(uint32_t value) { targetDisplay=std::min(value,7u); }
+        FUNCTION(Scriptable)
+        uint32_t GetTargetDisplay() const { return targetDisplay; }
+        FUNCTION() void SetWorldRenderPath(WorldRenderPath path) { worldRenderPathValue = path; }
+        FUNCTION() WorldRenderPath GetWorldRenderPath() const { return worldRenderPathValue; }
         [[nodiscard]] WorldRenderPath GetResolvedWorldRenderPath() const;
         void SetSortOrder(int32_t order) { sortOrderScript = order; }
         int32_t GetSortOrder() const { return sortOrderScript; }
@@ -114,28 +118,10 @@ namespace NLS::Engine::Components
         uint64_t GetCameraId() const { return cameraId; }
         void SetReferenceResolution(UI::UIVector2 resolution) { referenceResolution = resolution; }
         [[nodiscard]] UI::UIVector2 GetReferenceResolution() const { return referenceResolution; }
-        void SetUpdatePolicy(UpdatePolicy policy) { updatePolicy = policy; }
-        UpdatePolicy GetUpdatePolicy() const { return updatePolicy; }
-        FUNCTION()
-        uint32_t GetUpdatePolicyValue() const { return static_cast<uint32_t>(updatePolicy); }
-        FUNCTION()
-        void SetUpdatePolicyValue(uint32_t value)
-        {
-            updatePolicy = value <= static_cast<uint32_t>(UpdatePolicy::Manual)
-                ? static_cast<UpdatePolicy>(value)
-                : UpdatePolicy::EveryFrame;
-        }
-        void SetDpiScaleMode(DpiScaleMode mode) { dpiScaleMode = mode; }
-        [[nodiscard]] DpiScaleMode GetDpiScaleMode() const { return dpiScaleMode; }
-        FUNCTION()
-        uint32_t GetDpiScaleModeValue() const { return static_cast<uint32_t>(dpiScaleMode); }
-        FUNCTION()
-        void SetDpiScaleModeValue(uint32_t value)
-        {
-            dpiScaleMode = value <= static_cast<uint32_t>(DpiScaleMode::ConstantPhysicalSize)
-                ? static_cast<DpiScaleMode>(value)
-                : DpiScaleMode::ConstantPixelSize;
-        }
+        FUNCTION() void SetUpdatePolicy(UpdatePolicy policy) { updatePolicy = policy; }
+        FUNCTION() UpdatePolicy GetUpdatePolicy() const { return updatePolicy; }
+        FUNCTION() void SetDpiScaleMode(DpiScaleMode mode) { dpiScaleMode = mode; }
+        FUNCTION() DpiScaleMode GetDpiScaleMode() const { return dpiScaleMode; }
         FUNCTION(Scriptable)
         void SetDpiMatch(float match) { dpiMatch = std::clamp(match, 0.0f, 1.0f); }
         FUNCTION(Scriptable)
@@ -254,15 +240,15 @@ namespace NLS::Engine::Components
         std::shared_ptr<const UI::UIDocument> m_document;
         std::unique_ptr<UI::UIDocumentInstance> m_instance;
         UI::UIInputRouter m_inputRouter;
-        PROPERTY(DisplayName("Render Mode"), Getter(GetRenderModeValue), Setter(SetRenderModeValue))
+        PROPERTY(DisplayName("Render Mode"), Getter(GetRenderMode), Setter(SetRenderMode))
         RenderMode renderModeValue = RenderMode::ScreenOverlay;
-        PROPERTY(DisplayName("World Render Path"), Getter(GetWorldRenderPathValue), Setter(SetWorldRenderPathValue))
+        PROPERTY(DisplayName("Target Display (0-7)"), Getter(GetTargetDisplay), Setter(SetTargetDisplay))
+        uint32_t targetDisplay=0;
+        PROPERTY(DisplayName("World Render Path"), Getter(GetWorldRenderPath), Setter(SetWorldRenderPath))
         WorldRenderPath worldRenderPathValue = WorldRenderPath::Auto;
-        // These backing members deliberately expose portable Inspector types
-        // through the explicitly bound getter/setter pairs above.
-        PROPERTY(DisplayName("Update Policy"), Getter(GetUpdatePolicyValue), Setter(SetUpdatePolicyValue))
+        PROPERTY(DisplayName("Update Policy"), Getter(GetUpdatePolicy), Setter(SetUpdatePolicy))
         UpdatePolicy updatePolicy = UpdatePolicy::EveryFrame;
-        PROPERTY(DisplayName("DPI Scale Mode"), Getter(GetDpiScaleModeValue), Setter(SetDpiScaleModeValue))
+        PROPERTY(DisplayName("DPI Scale Mode"), Getter(GetDpiScaleMode), Setter(SetDpiScaleMode))
         DpiScaleMode dpiScaleMode = DpiScaleMode::ConstantPixelSize;
         PROPERTY(DisplayName("DPI Match"), Getter(GetDpiMatch), Setter(SetDpiMatch))
         float dpiMatch = 0.5f;

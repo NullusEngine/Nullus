@@ -1,4 +1,5 @@
 #include "UI/UIDocumentCanvasView.h"
+#include "Shortcuts/EditorInputActions.h"
 
 #include <algorithm>
 #include <cmath>
@@ -11,6 +12,8 @@
 
 namespace NLS::Editor::UIDocumentTools
 {
+    using Shortcuts::EditorInputAction;
+    using Shortcuts::GetEditorInputState;
     namespace
     {
         using Json = UIDocumentDesignerModel::Json;
@@ -396,13 +399,16 @@ namespace NLS::Editor::UIDocumentTools
         if (hovered)
         {
             auto& io = ImGui::GetIO();
-            if (io.MouseWheel != 0.0f)
+            const float zoom = GetEditorInputState(EditorInputAction::CanvasZoom).value.vector.y;
+            const float scrollX = GetEditorInputState(EditorInputAction::CanvasScrollX).value.vector.y;
+            const float scrollY = GetEditorInputState(EditorInputAction::CanvasScrollY).value.vector.y;
+            if (zoom != 0.0f || scrollX != 0.0f || scrollY != 0.0f)
             {
-                if (io.KeyCtrl)
+                if (zoom != 0.0f)
                 {
                     const float previousZoom = m_view.zoom;
                     const auto documentPoint = ScreenToDocument(io.MousePos);
-                    SetZoom(model, m_view.zoom * (io.MouseWheel > 0.0f ? 1.15f : 1.0f / 1.15f));
+                    SetZoom(model, m_view.zoom * (zoom > 0.0f ? 1.15f : 1.0f / 1.15f));
                     if (std::abs(previousZoom - m_view.zoom) > 0.0001f)
                     {
                         m_view.pan = {
@@ -411,13 +417,13 @@ namespace NLS::Editor::UIDocumentTools
                         };
                     }
                 }
-                else if (io.KeyShift)
+                else if (scrollX != 0.0f)
                 {
-                    m_view.pan.x += io.MouseWheel * 48.0f;
+                    m_view.pan.x += scrollX * 48.0f;
                 }
                 else
                 {
-                    m_view.pan.y += io.MouseWheel * 48.0f;
+                    m_view.pan.y += scrollY * 48.0f;
                 }
             }
         }
@@ -568,10 +574,8 @@ namespace NLS::Editor::UIDocumentTools
         // Middle-drag / Space+left-drag pans the view.
         if (m_interaction == Interaction::None && m_hovered)
         {
-            const bool spacePan =
-                ImGui::IsKeyDown(ImGuiKey_Space) &&
-                ImGui::IsMouseClicked(ImGuiMouseButton_Left);
-            if (ImGui::IsMouseClicked(ImGuiMouseButton_Middle) || spacePan)
+            const auto pan = GetEditorInputState(EditorInputAction::CanvasPan);
+            if (pan.pressed && pan.actuated)
             {
                 m_interaction = Interaction::Pan;
                 m_gesturePressMouse = io.MousePos;
@@ -581,8 +585,7 @@ namespace NLS::Editor::UIDocumentTools
 
         if (m_interaction == Interaction::Pan)
         {
-            if (ImGui::IsMouseDown(ImGuiMouseButton_Middle) ||
-                ImGui::IsMouseDown(ImGuiMouseButton_Left))
+            if (GetEditorInputState(EditorInputAction::CanvasPan).actuated)
             {
                 m_view.pan = Add(m_panStart, Subtract(io.MousePos, m_gesturePressMouse));
                 ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
@@ -681,9 +684,9 @@ namespace NLS::Editor::UIDocumentTools
                 if (hit != nullptr)
                 {
                     const auto guid = hit->GetNodeGuid().ToString();
-                    if (io.KeyCtrl)
+                    if (GetEditorInputState(EditorInputAction::CanvasToggleSelection).actuated)
                         model.ToggleSelection(guid);
-                    else if (io.KeyShift)
+                    else if (GetEditorInputState(EditorInputAction::CanvasAddSelection).actuated)
                         model.AddToSelection(guid);
                     else if (!IsSelected(model, guid))
                         model.SelectNode(guid);
@@ -699,15 +702,15 @@ namespace NLS::Editor::UIDocumentTools
                 }
                 else
                 {
-                    if (!io.KeyShift && !io.KeyCtrl)
+                    if (!GetEditorInputState(EditorInputAction::CanvasAddSelection).actuated && !GetEditorInputState(EditorInputAction::CanvasToggleSelection).actuated)
                         model.ClearSelection();
                     m_pressOnEmpty = true;
                     m_gestureGuid.clear();
                     m_gesturePressMouse = io.MousePos;
                     m_marqueeStart = io.MousePos;
                     m_marqueeBaseSelection = model.GetSelectedNodes();
-                    m_marqueeAdd = io.KeyShift;
-                    m_marqueeToggle = io.KeyCtrl;
+                    m_marqueeAdd = GetEditorInputState(EditorInputAction::CanvasAddSelection).actuated;
+                    m_marqueeToggle = GetEditorInputState(EditorInputAction::CanvasToggleSelection).actuated;
                     m_interaction = Interaction::PressPending;
                 }
             }
@@ -825,7 +828,7 @@ namespace NLS::Editor::UIDocumentTools
         Vec2 delta { screenDelta.x / m_view.zoom, screenDelta.y / m_view.zoom };
 
         m_activeSnap = {};
-        if (options.snapToGuides && !io.KeyAlt)
+        if (options.snapToGuides && !GetEditorInputState(EditorInputAction::CanvasSnapBypass).actuated)
         {
             std::vector<Rect> targets;
             CollectSnapTargets(model, m_gestureGuid, targets);
@@ -840,7 +843,7 @@ namespace NLS::Editor::UIDocumentTools
             delta.y += m_activeSnap.deltaY;
         }
 
-        if (options.snapToGrid && !io.KeyAlt)
+        if (options.snapToGrid && !GetEditorInputState(EditorInputAction::CanvasSnapBypass).actuated)
         {
             const float grid = std::max(1.0f, options.gridSize);
             if (!m_activeSnap.hasVerticalGuide)
@@ -890,7 +893,7 @@ namespace NLS::Editor::UIDocumentTools
 
         const ImVec2 screenDelta = Subtract(io.MousePos, m_gesturePressMouse);
         const Vec2 delta { screenDelta.x / m_view.zoom, screenDelta.y / m_view.zoom };
-        const float grid = (options.snapToGrid && !io.KeyAlt)
+        const float grid = (options.snapToGrid && !GetEditorInputState(EditorInputAction::CanvasSnapBypass).actuated)
             ? std::max(1.0f, options.gridSize)
             : 0.0f;
         const auto result = UIDocumentCanvasGeometry::Resize(
@@ -898,7 +901,7 @@ namespace NLS::Editor::UIDocumentTools
             m_gestureStartRect,
             m_gestureHandle,
             delta,
-            io.KeyShift,
+            GetEditorInputState(EditorInputAction::CanvasConstrain).actuated,
             grid);
         if (!result.changed)
             return;

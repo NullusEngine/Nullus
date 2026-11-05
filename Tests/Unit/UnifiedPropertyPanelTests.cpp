@@ -1,10 +1,12 @@
 #include <Reflection/Enum.h>
+#include <Reflection/Field.h>
 #include <gtest/gtest.h>
 #include "Properties/PropertyPanel.h"
 #include "Inspector/ReflectedEditHost.h"
 #include "Inspector/InspectorView.h"
 #include "Properties/PropertyDrawerRegistry.h"
 #include "Properties/CurveValue.h"
+#include "Shortcuts/EditorShortcutBinding.h"
 #include <Serialize/SerializedSpecialTypes.h>
 #include <Serialize/ExternalReflection.h>
 #include <ServiceLocator.h>
@@ -83,6 +85,75 @@ Serialization::SerializedTargetSet MultiTargets(size_t count)
     return targets;
 }
 } // namespace
+TEST(UnifiedPropertyPanel, NarrowIntegerTypesUseNativeByteStreams)
+{
+    const auto verify = [](const auto value)
+    {
+        using Value = decltype(value);
+        const auto type = NLS_TYPEOF(Value);
+        ASSERT_TRUE(type.IsValid());
+        const auto bytes = Serialization::SerializedValue::Capture(meta::Variant(value));
+        ASSERT_TRUE(bytes);
+        const auto restored = bytes->Resolve(type);
+        ASSERT_TRUE(restored);
+        EXPECT_EQ(restored->GetValue<Value>(), value);
+    };
+    verify(int8_t{-128});
+    verify(uint8_t{255});
+    verify(int16_t{-32768});
+    verify(uint16_t{65535});
+}
+
+TEST(UnifiedPropertyPanel, NativeShortcutReflectionIncludesRealKeysAndRoundTrips)
+{
+    using Windowing::Inputs::EKey;
+    using Shortcuts::ShortcutBinding;
+    const auto keys = NLS_TYPEOF(EKey).GetEnum();
+    ASSERT_TRUE(keys);
+    EXPECT_GT(keys.GetKeys().size(), 100u);
+    EXPECT_EQ(keys.GetValue("KEY_K").GetValue<EKey>(), EKey::KEY_K);
+    const auto keyField = NLS_TYPEOF(ShortcutBinding).GetField("primaryKey");
+    ASSERT_TRUE(keyField.IsValid());
+    EXPECT_EQ(keyField.GetType(), NLS_TYPEOF(EKey));
+    const auto modifiers = NLS_TYPEOF(ShortcutBinding).GetField("modifiers");
+    ASSERT_TRUE(modifiers.IsValid());
+    EXPECT_EQ(modifiers.GetType(), NLS_TYPEOF(uint8_t));
+    const auto binding = ShortcutBinding::FromKey(EKey::KEY_K, Shortcuts::EShortcutModifier::Ctrl);
+    const auto bytes = Serialization::SerializedValue::Capture(meta::Variant(binding));
+    ASSERT_TRUE(bytes);
+    const auto restored = bytes->Resolve(NLS_TYPEOF(ShortcutBinding));
+    ASSERT_TRUE(restored);
+    EXPECT_EQ(restored->GetValue<ShortcutBinding>(), binding);
+}
+
+TEST(UnifiedPropertyPanel, NativeCurveReflectionPreservesArrayKeysAndTangents)
+{
+    using Properties::CurveValue;
+    using Properties::CurveValueKey;
+    CurveValue curve;
+    curve.channels = 4;
+    CurveValueKey key;
+    key.time = .75;
+    key.value = {1, 2, 3, 4};
+    key.inTangent = {-.25f, .5f, .75f, 1};
+    key.outTangent = {.5f, -.75f, 1, 2};
+    key.interpolation = 2;
+    curve.keys.push_back(key);
+    EXPECT_EQ(NLS_TYPEOF(CurveValueKey).GetFields().size(), 5u);
+    const auto bytes = Serialization::SerializedValue::Capture(meta::Variant(curve));
+    ASSERT_TRUE(bytes);
+    const auto restored = bytes->Resolve(NLS_TYPEOF(CurveValue));
+    ASSERT_TRUE(restored);
+    const auto result = restored->GetValue<CurveValue>();
+    EXPECT_EQ(result.channels, 4u);
+    ASSERT_EQ(result.keys.size(), 1u);
+    EXPECT_DOUBLE_EQ(result.keys[0].time, key.time);
+    EXPECT_EQ(result.keys[0].value, key.value);
+    EXPECT_EQ(result.keys[0].inTangent, key.inTangent);
+    EXPECT_EQ(result.keys[0].outTangent, key.outTangent);
+    EXPECT_EQ(result.keys[0].interpolation, key.interpolation);
+}
+
 TEST(UnifiedPropertyPanel, RegisteredControlWorksForObjectAndValueThenUnregisters)
 {
     PanelGui gui;

@@ -1,5 +1,9 @@
 #include "CookTypes.h"
+#include "ECSCooker.h"
+#include <Engine/ECS/ECSAssets.h>
+#include <Engine/Assets/PhysicsAssetCompiler.h>
 #include <AnimationCompiler/AnimationSourceCompiler.h>
+#include <Core/Inputs/InputSerialization.h>
 
 #include "ModelCooker.h"
 #include "ShaderCooker.h"
@@ -15,7 +19,11 @@
 #include "Engine/Serialize/ObjectGraphReader.h"
 #include "Platform/Process/Process.h"
 #include "Rendering/Assets/TextureArtifact.h"
+#include "Assets/SpriteArtifact.h"
+#include "Assets/SpriteSheet.h"
 #include "Rendering/Assets/DistanceFieldBuilder.h"
+#include "Rendering/Assets/DistanceFieldBuildService.h"
+#include "Rendering/Assets/DistanceFieldArtifact.h"
 #include "Rendering/Assets/TextureBuildSettings.h"
 #include "Rendering/Assets/TextureMipGenerator.h"
 #include "Rendering/Resources/MaterialSerialization.h"
@@ -165,6 +173,20 @@ AssetTypeInfo MakeTypeInfo(const AssetType type, const std::filesystem::path& so
     }
     switch (type)
     {
+    case AssetType::PhysicsMaterial:
+    case AssetType::CollisionMesh:
+    case AssetType::PhysicsShape:
+        info.artifactType=type==AssetType::PhysicsMaterial?ArtifactType::PhysicsMaterial:
+            type==AssetType::CollisionMesh?ArtifactType::CollisionMesh:ArtifactType::PhysicsShape;
+        info.loaderId=Core::Assets::ToString(type);
+        info.importerId=info.loaderId; info.subAssetKey=info.loaderId+":main"; info.supported=true;
+        break;
+    case AssetType::ECSScene:
+    case AssetType::ECSPrefab:
+        info.artifactType = type == AssetType::ECSScene ? ArtifactType::ECSScene : ArtifactType::ECSPrefab;
+        info.loaderId = type == AssetType::ECSScene ? "ecs-scene" : "ecs-prefab";
+        info.importerId = info.loaderId; info.subAssetKey = info.loaderId + ":main"; info.supported = true;
+        break;
     case AssetType::Texture:
         info.artifactType = ArtifactType::Texture;
         info.loaderId = "texture";
@@ -205,6 +227,14 @@ AssetTypeInfo MakeTypeInfo(const AssetType type, const std::filesystem::path& so
         info.loaderId = "ui-document";
         info.importerId = "ui-document";
         info.subAssetKey = "ui-document:" + stem;
+        info.supported = true;
+        break;
+    case AssetType::InputActions:
+    case AssetType::InputProfile:
+        info.artifactType = type == AssetType::InputActions ? ArtifactType::InputActions : ArtifactType::InputProfile;
+        info.loaderId = type == AssetType::InputActions ? "input-actions" : "input-profile";
+        info.importerId = info.loaderId;
+        info.subAssetKey = info.loaderId + ":" + stem;
         info.supported = true;
         break;
     case AssetType::UIStyleSheet:
@@ -253,34 +283,49 @@ const ArtifactDatabaseRecord* FindRecordForReference(
     return primary;
 }
 
-constexpr const char* kNullusCookPostprocessorVersion = "3";
+// Version 4 retains the exact logical sub-resource in Prefab dependencies.
+constexpr const char* kNullusCookPostprocessorVersion = "4";
+std::string DistanceFieldCookVersion(const AssetMeta& meta,const std::filesystem::path& projectRoot)
+{
+    const auto settings=NLS::Render::DistanceField::ReadDistanceFieldBuildSettings(meta.settings,projectRoot);
+    return NLS::Render::DistanceField::ComputeDistanceFieldBuildIdentity("cook-settings",settings)+":"+std::to_string(settings.Enabled());
+}
 
 bool HasUpToDateCook(
     const ArtifactDatabase& database,
     const std::filesystem::path& projectRoot,
+    const std::filesystem::path& artifactRoot,
     const AssetId& assetId,
     const std::string& targetPlatform,
     const std::string& sourceRelative,
     const std::string& sourceHash,
     const std::string& metaRelative,
     const std::string& metaHash,
-    const uint32_t maxTextureSize)
+    const uint32_t maxTextureSize,
+    const uint32_t importerVersion,
+    const AssetType sourceType,const AssetMeta& sourceMeta,bool ignoreDistanceFields=false)
 {
     const auto manifest = database.BuildManifestForSource(assetId, targetPlatform);
     if (!manifest.has_value())
         return false;
+    if (manifest->importerVersion != importerVersion) return false;
+    if(!HasCurrentSpriteCompilerDependency(*manifest,sourceMeta))return false;
 
     bool sourceMatches = false;
     bool metaMatches = false;
     bool targetMatches = false;
     bool postprocessorMatches = false;
     bool textureCapMatches = false;
+    bool physicsMatches = sourceType!=AssetType::PhysicsMaterial && sourceType!=AssetType::CollisionMesh && sourceType!=AssetType::PhysicsShape;
     const bool isModel = NLS::Core::Assets::InferAssetType(sourceRelative) == AssetType::ModelScene;
-    bool distanceFieldMatches = !isModel;
-    const auto distanceFieldVersion = std::to_string(NLS::Render::DistanceField::BuilderVersion) + ":" +
-        (NLS::Render::DistanceField::ReadDistanceFieldBuildSettings({}, projectRoot).projectEnabled ? "1" : "0");
+    bool distanceFieldMatches = !isModel || ignoreDistanceFields;
+    const auto distanceFieldVersion = isModel?DistanceFieldCookVersion(sourceMeta,projectRoot):std::string{};
     for (const auto& dependency : manifest->dependencies)
     {
+        if(isModel && dependency.kind==AssetDependencyKind::PostprocessorVersion && dependency.value=="nullus-model-import-settings" &&
+            dependency.hashOrVersion==NLS::Core::Assets::ComputeModelImportSettingsFingerprint(sourceMeta))metaMatches=true;
+        if (dependency.kind==AssetDependencyKind::PostprocessorVersion && dependency.value=="nullus-physics-cooking" &&
+            dependency.hashOrVersion==Engine::Assets::PhysicsCookingFingerprint()) physicsMatches=true;
         if (dependency.kind == AssetDependencyKind::PostprocessorVersion &&
             dependency.value == "nullus-cook-distance-field" && dependency.hashOrVersion == distanceFieldVersion)
             distanceFieldMatches = true;
@@ -288,7 +333,7 @@ bool HasUpToDateCook(
         {
             if (dependency.value == sourceRelative && dependency.hashOrVersion == sourceHash)
                 sourceMatches = true;
-            if (dependency.value == metaRelative && dependency.hashOrVersion == metaHash)
+            if (!isModel && dependency.value == metaRelative && dependency.hashOrVersion == metaHash)
                 metaMatches = true;
         }
         if (dependency.kind == AssetDependencyKind::BuildTarget &&
@@ -310,9 +355,34 @@ bool HasUpToDateCook(
         }
     }
     if (!sourceMatches || !metaMatches || !targetMatches || !postprocessorMatches ||
-        !textureCapMatches || !distanceFieldMatches)
+        !textureCapMatches || !distanceFieldMatches || !physicsMatches)
     {
         return false;
+    }
+
+    if(isModel && !ignoreDistanceFields && NLS::Render::DistanceField::ReadDistanceFieldBuildSettings(sourceMeta.settings,projectRoot).Enabled())
+    {
+        namespace df=NLS::Render::DistanceField;
+        const auto resolve=[&](const auto& artifact)
+        {
+            auto path=std::filesystem::path(artifact.artifactPath);if(path.is_absolute())return path;
+            return path.generic_string().starts_with("Library/Artifacts/")?artifactRoot/path.lexically_relative("Library/Artifacts"):projectRoot/path;
+        };
+        const auto* input=manifest->FindSubAsset(df::DistanceFieldSourceKey);
+        const auto description=input?df::DeserializeDistanceFieldSource(ReadAllBytes(resolve(*input))):std::nullopt;
+        if(!description)return false;
+        const auto complete=[&](const std::string& key)
+        {
+            for(uint32_t mip=0;mip<3;++mip)
+            {
+                const auto* entry=manifest->FindSubAsset(df::DistanceFieldSubAssetKey(key,mip==2?df::MipCount:mip));
+                if(!entry)return false;std::error_code error;
+                if(!std::filesystem::is_regular_file(resolve(*entry),error) || std::filesystem::file_size(resolve(*entry),error)<=NLS::Core::Assets::NativeArtifactContainerHeaderSize())return false;
+            }
+            return true;
+        };
+        for(const auto& mesh:description->meshes)if(mesh.participates && !complete(mesh.key))return false;
+        for(const auto& group:description->groups)if(!complete(group.key))return false;
     }
 
     for (const auto* record : database.FindBySource(assetId))
@@ -327,12 +397,40 @@ bool HasUpToDateCook(
             continue;
         auto artifactPath = std::filesystem::path(record->artifactPath);
         if (artifactPath.is_relative())
-            artifactPath = projectRoot / artifactPath;
+        {
+            const auto portable = artifactPath.generic_string();
+            artifactPath = portable.rfind("Library/Artifacts/",0) == 0
+                ? artifactRoot / artifactPath.lexically_relative("Library/Artifacts") : projectRoot / artifactPath;
+        }
         std::error_code error;
         if (std::filesystem::is_regular_file(artifactPath, error))
             return true;
     }
     return false;
+}
+
+bool CanCookModelDistanceFields(const CookOptions& options,const ArtifactDatabase& database,const ArtifactManifest& previous,
+    const AssetMeta& meta,const std::string& sourceRelative,const std::string& sourceHash,const std::string& metaRelative,
+    const std::string& metaHash,uint32_t importerVersion)
+{
+    if(!previous.FindSubAsset(NLS::Render::DistanceField::DistanceFieldSourceKey) ||
+        !HasUpToDateCook(database,options.projectRoot,options.artifactRoot,meta.id,options.target.artifactPlatform,
+            sourceRelative,sourceHash,metaRelative,metaHash,options.maxTextureSize,importerVersion,AssetType::ModelScene,meta,true))return false;
+    for(const auto& dependency:previous.dependencies)
+        if(dependency.kind==AssetDependencyKind::SourceFileHash && dependency.value!=sourceRelative && dependency.value!=metaRelative)
+        {
+            const auto path=std::filesystem::path(dependency.value);
+            if(HashFile(path.is_absolute()?path:options.projectRoot/path)!=dependency.hashOrVersion)return false;
+        }
+    for(const auto& artifact:previous.subAssets)
+    {
+        if(artifact.artifactType==ArtifactType::MeshDistanceField)continue;
+        auto path=std::filesystem::path(artifact.artifactPath);
+        if(path.is_relative())path=path.generic_string().starts_with("Library/Artifacts/")?
+            options.artifactRoot/path.lexically_relative("Library/Artifacts"):options.projectRoot/path;
+        std::error_code error;if(!std::filesystem::is_regular_file(path,error))return false;
+    }
+    return true;
 }
 
 void AddCommonDependencies(
@@ -402,7 +500,7 @@ bool CookTexture(
     const AssetTypeInfo& typeInfo,
     std::vector<uint8_t>& payload,
     std::vector<AssetDependencyRecord>& dependencies,
-    std::string& error)
+    std::string& error, uint32_t& sourceWidth, uint32_t& sourceHeight)
 {
     (void)dependencies;
     const auto sourceBytes = ReadAllBytes(source);
@@ -427,7 +525,7 @@ bool CookTexture(
         ? NLS::Render::Assets::TextureArtifactColorSpace::Srgb
         : NLS::Render::Assets::TextureArtifactColorSpace::Linear;
     settings.format = NLS::Render::RHI::TextureFormat::RGBA8;
-    settings.mipmapEnabled = ParseBoolSetting(meta.settings, "TEXTURE_MIPMAP_ENABLED", true);
+    settings.mipmapEnabled = ParseBoolSetting(meta.settings, "TEXTURE_MIPMAP_ENABLED", !IsSpriteTexture(meta));
 
     const uint32_t maxTextureSize = options.maxTextureSize != 0u
         ? options.maxTextureSize
@@ -445,6 +543,8 @@ bool CookTexture(
         error = "texture could not be decoded by the cook decoders (png/jpg/tga/bmp/hdr)";
         return false;
     }
+    sourceWidth = texture->width;
+    sourceHeight = texture->height;
 
     if (maxTextureSize > 0u &&
         texture->format == NLS::Render::RHI::TextureFormat::RGBA8 &&
@@ -506,7 +606,7 @@ bool CookTexture(
         }
     }
     bool compressed = false;
-    if (auto encoder = NLS::Cook::CreateDirectXTexCookEncoder(); encoder != nullptr)
+    if (auto encoder = NLS::Cook::CreateDirectXTexCookEncoder(); encoder != nullptr && !IsSpriteTexture(meta))
     {
         NLS::Render::Assets::TextureBuildSettings buildSettings;
         buildSettings.sourceAssetPath = source.generic_string();
@@ -756,7 +856,27 @@ bool CookPrefab(
 
     for (const auto& reference : NLS::Engine::Assets::CollectPrefabAssetReferences(*document))
     {
-        const auto* record = FindRecordForReference(database, reference.guid, options.target.artifactPlatform);
+        const auto key = NLS::Engine::Assets::ExtractPrefabAssetReferenceSubAssetKeyHint(reference.filePath);
+        const ArtifactDatabaseRecord* record = nullptr;
+        for (const auto* candidate : database.FindBySource(AssetId(reference.guid)))
+        {
+            if (!candidate || candidate->targetPlatform != options.target.artifactPlatform ||
+                candidate->status != ArtifactRecordStatus::UpToDate || candidate->artifactPath.empty())
+                continue;
+            if ((!key.empty() && candidate->subAssetKey == key) ||
+                (key.empty() && NLS::Engine::Serialize::MakeLocalIdentifierInFile(reference.guid, candidate->subAssetKey) == reference.localIdentifierInFile))
+            {
+                record = candidate;
+                break;
+            }
+        }
+        if (!record && key.empty())
+            record = FindRecordForReference(database, reference.guid, options.target.artifactPlatform);
+        if (!record && !key.empty())
+        {
+            error = "prefab dependency was not cooked: " + reference.guid.ToString() + "#" + key;
+            return false;
+        }
         if (record == nullptr)
             continue;
         dependencies.push_back({
@@ -821,6 +941,9 @@ std::string CookSummary::FormatSummary() const
 
 bool AssetCooker::IsSupportedAssetType(const AssetType type)
 {
+    if(type==AssetType::PhysicsMaterial || type==AssetType::CollisionMesh || type==AssetType::PhysicsShape) return true;
+    if (type == AssetType::ECSScene || type == AssetType::ECSPrefab) return true;
+    if (type == AssetType::InputActions || type == AssetType::InputProfile) return true;
     if(type==AssetType::AnimationClip||type==AssetType::AnimationGraph||type==AssetType::BlendSpace||type==AssetType::BoneMask)return true;
     switch (type)
     {
@@ -961,6 +1084,8 @@ CookSummary AssetCooker::CookAssets(
             return cookRank(lhs) < cookRank(rhs);
         });
 
+    if (!Detail::OrderECSInputs(ordered, summary, options)) return summary;
+
     for (const auto& source : ordered)
     {
         if (IsCancelled(options))
@@ -1028,6 +1153,7 @@ CookSummary AssetCooker::CookAssets(
         }
 
         const auto typeInfo = MakeTypeInfo(assetType, source);
+        const auto importerVersion = (std::max)(meta->importerVersion,GetCurrentImporterVersion(assetType));
         if (!typeInfo.supported || typeInfo.artifactType == ArtifactType::Unknown)
         {
             summary.AddDiagnostic(
@@ -1043,8 +1169,23 @@ CookSummary AssetCooker::CookAssets(
 
         const auto sourceRelative = NormalizeRelative(options.projectRoot, source).generic_string();
         const auto metaRelative = NormalizeRelative(options.projectRoot, metaPath).generic_string();
-        const auto sourceHash = HashFile(source);
+        const bool isPhysics=assetType==AssetType::PhysicsMaterial || assetType==AssetType::CollisionMesh || assetType==AssetType::PhysicsShape;
+        if(assetType==AssetType::CollisionMesh && !Engine::Assets::IsPhysicsCookingTargetSupported(options.target.artifactPlatform,options.target.architecture))
+        {
+            const std::string message="Collision cooking requires the requested native platform and CPU architecture; cook on the matching host.";
+            summary.AddDiagnostic(CookSeverity::Error,"cook-physics-target-unsupported",message,source.string());
+            outcome.error=message; ++summary.failed; summary.assets.push_back(std::move(outcome)); continue;
+        }
+        std::vector<uint8_t> physicsSource;
+        std::string physicsReadError;
+        if(isPhysics && !Engine::Assets::CapturePhysicsAssetSource(source,physicsSource,physicsReadError))
+        {
+            summary.AddDiagnostic(CookSeverity::Error,"cook-physics-source-unreadable",physicsReadError,source.string());
+            outcome.error=physicsReadError; ++summary.failed; summary.assets.push_back(std::move(outcome)); continue;
+        }
+        const auto sourceHash = isPhysics ? HashBytes(physicsSource) : HashFile(source);
         const auto metaHash = HashFile(metaPath);
+        const auto expectedDistanceFieldVersion=assetType==AssetType::ModelScene?DistanceFieldCookVersion(*meta,options.projectRoot):std::string{};
         if (sourceHash.empty() || metaHash.empty())
         {
             summary.AddDiagnostic(
@@ -1058,17 +1199,23 @@ CookSummary AssetCooker::CookAssets(
             continue;
         }
 
-        if (!options.force &&
+        const bool isECS = assetType == AssetType::ECSScene || assetType == AssetType::ECSPrefab;
+        const auto ecsManifest = isECS ? database.BuildManifestForSource(meta->id, options.target.artifactPlatform) : std::optional<ArtifactManifest>{};
+        if (!options.force && (!isECS || (ecsManifest && Engine::ECSIntegration::AreECSAssetResourcesCurrent(
+                *ecsManifest, database, options.target.artifactPlatform, options.projectRoot))) &&
             HasUpToDateCook(
                 database,
                 options.projectRoot,
+                artifactRoot,
                 meta->id,
                 options.target.artifactPlatform,
                 sourceRelative,
                 sourceHash,
                 metaRelative,
                 metaHash,
-                options.maxTextureSize))
+                options.maxTextureSize,
+                importerVersion,
+                assetType,*meta))
         {
             outcome.succeeded = true;
             outcome.skipped = true;
@@ -1088,20 +1235,53 @@ CookSummary AssetCooker::CookAssets(
             metaHash,
             typeInfo,
             options.target,
-            meta->importerVersion == 0u ? 1u : meta->importerVersion,
+            importerVersion,
             options.maxTextureSize);
 
         std::string cookError;
         if (assetType == AssetType::ModelScene)
-            dependencies.push_back({AssetDependencyKind::PostprocessorVersion, "nullus-cook-distance-field",
-                std::to_string(NLS::Render::DistanceField::BuilderVersion) + ":" +
-                (NLS::Render::DistanceField::ReadDistanceFieldBuildSettings(meta->settings, options.projectRoot).projectEnabled ? "1" : "0")});
+        {
+            std::erase_if(dependencies,[&](const auto& d){return d.kind==AssetDependencyKind::SourceFileHash && d.value==metaRelative;});
+            dependencies.push_back({AssetDependencyKind::PostprocessorVersion,"nullus-model-import-settings",
+                NLS::Core::Assets::ComputeModelImportSettingsFingerprint(*meta)});
+        }
         bool cooked = false;
+        bool incrementalModel=false;
+        std::vector<std::string> modelRemovals;
         auto primarySubAssetKey = typeInfo.subAssetKey;
+        uint32_t spriteSourceWidth = 0, spriteSourceHeight = 0;
         switch (assetType)
         {
+        case AssetType::PhysicsMaterial:
+        case AssetType::CollisionMesh:
+        case AssetType::PhysicsShape:
+        {
+            ArtifactPayload compiled;
+            cooked=Engine::Assets::CompilePhysicsAsset(assetType,
+                std::string_view(reinterpret_cast<const char*>(physicsSource.data()),physicsSource.size()),options.target.artifactPlatform,compiled,cookError);
+            if(cooked)
+            {
+                payload=std::move(compiled.payload);
+                dependencies.insert(dependencies.end(),compiled.dependencies.begin(),compiled.dependencies.end());
+            }
+            break;
+        }
+        case AssetType::ECSScene:
+        case AssetType::ECSPrefab:
+            try
+            {
+                auto compiled = Engine::ECSIntegration::CompileECSAsset(ReadAllText(source),
+                    assetType == AssetType::ECSScene ? ECS::DocumentKind::Scene : ECS::DocumentKind::Prefab,
+                    database, options.target.artifactPlatform, options.projectRoot);
+                payload = std::move(compiled.payload);
+                dependencies.insert(dependencies.end(), compiled.dependencies.begin(), compiled.dependencies.end());
+                cooked = true;
+            }
+            catch (const std::exception& error) { cookError = error.what(); }
+            break;
         case AssetType::Texture:
-            cooked = CookTexture(options, *meta, source, typeInfo, payload, dependencies, cookError);
+            cooked = CookTexture(options, *meta, source, typeInfo, payload, dependencies, cookError,
+                spriteSourceWidth, spriteSourceHeight);
             break;
         case AssetType::Prefab:
             cooked = CookPrefab(options, database, *meta, source, payload, dependencies, cookError);
@@ -1151,13 +1331,17 @@ CookSummary AssetCooker::CookAssets(
         case AssetType::ModelScene:
         {
             NLS::Cook::Detail::ModelCookOutput modelOutput;
-            cooked = NLS::Cook::Detail::CookModelAsset(
-                options,
-                source,
-                *meta,
-                database,
-                modelOutput,
-                cookError);
+            const auto previous=database.BuildManifestForSource(meta->id,options.target.artifactPlatform);
+            if(!options.force && previous && CanCookModelDistanceFields(options,database,*previous,*meta,sourceRelative,sourceHash,metaRelative,metaHash,importerVersion))
+            {
+                cooked=NLS::Cook::Detail::CookModelDistanceFields(options,*meta,*previous,modelOutput,cookError);
+                incrementalModel=true;modelRemovals=std::move(modelOutput.removedSubAssets);
+                modelOutput.dependencies=previous->dependencies;
+                std::erase_if(modelOutput.dependencies,[&](const auto& d)
+                {return (d.kind==AssetDependencyKind::PostprocessorVersion && d.value=="nullus-cook-distance-field") ||
+                    std::any_of(dependencies.begin(),dependencies.end(),[&](const auto& current){return current.kind==d.kind && current.value==d.value;});});
+            }
+            else cooked = NLS::Cook::Detail::CookModelAsset(options,source,*meta,database,modelOutput,cookError);
             if (cooked)
             {
                 payloads = std::move(modelOutput.payloads);
@@ -1176,6 +1360,27 @@ CookSummary AssetCooker::CookAssets(
                 if (!modelOutput.primarySubAssetKey.empty())
                     primarySubAssetKey = modelOutput.primarySubAssetKey;
             }
+            break;
+        }
+        case AssetType::InputActions:
+        case AssetType::InputProfile:
+        {
+            std::vector<std::string> diagnostics;
+            std::string canonical;
+            if (assetType == AssetType::InputActions)
+            {
+                Input::InputDefinition definition;
+                cooked = Core::Inputs::LoadInputDefinition(source, definition, diagnostics);
+                if (cooked) canonical = Core::Inputs::SerializeInputDefinition(definition);
+            }
+            else
+            {
+                Input::InputProfile profile;
+                cooked = Core::Inputs::LoadInputProfile(source, profile, diagnostics);
+                if (cooked) canonical = Core::Inputs::SerializeInputProfile(profile);
+            }
+            if (cooked) payload.assign(canonical.begin(), canonical.end());
+            else cookError = diagnostics.empty() ? "Invalid input resource" : diagnostics.front();
             break;
         }
         case AssetType::UIDocument:
@@ -1222,20 +1427,51 @@ CookSummary AssetCooker::CookAssets(
         ArtifactWriteRequest request;
         request.sourceAssetId = meta->id;
         request.importerId = meta->importerId.empty() ? typeInfo.importerId : meta->importerId;
-        request.importerVersion = meta->importerVersion == 0u ? 1u : meta->importerVersion;
+        request.importerVersion = importerVersion;
         request.targetPlatform = options.target.artifactPlatform;
         request.primarySubAssetKey = primarySubAssetKey;
         request.dependencies = dependencies;
         request.artifacts = std::move(payloads);
+        if (assetType == AssetType::Texture && !AppendSpriteArtifacts(request, *meta,
+            spriteSourceWidth, spriteSourceHeight, primarySubAssetKey, StemOf(source), cookError))
+        {
+            summary.AddDiagnostic(CookSeverity::Error, "cook-sprite-invalid", cookError, source.string());
+            outcome.error = cookError;
+            summary.failed += 1u;
+            summary.assets.push_back(std::move(outcome));
+            continue;
+        }
 
+        struct PhysicsPublicationGuard final : NLS::Core::Assets::IArtifactWriteCancellation
+        {
+            std::function<bool()> invalid;
+            bool IsCancellationRequested() const override { return invalid(); }
+        } physicsGuard;
+        physicsGuard.invalid=[&]
+        {
+            if(IsCancelled(options)) return true;
+            if(incrementalModel)
+            {
+                const auto current=AssetMeta::Load(metaPath);
+                return !current || HashFile(source)!=sourceHash || HashFile(metaPath)!=metaHash ||
+                    DistanceFieldCookVersion(*current,options.projectRoot)!=expectedDistanceFieldVersion;
+            }
+            std::vector<uint8_t> current; std::string readError;
+            return !Engine::Assets::CapturePhysicsAssetSource(source,current,readError) || HashBytes(current)!=sourceHash || HashFile(metaPath)!=metaHash;
+        };
+        if((isPhysics || incrementalModel) && physicsGuard.IsCancellationRequested())
+        {
+            const std::string message="Physics source/meta revision changed or cooking was cancelled; previous artifacts are retained.";
+            summary.AddDiagnostic(CookSeverity::Error,"cook-physics-stale-result",message,source.string());
+            outcome.error=message; ++summary.failed; summary.assets.push_back(std::move(outcome)); continue;
+        }
         const auto previous = database.BuildManifestForSource(meta->id, options.target.artifactPlatform);
         ArtifactWriter writer(stagingRoot / meta->id.ToString(), artifactRoot);
-        const auto writeResult = writer.WriteAndCommit(
-            request,
-            previous.has_value() ? &*previous : nullptr,
-            nullptr);
+        auto writeResult = incrementalModel && previous?
+            writer.WriteIncrementalAndCommit(request,*previous,modelRemovals,&physicsGuard):
+            writer.WriteAndCommit(request,previous.has_value()?&*previous:nullptr,isPhysics?&physicsGuard:nullptr);
 
-        if (!writeResult.committed || !writeResult.diagnostics.empty())
+        if (!writeResult.committed || !writeResult.diagnostics.empty() || ((isPhysics || incrementalModel) && physicsGuard.IsCancellationRequested()))
         {
             std::string message = "Artifact write failed.";
             for (const auto& diagnostic : writeResult.diagnostics)
@@ -1253,6 +1489,8 @@ CookSummary AssetCooker::CookAssets(
             continue;
         }
 
+        if(assetType==AssetType::ModelScene)
+            writeResult.manifest.dependencies.push_back({AssetDependencyKind::PostprocessorVersion,"nullus-cook-distance-field",expectedDistanceFieldVersion});
         database.UpsertManifest(writeResult.manifest, sourceRelative, ArtifactRecordStatus::UpToDate);
         outcome.succeeded = true;
         outcome.subAssetKey = primarySubAssetKey;

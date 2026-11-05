@@ -19,7 +19,7 @@ This is the source of the Nullus handbook. The published GitHub Wiki is generate
 | [游戏逻辑与脚本](zh-CN/scripting/overview.md) | C#、Lua、API 参考与调试 |
 | [用户界面](zh-CN/ui/overview.md) | UI 运行时、文档格式与 UI Designer |
 | [动画与角色](zh-CN/animation/workflow.md) | 导入、Workbench、Animator、GPU 蒙皮与验证 |
-| [物理与交互](zh-CN/physics/roadmap.md) | 静态碰撞体、场景查询与动力学边界 |
+| [物理与交互](zh-CN/physics/roadmap.md) | 2D/3D 刚体、凹多边形与 Chain、形状查询、复合 Shape 资源、离线烘焙、插值与能力边界 |
 | [音频、特效与媒体](zh-CN/audio-vfx/particles.md) | 粒子制作、CPU/GPU 播放与媒体状态 |
 | [AI 与联网](zh-CN/ai-networking/roadmap.md) | AI 与联网现状及规划 |
 | [平台、构建与发布](zh-CN/platform-build/packaging.md) | 平台矩阵、Build Profile、Cook 与 Player 打包 |
@@ -43,7 +43,7 @@ This is the source of the Nullus handbook. The published GitHub Wiki is generate
 | [Gameplay and Scripting](en/scripting/overview.md) | C#, Lua, API reference, and debugging |
 | [User Interface](en/ui/overview.md) | UI runtime, document format, and UI Designer |
 | [Animation and Characters](en/animation/workflow.md) | Import, Workbench, Animator, GPU skinning, and validation |
-| [Physics and Interaction](en/physics/roadmap.md) | Static colliders, scene queries, and dynamics limits |
+| [Physics and Interaction](en/physics/roadmap.md) | 2D/3D bodies, concave polygons and chains, shape queries, compound Shape assets, offline cooking, interpolation, and limits |
 | [Audio, Visual Effects, and Media](en/audio-vfx/particles.md) | Particle authoring, CPU/GPU playback, and media status |
 | [AI and Networking](en/ai-networking/roadmap.md) | AI and networking status and plans |
 | [Platforms, Builds, and Releases](en/platform-build/packaging.md) | Platform matrix, Build Profiles, cooking, and Player packaging |

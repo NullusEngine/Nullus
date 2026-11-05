@@ -9,16 +9,17 @@
 ## 自动测试
 
 ```powershell
-cmake --build build --config Debug --target NullusAnimationTests NullusAnimationImportTests NullusAnimationEditorTests NullusAnimationGpuTests
-ctest --test-dir build -C Debug -R "^NullusAnimation" --output-on-failure
+cmake --build build --config Debug --target NullusUnitTests NullusGpuTests
+build/bin/Debug/NullusUnitTests.exe --gtest_filter="Animation*.*"
+build/bin/Debug/NullusGpuTests.exe --gtest_filter="Animation*.*"
 ```
 
 | 目标 | 主要检查 |
 | --- | --- |
-| `NullusAnimationTests` | TRS 与四元数、采样、混合、状态机、事件、二进制往返、程序替换失败回滚 |
-| `NullusAnimationImportTests` | glTF/GLB、FBX、多 Take、采样率、独立动画绑定、重导入身份与资源依赖 |
-| `NullusAnimationEditorTests` | 文档 Undo/Redo、场景更新、Prefab、共享 Animator、延迟绑定与冻结依赖 |
-| `NullusAnimationGpuTests` | GPU 蒙皮位置和法线、对象绑定、延迟提交中的资源保留与像素读回 |
+| `NullusUnitTests`：`AnimationCore` / `AnimationGraph` | TRS 与四元数、采样、混合、状态机、事件、二进制往返、程序替换失败回滚 |
+| `NullusUnitTests`：`AnimationFixture` / `AnimationSourceCompiler` | glTF/GLB、FBX、多 Take、采样率、独立动画绑定、重导入身份与资源依赖 |
+| `NullusUnitTests`：`AnimationDocument` / `AnimationScene` | 文档 Undo/Redo、场景更新、Prefab、共享 Animator、延迟绑定与冻结依赖 |
+| `NullusGpuTests`：`AnimationGpu` | GPU 蒙皮位置和法线、对象绑定、延迟提交中的资源保留与像素读回 |
 
 记录实际执行的后端、设备、配置、退出状态和跳过项。GPU 专项目标不能替代完整场景验收。
 

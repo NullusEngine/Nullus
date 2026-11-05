@@ -149,6 +149,19 @@ namespace NLS::Engine::Serialize
         // process-unique local identifier through the existing persistence map
         // without retaining an object pointer.
         [[nodiscard]] ObjectIdentifier GetOrCreateLocalObjectIdentifier(NLS::Object& object);
+        // ObjectGraph identities are local to a Scene, but survive renaming,
+        // hierarchy edits, serialization and Undo reconstruction. Runtime slots
+        // address this cache only; they never form the serialized identity.
+        [[nodiscard]] std::optional<ObjectId> FindObjectGraphId(
+            const NLS::Object& scope, const NLS::Object& object) const;
+        [[nodiscard]] ObjectId GetOrCreateObjectGraphId(
+            const NLS::Object& scope, const NLS::Object& object);
+        [[nodiscard]] bool BindObjectGraphId(
+            const NLS::Object& scope, const NLS::Object& object, ObjectId id);
+        void PruneObjectGraphIds(const NLS::Object& scope);
+        void ClearObjectGraphIds(const NLS::Object& scope);
+        [[nodiscard]] std::optional<NLS::Guid> FindObjectGraphDocumentId(const NLS::Object& scope) const;
+        void BindObjectGraphDocumentId(const NLS::Object& scope, const NLS::Guid& id);
         bool InstanceIDToObjectIdentifier(InstanceID instanceID, ObjectIdentifier& identifier) const;
         // Unlike ObjectIdentifierToInstanceID, this is a pure lookup.  Undo
         // validation must not reserve a new InstanceID for a stale target.
@@ -214,6 +227,13 @@ namespace NLS::Engine::Serialize
         // which are always positive.  Do not reset this on Clear(): stale
         // handles must never become aliases for a later runtime object.
         int64_t m_nextRuntimeLocalIdentifier = -1;
+        struct ObjectGraphScope
+        {
+            std::optional<NLS::Guid> documentId;
+            std::unordered_map<InstanceID, ObjectId> byInstance;
+            std::unordered_map<ObjectId, InstanceID> byId;
+        };
+        std::unordered_map<InstanceID, ObjectGraphScope> m_objectGraphScopes;
         mutable std::mutex m_mutex;
     };
 

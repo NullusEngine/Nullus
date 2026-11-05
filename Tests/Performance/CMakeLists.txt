@@ -32,3 +32,14 @@ set_tests_properties(NullusPerformanceTests PROPERTIES
     WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
     LABELS performance
 )
+
+# Built only when NLS_BUILD_PERFORMANCE_TESTS is enabled.
+add_executable(NullusPhysicsBenchmark "${CMAKE_SOURCE_DIR}/Tests/Physics/PhysicsBenchmark.cpp")
+target_compile_features(NullusPhysicsBenchmark PRIVATE cxx_std_20)
+target_include_directories(NullusPhysicsBenchmark PRIVATE "${CMAKE_SOURCE_DIR}/Runtime")
+target_link_libraries(NullusPhysicsBenchmark PRIVATE NLS_Physics)
+target_compile_definitions(NullusPhysicsBenchmark PRIVATE NLS_PHYSICS_BENCH_CONFIG="$<CONFIG>")
+if(WIN32)
+    target_link_libraries(NullusPhysicsBenchmark PRIVATE Psapi)
+endif()
+set_target_properties(NullusPhysicsBenchmark PROPERTIES FOLDER "Tests/Performance" RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/runtime")

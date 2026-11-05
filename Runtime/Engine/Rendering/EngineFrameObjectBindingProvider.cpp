@@ -269,24 +269,25 @@ void EngineFrameObjectBindingProvider::OnBeginFrame(const NLS::Render::Data::Fra
 
     auto currentTime = std::chrono::high_resolution_clock::now();
     auto elapsedTime = std::chrono::duration_cast<std::chrono::duration<float>>(currentTime - m_startTime);
+    const float shaderTime=frameDescriptor.gameTime ? static_cast<float>(*frameDescriptor.gameTime) : elapsedTime.count();
 
     size_t offset = sizeof(Maths::Matrix4);
     m_engineBuffer->SetSubData(Maths::Matrix4::Transpose(frameDescriptor.camera->GetViewMatrix()), std::ref(offset));
-    m_engineBuffer->SetSubData(Maths::Matrix4::Transpose(frameDescriptor.camera->GetProjectionMatrix()), std::ref(offset));
+    m_engineBuffer->SetSubData(Maths::Matrix4::Transpose(frameDescriptor.camera->GetGpuProjectionMatrix()), std::ref(offset));
     m_engineBuffer->SetSubData(frameDescriptor.camera->GetPosition(), std::ref(offset));
-    m_engineBuffer->SetSubData(elapsedTime.count(), std::ref(offset));
+    m_engineBuffer->SetSubData(shaderTime, std::ref(offset));
 
     size_t hlslFrameOffset = 0;
-    const auto viewProjection = frameDescriptor.camera->GetProjectionMatrix() * frameDescriptor.camera->GetViewMatrix();
+    const auto viewProjection = frameDescriptor.camera->GetGpuProjectionMatrix() * frameDescriptor.camera->GetViewMatrix();
     auto viewMatrixNoTranslation = frameDescriptor.camera->GetViewMatrix();
     viewMatrixNoTranslation(0, 3) = 0.0f;
     viewMatrixNoTranslation(1, 3) = 0.0f;
     viewMatrixNoTranslation(2, 3) = 0.0f;
-    const auto viewProjectionNoTranslation = frameDescriptor.camera->GetProjectionMatrix() * viewMatrixNoTranslation;
+    const auto viewProjectionNoTranslation = frameDescriptor.camera->GetGpuProjectionMatrix() * viewMatrixNoTranslation;
 
     m_hlslFrameBuffer->SetSubData(Maths::Matrix4::Transpose(viewProjection), std::ref(hlslFrameOffset));
     m_hlslFrameBuffer->SetSubData(frameDescriptor.camera->GetPosition(), std::ref(hlslFrameOffset));
-    m_hlslFrameBuffer->SetSubData(elapsedTime.count(), std::ref(hlslFrameOffset));
+    m_hlslFrameBuffer->SetSubData(shaderTime, std::ref(hlslFrameOffset));
     m_hlslFrameBuffer->SetSubData(Maths::Matrix4::Transpose(viewProjectionNoTranslation), std::ref(hlslFrameOffset));
     // Frame constants changed. The slot that ends up capturing this frame marks
     // its own binding set dirty when it is bound, so a frame that never captures
@@ -294,7 +295,7 @@ void EngineFrameObjectBindingProvider::OnBeginFrame(const NLS::Render::Data::Fra
     const auto transposedViewProjection = Maths::Matrix4::Transpose(viewProjection);
     const auto transposedNoTranslation = Maths::Matrix4::Transpose(viewProjectionNoTranslation);
     const auto position = frameDescriptor.camera->GetPosition();
-    const float time = elapsedTime.count();
+    const float time = shaderTime;
     size_t byteOffset = 0u;
     const auto append = [&](const auto& value)
     {

@@ -8,6 +8,9 @@
 #include "IBuildPlatform.h"
 #include "ManagedScriptBuildService.h"
 #include "PackageInspection.h"
+#include "PluginBuildInputs.h"
+#include "Core/Assets/ContentHash.h"
+#include "Core/Assets/ArtifactManifest.h"
 #include "Version.h"
 
 #include "CookTypes.h"
@@ -434,6 +437,13 @@ BuildOutcome BuildPipeline::Run(const BuildRequest& request, BuildReport& report
     DependencyCollectionResult collection;
     std::vector<std::string> contentPackages;
     std::filesystem::path symbolsDirectory;
+    std::unique_ptr<PluginBuildInputs> pluginInputs;
+    if (platform != nullptr)
+    {
+        try { pluginInputs = std::make_unique<PluginBuildInputs>(context.projectRoot,
+            context.profile.target.platform == PlatformFamily::Windows ? "Windows" : context.profile.target.platform == PlatformFamily::MacOS ? "macOS" : "Linux"); }
+        catch (const std::exception& error) { report.AddDiagnostic(DiagnosticSeverity::Error,"build-plugin-inputs",error.what()); outcome.error = error.what(); platform = nullptr; }
+    }
 
     if (platform != nullptr && request.bakeAssets)
     {
@@ -484,6 +494,12 @@ BuildOutcome BuildPipeline::Run(const BuildRequest& request, BuildReport& report
             }
         }
 
+        if (pluginInputs && !pluginInputs->CookRoot().empty())
+        {
+            auto pluginOptions = cookOptions; pluginOptions.projectRoot = pluginInputs->CookRoot(); pluginOptions.assetsRoot = pluginOptions.projectRoot / "Assets";
+            const auto pluginSummary = NLS::Cook::AssetCooker::CookProject(pluginOptions); AppendCookDiagnostics(pluginSummary,report);
+            if (!pluginSummary.Succeeded()) { outcome.error = "plugin content cooking failed"; platform = nullptr; }
+        }
         const auto cookSummary = NLS::Cook::AssetCooker::CookProject(cookOptions);
         AppendCookDiagnostics(cookSummary, report);
         report.cachedStages.push_back(
@@ -501,24 +517,32 @@ BuildOutcome BuildPipeline::Run(const BuildRequest& request, BuildReport& report
     {
         // 2. Freeze inputs, then collect dependencies against them.
         report.inputHash = ComputeBuildInputHash(context);
+        if (pluginInputs)
+        {
+            const auto frozen = report.inputHash + pluginInputs->Fingerprint();
+            report.inputHash = Core::Assets::ToHexString(Core::Assets::ComputeSha256(reinterpret_cast<const uint8_t*>(frozen.data()),frozen.size()));
+        }
         const auto assetsListingBefore = Detail::HashDirectoryListing(context.projectAssetsPath, true);
         const auto databaseListingBefore = Detail::HashDirectoryListing(context.artifactDatabasePath, true, "lock.mdb");
 
         {
             PhaseScope phase(report, "collect-dependencies", context);
+            auto collectionProfile = context.profile;
+            if (pluginInputs) collectionProfile.keepAssetPaths.insert(collectionProfile.keepAssetPaths.end(),pluginInputs->KeepGuids().begin(),pluginInputs->KeepGuids().end());
             if (!BuildDependencyCollector::Collect(
                     context.projectRoot,
                     context.projectAssetsPath,
-                    context.profile,
+                    collectionProfile,
                     context.artifactDatabasePath,
                     collection,
-                    report))
+                    report,pluginInputs && !pluginInputs->CookRoot().empty() ? pluginInputs->CookRoot() / "Assets" : std::filesystem::path{}))
             {
                 outcome.error = "dependency collection failed";
                 platform = nullptr;
             }
             else
             {
+                if (pluginInputs) collection.rawFiles.insert(collection.rawFiles.end(),pluginInputs->RawFiles().begin(),pluginInputs->RawFiles().end());
                 for (const auto& artifact : collection.artifacts)
                 {
                     BuildIncludedAsset included;
@@ -548,7 +572,7 @@ BuildOutcome BuildPipeline::Run(const BuildRequest& request, BuildReport& report
         {
             const auto assetsListingAfter = Detail::HashDirectoryListing(context.projectAssetsPath, true);
             const auto databaseListingAfter = Detail::HashDirectoryListing(context.artifactDatabasePath, true, "lock.mdb");
-            if (assetsListingAfter != assetsListingBefore || databaseListingAfter != databaseListingBefore)
+            if (assetsListingAfter != assetsListingBefore || databaseListingAfter != databaseListingBefore || (pluginInputs && !pluginInputs->IsCurrent()))
             {
                 report.AddDiagnostic(
                     DiagnosticSeverity::Error,
@@ -656,8 +680,8 @@ BuildOutcome BuildPipeline::Run(const BuildRequest& request, BuildReport& report
                 platform = nullptr;
             }
 
-            // Script hosts: a shipping build that requests C# content must ship
-            // a managed payload; a project without C# content may omit it.
+            // A selected C# host needs its runtime for project scripts and for
+            // managed assemblies inherited from the prebuilt player template.
             const bool requestsCSharp = std::find(
                 context.profile.target.scriptBackends.begin(),
                 context.profile.target.scriptBackends.end(),
@@ -685,7 +709,7 @@ BuildOutcome BuildPipeline::Run(const BuildRequest& request, BuildReport& report
                         platform = nullptr;
                     }
                 }
-                else if (projectHasCSharp)
+                else if (projectHasCSharp || playerHasManaged)
                 {
                     const auto dotnetRoot = player->directory / "Runtime" / "dotnet";
                     if (!std::filesystem::is_directory(dotnetRoot) &&
@@ -739,7 +763,7 @@ BuildOutcome BuildPipeline::Run(const BuildRequest& request, BuildReport& report
                     context.profile.target.scriptBackends.begin(),
                     context.profile.target.scriptBackends.end(),
                     ScriptBackend::CSharp) != context.profile.target.scriptBackends.end() &&
-                HasFileWithExtension(context.projectAssetsPath, ".cs"))
+                (HasFileWithExtension(context.projectAssetsPath, ".cs") || player->hasManagedAssemblies))
             {
                 std::string managedError;
                 if (projectManaged.has_value() && projectManaged->succeeded)
@@ -793,7 +817,12 @@ BuildOutcome BuildPipeline::Run(const BuildRequest& request, BuildReport& report
         {
             PhaseScope phase(report, "finalize-player", context);
             std::string finalizeError;
-            if (!platform->FinalizeStagingPlayer(context, report, &finalizeError))
+            if (pluginInputs && !pluginInputs->IsCurrent())
+            {
+                report.AddDiagnostic(DiagnosticSeverity::Error,"build-plugin-inputs-changed","Plugin inputs changed after content freeze; retry the build.");
+                outcome.error = "plugin inputs changed"; platform = nullptr;
+            }
+            else if (!platform->FinalizeStagingPlayer(context, report, &finalizeError))
             {
                 report.AddDiagnostic(
                     DiagnosticSeverity::Error,

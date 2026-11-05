@@ -4,6 +4,7 @@ project(NullusTests LANGUAGES CXX)
 
 include(CTest)
 enable_testing()
+set(CMAKE_FOLDER Tests)
 
 if(NOT TARGET gtest)
     set(INSTALL_GTEST OFF CACHE BOOL "" FORCE)
@@ -127,8 +128,13 @@ if(NLS_BUILD_TESTS)
             "-DNLS_ROOT_DIR=${CMAKE_SOURCE_DIR}"
             -P "${CMAKE_SOURCE_DIR}/Tests/CMake/DeployRuntimeTests.cmake")
     add_subdirectory(Unit)
+    add_subdirectory(ECS)
+    # Engine-facing plugin suites join NullusUnitTests; native ABI/link-mode
+    # validation keeps its own hosts and child processes.
+    add_subdirectory(Plugins)
 endif()
 
 if(NLS_BUILD_PERFORMANCE_TESTS)
     add_subdirectory(Performance)
+    add_subdirectory(InputPerformance)
 endif()

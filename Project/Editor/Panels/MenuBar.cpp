@@ -13,6 +13,7 @@
 #include "Utils/GameObjectCreationMenu.h"
 #include "Rendering/Context/DriverAccess.h"
 #include "Shortcuts/EditorShortcutService.h"
+#include "Shortcuts/EditorCommandInvocation.h"
 #include "Undo/EditorUndoService.h"
 #include "UI/Widgets/Texts/Text.h"
 using namespace NLS;
@@ -50,11 +51,11 @@ void Editor::Panels::MenuBar::CreateFileMenu()
 {
 	auto& fileMenu = CreateWidget<Widgets::MenuList>("File");
 	m_newSceneItem = &fileMenu.CreateWidget<Widgets::MenuItem>("New Scene", "CTRL + N");
-	m_newSceneItem->ClickedEvent += EDITOR_BIND(LoadEmptyScene);
+		m_newSceneItem->ClickedEvent += [] { Shortcuts::InvokeEditorCommand("file.new-scene", Shortcuts::CommandSource::Menu); };
 	m_saveSceneItem = &fileMenu.CreateWidget<Widgets::MenuItem>("Save Scene", "CTRL + S");
-	m_saveSceneItem->ClickedEvent += EDITOR_BIND(SaveSceneChanges);
+		m_saveSceneItem->ClickedEvent += [] { Shortcuts::InvokeEditorCommand("file.save-scene", Shortcuts::CommandSource::Menu); };
 	m_saveSceneAsItem = &fileMenu.CreateWidget<Widgets::MenuItem>("Save Scene As...", "CTRL + SHIFT + S");
-	m_saveSceneAsItem->ClickedEvent += EDITOR_BIND(SaveAs);
+		m_saveSceneAsItem->ClickedEvent += [] { Shortcuts::InvokeEditorCommand("file.save-scene-as", Shortcuts::CommandSource::Menu); };
 	fileMenu.CreateWidget<Widgets::MenuItem>("Exit", "ALT + F4").ClickedEvent						+= [] { EDITOR_CONTEXT(window)->SetShouldClose(true); };
 }
 
@@ -64,14 +65,12 @@ void Editor::Panels::MenuBar::CreateEditMenu()
 	m_undoItem = &m_editMenu->CreateWidget<Widgets::MenuItem>("Undo", "");
 	m_undoItem->ClickedEvent += []
 	{
-		if (NLS::Core::ServiceLocator::Contains<Undo::EditorUndoService>())
-			NLS::Core::ServiceLocator::Get<Undo::EditorUndoService>().RequestUndo();
+			Shortcuts::InvokeEditorCommand("edit.undo", Shortcuts::CommandSource::Menu);
 	};
 	m_redoItem = &m_editMenu->CreateWidget<Widgets::MenuItem>("Redo", "");
 	m_redoItem->ClickedEvent += []
 	{
-		if (NLS::Core::ServiceLocator::Contains<Undo::EditorUndoService>())
-			NLS::Core::ServiceLocator::Get<Undo::EditorUndoService>().RequestRedo();
+			Shortcuts::InvokeEditorCommand("edit.redo", Shortcuts::CommandSource::Menu);
 	};
 	m_editMenu->CreateWidget<Widgets::Separator>();
     m_editMenu->CreateWidget<Widgets::MenuItem>("Settings...").ClickedEvent += [this]
@@ -237,26 +236,6 @@ void Editor::Panels::MenuBar::CreateDebuggingMenu()
 	// so the presentation is refreshed every time the menu is opened.
 	m_debuggingMenu->ClickedEvent += std::bind(&MenuBar::RefreshDebuggingMenuStatus, this);
 
-	auto* debugSettings = &Settings::EditorSettings::GetDebugDrawSettingsObject();
-	auto& debugDrawMenu = m_debuggingMenu->CreateWidget<Widgets::MenuList>("Debug Draw");
-	debugDrawMenu.CreateWidget<Widgets::MenuItem>("Enabled", "", true, debugSettings->debugDrawEnabled).ValueChangedEvent += [debugSettings](bool p_value) { debugSettings->debugDrawEnabled = p_value; };
-	debugDrawMenu.CreateWidget<Widgets::MenuItem>("Grid", "", true, debugSettings->debugDrawGrid).ValueChangedEvent += [debugSettings](bool p_value) { debugSettings->debugDrawGrid = p_value; };
-	debugDrawMenu.CreateWidget<Widgets::MenuItem>("Bounds", "", true, debugSettings->debugDrawBounds).ValueChangedEvent += [debugSettings](bool p_value) { debugSettings->debugDrawBounds = p_value; };
-	debugDrawMenu.CreateWidget<Widgets::MenuItem>("Cameras", "", true, debugSettings->debugDrawCamera).ValueChangedEvent += [debugSettings](bool p_value) { debugSettings->debugDrawCamera = p_value; };
-	debugDrawMenu.CreateWidget<Widgets::MenuItem>("Lights", "", true, debugSettings->debugDrawLighting).ValueChangedEvent += [debugSettings](bool p_value) { debugSettings->debugDrawLighting = p_value; };
-
-	m_wireframeModeItem = &m_debuggingMenu->CreateWidget<Widgets::MenuItem>("Wireframe Mode", "", true, false);
-	m_wireframeModeItem->tooltip = "Draw scene geometry as wireframe.";
-	m_wireframeModeItem->ValueChangedEvent += [this](bool p_value)
-	{
-		if (auto* driver = EDITOR_CONTEXT(driver).get())
-		{
-			Render::Context::DriverUIAccess::SetPolygonMode(
-				*driver,
-				p_value ? Render::Settings::ERasterizationMode::LINE : Render::Settings::ERasterizationMode::FILL);
-		}
-	};
-
 	auto& renderDocMenu = m_debuggingMenu->CreateWidget<Widgets::MenuList>("RenderDoc");
 	m_renderDocStatusText = &renderDocMenu.CreateWidget<Widgets::Text>("Status: Unknown");
 	m_renderDocEnabledItem = &renderDocMenu.CreateWidget<Widgets::MenuItem>("Enabled", "", true, false);
@@ -269,14 +248,12 @@ void Editor::Panels::MenuBar::CreateDebuggingMenu()
 	m_renderDocCaptureItem = &renderDocMenu.CreateWidget<Widgets::MenuItem>("Capture Next Frame", "F11");
 	m_renderDocCaptureItem->ClickedEvent += []
 	{
-		if (auto* driver = EDITOR_CONTEXT(driver).get())
-			Render::Context::DriverUIAccess::QueueRenderDocCapture(*driver, "Editor");
+			Shortcuts::InvokeEditorCommand("debug.renderdoc.capture-next-frame", Shortcuts::CommandSource::Menu);
 	};
 	m_renderDocOpenLatestItem = &renderDocMenu.CreateWidget<Widgets::MenuItem>("Open Latest Capture", "CTRL + F11");
 	m_renderDocOpenLatestItem->ClickedEvent += []
 	{
-		if (auto* driver = EDITOR_CONTEXT(driver).get())
-			Render::Context::DriverUIAccess::OpenLatestRenderDocCapture(*driver);
+			Shortcuts::InvokeEditorCommand("debug.renderdoc.open-latest-capture", Shortcuts::CommandSource::Menu);
 	};
 	renderDocMenu.CreateWidget<Widgets::MenuItem>("Open Capture Folder").ClickedEvent += []
 	{
@@ -365,6 +342,7 @@ bool Editor::Panels::MenuBar::RegisterCommand(const std::string& p_menuPath, std
 {
     if (p_menuPath.empty() || !p_execute)
         return false;
+    if (m_scriptCommandItems.contains(p_menuPath)) return false;
 
     // Only the last separator is structural, so a leaf label may itself contain
     // a slash without silently creating another menu level.
@@ -404,7 +382,16 @@ bool Editor::Panels::MenuBar::RegisterCommand(const std::string& p_menuPath, std
 
     auto& item = menu->CreateWidget<UI::Widgets::MenuItem>(leaf);
     item.ClickedEvent += std::move(p_execute);
+    m_scriptCommandItems.emplace(p_menuPath, &item);
     return true;
+}
+
+void Editor::Panels::MenuBar::UnregisterCommand(const std::string& path)
+{
+    const auto it = m_scriptCommandItems.find(path);
+    if (it == m_scriptCommandItems.end()) return;
+    it->second->Destroy();
+    m_scriptCommandItems.erase(it);
 }
 
 void Editor::Panels::MenuBar::UpdateToggleableItems()

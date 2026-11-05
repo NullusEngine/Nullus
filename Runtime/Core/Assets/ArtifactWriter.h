@@ -94,6 +94,14 @@ public:
         const ArtifactManifest* previousSuccessfulManifest,
         const IArtifactWriteCancellation* cancellation = nullptr) const;
 
+    // Writes only supplied blobs and preserves all unrelated published entries.
+    // The owner commits the returned manifest under its publication lock.
+    ArtifactWriteResult WriteIncrementalAndCommit(
+        const ArtifactWriteRequest& request,
+        const ArtifactManifest& previousSuccessfulManifest,
+        const std::vector<std::string>& removedSubAssets = {},
+        const IArtifactWriteCancellation* cancellation = nullptr) const;
+
 private:
     std::filesystem::path m_stagingRoot;
     std::filesystem::path m_committedRoot;

@@ -81,9 +81,9 @@ const std::vector<IconDefinition>& GeneratedIconDefinitions()
         [] {
             IconDefinition definition;
             definition.id = "editor.icon.asset.scene";
-            definition.kind = IconKind::Color;
+            definition.kind = IconKind::Monochrome;
             definition.defaultToken = IconToken::Large;
-            definition.themeable = false;
+            definition.themeable = true;
             definition.module = "editor";
             definition.glyph = 0;
             definition.aliases = {  };
@@ -486,6 +486,20 @@ const std::vector<IconDefinition>& GeneratedIconDefinitions()
         }(),
         [] {
             IconDefinition definition;
+            definition.id = "editor.icon.toolbar.rect";
+            definition.kind = IconKind::Monochrome;
+            definition.defaultToken = IconToken::Small;
+            definition.themeable = true;
+            definition.module = "editor";
+            definition.glyph = 0;
+            definition.aliases = {  };
+            definition.tags = { "tool", "transform", "rect" };
+            definition.tiers = { 16, 32, 48 };
+            definition.deprecatedBy = "";
+            return definition;
+        }(),
+        [] {
+            IconDefinition definition;
             definition.id = "editor.icon.toolbar.pivot";
             definition.kind = IconKind::Monochrome;
             definition.defaultToken = IconToken::Small;
@@ -620,6 +634,188 @@ const std::vector<IconDefinition>& GeneratedIconDefinitions()
             definition.glyph = 0;
             definition.aliases = {  };
             definition.tags = { "generated", "diagnostic" };
+            definition.tiers = { 16, 32, 48 };
+            definition.deprecatedBy = "";
+            return definition;
+        }(),
+        [] {
+            IconDefinition definition;
+            definition.id = "editor.icon.toolbar.grid";
+            definition.kind = IconKind::Monochrome;
+            definition.defaultToken = IconToken::Small;
+            definition.themeable = true;
+            definition.module = "editor";
+            definition.glyph = 0;
+            definition.aliases = {  };
+            definition.tags = { "toolbar", "scene" };
+            definition.tiers = { 16, 32, 48 };
+            definition.deprecatedBy = "";
+            return definition;
+        }(),
+        [] {
+            IconDefinition definition;
+            definition.id = "editor.icon.toolbar.snap";
+            definition.kind = IconKind::Monochrome;
+            definition.defaultToken = IconToken::Small;
+            definition.themeable = true;
+            definition.module = "editor";
+            definition.glyph = 0;
+            definition.aliases = {  };
+            definition.tags = { "toolbar", "scene" };
+            definition.tiers = { 16, 32, 48 };
+            definition.deprecatedBy = "";
+            return definition;
+        }(),
+        [] {
+            IconDefinition definition;
+            definition.id = "editor.icon.toolbar.shaded";
+            definition.kind = IconKind::Monochrome;
+            definition.defaultToken = IconToken::Small;
+            definition.themeable = true;
+            definition.module = "editor";
+            definition.glyph = 0;
+            definition.aliases = {  };
+            definition.tags = { "toolbar", "scene" };
+            definition.tiers = { 16, 32, 48 };
+            definition.deprecatedBy = "";
+            return definition;
+        }(),
+        [] {
+            IconDefinition definition;
+            definition.id = "editor.icon.toolbar.wireframe";
+            definition.kind = IconKind::Monochrome;
+            definition.defaultToken = IconToken::Small;
+            definition.themeable = true;
+            definition.module = "editor";
+            definition.glyph = 0;
+            definition.aliases = {  };
+            definition.tags = { "toolbar", "scene" };
+            definition.tiers = { 16, 32, 48 };
+            definition.deprecatedBy = "";
+            return definition;
+        }(),
+        [] {
+            IconDefinition definition;
+            definition.id = "editor.icon.toolbar.shaded.wireframe";
+            definition.kind = IconKind::Monochrome;
+            definition.defaultToken = IconToken::Small;
+            definition.themeable = true;
+            definition.module = "editor";
+            definition.glyph = 0;
+            definition.aliases = {  };
+            definition.tags = { "toolbar", "scene" };
+            definition.tiers = { 16, 32, 48 };
+            definition.deprecatedBy = "";
+            return definition;
+        }(),
+        [] {
+            IconDefinition definition;
+            definition.id = "editor.icon.toolbar.2d";
+            definition.kind = IconKind::Monochrome;
+            definition.defaultToken = IconToken::Small;
+            definition.themeable = true;
+            definition.module = "editor";
+            definition.glyph = 0;
+            definition.aliases = {  };
+            definition.tags = { "toolbar", "scene" };
+            definition.tiers = { 16, 32, 48 };
+            definition.deprecatedBy = "";
+            return definition;
+        }(),
+        [] {
+            IconDefinition definition;
+            definition.id = "editor.icon.toolbar.effects";
+            definition.kind = IconKind::Monochrome;
+            definition.defaultToken = IconToken::Small;
+            definition.themeable = true;
+            definition.module = "editor";
+            definition.glyph = 0;
+            definition.aliases = {  };
+            definition.tags = { "toolbar", "scene" };
+            definition.tiers = { 16, 32, 48 };
+            definition.deprecatedBy = "";
+            return definition;
+        }(),
+        [] {
+            IconDefinition definition;
+            definition.id = "editor.icon.toolbar.visibility";
+            definition.kind = IconKind::Monochrome;
+            definition.defaultToken = IconToken::Small;
+            definition.themeable = true;
+            definition.module = "editor";
+            definition.glyph = 0;
+            definition.aliases = {  };
+            definition.tags = { "toolbar", "scene" };
+            definition.tiers = { 16, 32, 48 };
+            definition.deprecatedBy = "";
+            return definition;
+        }(),
+        [] {
+            IconDefinition definition;
+            definition.id = "editor.icon.toolbar.visibility.off";
+            definition.kind = IconKind::Monochrome;
+            definition.defaultToken = IconToken::Small;
+            definition.themeable = true;
+            definition.module = "editor";
+            definition.glyph = 0;
+            definition.aliases = {  };
+            definition.tags = { "toolbar", "scene" };
+            definition.tiers = { 16, 32, 48 };
+            definition.deprecatedBy = "";
+            return definition;
+        }(),
+        [] {
+            IconDefinition definition;
+            definition.id = "editor.icon.toolbar.camera";
+            definition.kind = IconKind::Monochrome;
+            definition.defaultToken = IconToken::Small;
+            definition.themeable = true;
+            definition.module = "editor";
+            definition.glyph = 0;
+            definition.aliases = {  };
+            definition.tags = { "toolbar", "scene" };
+            definition.tiers = { 16, 32, 48 };
+            definition.deprecatedBy = "";
+            return definition;
+        }(),
+        [] {
+            IconDefinition definition;
+            definition.id = "editor.icon.toolbar.gizmos";
+            definition.kind = IconKind::Monochrome;
+            definition.defaultToken = IconToken::Small;
+            definition.themeable = true;
+            definition.module = "editor";
+            definition.glyph = 0;
+            definition.aliases = {  };
+            definition.tags = { "toolbar", "scene" };
+            definition.tiers = { 16, 32, 48 };
+            definition.deprecatedBy = "";
+            return definition;
+        }(),
+        [] {
+            IconDefinition definition;
+            definition.id = "editor.icon.toolbar.buffer";
+            definition.kind = IconKind::Monochrome;
+            definition.defaultToken = IconToken::Small;
+            definition.themeable = true;
+            definition.module = "editor";
+            definition.glyph = 0;
+            definition.aliases = {  };
+            definition.tags = { "toolbar", "scene" };
+            definition.tiers = { 16, 32, 48 };
+            definition.deprecatedBy = "";
+            return definition;
+        }(),
+        [] {
+            IconDefinition definition;
+            definition.id = "editor.icon.toolbar.overdraw";
+            definition.kind = IconKind::Monochrome;
+            definition.defaultToken = IconToken::Small;
+            definition.themeable = true;
+            definition.module = "editor";
+            definition.glyph = 0;
+            definition.aliases = {  };
+            definition.tags = { "toolbar", "scene" };
             definition.tiers = { 16, 32, 48 };
             definition.deprecatedBy = "";
             return definition;

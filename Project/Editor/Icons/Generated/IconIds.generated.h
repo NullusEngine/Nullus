@@ -39,6 +39,7 @@ namespace NLS::Editor::Icons::EditorIcons
     inline constexpr IconId ToolbarMove { "editor.icon.toolbar.move" };
     inline constexpr IconId ToolbarRotate { "editor.icon.toolbar.rotate" };
     inline constexpr IconId ToolbarScale { "editor.icon.toolbar.scale" };
+    inline constexpr IconId ToolbarRect { "editor.icon.toolbar.rect" };
     inline constexpr IconId ToolbarPivot { "editor.icon.toolbar.pivot" };
     inline constexpr IconId ToolbarCenter { "editor.icon.toolbar.center" };
     inline constexpr IconId ToolbarGlobal { "editor.icon.toolbar.global" };
@@ -49,4 +50,17 @@ namespace NLS::Editor::Icons::EditorIcons
     inline constexpr IconId GlyphSearch { "editor.icon.glyph.search" };
     inline constexpr IconId GlyphMore { "editor.icon.glyph.more" };
     inline constexpr IconId GeneratedMissing { "editor.icon.generated.missing" };
+    inline constexpr IconId ToolbarGrid { "editor.icon.toolbar.grid" };
+    inline constexpr IconId ToolbarSnap { "editor.icon.toolbar.snap" };
+    inline constexpr IconId ToolbarShaded { "editor.icon.toolbar.shaded" };
+    inline constexpr IconId ToolbarWireframe { "editor.icon.toolbar.wireframe" };
+    inline constexpr IconId ToolbarShadedWireframe { "editor.icon.toolbar.shaded.wireframe" };
+    inline constexpr IconId Toolbar2d { "editor.icon.toolbar.2d" };
+    inline constexpr IconId ToolbarEffects { "editor.icon.toolbar.effects" };
+    inline constexpr IconId ToolbarVisibility { "editor.icon.toolbar.visibility" };
+    inline constexpr IconId ToolbarVisibilityOff { "editor.icon.toolbar.visibility.off" };
+    inline constexpr IconId ToolbarCamera { "editor.icon.toolbar.camera" };
+    inline constexpr IconId ToolbarGizmos { "editor.icon.toolbar.gizmos" };
+    inline constexpr IconId ToolbarBuffer { "editor.icon.toolbar.buffer" };
+    inline constexpr IconId ToolbarOverdraw { "editor.icon.toolbar.overdraw" };
 }

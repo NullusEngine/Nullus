@@ -15,7 +15,8 @@ cbuffer DFConstants : register(b0)
     float4 ClipMinVoxel[4];
     row_major float4x4 InverseViewProjection;
     float4 CameraPosition;
-    float SlicePosition,TraceDistance; uint MostlyStaticOnly,Padding;
+    float SlicePosition,TraceDistance; uint MostlyStaticOnly,TraceStepsMax;
+    float4 SceneMin,SceneMax;
 };
 StructuredBuffer<DFObject> Objects : register(t0);
 StructuredBuffer<uint> MeshIndirection : register(t1);
@@ -61,6 +62,17 @@ float SampleMeshDistanceField(DFObject object,float3 world)
     float3 outside=max(max(object.LocalMinScale.xyz-local,local-object.LocalMaxBand.xyz),0);
     if(any(outside>0)) distance=sqrt(dot(outside,outside)+max(distance,0)*max(distance,0));
     return distance*object.LocalMinScale.w;
+}
+
+// The distance outside the local volume is a lower bound for this encoded
+// field, including conservative distances under nonuniform scaling.
+float MeshDistanceLowerBoundSquared(DFObject object,float3 world,out bool outside)
+{
+    const float4 p=float4(world,1);
+    const float3 local=float3(dot(object.WorldToLocal0,p),dot(object.WorldToLocal1,p),dot(object.WorldToLocal2,p));
+    const float3 delta=max(max(object.LocalMinScale.xyz-local,local-object.LocalMaxBand.xyz),0);
+    outside=any(delta>0);
+    return dot(delta,delta)*object.LocalMinScale.w*object.LocalMinScale.w;
 }
 
 bool Overlap(DFObject object,DFPage page)
@@ -183,6 +195,9 @@ float SampleScene(float3 p,out bool valid,out float voxel,out uint level)
     float distance=1.e20; valid=false; voxel=.01; level=0;
     for(uint i=0;i<ObjectCount;++i)
     {
+        bool outside;
+        const float lowerBound=MeshDistanceLowerBoundSquared(Objects[i],p,outside);
+        if(outside && lowerBound>=max(distance,0)*max(distance,0)) continue;
         float d=SampleMeshDistanceField(Objects[i],p);
         if(d<distance)
         {
@@ -195,7 +210,40 @@ float SampleScene(float3 p,out bool valid,out float voxel,out uint level)
     return distance;
 }
 
+// Hue shows trace cost; surface lighting below preserves the shape. A log
+// scale keeps low counts readable without artificial boundaries on flat faces.
+float3 TraceStepsColor(uint stepCount)
+{
+    const float3 colors[5] = {
+        float3(.16,.32,.72), float3(.10,.64,.74), float3(.24,.73,.43),
+        float3(.94,.73,.20), float3(.88,.20,.14)
+    };
+    const float t=saturate(log2(max(float(stepCount),1.0))/log2(max(float(TraceStepsMax),2.0)))*4;
+    const uint band=min((uint)t,3u);
+    return lerp(colors[band],colors[band+1],t-float(band));
+}
+
 #ifndef NLS_DF_SAMPLING_ONLY
+bool IntersectMeshScene(float3 origin,float3 direction,out float begin,out float end)
+{
+    begin=0;end=TraceDistance;
+    if(ObjectCount==0)return false;
+    [unroll] for(uint axis=0;axis<3;++axis)
+    {
+        if(abs(direction[axis])<1.e-8)
+        {
+            if(origin[axis]<SceneMin[axis] || origin[axis]>SceneMax[axis]) return false;
+        }
+        else
+        {
+            const float a=(SceneMin[axis]-origin[axis])/direction[axis];
+            const float b=(SceneMax[axis]-origin[axis])/direction[axis];
+            begin=max(begin,min(a,b));end=min(end,max(a,b));
+        }
+    }
+    return end>=begin;
+}
+
 [numthreads(8,8,1)]
 void Visualize(uint3 id:SV_DispatchThreadID)
 {
@@ -224,8 +272,13 @@ void Visualize(uint3 id:SV_DispatchThreadID)
     float4 nearPoint=mul(InverseViewProjection,float4(uv.x*2-1,1-uv.y*2,0,1)); nearPoint/=nearPoint.w;
     float4 farPoint=mul(InverseViewProjection,float4(uv.x*2-1,1-uv.y*2,1,1)); farPoint/=farPoint.w;
     float3 direction=normalize(farPoint.xyz-nearPoint.xyz);
-    float travel=0;
-    for(steps=0;steps<512 && travel<TraceDistance;++steps)
+    float travel=0,traceEnd=TraceDistance;
+    if(Visualization==1 && !IntersectMeshScene(nearPoint.xyz,direction,travel,traceEnd))
+    {
+        DebugOutput[id.xy]=float4(DebugChannel==1?float3(.015,.02,.03):float3(.035,.04,.05),1);
+        return;
+    }
+    for(steps=0;steps<512 && travel<traceEnd;++steps)
     {
         p=nearPoint.xyz+direction*travel;
         distance=SampleScene(p,valid,voxel,level);
@@ -234,15 +287,16 @@ void Visualize(uint3 id:SV_DispatchThreadID)
         travel+=valid?max(distance*.8,max(voxel*.1,.001)):max(voxel*3,max(ClipMinVoxel[0].w*3,.05));
     }
     float3 color=float3(.035,.04,.05);
-    if(DebugChannel==1) color=steps/512.0;
-    else if(hit)
+    if(hit)
     {
         bool v;float vs;uint l; float e=max(voxel,.0001);
         float3 n=float3(SampleScene(p+float3(e,0,0),v,vs,l)-SampleScene(p-float3(e,0,0),v,vs,l),
             SampleScene(p+float3(0,e,0),v,vs,l)-SampleScene(p-float3(0,e,0),v,vs,l),
             SampleScene(p+float3(0,0,e),v,vs,l)-SampleScene(p-float3(0,0,e),v,vs,l));
         n=length(n)>.00001?normalize(n):float3(0,1,0);
-        color=DebugChannel==3?n*.5+.5:(.2+.8*saturate(dot(n,normalize(float3(.4,1,.2))))).xxx;
+        const float surface=.2+.8*saturate(dot(n,normalize(float3(.4,1,.2))));
+        color=DebugChannel==3?n*.5+.5:surface.xxx;
+        if(DebugChannel==1) color=lerp(float3(1,1,1),TraceStepsColor(steps+1),.8)*surface;
         if(DebugChannel==4) color=level==0?float3(.3,1,.3):level==1?float3(1,1,.2):level==2?float3(.2,.6,1):float3(1,.2,1);
         if(DebugChannel==5)
         {
@@ -251,6 +305,7 @@ void Visualize(uint3 id:SV_DispatchThreadID)
         }
         if(DebugChannel==6) color=level==0?float3(.1,.9,.25):level==1?float3(.9,.8,.15):float3(.9,.25,.1);
     }
+    else if(DebugChannel==1) color=float3(.015,.02,.03);
     DebugOutput[id.xy]=float4(color,1);
 }
 [numthreads(64,1,1)]

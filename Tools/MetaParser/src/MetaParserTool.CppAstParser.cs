@@ -3,21 +3,24 @@ using System.Text.RegularExpressions;
 
 internal static partial class MetaParserTool
 {
-    // Set while configuring the parser target.  A fixed-width typedef can
+    // Matches ConfigurePlatformDefaults. A fixed-width typedef can
     // surface as the compiler's underlying spelling, and `long` is only 64-bit
     // on LP64 targets such as Linux and macOS.
-    private static bool s_targetLongIs64Bit;
+    private static readonly bool s_targetLongIs64Bit = !OperatingSystem.IsWindows();
 
-    private static IEnumerable<ReflectTypeInfo> ParseHeaderWithCppAst(string rootDir, string headerPath, PrecompileParams config)
+    private static IEnumerable<ReflectTypeInfo> ParseHeaderWithCppAst(
+        string rootDir, string headerPath, PrecompileParams config, List<CppSourceFile>? sourceFiles)
     {
         var options = CreateOptions(config);
         options.AutoSquashTypedef = false;
+        options.CollectSourceFiles = sourceFiles is not null;
         var compilation = CppParser.ParseFile(headerPath, options);
         if (compilation.HasErrors)
         {
             var errors = string.Join(Environment.NewLine, compilation.Diagnostics.Messages);
             throw new InvalidOperationException(errors);
         }
+        sourceFiles?.AddRange(compilation.SourceFiles);
 
         var normalizedHeader = Path.GetFullPath(headerPath);
         var headerText = File.ReadAllText(normalizedHeader);
@@ -168,12 +171,10 @@ internal static partial class MetaParserTool
     {
         if (OperatingSystem.IsWindows())
         {
-            s_targetLongIs64Bit = false;
             options.ConfigureForWindowsMsvc(CppTargetCpu.X86_64);
             return;
         }
 
-        s_targetLongIs64Bit = true;
         options.TargetCpu = CppTargetCpu.X86_64;
         options.TargetVendor = "pc";
         options.TargetSystem = OperatingSystem.IsMacOS() ? "darwin" : "linux";

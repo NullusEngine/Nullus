@@ -7,6 +7,7 @@ using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Runtime.InteropServices;
+using System.Security.Cryptography;
 using System.Text;
 using ClangSharp.Interop;
 
@@ -18,6 +19,16 @@ namespace CppAst
     public static class CppParser
     {
         public const string CppAstRootFileName = "cppast.input";
+
+        /// <summary>The version of the loaded native parser, used to invalidate parser caches.</summary>
+        public static string ClangVersion
+        {
+            get
+            {
+                using var version = clang.getClangVersion();
+                return version.ToString();
+            }
+        }
 
         /// <summary>
         /// Parse the specified C++ text in-memory.
@@ -190,6 +201,7 @@ namespace CppAst
                         , translationFlags);
                 }
 
+                using var translationUnitLifetime = translationUnit;
                 bool skipProcessing = false;
 
                 if (translationUnit.NumDiagnostics != 0)
@@ -232,7 +244,39 @@ namespace CppAst
                     translationUnit.Cursor.VisitChildren(builder.VisitTranslationUnit, clientData: default);
                 }
 
-                translationUnit.Dispose();
+                if (options.CollectSourceFiles && !skipProcessing)
+                {
+                    var seen = new HashSet<string>(OperatingSystem.IsWindows() ? StringComparer.OrdinalIgnoreCase : StringComparer.Ordinal);
+                    Exception collectionError = null;
+                    CXInclusionVisitor visitor = (handle, stack, length, data) =>
+                    {
+                        try
+                        {
+                            var file = new CXFile((IntPtr)handle);
+                            using var name = file.Name;
+                            var path = name.ToString();
+                            if (string.IsNullOrEmpty(path) || path == rootFileName || !Path.IsPathFullyQualified(path))
+                                return;
+                            path = Path.GetFullPath(path);
+                            if (string.Equals(path, Path.GetFullPath(rootFileName), OperatingSystem.IsWindows()
+                                ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal))
+                                return;
+                            if (!seen.Add(path))
+                                return;
+                            var contents = translationUnit.GetFileContents(file, out _);
+                            compilation.SourceFiles.Add(new CppSourceFile(path, Convert.ToHexString(SHA256.HashData(contents))));
+                        }
+                        catch (Exception ex)
+                        {
+                            // Managed exceptions must not escape through the native visitor.
+                            collectionError ??= ex;
+                        }
+                    };
+                    translationUnit.GetInclusions(visitor, default);
+                    GC.KeepAlive(visitor);
+                    if (collectionError != null)
+                        throw new InvalidOperationException("Failed to collect translation-unit source inputs.", collectionError);
+                }
 
                 return compilation;
             }

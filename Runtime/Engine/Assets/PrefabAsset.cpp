@@ -275,6 +275,8 @@ std::string InferResolvedAssetTypeFromPropertyContext(
         return "Mesh";
     if (TypeNameHasSuffix(object.typeName, "MeshRenderer") && propertyName == "materials")
         return "Material";
+    if (TypeNameHasSuffix(object.typeName, "SpriteRendererComponent") && propertyName == "sprite")
+        return "Sprite";
     if (TypeNameHasSuffix(object.typeName, "ParticleSystemComponent") && propertyName == "system")
         return "ParticleSystem";
     if ((TypeNameHasSuffix(object.typeName,"AnimatorComponent")&&propertyName=="animation") ||
@@ -294,6 +296,8 @@ std::string InferResolvedAssetType(const PrefabAssetReference& assetReference)
         return "Material";
     if (path.rfind("texture:", 0) == 0)
         return "Texture";
+    if (path.rfind("sprite:", 0) == 0)
+        return "Sprite";
     if (path.rfind("shader:", 0) == 0)
         return "Shader";
     if (path.rfind("vfx-system:", 0) == 0)
@@ -1304,6 +1308,7 @@ std::string PrefabResolvedAssetTypeForArtifactType(const NLS::Core::Assets::Arti
     case ArtifactType::Mesh: return "Mesh";
     case ArtifactType::Material: return "Material";
     case ArtifactType::Texture: return "Texture";
+    case ArtifactType::Sprite: return "Sprite";
     case ArtifactType::Skeleton: return "Skeleton";
     case ArtifactType::Skin: return "Skin";
     case ArtifactType::AnimationClip: return "AnimationClip";
@@ -1394,7 +1399,12 @@ std::vector<Serialize::ObjectIdentifier> CollectPrefabAssetReferences(
 
 std::string ExtractPrefabAssetReferenceSubAssetKeyHint(const std::string& referencePath)
 {
-    (void)referencePath;
+    const auto separator = referencePath.rfind('#');
+    const auto key = separator == std::string::npos ? referencePath : referencePath.substr(separator + 1);
+    for (const std::string_view prefix : {"sprite:", "texture:", "mesh:", "material:", "shader:", "prefab:",
+             "vfx-system:", "animation:", "audio:", "input-actions:"})
+        if (key.size() > prefix.size() && key.compare(0, prefix.size(), prefix) == 0)
+            return key;
     return {};
 }
 

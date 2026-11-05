@@ -6,6 +6,7 @@ enum class EGizmoOperation
 {
     TRANSLATE,
     ROTATE,
-    SCALE
+    SCALE,
+    RECT
 };
 }

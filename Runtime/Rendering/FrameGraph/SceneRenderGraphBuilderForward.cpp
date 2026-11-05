@@ -70,14 +70,16 @@ namespace NLS::Render::FrameGraph
                     break;
                 }
 
-                if (drawCount == 0u)
+                const bool clearOnlyOpaque = metadata.commandKind == NLS::Render::Context::RenderPassCommandKind::Opaque &&
+                    (package.clearColorBuffer || package.clearDepthBuffer || package.clearStencilBuffer);
+                if (drawCount == 0u && !clearOnlyOpaque)
                     continue;
 
                 NLS::Render::Context::RenderPassCommandInput input;
                 input.kind = metadata.commandKind;
                 input.drawCount = drawCount;
                 input.requiresFrameData = true;
-                input.requiresObjectData = true;
+                input.requiresObjectData = drawCount > 0u;
                 input.targetsSwapchain = package.targetsSwapchain;
                 input.renderWidth = package.renderWidth;
                 input.renderHeight = package.renderHeight;

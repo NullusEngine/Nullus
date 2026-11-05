@@ -1,0 +1,767 @@
+{
+  "recordedUtc": "2026-10-29T15:27:06.6851777Z",
+  "platform": "Windows x64",
+  "configuration": "Debug",
+  "scope": "Complex 2D Polygon/Edge/Chain geometry, atomic 2D groups, revision-local query part IDs and safe final-owner cleanup in both worlds. Phase 3 and the complete physics plan remain Partial.",
+  "totalTests": 238,
+  "failures": 0,
+  "skipped": 0,
+  "tests": [
+    {
+      "target": "NullusPhysicsTests",
+      "tests": 98,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0,
+      "exitCode": 0,
+      "executable": "D:/Code/Nullus/build/physics-validation/complex2d/Debug/run/NullusPhysicsTests.exe",
+      "executableSha256": "115DA60BF5B5CEEF32DB6D75DEC3078DC0E81CB6D75266522A7F06FA0D7447E3",
+      "xml": "D:/Code/Nullus/build/physics-validation/complex2d/Debug/NullusPhysicsTests.xml",
+      "log": "D:/Code/Nullus/build/physics-validation/complex2d/Debug/NullusPhysicsTests.log",
+      "xmlUtc": "2026-10-29T15:02:06.2094203Z",
+      "cases": [
+        "PhysicsWorldTests.RaycastReportsStableIdentityPositionNormalAndMaterial",
+        "PhysicsWorldTests.PoseRevisionsDistinguishSimulationFromTeleportRebuildAndRestore",
+        "PhysicsWorldTests.FilteringAndGenerationPreventStaleOrForeignHandles",
+        "PhysicsWorldTests.AllHitsStreamsBeyondTheInternalBufferAndReturnsDistanceOrder",
+        "PhysicsWorldTests.SphereSweepsAndOverlapRespectTriggersAndDynamicFilters",
+        "PhysicsWorldTests.CooksTriangleGeometryAndRejectsBadIndices",
+        "PhysicsWorldTests.ReadAccessRetainsSceneAndConcurrentQueriesUseIndependentBuffers",
+        "PhysicsWorldTests.CookedFaceIndicesReferToSourceTriangles",
+        "PhysicsWorldTests.CompoundBodyKeepsIndependentShapeIdentityLayersAndMass",
+        "PhysicsWorldTests.AllForceModesUseRealMassAndTorqueUsesInertia",
+        "PhysicsWorldTests.LocksSleepAndKinematicTargetsHaveSeparateBehavior",
+        "PhysicsWorldTests.ConvexCookingSupportsDynamicBodiesAndConcaveTrianglesAreRejected",
+        "PhysicsWorldTests.SimulationMaskDoesNotChangeLegacyQueryLayerSemantics",
+        "PhysicsWorldTests.ColliderPairEventsAggregateCompoundShapesAndContinueDuringSleep",
+        "PhysicsWorldTests.SnapshotRestoresPoseVelocitySleepAndStepButRejectsChangedTopology",
+        "PhysicsWorldTests.SharedTaskGraphCompletesPhysXWorkBeforeWorldRelease",
+        "PhysicsWorldTests.CallerOwnedQueryBuffersReportTruncationAndKeepNearestHits",
+        "PhysicsWorldTests.SdkCylinderRetainsCallbacksForQueriesDynamicsAndRemoval",
+        "PhysicsWorldTests.HeightFieldUsesCallerSamplesAndRejectsDynamicOrInvalidGrids",
+        "PhysicsWorldTests.ContinuousCollisionStopsAFastBodyAtAThinWall",
+        "PhysicsClockTests.FractionalFramesAccumulateAndMultipleStepsConsumeTimeOnce",
+        "PhysicsClockTests.LongFrameHasBoundedStepsAndReportsAllDiscardedDebt",
+        "PhysicsClockTests.InvalidConfigurationDoesNotReplaceTheLastValidSettings",
+        "PhysicsClockTests.NonFiniteAndNegativeDeltasDoNotCreateSimulationDebt",
+        "PhysicsClockTests.ReconfigurationRetainsRemainderAndIndependentClocksStayIsolated",
+        "PhysicsPoseHistoryTests.InterpolatesTranslationAndShortestArcRotation",
+        "PhysicsPoseHistoryTests.ReadingTheSameStepTwiceDoesNotConsumeThePreviousSample",
+        "PhysicsPoseHistoryTests.TeleportRestoreAndMissingStepsResetBothSamples",
+        "PhysicsPoseHistoryTests.AlphaIsClampedAndClearedHistoriesCannotPublishStalePoses",
+        "PhysicsWorld2DTests.RealGravityAndWorldIsolation",
+        "PhysicsWorld2DTests.PoseRevisionsInvalidateHistoryOnlyForDiscontinuousChanges",
+        "PhysicsWorld2DTests.BoxCircleCapsuleAndConvexPolygonSettleOnTheFloor",
+        "PhysicsWorld2DTests.CompoundShapesShareOneBodyAndRecomputeMass",
+        "PhysicsWorld2DTests.ForceModesAndTorqueUsePhysicalMassAndInertia",
+        "PhysicsWorld2DTests.RayAndCircleQueriesReturnActualShapeIdentityAndRespectFilters",
+        "PhysicsWorld2DTests.TriggerQueriesAndAllHitsAreFilteredAndDistanceSorted",
+        "PhysicsWorld2DTests.MotionLocksSleepAndTeleportVelocityPolicyAreEffective",
+        "PhysicsWorld2DTests.BulletDoesNotTunnelThroughThinStaticGeometry",
+        "PhysicsWorld2DTests.InvalidInputsAndForeignOrRecycledHandlesNeverReachBackendAssertions",
+        "PhysicsWorld2DTests.ReadViewRetainsWorldAndConcurrentQueriesUseIndependentStorage",
+        "PhysicsWorld2DTests.TwoAndThreeDimensionalSolversDoNotAdvanceEachOther",
+        "PhysicsWorld2DTests.SharedTaskGraphExecutesBackendTasksAndOutlivesEachWorld",
+        "PhysicsWorld2DTests.MutationBatchDoesNotExposeACompoundRebuildToConcurrentReaders",
+        "PhysicsWorld2DTests.QueryLayersRemainIndependentOfTheSimulationCollisionMask",
+        "PhysicsWorld2DTests.InlineTaskGraphWithNoRetainedRecordsStillWaitsForAcceptedTasks",
+        "PhysicsWorld2DTests.CallerOwnedQueryBuffersReportRequiredCapacityAndNearestHits",
+        "PhysicsWorld2DTests.SnapshotRestoresPoseVelocitySleepAndStepForUnchangedTopology",
+        "PhysicsCommandTests.DefersThreeDimensionalBodyAndCompoundShapesInRecordedOrder",
+        "PhysicsCommandTests.CompoundReplacementPublishesStablePartIdsAndInvalidatesTheEntireOldGroup",
+        "PhysicsCommandTests.FailedCompoundAttachmentRollsBackNewGeometryWithoutLosingMassVelocityOrForce",
+        "PhysicsCommandTests.ReplacementRejectsOtherBodiesStaleHandlesAndDuplicatePartIdentitiesInBothDimensions",
+        "PhysicsCommandTests.CompoundLimitsAndEmptyReplacementPreserveUnrelatedShapes",
+        "PhysicsCommandTests.ReadViewsSeeWholeCompoundGroupsAcrossCommit",
+        "PhysicsCommandTests.CompoundContactPairsAggregateOwnersAndKeepRepresentativeSubshapeIdsThroughSleepAndExit",
+        "PhysicsCommandTests.WorldConfigurationWaitsForCommitAndChangesRealSolverMotion",
+        "PhysicsCommandTests.RejectsInvalidAndWrongDimensionWorldConfiguration",
+        "PhysicsCommandTests.DefersTwoDimensionalBodiesAndUsesMassAfterShapeAssembly",
+        "PhysicsCommandTests.CopiesMeshInputAndRetainsOldShapeWhenReplacementIsRejected",
+        "PhysicsCommandTests.RejectsBadPolygonAndFailedDependenciesBeforeCallingBox2D",
+        "PhysicsCommandTests.TicketsAndHandlesCannotCrossBuffersDimensionsOrGenerations",
+        "PhysicsCommandTests.CancellingPendingWorkAndExpiringWorldsDoNotCreateOrRetainObjects",
+        "PhysicsCommandTests.ConcurrentProducersOnlyRecordAndConsumerAppliesOneSnapshot",
+        "PhysicsCommandTests.WorkRecordedDuringCommitWaitsForTheNextCommit",
+        "PhysicsCommandTests.DynamicsUpdatesPreserveSubmittedForcesAndNativeGeometryOutlivesRecords",
+        "PhysicsBodyPropertiesTests.CustomMassCenterAndInertiaDriveRealOffCenterImpulse",
+        "PhysicsBodyPropertiesTests.RotatedPrincipalAxesChangeAngularImpulseResponse",
+        "PhysicsBodyPropertiesTests.AutomaticAndManualPropertiesSurviveShapeRemovalAndReassembly",
+        "PhysicsBodyPropertiesTests.StartAsleepDoesNotEraseMotionWhenAnAwakeBodyRebuildsShapes",
+        "PhysicsBodyPropertiesTests.InvalidMassPropertiesNeverModifyNativeConfiguration",
+        "PhysicsBodyPropertiesTests.TorqueAndPositionedForceModesHaveAnalyticalMassAndInertiaResponse",
+        "PhysicsBodyPropertiesTests.ConfiguredSleepThresholdChangesAutomaticSleepingBehavior",
+        "PhysicsShapeQueryTests.RotatedBoxAndYUpCapsuleSweepsUseActualGeometry",
+        "PhysicsShapeQueryTests.OverlapsReturnIndependentShapeIdentityAndPreserveLegacyBodyDeduplication",
+        "PhysicsShapeQueryTests.AllSweepsAndBoundedOutputsProcessEveryNativeTouchBatch",
+        "PhysicsShapeQueryTests.OverlapCountsRemainExactBeyondInternalBufferCapacity",
+        "PhysicsShapeQueryTests.CookedConvexTemplatesExcludeTheirWholeBodyAndSurviveRetainedReads",
+        "PhysicsShapeQueryTests.InvalidForeignAndUnsupportedSourcesNeverReachBackendAssertions",
+        "PhysicsShapeQueryTests.LayerTriggerDynamicAndIgnoredBodyFiltersMatchExistingQuerySemantics",
+        "PhysicsShapeQueryTests.InitialOverlapDoesNotInventAContactPointIncludingTheLegacySphereEntry",
+        "PhysicsShapeQueryTests.ValidMissAndDisabledCategoriesHaveSuccessfulStatusAndNoOutputWrites",
+        "PhysicsShapeQueryTests.CylinderCastsUseExactFlatCapsForPrimitivesAndRetainedCustomShapes",
+        "PhysicsCookingTests.ConvexRoundTripUsesRealGeometryAndRetainsNativeLifetime",
+        "PhysicsCookingTests.MirroredTriangleCookingPreservesFrontFacesAndSourceIndices",
+        "PhysicsCookingTests.CookedHeightfieldProducesRealStaticCollisionAtBakedHeight",
+        "PhysicsCookingTests.CookedConcaveReplacementRejectsDynamicAndTriggerWithoutRemovingValidShape",
+        "PhysicsCookingTests.MalformedSourcesAndCorruptStreamsAreRejectedWithoutBackendAssertions",
+        "PhysicsCookingTests.OwnedCookedInputSupportsDeferredAssemblyAndIndependentWorlds",
+        "PhysicsCookingTests.MaterialCombineModesControlActualRebound",
+        "PhysicsGeometry2DTests.ConcavePolygonPreservesItsNotchAndReturnsPerPartQueryIdentity",
+        "PhysicsGeometry2DTests.EitherWindingAndCollinearVerticesDecomposeWithoutChangingArea",
+        "PhysicsGeometry2DTests.MalformedContoursNeverChangeThePreviousOutputOrReachNativeAssertions",
+        "PhysicsGeometry2DTests.ConvexContoursAboveEightVerticesProduceValidBoundedNativeParts",
+        "PhysicsGeometry2DTests.DecomposedDynamicMassAndImpulseUseTheActualConcaveArea",
+        "PhysicsGeometry2DTests.AtomicGroupRollbackPreservesOldGeometryMotionAndUnconsumedForce",
+        "PhysicsGeometry2DTests.RecordedGroupsOwnTheirInputsAndReadViewsObserveCompleteGroups",
+        "PhysicsGeometry2DTests.OneSidedChainHasGhostNeighborsRealCollisionAndPerSegmentIdentity",
+        "PhysicsGeometry2DTests.ChainSeamSlidesWithoutGhostBumpsAndLoopsHaveCompleteClosure",
+        "PhysicsGeometry2DTests.TwoSidedEdgesValidateNativeGeometryBeforeCreation"
+      ]
+    },
+    {
+      "target": "NullusPhysicsAssetTests",
+      "tests": 19,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0,
+      "exitCode": 0,
+      "executable": "D:/Code/Nullus/build/physics-validation/complex2d/Debug/run/NullusPhysicsAssetTests.exe",
+      "executableSha256": "55B97792CE8BE0C4BEEEDF34B090CAC92A446D4E01C3F5BBF62589C2867AFEC8",
+      "xml": "D:/Code/Nullus/build/physics-validation/complex2d/Debug/NullusPhysicsAssetTests.xml",
+      "log": "D:/Code/Nullus/build/physics-validation/complex2d/Debug/NullusPhysicsAssetTests.log",
+      "xmlUtc": "2026-10-29T15:02:08.6863269Z",
+      "cases": [
+        "PhysicsAssetTests.NativeTypesUseExistingMetadataAndKeepSourceIdentity",
+        "PhysicsAssetTests.MaterialCompilerRejectsMalformedDataWithoutChangingOutput",
+        "PhysicsAssetTests.MeshCompilerRejectsBadGeometryVersionsAndForeignTargets",
+        "PhysicsAssetTests.CacheIncludesBakeSettingsMetadataBackendAndTarget",
+        "PhysicsAssetTests.FailedAndCancelledCookRetainsTheLastSuccessfulArtifact",
+        "PhysicsAssetTests.RuntimeManifestLoadsCookedGeometryAfterSourcesAndDatabaseAreRemoved",
+        "PhysicsAssetTests.SameMaterialDrivesActualThreeAndTwoDimensionalRebound",
+        "PhysicsAssetTests.ResourceReloadPreservesIdentityAndRejectsHashOrGuidMismatch",
+        "PhysicsAssetTests.AuthoringLookupUsesOneSnapshotAndSeesNextCommittedRevision",
+        "PhysicsAssetTests.SceneRoundTripAndCloneKeepTypedResourceReferencesAndIndependentBodies",
+        "PhysicsAssetTests.InvalidResourceAndUnsupportedMeshTransformRetainLastValidShape",
+        "PhysicsAssetTests.ShapeParserValidatesStableIdsTransformsReferencesAndCanonicalOrdering",
+        "PhysicsAssetTests.ShapeResourcePublishesActualRotatedPrimitiveGeometryAndReflectedOffsets",
+        "PhysicsAssetTests.ShapeDependenciesPackageTransitivelyAndLoadWithoutSourcesOrArtifactDatabase",
+        "PhysicsAssetTests.ShapeReloadAndChildMeshReloadReplaceAllShapesWhileKeepingBodyAndStablePartIds",
+        "PhysicsAssetTests.InvalidShapeResourceTransformsAndMissingDependenciesRetainTheWholePreviousGroup",
+        "PhysicsAssetTests.CompoundSceneRoundTripCloneDisableAndExternalShapeRemovalKeepIndependentOwnership",
+        "PhysicsAssetTests.ShapeMeshReflectionAndConcavityRejectUnsupportedChangesWithoutDiscardingGeometry",
+        "PhysicsAssetTests.CompoundChildUsesRigidbodyWorldPoseAndCallbackDestructionReleasesEveryPart"
+      ]
+    },
+    {
+      "target": "NullusPhysicsSceneTests",
+      "tests": 72,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0,
+      "exitCode": 0,
+      "executable": "D:/Code/Nullus/build/physics-validation/complex2d/Debug/run/NullusPhysicsSceneTests.exe",
+      "executableSha256": "7AFCB7EBC01ECFDDBA73627EF1EB100AD26AE6E4AA22E3D0639FA8A2F969275A",
+      "xml": "D:/Code/Nullus/build/physics-validation/complex2d/Debug/NullusPhysicsSceneTests.xml",
+      "log": "D:/Code/Nullus/build/physics-validation/complex2d/Debug/NullusPhysicsSceneTests.log",
+      "xmlUtc": "2026-10-29T15:01:08.5504067Z",
+      "cases": [
+        "PhysicsSceneTests.ColliderPublishesQueryBodiesAndTracksTransforms",
+        "PhysicsSceneTests.ColliderGeometryFollowsWorldScale",
+        "PhysicsSceneTests.CapsuleUsesYUpAxisAndFollowsRotation",
+        "PhysicsSceneTests.RemovingOrDestroyingCollidersReleasesQueryBodies",
+        "PhysicsSceneTests.ParticlesCollideWithSceneCollidersWithoutManualWiring",
+        "PhysicsSceneTests.SceneRoundTripRestoresColliderGeometry",
+        "PhysicsSceneTests.DescendantCollidersShareTheNearestRigidbodyAndNestedBodiesStopOwnership",
+        "PhysicsSceneTests.CompoundForceCommandsApplyOnceAndShapeRebuildPreservesMotion",
+        "PhysicsSceneTests.DynamicDescendantKeepsWorldPoseWhenItsParentMoves",
+        "PhysicsSceneTests.ExplicitTransformEditTeleportsOnceAndQueuedTeleportCanClearVelocity",
+        "PhysicsSceneTests.StaticMirrorsBakeCenterAndShearReportsADiagnostic",
+        "PhysicsSceneTests.StopAndComponentRemovalReleaseBodiesEvenWhenAReadWorldIsRetained",
+        "PhysicsSceneTests.CylinderAuthoringUsesYUpDimensionsAndSurvivesSceneRoundTrip",
+        "PhysicsSceneTests.FixedUpdateMassChangesPreservePreviouslySubmittedForceAndBodyIdentity",
+        "PhysicsSceneTests.WorldSettingsApplyToBothSolversWithoutRebuildingBodyHandles",
+        "PhysicsSceneTests.SceneWorldSettingsSurviveTextRoundTripAndCloning",
+        "PhysicsSceneTests.InvalidWorldSettingsLeaveConfigurationAndNativeWorldsUnchanged",
+        "PhysicsSceneTests.OldSceneWithoutPhysicsSettingsUsesDefaultsWithoutMutatingItsDocument",
+        "PhysicsSceneTests.MalformedPhysicsSettingsAreRejectedBeforeSceneInstantiation",
+        "PhysicsStructureTests.RuntimeCreationWaitsForSafeSynchronizationInBothDimensions",
+        "PhysicsStructureTests.AuthoringDeferralKeepsQueriesStableUntilExplicitSynchronization",
+        "PhysicsStructureTests.ComponentDestructionWithRetainedQueriesWaitsForTheNextSafeCommit",
+        "PhysicsStructureTests.ContactCallbacksCanDestroyAndCreateObjectsWithoutMutatingTheirReadWorld",
+        "PhysicsStructureTests.RemovingAndReaddingRigidbodyReassemblesShapesWithFreshHandles",
+        "PhysicsStructureTests.DisableThenReenableBeforeCommitCannotRemoveTheReplacementShape",
+        "PhysicsStructureTests.SceneDestructionFlushesPendingAndDuplicateReleasesInBothWorlds",
+        "PhysicsStructureTests.RepeatedPlayStopClearsRetainedWorldsAndDoesNotReplayOldCommands",
+        "PhysicsStructureTests.SceneCloneNeverCopiesPendingCommandsOrRuntimeHandles",
+        "PhysicsStructureTests.ExternallyRemovedShapesAreRebuiltInsteadOfAcceptingStaleCacheEntries",
+        "PhysicsPresentationTests.RenderAlphaMovesFrozenProxiesWithoutChangingAuthorityOrQueries",
+        "PhysicsPresentationTests.TeleportsRestoresAndShapeRebuildsClearInterpolationHistory",
+        "PhysicsPresentationTests.NativeTeleportsAndRestoresInvalidateRetainedRenderProxiesWhilePaused",
+        "PhysicsPresentationTests.NestedBodiesRemainIndependentRegardlessOfCreationOrder",
+        "PhysicsPresentationTests.ParentMotionWithoutAFixedStepCannotDragDynamicBody",
+        "PhysicsPresentationTests.CameraCapturesSmoothedViewAndKeepsAuthoringCameraSemantics",
+        "PhysicsScene2DTests.EditingPublishesStaticQueriesWithoutRunningSimulation",
+        "PhysicsScene2DTests.InterpolationPreservesLiveZAndClearsOnTeleportRestoreAndRebuild",
+        "PhysicsScene2DTests.CrossingPiDoesNotRebuildShapesOrResetShortestRotationInterpolation",
+        "PhysicsScene2DTests.DynamicPoseIgnoresParentMovementWithoutRunningSimulation",
+        "PhysicsScene2DTests.MixedDimensionParentsWriteWorldPosesBeforeTheirDynamicChildren",
+        "PhysicsScene2DTests.RuntimeFallsOntoStaticColliderAndStopReleasesWorldObjects",
+        "PhysicsScene2DTests.ChildCollidersShareNearestRigidbodyAndNestedRigidbodyStartsAnotherBody",
+        "PhysicsScene2DTests.ForceCommandsApplyAfterShapeMassAndAreConsumedExactlyOnce",
+        "PhysicsScene2DTests.MovingAParentDoesNotTeleportItsDynamicChildBody",
+        "PhysicsScene2DTests.AuthoredTransformTeleportsOnceAndExplicitTeleportCanResetVelocity",
+        "PhysicsScene2DTests.InvalidShearRetainsValidShapeAndOtherCollidersRemainUsable",
+        "PhysicsScene2DTests.RemovingComponentsAndUnloadingSceneLeaveNoBackendBodies",
+        "PhysicsScene2DTests.SceneRoundTripRestoresConfigurationAndCreatesIndependentWorldHandles",
+        "PhysicsScene2DTests.TwoDimensionsCannotDriveTheSameObjectTransform",
+        "PhysicsScene2DTests.DynamicsEditsPreservePreviouslySubmittedForceAndBodyIdentity",
+        "PhysicsScene2DTests.ConcavePolygonComponentPublishesTheRealContourAndRetainsAllPartsOnInvalidEdit",
+        "PhysicsScene2DTests.PolygonBakesMirroredNonuniformLocalRotationAndKeepsPartsWhileItsParentSimulates",
+        "PhysicsScene2DTests.MirroredChainPreservesFrontSideSupportsBodiesAndRecoversDeletedMembers",
+        "PhysicsScene2DTests.ContourArraysAndLoopRoundTripThroughTextCloneAndLegacyDefaults",
+        "PhysicsScene2DTests.DeferredDestructionAndRepeatedPlayReleaseEveryConcavePart",
+        "PhysicsScene2DTests.EdgeAndUnsupportedDynamicChainChangesPreserveThePreviousValidGroup",
+        "PhysicsLifecycleTests.StoppedEditGeometryUsesDeferredOwnerCleanupInBothWorldsWithoutReplayingDestroy",
+        "PhysicsLifecycleTests.DetachedComponentsAfterStopKeepTheirSceneReleaseContextForBothBodiesAndStaticGroups",
+        "PhysicsLifecycleTests.RetainedWorldsAreEmptyAfterDestroyingAStoppedSceneWithRecreatedQueryGeometry",
+        "PhysicsLifecycleTests.NormalOwnerDestructionKeepsExistingGameplayCallbackAndPhysicsCleanupOrder",
+        "PhysicsLifecycleTests.DeferredWorldSettingsKeepRetainedQueriesStableUntilSafeCommit",
+        "PhysicsLifecycleTests.ContactStopWaitsForQueryReleaseAndClearsBothWorldsAtTheNextBoundary",
+        "PhysicsLifecycleTests.RuntimePrefabInstancesOwnFreshBodiesAndNeverCopyPendingForces",
+        "PhysicsLifecycleTests.ReparentingCollidersReassignsShapesAndPreservesIndependentNestedBodies",
+        "PhysicsLifecycleTests.RepeatedSandboxReplacementRejectsUnsafeDestructionAndPreservesTheEditWorlds",
+        "PhysicsLifecycleTests.DelayedSceneLoadsWaitForReadReleaseAndPreserveRequestsQueuedByLoadEvents",
+        "PhysicsBodyControlsTests.ConstraintsAffectSimulationAndUnlockWithoutReplacingShapes",
+        "PhysicsBodyControlsTests.ManualMassPropertiesUsePhysicalBodyUnitsAndSurviveGeometryRebuild",
+        "PhysicsBodyControlsTests.SleepWakeAndGeometryRebuildRespectDeferredCommandsAndCurrentSleepingState",
+        "PhysicsBodyControlsTests.AllForceAndTorqueModesAreAppliedExactlyOnceAndRejectInvalidModes",
+        "PhysicsBodyControlsTests.NewConfigurationRoundTripsAndMissingLegacyFieldsUseDefaults",
+        "PhysicsBodyControlsTests.ColliderQueriesComposeNativeLocalPoseAndKeepCapsuleAxesConsistent"
+      ]
+    },
+    {
+      "target": "NullusPlayModeTests",
+      "tests": 42,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0,
+      "exitCode": 0,
+      "executable": "D:/Code/Nullus/build/physics-validation/complex2d/Debug/run/NullusPlayModeTests.exe",
+      "executableSha256": "CA38A36B6439B1DDCEEA1EDD566B3F99877F065A0FED5ACD1F6B42730D73437C",
+      "xml": "D:/Code/Nullus/build/physics-validation/complex2d/Debug/NullusPlayModeTests.xml",
+      "log": "D:/Code/Nullus/build/physics-validation/complex2d/Debug/NullusPlayModeTests.log",
+      "xmlUtc": "2026-10-29T15:17:18.0035214Z",
+      "cases": [
+        "ProjectPhysicsTimingTests.PartialProjectOverridesKeepSixtyHzAndExplicitSessionSettings",
+        "ProjectPhysicsTimingTests.AccumulationOnlyOverrideIsAppliedAndInvalidValueIsAtomic",
+        "PlayUndoTests.RestoresEditRedoAndDiscardsRuntimeHistory",
+        "PlayUndoTests.KeepsExplicitAssetEditsAndRejectsMixedLifetimes",
+        "GameViewPresentationTests.ResolutionDpiAndZoomAreIndependent",
+        "GameViewInputRouterTests.OcclusionBlackBarsAndEscapeDoNotLeakInput",
+        "PlayAudioTests.MuteAdvancesPauseHoldsAndStopReleasesSessionVoices",
+        "PlayAudioTests.DecodesRealWavMp3OggAndRunsWithoutADevice",
+        "PlayPhysicsTests.DynamicBodyFallsAndProducesContactInExistingQueryWorld",
+        "PlayModeControllerTests.QueuesTransitionsAndAdvancesOnlyOneStep",
+        "PlayModeControllerTests.RecoveryFailureCannotPublishEditAndCanRetry",
+        "PlayModeControllerTests.StopAfterStepWinsWithoutAnotherSimulation",
+        "PlayModeControllerTests.EntryExceptionRollsBackAndCrossThreadStopCancelsEntry",
+        "RuntimePlaySessionTests.FixedStepIsScaledOnceAndStepAlwaysRunsOneFixedTick",
+        "RuntimePlaySessionTests.ManualStepIgnoresTimeScaleAndPreservesOrdinaryFractionalDebt",
+        "RuntimePlaySessionTests.PublishesRenderInterpolationAndPauseStepShowsLatestPhysicalPose",
+        "RuntimePlaySessionTests.CollisionScriptDispatchDefersStructuralAndMotionCommitsUnderRetainedQueries",
+        "RuntimePlaySessionTests.ConfiguredStepBudgetBoundsLongFramesAndCountsDiscardedTime",
+        "RuntimePlaySessionTests.CollisionStopPreservesCallbackLifetimeAndCancelsRemainingCatchupWork",
+        "RuntimePlaySessionTests.ZeroTimeScaleStepCommitsWorldSettingsQueuedByRealCollisionScripts",
+        "RuntimePlaySessionTests.DefaultLongFrameRunsEightStepsAndReportsClippedTime",
+        "RuntimePlaySessionTests.PausedZeroTimeScaleStepAdvancesBothNativeWorldsExactlyOnce",
+        "RuntimePlaySessionTests.ScriptHostRestoreFailureRetainsSceneUntilRetry",
+        "RuntimePlaySessionTests.EditorCanRetirePlayBeforeRestoringAnUnavailableScriptHost",
+        "RuntimePlaySessionTests.OneHundredSandboxSessionsRetainTheEditWorld",
+        "RuntimePlaySessionTests.ScalesZeroHalfNormalAndDoubleWithoutPauseCatchup",
+        "RuntimePlaySessionInputTests.ZeroAndMultiplePhysicsStepsNeverLoseOrRepeatActionCommands",
+        "RuntimePlaySessionInputTests.ScriptApiReadsIndependentDynamicAndFixedEventCursors",
+        "RuntimePlaySessionInputTests.LuaSubscriptionsKeepEveryClickAndReloadWithoutStaleClosures",
+        "RuntimePlaySessionInputTests.LuaPairingPreservesGenerationTaggedDeviceIds",
+        "RuntimePlaySessionInputTests.RebindingTimeoutReportsItsStatusAfterReleasingTheInputLease",
+        "RuntimePlaySessionInputTests.PauseAndStopIsolateCommandsWithoutResettingHostDevices",
+        "RuntimePlaySessionInputTests.ManualStepConsumesBufferedInputAtZeroTimeScaleAndResumeDiscardsPendingInput",
+        "RuntimePlaySessionInputTests.CSharpSubscriptionsConsumeEachDynamicAndFixedClickOnce",
+        "PlayScriptsTests.LuaSessionRecreatesVmAndCannotReusePreviousInstance",
+        "PlayScriptsTests.ContentAddressedAssemblyBindsThePortableAbiWithoutAnUnversionedAlias",
+        "PlayScriptsTests.CSharpResetsStaticsSubscriptionsAndCollectsOldDomains",
+        "PlayScriptsTests.LuaLifecycleActivationMutationAndExceptionsRemainIsolated",
+        "PlayBindingsTests.NativeAdapterChangesRigidbodiesAndCameraOutput",
+        "GameOutputTests.DisplayDepthAndViewportUseStableSceneOrder",
+        "PlayUiTests.DisplayFilteringAndPointerCancellationPreserveTextFocus",
+        "PlayUiTests.OrderedMouseClicksReachUiThreeTimesAndDoNotTriggerGameplay"
+      ]
+    },
+    {
+      "target": "NullusPlayLoopNoUiTests",
+      "tests": 1,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0,
+      "exitCode": 0,
+      "executable": "D:/Code/Nullus/build/physics-validation/complex2d/Debug/run/NullusPlayLoopNoUiTests.exe",
+      "executableSha256": "33A8A5FF52566F55BB487EEDD81178562845EECC73D3A25BE9C424906E825BFB",
+      "xml": "D:/Code/Nullus/build/physics-validation/complex2d/Debug/NullusPlayLoopNoUiTests.xml",
+      "log": "D:/Code/Nullus/build/physics-validation/complex2d/Debug/NullusPlayLoopNoUiTests.log",
+      "xmlUtc": "2026-10-29T15:04:45.2963627Z",
+      "cases": [
+        "PlayLoopNoUiTests.SimulationContinuesAndPauseDoesNotAccumulateTime"
+      ]
+    },
+    {
+      "target": "NullusPhysicsAssetEditorTests",
+      "tests": 6,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0,
+      "exitCode": 0,
+      "executable": "D:/Code/Nullus/build/physics-validation/complex2d/Debug/run/NullusPhysicsAssetEditorTests.exe",
+      "executableSha256": "1ABBBB6B4A22E41263A093E6EFC08A010A7CE78E5D74EE2E5546D0796DED9F34",
+      "xml": "D:/Code/Nullus/build/physics-validation/complex2d/Debug/NullusPhysicsAssetEditorTests.xml",
+      "log": "D:/Code/Nullus/build/physics-validation/complex2d/Debug/NullusPhysicsAssetEditorTests.log",
+      "xmlUtc": "2026-10-29T15:24:03.7766183Z",
+      "cases": [
+        "PhysicsAssetEditorTests.NativeImporterPersistsBothPhysicsResourcesAndReopensTypedAssets",
+        "PhysicsAssetEditorTests.InvalidReimportRetainsThePreviousSuccessfulArtifact",
+        "PhysicsAssetEditorTests.SourceAndMetaChangesDuringCookingOrFinalPublicationCannotReplaceGoodArtifacts",
+        "PhysicsAssetEditorTests.CancellationDuringFinalPublicationRetainsArtifactsAndEndsTheJob",
+        "PhysicsAssetEditorTests.ShapeImporterPublishesReferencesReloadsAndPreservesThePreviousGroupOnInvalidSource",
+        "PhysicsAssetEditorTests.ShapeFinalPublicationRejectsSourceChangesAndCancellation"
+      ]
+    }
+  ],
+  "modules": [
+    {
+      "name": "NLS_Based.dll",
+      "built": "D:/Code/Nullus/build/physics-validation/complex2d/Debug/lib/NLS_Based.dll",
+      "loaded": "D:/Code/Nullus/build/physics-validation/complex2d/Debug/run/NLS_Based.dll",
+      "sha256": "1561471AB4C828990506335D24680A429811572CABD199610175D79209EB517A",
+      "matchesBuilt": true,
+      "builtUtc": "2026-10-29T14:29:34.0372950Z"
+    },
+    {
+      "name": "NLS_Cored.dll",
+      "built": "D:/Code/Nullus/build/physics-validation/complex2d/Debug/lib/NLS_Cored.dll",
+      "loaded": "D:/Code/Nullus/build/physics-validation/complex2d/Debug/run/NLS_Cored.dll",
+      "sha256": "14E9E6568B8E57B68755AE5859DD802D50753650DC3C7227BA51270EA5D497A6",
+      "matchesBuilt": true,
+      "builtUtc": "2026-10-29T14:29:37.6637762Z"
+    },
+    {
+      "name": "NLS_Physicsd.dll",
+      "built": "D:/Code/Nullus/build/physics-validation/complex2d/Debug/lib/NLS_Physicsd.dll",
+      "loaded": "D:/Code/Nullus/build/physics-validation/complex2d/Debug/run/NLS_Physicsd.dll",
+      "sha256": "276A3963FF45FAF8BC2776BD30A0C67EDE79C7EBAF23899279F2955D52A1175B",
+      "matchesBuilt": true,
+      "builtUtc": "2026-10-29T14:37:48.0339218Z"
+    },
+    {
+      "name": "NLS_VFXd.dll",
+      "built": "D:/Code/Nullus/build/physics-validation/complex2d/Debug/lib/NLS_VFXd.dll",
+      "loaded": "D:/Code/Nullus/build/physics-validation/complex2d/Debug/run/NLS_VFXd.dll",
+      "sha256": "8378E03F7970E247A2A99A4981BC5952E246E7132F3478ECCE21ADED889780C3",
+      "matchesBuilt": true,
+      "builtUtc": "2026-10-29T14:29:47.2175972Z"
+    },
+    {
+      "name": "NLS_ECSd.dll",
+      "built": "D:/Code/Nullus/build/physics-validation/complex2d/Debug/lib/NLS_ECSd.dll",
+      "loaded": "D:/Code/Nullus/build/physics-validation/complex2d/Debug/run/NLS_ECSd.dll",
+      "sha256": "9A1901D0B1D87C5220575C516679A570B55F93467AF2189FC259E0D68B30E7F6",
+      "matchesBuilt": true,
+      "builtUtc": "2026-10-29T14:29:55.5834564Z"
+    },
+    {
+      "name": "NLS_Engined.dll",
+      "built": "D:/Code/Nullus/build/physics-validation/complex2d/Debug/lib/NLS_Engined.dll",
+      "loaded": "D:/Code/Nullus/build/physics-validation/complex2d/Debug/run/NLS_Engined.dll",
+      "sha256": "C29CB1A4782C7896F74D888CF9D15B19B014647BB7FD0C0558878361C2E2D5B0",
+      "matchesBuilt": true,
+      "builtUtc": "2026-10-29T14:57:58.1916513Z"
+    },
+    {
+      "name": "NLS_Scriptingd.dll",
+      "built": "D:/Code/Nullus/build/physics-validation/complex2d/Debug/lib/NLS_Scriptingd.dll",
+      "loaded": "D:/Code/Nullus/build/physics-validation/complex2d/Debug/run/NLS_Scriptingd.dll",
+      "sha256": "73F8DE22E659AD13023CDC004EF7D6F240FEF19B5590EEC9E40F0072230C94CB",
+      "matchesBuilt": true,
+      "builtUtc": "2026-10-29T14:58:18.7734367Z"
+    },
+    {
+      "name": "NLS_Cookd.dll",
+      "built": "D:/Code/Nullus/build/physics-validation/complex2d/Debug/lib/NLS_Cookd.dll",
+      "loaded": "D:/Code/Nullus/build/physics-validation/complex2d/Debug/run/NLS_Cookd.dll",
+      "sha256": "835A2D76CBDC753E164BB631D57BB2093DB28DFC9D73B3F414845EF8129795C7",
+      "matchesBuilt": true,
+      "builtUtc": "2026-10-29T14:58:36.6391911Z"
+    }
+  ],
+  "sourceSnapshot": [
+    {
+      "path": "Runtime/Physics/Geometry2D.h",
+      "module": "NLS_Physicsd.dll",
+      "sha256": "B87763743AF7A1FAE9F24C65D63EC77A7BC1DB67C75A143761C36843F816FD85"
+    },
+    {
+      "path": "Runtime/Physics/Geometry2D.cpp",
+      "module": "NLS_Physicsd.dll",
+      "sha256": "EE75940CC494D923AA135706ABBE43A73DFDA5735CD81655A248F9C869557588"
+    },
+    {
+      "path": "Runtime/Physics/PhysicsWorld2D.h",
+      "module": "NLS_Physicsd.dll",
+      "sha256": "1F41BF3F033188D94F1A7A893399E1D7F164D03B9597B8A9C3508A39A697BA91"
+    },
+    {
+      "path": "Runtime/Physics/PhysicsWorld2D.cpp",
+      "module": "NLS_Physicsd.dll",
+      "sha256": "327CE6E3414EDE4A114CCFE4AB8FE99A44BF71D6B9AB83FE760363DFFEC6E10C"
+    },
+    {
+      "path": "Runtime/Physics/PhysicsCommandBuffer.h",
+      "module": "NLS_Physicsd.dll",
+      "sha256": "AAE02221BB4035A772034450FFFADE399A3BE0122C50BB6A2EC0CC3A580D8C69"
+    },
+    {
+      "path": "Runtime/Physics/PhysicsCommandBuffer.cpp",
+      "module": "NLS_Physicsd.dll",
+      "sha256": "D7F80794F23FDF5AD0C808A35C638452B64A33E3A578046861C35562024D64EE"
+    },
+    {
+      "path": "Runtime/Engine/Components/Component.h",
+      "module": "NLS_Engined.dll",
+      "sha256": "E99F29C2EFCACC5488674078E7D6F0934F7A408C7DC2A2F7798A03F537B0186D"
+    },
+    {
+      "path": "Runtime/Engine/Components/RigidbodyComponent.h",
+      "module": "NLS_Engined.dll",
+      "sha256": "D8FE1197E345405052084D402B242E9C93AB74E917D6B1E17B1104472E17A843"
+    },
+    {
+      "path": "Runtime/Engine/Components/RigidbodyComponent.cpp",
+      "module": "NLS_Engined.dll",
+      "sha256": "8D6BAF159E21DB6444F34347C0FEB078A6F9079A9F1A2333D68B03FB685EFFDC"
+    },
+    {
+      "path": "Runtime/Engine/Components/Rigidbody2DComponent.h",
+      "module": "NLS_Engined.dll",
+      "sha256": "21F094B67572D89E1BE2EA02B51E653EF6D7F24E0FC2CA99DB7F290D20E9E5A6"
+    },
+    {
+      "path": "Runtime/Engine/Components/Rigidbody2DComponent.cpp",
+      "module": "NLS_Engined.dll",
+      "sha256": "B0987A8867E3CDE5541D3F90BD99BA86AB9D5851ACF56D2F46B4959BD58AC4D6"
+    },
+    {
+      "path": "Runtime/Engine/Components/PhysicsColliderComponent.h",
+      "module": "NLS_Engined.dll",
+      "sha256": "5EDF98C229E6837116430798C6FED70C27144EBAAB3D76062568EB121965AE62"
+    },
+    {
+      "path": "Runtime/Engine/Components/PhysicsColliderComponent.cpp",
+      "module": "NLS_Engined.dll",
+      "sha256": "C6329701C5C054C8BF9F750359B0219DB6172435EC121ECA4A1B8E86BF0B24FF"
+    },
+    {
+      "path": "Runtime/Engine/Components/PhysicsCollider2DComponent.h",
+      "module": "NLS_Engined.dll",
+      "sha256": "9CD93D228C23B9D993C7813FECAB9A617842AF790AEB77E2E410A95594CA7477"
+    },
+    {
+      "path": "Runtime/Engine/Components/PhysicsCollider2DComponent.cpp",
+      "module": "NLS_Engined.dll",
+      "sha256": "93FF163505C1CBE1355B42E3887D373399D218A97EFE113394DDDE8B71A00211"
+    },
+    {
+      "path": "Runtime/Engine/SceneSystem/Scene.cpp",
+      "module": "NLS_Engined.dll",
+      "sha256": "41AD0C25B513CFA94D88593A9555A0EBADEB2C3BA4ED49247B36C4427C2AB9AE"
+    },
+    {
+      "path": "Project/Editor/Assets/AssetDatabaseFacade.cpp",
+      "module": "EditorProjectd.lib",
+      "sha256": "4618C1C5FE4AC558AD7348A7CC51182F024BA901F41411490B1487FDA26CED02"
+    }
+  ],
+  "testSourceSnapshot": [
+    {
+      "path": "Tests/Unit/PhysicsGeometry2DTests.cpp",
+      "target": "NullusPhysicsTests",
+      "sha256": "4A05040F578FFB0C10BE314760B6CE133C6CB37885A4384EBFF671801F9A6FBE"
+    },
+    {
+      "path": "Tests/Unit/PhysicsScene2DTests.cpp",
+      "target": "NullusPhysicsSceneTests",
+      "sha256": "E981DB3F811A4E997A089D4DFA43B550636EA8390AE6278A80D758B9C087606C"
+    },
+    {
+      "path": "Tests/Unit/PhysicsAssetTests.cpp",
+      "target": "NullusPhysicsAssetTests",
+      "sha256": "634EBD60E3772010AD97DEFE44500511E8C70098EFA5C49FDE543D65916CDB06"
+    },
+    {
+      "path": "Tests/Unit/PhysicsAssetEditorTests.cpp",
+      "target": "NullusPhysicsAssetEditorTests",
+      "sha256": "3FD375716CD9173DBB692B3FB47E894F6E7362C3D0735E79529ACB7705EF7DCC"
+    },
+    {
+      "path": "Tests/Unit/PhysicsLifecycleTests.cpp",
+      "target": "NullusPhysicsSceneTests",
+      "sha256": "4FD0864E905882EDA90904CCD2DAB461F895BFD199F43A91EF7A83739184A08C"
+    }
+  ],
+  "editorSourceInputCapture": {
+    "source": "D:/Code/Nullus/Project/Editor/Assets/AssetDatabaseFacade.cpp",
+    "sha256Before": "4618C1C5FE4AC558AD7348A7CC51182F024BA901F41411490B1487FDA26CED02",
+    "sha256After": "4618C1C5FE4AC558AD7348A7CC51182F024BA901F41411490B1487FDA26CED02",
+    "contentMatches": true,
+    "buildExitCode": 0,
+    "startedUtc": "2026-10-29T15:20:39.4758502Z",
+    "finishedUtc": "2026-10-29T15:23:52.2530279Z"
+  },
+  "newComplex2DAndCleanupTests": 20,
+  "concurrentCheckoutNote": "Play retains its existing 42 cases; the earlier 218-test snapshot remains immutable",
+  "reusedNativeDependencies": [
+    {
+      "name": "assimp-vc143-mtd.dll",
+      "path": "D:\\Code\\Nullus\\build\\physics-validation\\complex2d\\Debug\\run\\assimp-vc143-mtd.dll",
+      "sha256": "AAE25CCEDE833787AE386C4FCE3DE70BFC9DFF56E127BBD78CA494F289F25D94"
+    },
+    {
+      "name": "glfw3d.dll",
+      "path": "D:\\Code\\Nullus\\build\\physics-validation\\complex2d\\Debug\\run\\glfw3d.dll",
+      "sha256": "240078F75E450CDD7704309E462FDAE02E56F9AB1ADCF17EFDA800A9A7F7B32D"
+    },
+    {
+      "name": "ImGuid.dll",
+      "path": "D:\\Code\\Nullus\\build\\physics-validation\\complex2d\\Debug\\run\\ImGuid.dll",
+      "sha256": "7D107A490FA7FBD2337915567590F76AE4F3BE6BDBC69B2212E7DE16CC54C61C"
+    },
+    {
+      "name": "NLS_AnimationCompilerd.dll",
+      "path": "D:\\Code\\Nullus\\build\\physics-validation\\complex2d\\Debug\\run\\NLS_AnimationCompilerd.dll",
+      "sha256": "62C5902AB018BB9A20962BD6670CC3000FC5BABE4BAF1680AD604F4BFC8270C1"
+    },
+    {
+      "name": "NLS_Animationd.dll",
+      "path": "D:\\Code\\Nullus\\build\\physics-validation\\complex2d\\Debug\\run\\NLS_Animationd.dll",
+      "sha256": "D4615ABCBC3E698D0410BF32431207A545C36333025D37ACD88F86A8EA2B3DA0"
+    },
+    {
+      "name": "NLS_Buildd.dll",
+      "path": "D:\\Code\\Nullus\\build\\physics-validation\\complex2d\\Debug\\run\\NLS_Buildd.dll",
+      "sha256": "C994BDE4A9A0570058AAD32A88D0279F923EBAC81D0C357BEDED55C19D72731E"
+    },
+    {
+      "name": "NLS_Inputd.dll",
+      "path": "D:\\Code\\Nullus\\build\\physics-validation\\complex2d\\Debug\\run\\NLS_Inputd.dll",
+      "sha256": "DE996D9BCE0DCA6194300A9884B3B7685BED3EBDB2FA9E4401BCB56B6C1C1B4F"
+    },
+    {
+      "name": "NLS_Mathd.dll",
+      "path": "D:\\Code\\Nullus\\build\\physics-validation\\complex2d\\Debug\\run\\NLS_Mathd.dll",
+      "sha256": "ADD0148A62CE0897C3B88B5128BF53DECC5807D3375B250649F406C0F56BE3EA"
+    },
+    {
+      "name": "NLS_Packagesd.dll",
+      "path": "D:\\Code\\Nullus\\build\\physics-validation\\complex2d\\Debug\\run\\NLS_Packagesd.dll",
+      "sha256": "DA052B2DF90FD20E963C77A68D602CFE0EB49E913434602ECCB52C2FE930B4A8"
+    },
+    {
+      "name": "NLS_Platformd.dll",
+      "path": "D:\\Code\\Nullus\\build\\physics-validation\\complex2d\\Debug\\run\\NLS_Platformd.dll",
+      "sha256": "DFC22AC3FC960018F7651F3F28B1EEDE35A06F28AEC9A5B51102BA2F361FB2CE"
+    },
+    {
+      "name": "NLS_Pluginsd.dll",
+      "path": "D:\\Code\\Nullus\\build\\physics-validation\\complex2d\\Debug\\run\\NLS_Pluginsd.dll",
+      "sha256": "689A6161F72B02279EDDD70FA075EDE4C110082E1A31CDDCC17C866B5E16B804"
+    },
+    {
+      "name": "NLS_Renderd.dll",
+      "path": "D:\\Code\\Nullus\\build\\physics-validation\\complex2d\\Debug\\run\\NLS_Renderd.dll",
+      "sha256": "42D377E1033D6CD8515E38BF27D17F1E14FF9A34FDD7F0DD10E9B6EC54906DD4"
+    },
+    {
+      "name": "NLS_UId.dll",
+      "path": "D:\\Code\\Nullus\\build\\physics-validation\\complex2d\\Debug\\run\\NLS_UId.dll",
+      "sha256": "D16EFC78FC5F08633B45F4A69A83DC84F9799F236A33A71E05BA9C3AB32E6E06"
+    },
+    {
+      "name": "NLS_VFXCompilerd.dll",
+      "path": "D:\\Code\\Nullus\\build\\physics-validation\\complex2d\\Debug\\run\\NLS_VFXCompilerd.dll",
+      "sha256": "3D55AD3F00A105D926AC8A03443799C98FE88BB01D06D7CC3096820E317576D4"
+    }
+  ],
+  "managedFixtureSnapshot": [
+    {
+      "path": "D:/Code/Nullus/build/physics-validation/complex2d/Debug/managed-inputs/ScriptApi.json",
+      "source": "D:/Code/Nullus/Library/ScriptApi/ScriptApi.json",
+      "sha256": "7DD8276FF8345567C8F41390F42AB073F9A6960B540A4F5B8FB8457002DED255",
+      "sourceUtcBefore": "2026-10-29T15:12:38.7114263Z",
+      "sourceUtcAfter": "2026-10-29T15:12:38.7114263Z",
+      "contentMatchesBeforeAndAfter": true,
+      "sourceMatchesAtCollection": true
+    },
+    {
+      "path": "D:/Code/Nullus/build/physics-validation/complex2d/Debug/managed-inputs/Nullus.Managed.dll",
+      "source": "D:/Code/Nullus/build/play-tests-managed/Debug/Nullus.Managed.dll",
+      "sha256": "E9438BB54B7C90E7DB8DAAB5D3E2E26FA1343502A993E1645544E31F84A3954D",
+      "sourceUtcBefore": "2026-10-29T14:55:20.1755143Z",
+      "sourceUtcAfter": "2026-10-29T14:55:20.1755143Z",
+      "contentMatchesBeforeAndAfter": true,
+      "sourceMatchesAtCollection": true
+    },
+    {
+      "path": "D:/Code/Nullus/build/physics-validation/complex2d/Debug/managed-inputs/EngineScripts.dll",
+      "source": "D:/Code/Nullus/build/play-tests-managed/Debug/EngineScripts.dll",
+      "sha256": "50201A5B0706DF922B951E09DE8DDA5F35CC8E3A7FACB59D9B4EE1A0F0DF49DD",
+      "sourceUtcBefore": "2026-10-29T15:02:58.0815159Z",
+      "sourceUtcAfter": "2026-10-29T15:02:58.0815159Z",
+      "contentMatchesBeforeAndAfter": true,
+      "sourceMatchesAtCollection": true
+    },
+    {
+      "path": "D:/Code/Nullus/build/physics-validation/complex2d/Debug/managed-inputs/GameScripts.dll",
+      "source": "D:/Code/Nullus/build/play-tests-managed/Debug/GameScripts.dll",
+      "sha256": "F1849760E57FBBAC01E5F874E62FE38BD6D83526BBC9FDA757DF4FAE5C43ECF2",
+      "sourceUtcBefore": "2026-10-29T15:02:59.5637531Z",
+      "sourceUtcAfter": "2026-10-29T15:02:59.5637531Z",
+      "contentMatchesBeforeAndAfter": true,
+      "sourceMatchesAtCollection": true
+    },
+    {
+      "path": "D:/Code/Nullus/build/physics-validation/complex2d/Debug/managed-inputs/GameScripts.runtimeconfig.json",
+      "source": "D:/Code/Nullus/build/play-tests-managed/Debug/GameScripts.runtimeconfig.json",
+      "sha256": "162D81F468BEC570EC15E527433F4DE5D5729FFE338AB79B22671F38760D34BD",
+      "sourceUtcBefore": "2026-10-29T02:20:46.8822928Z",
+      "sourceUtcAfter": "2026-10-29T02:20:46.8822928Z",
+      "contentMatchesBeforeAndAfter": true,
+      "sourceMatchesAtCollection": true
+    }
+  ],
+  "moduleBuilds": [
+    {
+      "target": "NLS_Base",
+      "exitCode": 0,
+      "log": "D:/Code/Nullus/build/physics-validation/complex2d-NLS_Base-build.log"
+    },
+    {
+      "target": "NLS_Core",
+      "exitCode": 0,
+      "log": "D:/Code/Nullus/build/physics-validation/complex2d-NLS_Core-build.log"
+    },
+    {
+      "target": "NLS_Physics",
+      "exitCode": 0,
+      "log": "D:/Code/Nullus/build/physics-validation/complex2d-NLS_Physics-build.log"
+    },
+    {
+      "target": "NLS_VFX",
+      "exitCode": 0,
+      "log": "D:/Code/Nullus/build/physics-validation/complex2d-NLS_VFX-build.log"
+    },
+    {
+      "target": "NLS_ECS",
+      "exitCode": 0,
+      "log": "D:/Code/Nullus/build/physics-validation/complex2d-NLS_ECS-build.log"
+    },
+    {
+      "target": "NLS_Engine",
+      "exitCode": 0,
+      "log": "D:/Code/Nullus/build/physics-validation/complex2d-NLS_Engine-build.log"
+    },
+    {
+      "target": "NLS_Scripting",
+      "exitCode": 0,
+      "log": "D:/Code/Nullus/build/physics-validation/complex2d-NLS_Scripting-build.log"
+    },
+    {
+      "target": "NLS_Cook",
+      "exitCode": 0,
+      "log": "D:/Code/Nullus/build/physics-validation/complex2d-NLS_Cook-build.log"
+    }
+  ],
+  "editorLibrary": {
+    "path": "D:/Code/Nullus/build/physics-validation/complex2d/Debug/run/EditorProjectd.lib",
+    "sha256": "1BDABA2266FF84BED1D50B6B579C9686B7CC57BCDC13C61C00CC2D61D0BCF937",
+    "responseFile": "D:/Code/Nullus/build/physics-validation/complex2d/PrivateEditorLink.rsp",
+    "responseSha256": "BADD608773A838AD2A136FBD7C0B08CFC712B476D7412A4ECCACD0C967EF17A0",
+    "linkExitCode": 0,
+    "note": "Recorded response file selects this new private archive explicitly. Shared archive and running editor binaries were preserved."
+  },
+  "build": {
+    "configureExitCode": 0,
+    "engineReflectionExitCode": 0,
+    "engineTypes": 34,
+    "editorLibraryExitCode": 0,
+    "editorTypes": 11,
+    "testCompileExitCode": 0,
+    "logs": [
+      "D:/Code/Nullus/build/physics-validation/complex2d-configure.log",
+      "D:/Code/Nullus/build/physics-validation/complex2d-metaparser.log",
+      "D:/Code/Nullus/build/physics-validation/complex2d-native-tests-build.log",
+      "D:/Code/Nullus/build/physics-validation/complex2d-tests-editor-build.log",
+      "D:/Code/Nullus/build/physics-validation/complex2d-final-runtime-build.log",
+      "D:/Code/Nullus/build/physics-validation/complex2d-metaparser-final.log",
+      "D:/Code/Nullus/build/physics-validation/complex2d-managed-fixture-build.log",
+      "D:/Code/Nullus/build/physics-validation/complex2d-editor-tests-compile.log",
+      "D:/Code/Nullus/build/physics-validation/complex2d-editor-direct-link.log"
+    ],
+    "deployment": "Disabled; isolated output and existing dependency snapshots"
+  },
+  "validated": [
+    "Strict bounded simple-contour validation before SDK creation: nonfinite/huge coordinates, duplicate/close points, crossings/touching, backtracking and degenerate/sliver rejection",
+    "Either winding and collinear cleanup, ear clipping plus convex merging, varying concave contours and convex contours above the native eight-vertex limit",
+    "Real concave missing-region ray/circle queries with per-piece owner/subshape identity and caller-buffer truncation",
+    "Actual concave area determines compound mass and impulse response without convex-hull filling",
+    "Atomic 2D group commit/rollback retains prior geometry, mass, velocity and pending forces; stale/wrong-body/duplicate/limit checks and retained readers",
+    "Two-sided Edge and one-sided static Chain C APIs; complete loop closure, neighboring ghost vertices, real body support and smooth seam sliding",
+    "Primitive numeric guards including too-short capsule segments and unsafe density/friction reject before native creation",
+    "Polygon/Edge/Chain components bake signed affine local axes and retain authored chain front under mirrors; simulated parent motion preserves handles",
+    "Vertices/Loop reflection, text round trip, independent cloned worlds and legacy missing-field defaults",
+    "Full-member query readiness, invalid-edit retention, external member deletion recovery, disable/reenable, Stop/Play and deferred destruction",
+    "Both dimensions retain explicit scene cleanup context after Stop-to-edit geometry recreation and individual component owner detachment",
+    "No repeated gameplay OnDestroy and unchanged normal callback/physics cleanup order; retained worlds empty after scene destruction",
+    "Existing physics resources, native/scene/particle queries, C#/Lua, fixed steps, TimeScale-zero Step, no-UI playback and real Editor import regressions"
+  ],
+  "correctedFailures": [
+    "An initializer-list insert accidentally inserted two vertices; corrected the fixture to insert one explicit Vector2",
+    "A new repeated Stop/Play retained-read destruction case blocked because recreated physics geometry lost owner cleanup context; fixed through Scene for both body/collider families without replaying gameplay callbacks",
+    "Only the verified private stuck test process was stopped; final runs enforce bounded timeouts",
+    "Three initial C# cases had stale API schema hashes; isolated Play fixture refresh against the final generated manifest restored all 42 cases"
+  ],
+  "documentation": {
+    "command": "python Tools/Docs/nullus_docs.py check --strict",
+    "exitCode": 1,
+    "log": "D:/Code/Nullus/build/physics-validation/complex2d-docs-check.log",
+    "reportedErrors": [
+      "[error] Docs/zh-CN/architecture/jobs-threading.md:3: markdown file is not part of the navigation manifest: Docs/TaskSystemUnification.md",
+      "[error] Docs/en/architecture/jobs-threading.md:3: markdown file is not part of the navigation manifest: Docs/TaskSystemUnification.md",
+      "[error] Docs\\zh-CN\\2DGettingStarted.md: markdown file is not declared in the navigation manifest",
+      "[error] Docs\\zh-CN\\PluginDevelopment.md: markdown file is not declared in the navigation manifest"
+    ],
+    "physicsPageErrorsReported": 0,
+    "note": "Four existing errors outside physics remain; concurrent pages were preserved"
+  },
+  "diffCheckExitCode": 0,
+  "unverified": [
+    "Polygon/Chain authoring UI, visible Inspector and stable Undo/Redo",
+    "Multi-path Boolean Composite and holes",
+    "Tilemap generation/content integration and full Platformer",
+    "Full 2D query facade/events/filtering matrices",
+    "Full Editor/Player builds and complete Player Cook",
+    "Complete C#/Lua physics facade parity",
+    "Release performance and long stress",
+    "Linux/macOS CI",
+    "GPU/CUDA hardware",
+    "All remaining phases of the physics plan"
+  ],
+  "workspace": "Unrelated dirty work, staging and running processes preserved. No shared runtime DLL deployment, no staging and no commits."
+}

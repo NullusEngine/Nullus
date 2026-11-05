@@ -2,6 +2,8 @@
 
 #include <cstdint>
 #include <cstddef>
+#include <optional>
+#include "Inspector/InspectorTypes.h"
 
 #include <Rendering/Resources/Loaders/TextureLoader.h>
 #include <Rendering/Entities/Camera.h>
@@ -79,8 +81,12 @@ namespace NLS::Editor::Panels
 		void AddGameObjectByInstance(Engine::GameObject& p_GameObject);
 
 		void RebuildFromCurrentScene();
+        std::vector<NLS::InstanceID> CaptureExpandedObjects() const;
+        void RestoreExpandedObjects(const std::vector<NLS::InstanceID>& ids);
 
 		void RefreshSceneRootName();
+        void SelectAll();
+        [[nodiscard]] std::vector<Engine::GameObject*> CaptureVisibleObjects() const;
         void RefreshPrefabPresentation(Engine::GameObject& p_GameObject);
 		size_t GetHierarchyNodeCount() const { return m_widgetGameObjectLink.size(); }
 
@@ -88,11 +94,21 @@ namespace NLS::Editor::Panels
 		Event<Engine::GameObject&> GameObjectSelectedEvent;
 		Event<Engine::GameObject&> GameObjectUnselectedEvent;
 
-	private:
+        protected:
+        void OnBeforeDrawWidgets() override;
+        void OnAfterDrawWidgets() override;
+
+		private:
+        void HandleSelectionClick(Engine::GameObject& object);
+        void SynchronizeHierarchyOrder();
 		UI::Widgets::TreeNode* m_sceneRoot;
-		// Only one Hierarchy node is selected at a time. Tracking it avoids
-		// walking every GameObject node whenever the editor selection changes.
+		// The active node is tracked separately from all highlighted nodes.
 		UI::Widgets::TreeNode* m_selectedWidget = nullptr;
+        std::vector<UI::Widgets::TreeNode*> m_selectedWidgets;
+        NLS::InstanceID m_rangeAnchor = NLS::InstanceID_None;
+        uint64_t m_hierarchyOrderRevision = 0;
+        std::optional<NLS::Editor::Inspector::InspectorTargetHandle> m_pendingSelectionClick;
+        Maths::Vector2 m_selectionPressPosition;
         NLS::Editor::Assets::PrefabInstanceRegistry* m_prefabInstanceRegistry = nullptr;
 
 		std::unordered_map<Engine::GameObject*, UI::Widgets::TreeNode*> m_widgetGameObjectLink;

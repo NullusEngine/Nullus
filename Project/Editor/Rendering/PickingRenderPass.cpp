@@ -1,4 +1,5 @@
 #include "Rendering/PickingRenderPass.h"
+#include "Rendering/SceneGizmoIcons.h"
 #include "Rendering/EditorDefaultResources.h"
 #include "Rendering/EditorHelperLifecycle.h"
 #include "Core/EditorActions.h"
@@ -16,6 +17,9 @@
 #include <Components/MeshFilter.h>
 #include <Components/MeshRenderer.h>
 #include <Components/TransformComponent.h>
+#include <Components/SpriteRendererComponent.h>
+#include <Assets/SpriteProjectSettings.h>
+#include <Rendering/RHI/BindingPointMap.h>
 #include <Rendering/EngineDrawableDescriptor.h>
 #include <iterator>
 #include <cstring>
@@ -432,6 +436,16 @@ Editor::Rendering::PickingRenderPass::BuildCurrentPickingSignature(
         }
     }
     const auto& fastAccess = scene.GetFastAccessComponents();
+    HashCombine(drawSourceHash, fastAccess.sprites.size());
+    for(auto* component:fastAccess.sprites)
+    {
+        if(!component||!component->gameobject())continue;
+        HashPickableActor(drawSourceHash,*component->gameobject());
+        component->CaptureSprite();
+        HashCombine(drawSourceHash,component->GetRenderRevision());
+        HashCombine(drawSourceHash,component->IsActiveAndEnabled());
+    }
+    HashCombine(drawSourceHash,std::hash<std::string>{}(Engine::Assets::CaptureSpriteSortingLayers()->Serialize()));
     HashCombine(drawSourceHash, static_cast<uint64_t>(fastAccess.cameras.size()));
     for (auto* cameraComponent : fastAccess.cameras)
     {
@@ -449,6 +463,15 @@ Editor::Rendering::PickingRenderPass::BuildCurrentPickingSignature(
         HashPointer(drawSourceHash, lightData);
         HashCombine(drawSourceHash, lightData != nullptr ? static_cast<uint64_t>(lightData->type) : 0u);
     }
+    const auto& helpers = GetSceneViewDebugDrawSettings(m_renderer);
+    HashCombine(drawSourceHash, helpers.debugDrawCameraIcons && helpers.debugDrawEnabled);
+    HashCombine(drawSourceHash, helpers.debugDrawLightIcons && helpers.debugDrawEnabled);
+    HashFloat(drawSourceHash, helpers.lightBillboardScale);
+    HashCombine(drawSourceHash, helpers.icons3D);
+    HashCombine(drawSourceHash, helpers.fadeGizmos);
+    if (m_renderer.HasDescriptor<Engine::Rendering::BaseSceneRenderer::SceneDescriptor>())
+        for (const auto id : m_renderer.GetDescriptor<Engine::Rendering::BaseSceneRenderer::SceneDescriptor>().viewOptions.hiddenObjectIds)
+            HashCombine(drawSourceHash, static_cast<uint64_t>(id));
     signature.pickableDrawSourceHash = drawSourceHash;
     return signature;
 }
@@ -659,6 +682,20 @@ bool Editor::Rendering::PickingRenderPass::RenderPickingScene(NLS::Render::Data:
 	DrawPickableCameras(p_pso, scene);
 	DrawPickableLights(p_pso, scene);
 
+    NLS::Render::Context::RenderPassCommandInput spriteInput;
+    spriteInput.renderWidth=frameDescriptor.renderWidth;spriteInput.renderHeight=frameDescriptor.renderHeight;
+    spriteInput.colorAttachmentViews={m_gameObjectPickingFramebuffer.GetOrCreateExplicitColorView("EditorPickingColorView")};
+    spriteInput.depthStencilAttachmentView=m_gameObjectPickingFramebuffer.GetOrCreateExplicitDepthStencilView("EditorPickingDepthView");
+    AppendPickableSprites(scene,spriteInput);
+    if(auto commands=NLS::Render::Context::DriverRendererAccess::GetActiveExplicitCommandBuffer(m_renderer.GetDriver()))
+        for(const auto& draw:spriteInput.recordedDrawCommands)
+        {
+            commands->BindGraphicsPipeline(draw.pipeline);
+            commands->BindBindingSet(NLS::Render::RHI::BindingPointMap::kPassDescriptorSet,draw.passBindingSet);
+            commands->BindBindingSet(NLS::Render::RHI::BindingPointMap::kMaterialDescriptorSet,draw.materialBindingSet);
+            commands->Draw(draw.vertexCount,draw.instanceCount,draw.vertexStart,0);
+        }
+
 	m_renderer.EndRecordedRenderPass();
 	return true;
 }
@@ -753,8 +790,43 @@ std::optional<NLS::Render::Context::RenderPassCommandInput> Editor::Rendering::P
             passInput.recordedDrawCommands);
     }
 
+    AppendPickableSprites(scene,passInput);
     passInput.drawCount = static_cast<uint64_t>(passInput.recordedDrawCommands.size());
     return passInput;
+}
+
+void Editor::Rendering::PickingRenderPass::AppendPickableSprites(Engine::SceneSystem::Scene& scene,
+    NLS::Render::Context::RenderPassCommandInput& input)
+{
+    using namespace Engine::Rendering;
+    std::vector<std::shared_ptr<const SpriteRenderProxy>> sprites;
+    const auto& options=m_renderer.GetDescriptor<BaseSceneRenderer::SceneDescriptor>().viewOptions;
+    for(auto* component:scene.GetFastAccessComponents().sprites)
+    {
+        if(!component||!component->IsActiveAndEnabled()||!component->gameobject()||options.IsObjectHidden(component->gameobject()->GetInstanceID()))continue;
+        std::string error;const auto source=CaptureSpriteRenderProxy(*component,error);if(!source)continue;
+        auto picking=std::make_shared<SpriteRenderProxy>(*source);picking->picking=true;
+        const uint32_t id=RegisterPickableGameObject(*component->gameobject());
+        picking->color.x=float(id&255)/255;picking->color.y=float((id>>8)&255)/255;picking->color.z=float((id>>16)&255)/255;
+        sprites.push_back(std::move(picking));
+    }
+    if(sprites.empty())return;
+    NLS::Render::Context::RenderScenePackage package;
+    package.renderWidth=input.renderWidth;package.renderHeight=input.renderHeight;
+    package.externalSceneOutputColorView=input.colorAttachmentViews.front();package.externalSceneOutputDepthView=input.depthStencilAttachmentView;
+    auto initialized=input;initialized.drawCount=1;initialized.usesColorAttachment=true;initialized.writesDepthStencilAttachment=true;
+    package.passCommandInputs.push_back(std::move(initialized));
+    const auto frozen=NLS::Render::FrameGraph::FreezeFrameDescriptor(m_renderer.GetFrameDescriptor());std::string error;
+    if(!m_spritePickingRenderer.AppendPass(NLS::Render::Context::DriverRendererAccess::GetExplicitDevice(m_renderer.GetDriver()),package,frozen,sprites,error))
+    {NLS_LOG_ERROR("Sprite picking: "+error);return;}
+    if(package.passCommandInputs.size()<2)return;
+    auto& pass=package.passCommandInputs.back();
+    input.recordedDrawCommands.insert(input.recordedDrawCommands.end(),std::make_move_iterator(pass.recordedDrawCommands.begin()),std::make_move_iterator(pass.recordedDrawCommands.end()));
+    input.bufferResourceAccesses.insert(input.bufferResourceAccesses.end(),pass.bufferResourceAccesses.begin(),pass.bufferResourceAccesses.end());
+    // The picking pass writes its depth buffer for mesh geometry, so retain that
+    // attachment declaration and append only Sprite texture reads.
+    for(const auto& access:pass.textureResourceAccesses)
+        if(access.mode==NLS::Render::Context::ResourceAccessMode::Read&&access.texture!=input.depthStencilAttachmentView->GetTexture())input.textureResourceAccesses.push_back(access);
 }
 
 Editor::Rendering::PickingRenderPass::PickingCaptureGuards
@@ -779,7 +851,10 @@ Editor::Rendering::PickingRenderPass::BuildPickingCaptureGuards(
     guards.cameraHelperMesh = EDITOR_CONTEXT(editorResources)->GetMesh("Camera");
     guards.lightHelperMesh = EDITOR_CONTEXT(editorResources)->GetMesh("Vertical_Plane");
     guards.lightBillboardScale =
-        Settings::EditorSettings::GetDebugDrawSettingsObject().lightBillboardScale;
+        GetSceneViewDebugDrawSettings(m_renderer).lightBillboardScale;
+    const auto& helpers = GetSceneViewDebugDrawSettings(m_renderer);
+    guards.showCameras = helpers.debugDrawEnabled && helpers.debugDrawCameraIcons;
+    guards.showLights = helpers.debugDrawEnabled && helpers.debugDrawLightIcons;
     return guards;
 }
 
@@ -940,7 +1015,7 @@ void Editor::Rendering::PickingRenderPass::CapturePickableModels(
     for (auto modelRenderer : p_scene.GetFastAccessComponents().modelRenderers)
     {
         auto& actor = *modelRenderer->gameobject();
-        if (!actor.IsActive())
+        if (!actor.IsActive() || IsSceneObjectHidden(m_renderer, actor.GetInstanceID()))
             continue;
 
         auto* meshFilter = actor.GetComponent<Engine::Components::MeshFilter>();
@@ -996,7 +1071,7 @@ void Editor::Rendering::PickingRenderPass::CapturePickableModelSources(
 
     for (const auto& source : sources)
     {
-        if (source.ownerInstanceId == NLS::InstanceID_None || source.mesh == nullptr)
+        if (source.ownerInstanceId == NLS::InstanceID_None || source.mesh == nullptr || IsSceneObjectHidden(m_renderer, source.ownerInstanceId))
             continue;
 
         PreparePickingMaterial(RegisterPickableInstance(source.ownerInstanceId), m_gameObjectPickingMaterial);
@@ -1040,7 +1115,7 @@ void Editor::Rendering::PickingRenderPass::DrawPickableModels(
 	{
 		auto& actor = *modelRenderer->gameobject();
 
-		if (actor.IsActive())
+		if (actor.IsActive() && !IsSceneObjectHidden(m_renderer, actor.GetInstanceID()))
 		{
             auto* meshFilter = actor.GetComponent<Engine::Components::MeshFilter>();
             if (auto* mesh = meshFilter != nullptr ? meshFilter->ResolveMesh() : nullptr)
@@ -1081,7 +1156,7 @@ void Editor::Rendering::PickingRenderPass::DrawPickableModelSources(
 {
     for (const auto& source : sources)
     {
-        if (source.ownerInstanceId == NLS::InstanceID_None || source.mesh == nullptr)
+        if (source.ownerInstanceId == NLS::InstanceID_None || source.mesh == nullptr || IsSceneObjectHidden(m_renderer, source.ownerInstanceId))
             continue;
 
         PreparePickingMaterial(RegisterPickableInstance(source.ownerInstanceId), m_gameObjectPickingMaterial);
@@ -1109,19 +1184,27 @@ void Editor::Rendering::PickingRenderPass::DrawPickableCameras(
 	Engine::SceneSystem::Scene& p_scene
 )
 {
-	auto cameraPickingPso = Editor::Rendering::CreateEditorUnculledPipelineState(p_pso);
+    const auto& helpers = GetSceneViewDebugDrawSettings(m_renderer);
+    if (!helpers.debugDrawEnabled || !helpers.debugDrawCameraIcons) return;
+	auto cameraPickingPso = Editor::Rendering::CreateEditorOverlayPipelineState(p_pso);
 
 	for (auto camera : p_scene.GetFastAccessComponents().cameras)
 	{
 		auto& actor = *camera->gameobject();
 
-		if (actor.IsActive())
+		if (actor.IsActive() && !IsSceneObjectHidden(m_renderer, actor.GetInstanceID()))
 		{
 			PreparePickingMaterial(RegisterPickableGameObject(actor), m_gameObjectPickingMaterial);
 			auto& cameraMesh = *EDITOR_CONTEXT(editorResources)->GetMesh("Camera");
             auto translation = Maths::Matrix4::Translation(actor.GetTransform()->GetWorldPosition());
             auto rotation = Maths::Quaternion::ToMatrix4(actor.GetTransform()->GetWorldRotation());
 			auto modelMatrix = translation * rotation;
+            const auto& frame = m_renderer.GetFrameDescriptor();
+            const auto icon = ComputeSceneIconPresentation(*frame.camera, actor.GetTransform()->GetWorldPosition(),
+                frame.renderHeight, EDITOR_CONTEXT(editorResources)->GetMesh("Camera")->GetBounds().size.y,
+                helpers.lightBillboardScale, helpers.icons3D, helpers.fadeGizmos, 2.0f);
+            if (icon.opacity <= 0.0f) continue;
+            modelMatrix = modelMatrix * Maths::Matrix4::Scaling(Maths::Vector3(icon.scale, icon.scale, icon.scale));
 
 			m_debugModelRenderer.DrawMeshWithSingleMaterial(cameraPickingPso, cameraMesh, m_gameObjectPickingMaterial, modelMatrix);
 		}
@@ -1134,7 +1217,9 @@ void Editor::Rendering::PickingRenderPass::CapturePickableCameras(
     std::vector<NLS::Render::Context::RecordedDrawCommandInput>& outDrawCommands)
 {
     NLS_PROFILE_NAMED_SCOPE("PickingRenderPass::CapturePickableCameras");
-    auto cameraPickingPso = Editor::Rendering::CreateEditorUnculledPipelineState(p_pso);
+    const auto& helpers = GetSceneViewDebugDrawSettings(m_renderer);
+    if (!helpers.debugDrawEnabled || !helpers.debugDrawCameraIcons) return;
+    auto cameraPickingPso = Editor::Rendering::CreateEditorOverlayPipelineState(p_pso);
     auto* cameraMesh = EDITOR_CONTEXT(editorResources)->GetMesh("Camera");
     if (cameraMesh == nullptr)
         return;
@@ -1142,13 +1227,19 @@ void Editor::Rendering::PickingRenderPass::CapturePickableCameras(
     for (auto camera : p_scene.GetFastAccessComponents().cameras)
     {
         auto& actor = *camera->gameobject();
-        if (!actor.IsActive())
+        if (!actor.IsActive() || IsSceneObjectHidden(m_renderer, actor.GetInstanceID()))
             continue;
 
         PreparePickingMaterial(RegisterPickableGameObject(actor), m_gameObjectPickingMaterial);
         auto translation = Maths::Matrix4::Translation(actor.GetTransform()->GetWorldPosition());
         auto rotation = Maths::Quaternion::ToMatrix4(actor.GetTransform()->GetWorldRotation());
         auto modelMatrix = translation * rotation;
+            const auto& frame = m_renderer.GetFrameDescriptor();
+            const auto icon = ComputeSceneIconPresentation(*frame.camera, actor.GetTransform()->GetWorldPosition(),
+                frame.renderHeight, EDITOR_CONTEXT(editorResources)->GetMesh("Camera")->GetBounds().size.y,
+                helpers.lightBillboardScale, helpers.icons3D, helpers.fadeGizmos, 2.0f);
+            if (icon.opacity <= 0.0f) continue;
+            modelMatrix = modelMatrix * Maths::Matrix4::Scaling(Maths::Vector3(icon.scale, icon.scale, icon.scale));
         m_debugModelRenderer.CaptureMeshDrawCommandsWithSingleMaterial(
             cameraPickingPso,
             *cameraMesh,
@@ -1164,7 +1255,9 @@ void Editor::Rendering::PickingRenderPass::DrawPickableLights(
 	Engine::SceneSystem::Scene& p_scene
 )
 {
-    const auto lightBillboardScale = Settings::EditorSettings::GetDebugDrawSettingsObject().lightBillboardScale;
+    const auto& helpers = GetSceneViewDebugDrawSettings(m_renderer);
+    if (!helpers.debugDrawEnabled || !helpers.debugDrawLightIcons) return;
+    const auto lightBillboardScale = helpers.lightBillboardScale;
 	if (lightBillboardScale > 0.001f)
 	{
 		auto lightPickingPso = Editor::Rendering::CreateEditorOverlayPipelineState(p_pso);
@@ -1175,9 +1268,16 @@ void Editor::Rendering::PickingRenderPass::DrawPickableLights(
 		{
 			auto& actor = *light->gameobject();
 
-			if (actor.IsActive())
+			if (actor.IsActive() && !IsSceneObjectHidden(m_renderer, actor.GetInstanceID()))
 			{
-				PreparePickingMaterial(RegisterPickableGameObject(actor), m_lightMaterial);
+				const auto& frame = m_renderer.GetFrameDescriptor();
+            const auto icon = ComputeSceneIconPresentation(*frame.camera, actor.GetTransform()->GetWorldPosition(),
+                frame.renderHeight, EDITOR_CONTEXT(editorResources)->GetMesh("Vertical_Plane")->GetBounds().size.y,
+                helpers.lightBillboardScale, helpers.icons3D, helpers.fadeGizmos);
+            if (icon.opacity <= 0.0f) continue;
+            m_lightMaterial.Set<float>("u_Scale", ComputeLightBillboardShaderScale(
+                *frame.camera, actor.GetTransform()->GetWorldPosition(), icon, helpers.icons3D));
+            PreparePickingMaterial(RegisterPickableGameObject(actor), m_lightMaterial);
 				auto& lightMesh = *EDITOR_CONTEXT(editorResources)->GetMesh("Vertical_Plane");
 				auto modelMatrix = Maths::Matrix4::Translation(actor.GetTransform()->GetWorldPosition());
 
@@ -1193,7 +1293,9 @@ void Editor::Rendering::PickingRenderPass::CapturePickableLights(
     std::vector<NLS::Render::Context::RecordedDrawCommandInput>& outDrawCommands)
 {
     NLS_PROFILE_NAMED_SCOPE("PickingRenderPass::CapturePickableLights");
-    const auto lightBillboardScale = Settings::EditorSettings::GetDebugDrawSettingsObject().lightBillboardScale;
+    const auto& helpers = GetSceneViewDebugDrawSettings(m_renderer);
+    if (!helpers.debugDrawEnabled || !helpers.debugDrawLightIcons) return;
+    const auto lightBillboardScale = helpers.lightBillboardScale;
     if (lightBillboardScale <= 0.001f)
         return;
 
@@ -1206,10 +1308,17 @@ void Editor::Rendering::PickingRenderPass::CapturePickableLights(
     for (auto light : p_scene.GetFastAccessComponents().lights)
     {
         auto& actor = *light->gameobject();
-        if (!actor.IsActive())
+        if (!actor.IsActive() || IsSceneObjectHidden(m_renderer, actor.GetInstanceID()))
             continue;
 
-        PreparePickingMaterial(RegisterPickableGameObject(actor), m_lightMaterial);
+        const auto& frame = m_renderer.GetFrameDescriptor();
+            const auto icon = ComputeSceneIconPresentation(*frame.camera, actor.GetTransform()->GetWorldPosition(),
+                frame.renderHeight, EDITOR_CONTEXT(editorResources)->GetMesh("Vertical_Plane")->GetBounds().size.y,
+                helpers.lightBillboardScale, helpers.icons3D, helpers.fadeGizmos);
+            if (icon.opacity <= 0.0f) continue;
+            m_lightMaterial.Set<float>("u_Scale", ComputeLightBillboardShaderScale(
+                *frame.camera, actor.GetTransform()->GetWorldPosition(), icon, helpers.icons3D));
+            PreparePickingMaterial(RegisterPickableGameObject(actor), m_lightMaterial);
         auto modelMatrix = Maths::Matrix4::Translation(actor.GetTransform()->GetWorldPosition());
         m_debugModelRenderer.CaptureMeshDrawCommandsWithSingleMaterial(
             lightPickingPso,

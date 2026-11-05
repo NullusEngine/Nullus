@@ -17,6 +17,7 @@ namespace NLS::Engine::UI
         [[nodiscard]] UIElement* GetRoot() const { return m_root; }
         [[nodiscard]] UIElement* GetHoveredElement() const { return m_hovered; }
         [[nodiscard]] UIElement* GetFocusedElement() const { return m_focused; }
+        [[nodiscard]] bool HasPointerCapture() const { return !m_pointerCapture.empty(); }
 
         UIElement* HitTest(UIVector2 position) const;
         bool DispatchPointer(
@@ -38,6 +39,7 @@ namespace NLS::Engine::UI
         void ReleasePointer(uint32_t pointerId);
         void Focus(UIElement* element);
         void ClearFocus() { Focus(nullptr); }
+        void CancelInput(bool clearFocus = true);
         void Clear();
 
     private:

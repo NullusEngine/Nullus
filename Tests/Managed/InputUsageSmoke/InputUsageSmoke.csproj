@@ -1,0 +1,19 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <DefineConstants>$(DefineConstants);NLS_GAME_SCRIPTS_PROJECT</DefineConstants>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="../../../Managed/Nullus.Managed/Nullus.Managed.csproj" />
+    <ProjectReference Include="../../../Managed/Nullus.ScriptGenerator/Nullus.ScriptGenerator.csproj" OutputItemType="Analyzer" ReferenceOutputAssembly="false" />
+    <ProjectReference Include="../../../Managed/Nullus.ScriptAnalysis/Nullus.ScriptAnalysis.csproj" OutputItemType="Analyzer" ReferenceOutputAssembly="false" />
+    <!-- Validation supplies the freshly generated production wrapper. -->
+    <Compile Include="$(InputGeneratedSource)" Condition="'$(InputGeneratedSource)' != ''" />
+    <Compile Include="$(InputValidationExtraSource)" Condition="'$(InputValidationExtraSource)' != ''" />
+    <Compile Include="../../../Samples/Input/JumpInput.cs" Link="JumpInput.cs" />
+  </ItemGroup>
+</Project>

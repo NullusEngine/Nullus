@@ -1,5 +1,6 @@
 #include "TaskGraph/TaskGraphSystem.h"
 
+#include <memory>
 #include <mutex>
 
 namespace NLS::Base::TaskGraph
@@ -14,44 +15,69 @@ namespace NLS::Base::TaskGraph
 
     bool InitializeGlobalTaskGraph(const TaskGraphConfig& config)
     {
-        std::lock_guard lock(g_globalTaskGraphMutex);
-        if (g_globalTaskGraph != nullptr && g_globalTaskGraph->IsStarted())
-            return true;
-        if (g_globalTaskGraph == nullptr)
-            g_globalTaskGraph = new TaskGraph(config);
-        return g_globalTaskGraph->Start();
+        TaskGraph* graph;
+        {
+            std::lock_guard lock(g_globalTaskGraphMutex);
+            if (g_globalTaskGraph == nullptr)
+            {
+                // Initial startup cannot wait for this unpublished graph's
+                // tasks. Publish only after it finishes so concurrent readers
+                // cannot observe a half-initialized singleton.
+                auto initialGraph = std::make_unique<TaskGraph>(config);
+                const bool started = initialGraph->Start();
+                g_globalTaskGraph = initialGraph.release();
+                return started;
+            }
+            graph = g_globalTaskGraph;
+        }
+        // Start and shutdown can wait for callbacks which inspect the global
+        // graph. Never hold the global pointer lock across lifecycle operations.
+        return graph->Start();
     }
 
     TaskGraph& GetGlobalTaskGraph()
     {
-        std::lock_guard lock(g_globalTaskGraphMutex);
-        if (g_globalTaskGraph == nullptr)
-            g_globalTaskGraph = new TaskGraph();
-        if (!g_globalTaskGraph->IsStarted())
-            (void)g_globalTaskGraph->Start();
-        return *g_globalTaskGraph;
+        TaskGraph* graph;
+        {
+            std::lock_guard lock(g_globalTaskGraphMutex);
+            if (g_globalTaskGraph == nullptr)
+            {
+                auto initialGraph = std::make_unique<TaskGraph>();
+                (void)initialGraph->Start();
+                g_globalTaskGraph = initialGraph.release();
+            }
+            graph = g_globalTaskGraph;
+        }
+        // Getting a stopped graph is observational. Only explicit Initialize
+        // restarts it, so a callback cannot wait for its own shutdown to finish.
+        return *graph;
     }
 
     bool IsGlobalTaskGraphStarted()
     {
-        std::lock_guard lock(g_globalTaskGraphMutex);
-        return g_globalTaskGraph != nullptr && g_globalTaskGraph->IsStarted();
+        TaskGraph* graph;
+        {
+            std::lock_guard lock(g_globalTaskGraphMutex);
+            graph = g_globalTaskGraph;
+        }
+        return graph != nullptr && graph->IsStarted();
     }
 
     void ShutdownGlobalTaskGraph(const TaskGraphShutdownMode mode)
     {
-        std::lock_guard lock(g_globalTaskGraphMutex);
-        if (g_globalTaskGraph == nullptr)
-            return;
-        g_globalTaskGraph->Shutdown(mode);
+        TaskGraph* graph;
+        {
+            std::lock_guard lock(g_globalTaskGraphMutex);
+            graph = g_globalTaskGraph;
+        }
+        if (graph != nullptr)
+            graph->Shutdown(mode);
     }
 
 #if defined(NLS_ENABLE_TEST_HOOKS)
     void ResetGlobalTaskGraphForTesting()
     {
-        std::lock_guard lock(g_globalTaskGraphMutex);
-        if (g_globalTaskGraph != nullptr)
-            g_globalTaskGraph->Shutdown(TaskGraphShutdownMode::Immediate);
+        ShutdownGlobalTaskGraph(TaskGraphShutdownMode::Immediate);
     }
 #endif
 }

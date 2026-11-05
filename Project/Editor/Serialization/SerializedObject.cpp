@@ -260,6 +260,15 @@ EditorExposedReferenceResolver& GetEditorExposedReferenceResolver()
     return resolver;
 }
 
+struct SerializedLiveEditState
+{
+    std::shared_ptr<ISerializedTargetBackend> backend;
+    Undo::UndoCommandInfo info;
+    SerializedStreamChangeSet pending;
+    SerializedStreamChangeSet applied;
+    bool finished = false;
+};
+
 struct SerializedObject::State
 {
     SerializedTargetSet targets;
@@ -285,6 +294,8 @@ struct SerializedObject::State
     // rebuilds still invalidate every property through schemaGeneration.
     std::unordered_set<std::string> stalePropertyPaths;
     std::string lastError;
+    std::shared_ptr<SerializedLiveEditState> liveEdit;
+    std::optional<Undo::UndoEditSession> liveSession;
 };
 
 namespace
@@ -586,7 +597,7 @@ std::shared_ptr<SerializedByteStream> BuildStagedTargetStream(SerializedObject::
     return stream;
 }
 
-SerializedStreamChangeSet BuildStreamChangeSet(SerializedObject::State& state)
+SerializedStreamChangeSet BuildStreamChangeSet(SerializedObject::State& state, const bool includeUnchanged = false)
 {
     SerializedStreamChangeSet result;
     result.modifiedPaths = GetMinimalModifiedPaths(state);
@@ -598,7 +609,7 @@ SerializedStreamChangeSet BuildStreamChangeSet(SerializedObject::State& state)
             : std::shared_ptr<NLS::Engine::Serialize::SerializedByteStream> {};
         auto after = BuildStagedTargetStream(state,index);
         if(!after) return {};
-        if (EquivalentStreams(before, after))
+        if (!includeUnchanged && EquivalentStreams(before, after))
             continue;
 
         SerializedTargetStreamChange change;
@@ -747,6 +758,62 @@ Undo::UndoCommandInfo BuildCommandInfo(
     info.estimatedBytes = changes.EstimatedBytes();
     return info;
 }
+
+class SerializedStreamLiveEdit final : public Undo::IEditorUndoEdit
+{
+public:
+    explicit SerializedStreamLiveEdit(std::shared_ptr<SerializedLiveEditState> state)
+        : m_state(std::move(state)) {}
+
+    Undo::UndoValidationResult Validate(const Undo::UndoExecutionContext& context) const override
+    {
+        const bool restoring = context.direction == Undo::UndoDirection::Undo;
+        return SerializedStreamChangeCommand(m_state->info, m_state->backend,
+            restoring ? m_state->applied : m_state->pending).Validate(context.direction, context);
+    }
+
+    Undo::UndoStartResult Preview(const Undo::UndoExecutionContext& context, Undo::UndoCompletion) override
+    {
+        auto changes = m_state->pending;
+        // If one target fails, restore the previous preview, not the drag's
+        // original value, for targets already written during this update.
+        for (size_t i = 0; i < changes.targets.size() && i < m_state->applied.targets.size(); ++i)
+            changes.targets[i].before = m_state->applied.targets[i].after;
+        auto command = SerializedStreamChangeCommand(m_state->info, m_state->backend, std::move(changes));
+        const auto result = command.Apply(Undo::UndoDirection::Redo, context, {});
+        if (result.state == Undo::UndoStartState::Completed)
+            m_state->applied = m_state->pending;
+        return result;
+    }
+
+    Undo::UndoStartResult Cancel(const Undo::UndoExecutionContext& context, Undo::UndoCompletion) override
+    {
+        auto command = SerializedStreamChangeCommand(m_state->info, m_state->backend, m_state->applied);
+        const auto result = command.Apply(Undo::UndoDirection::Undo, context, {});
+        if (result.state == Undo::UndoStartState::Completed)
+            m_state->finished = true;
+        return result;
+    }
+
+    bool HasChanges() const override
+    {
+        return std::any_of(m_state->applied.targets.begin(), m_state->applied.targets.end(),
+            [](const auto& target) { return !EquivalentStreams(target.before, target.after); });
+    }
+
+    Undo::UndoCommandPtr BuildCommand() override
+    {
+        m_state->finished = true;
+        auto changes = m_state->applied;
+        std::erase_if(changes.targets,
+            [](const auto& target) { return EquivalentStreams(target.before, target.after); });
+        return changes.Empty() ? nullptr : std::make_unique<SerializedStreamChangeCommand>(
+            m_state->info, m_state->backend, std::move(changes));
+    }
+
+private:
+    std::shared_ptr<SerializedLiveEditState> m_state;
+};
 
 bool ApplyDirect(
     const std::shared_ptr<ISerializedTargetBackend>& backend,
@@ -920,7 +987,11 @@ SerializedObject::SerializedObject(
     Reset(std::move(targets), std::move(backend), mode, std::move(context), std::move(exposedReferenceResolver));
 }
 
-SerializedObject::~SerializedObject() = default;
+SerializedObject::~SerializedObject()
+{
+    if (m_state && m_state->liveEdit)
+        DiscardModifiedProperties();
+}
 
 void SerializedObject::Reset(
     SerializedTargetSet targets,
@@ -929,6 +1000,8 @@ void SerializedObject::Reset(
     std::optional<SerializedTargetHandle> context,
     std::shared_ptr<const IExposedReferenceResolver> exposedReferenceResolver)
 {
+    if (m_state && m_state->liveEdit)
+        DiscardModifiedProperties();
     if (!m_state)
         m_state = std::make_shared<State>();
     *m_state = State {};
@@ -971,6 +1044,8 @@ void SerializedObject::Reset(
 
 void SerializedObject::Update()
 {
+    if (m_state && m_state->liveEdit)
+        DiscardModifiedProperties();
     if(m_state) ++m_state->updateEpoch;
     if (!m_state || !m_state->valid)
         return;
@@ -1257,10 +1332,89 @@ bool SerializedObject::HasModifiedProperties() const
     return m_state != nullptr && m_state->modified && !m_state->modifiedPaths.empty();
 }
 
+bool SerializedObject::PreviewModifiedProperties()
+{
+    if (!IsValid() || !HasModifiedProperties())
+        return false;
+    m_state->lastError.clear();
+    auto changes = BuildStreamChangeSet(*m_state, true);
+    if (changes.Empty())
+        return false;
+    auto* undo = NLS::Core::ServiceLocator::Contains<Undo::EditorUndoService>()
+        ? &NLS::Core::ServiceLocator::Get<Undo::EditorUndoService>() : nullptr;
+    if (!m_state->liveEdit)
+    {
+        auto edit = std::make_shared<SerializedLiveEditState>();
+        edit->backend = m_state->backend;
+        edit->info = BuildCommandInfo(*m_state, changes);
+        edit->pending = changes;
+        if (undo)
+        {
+            auto begin = undo->BeginEditSession({edit->info, std::make_unique<SerializedStreamLiveEdit>(edit)});
+            if (!begin.session.IsValid())
+            {
+                m_state->lastError = begin.result.message;
+                return false;
+            }
+            m_state->liveSession = begin.session;
+        }
+        m_state->liveEdit = std::move(edit);
+    }
+    if (m_state->liveEdit->finished)
+    {
+        m_state->lastError = "The live property edit is no longer active.";
+        return false;
+    }
+    m_state->liveEdit->pending = std::move(changes);
+    bool success;
+    if (undo && m_state->liveSession)
+    {
+        const auto result = undo->PreviewEditSession(*m_state->liveSession);
+        success = result.Succeeded();
+        if (!success) m_state->lastError = result.message;
+    }
+    else
+    {
+        SerializedStreamLiveEdit edit(m_state->liveEdit);
+        const Undo::UndoExecutionContext context {0u, Undo::UndoDirection::Redo, 0u, m_state->liveEdit->info.scopes};
+        const auto validation = edit.Validate(context);
+        if (validation.state != Undo::UndoValidationState::Ready)
+        {
+            m_state->lastError = validation.message;
+            return false;
+        }
+        const auto result = edit.Preview(context, {});
+        success = result.state == Undo::UndoStartState::Completed;
+        if (!success) m_state->lastError = result.message;
+    }
+    // Keep the original before streams and property handles throughout the
+    // drag. Our own native writes must not trigger Update on the next frame.
+    if (success) m_state->version = ComputeVersion(*m_state);
+    return success;
+}
+
 bool SerializedObject::ApplyModifiedProperties()
 {
     if (!m_state || !m_state->valid || m_state->modifiedPaths.empty())
         return false;
+    if (m_state->liveEdit)
+    {
+        if (!PreviewModifiedProperties()) return false;
+        if (m_state->liveSession && NLS::Core::ServiceLocator::Contains<Undo::EditorUndoService>())
+        {
+            const auto result = NLS::Core::ServiceLocator::Get<Undo::EditorUndoService>()
+                .CommitEditSession(*m_state->liveSession);
+            if (!result.Succeeded())
+            {
+                m_state->lastError = result.message;
+                return false;
+            }
+        }
+        m_state->liveSession.reset();
+        m_state->liveEdit.reset();
+        Update();
+        return true;
+    }
     m_state->lastError.clear();
     auto changes = BuildStreamChangeSet(*m_state);
     if (changes.Empty())
@@ -1312,6 +1466,15 @@ bool SerializedObject::ApplyModifiedPropertiesWithoutUndo()
 {
     if (!m_state || !m_state->valid || m_state->modifiedPaths.empty())
         return false;
+    if (m_state->liveEdit)
+    {
+        const auto changes = BuildStreamChangeSet(*m_state, true);
+        if (changes.Empty()) return false;
+        DiscardModifiedProperties();
+        if (!ApplyDirect(m_state->backend, changes, true, m_state->lastError)) return false;
+        Update();
+        return true;
+    }
     m_state->lastError.clear();
     const auto changes = BuildStreamChangeSet(*m_state);
     if (changes.Empty())
@@ -1339,6 +1502,22 @@ void SerializedObject::DiscardModifiedProperties()
 {
     if (!m_state)
         return;
+    if (m_state->liveEdit)
+    {
+        if (!m_state->liveEdit->finished)
+        {
+            if (m_state->liveSession && NLS::Core::ServiceLocator::Contains<Undo::EditorUndoService>())
+                (void)NLS::Core::ServiceLocator::Get<Undo::EditorUndoService>().CancelEditSession(*m_state->liveSession);
+            else
+            {
+                const Undo::UndoExecutionContext context {0u, Undo::UndoDirection::Undo, 0u, m_state->liveEdit->info.scopes};
+                (void)SerializedStreamLiveEdit(m_state->liveEdit).Cancel(context, {});
+            }
+        }
+        m_state->liveSession.reset();
+        m_state->liveEdit.reset();
+        m_state->version = ComputeVersion(*m_state);
+    }
     if (!m_state->targetStreams.empty())
         m_state->stagedStream = CloneStream(m_state->targetStreams.front());
     m_state->modifiedPaths.clear();

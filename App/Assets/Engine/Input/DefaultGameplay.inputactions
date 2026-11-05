@@ -1,0 +1,248 @@
+{
+  "version": 1,
+  "id": "33e8ea12-6186-454e-8691-774f4ff9f400",
+  "defaultContext": "df500085-d399-4d61-b1ea-18e635e2291f",
+  "actions": [
+    {
+      "id": "c680c109-5f1c-46ec-a004-718d8f5fb00a",
+      "name": "Move",
+      "type": 2,
+      "nature": 2,
+      "aggregation": 0
+    },
+    {
+      "id": "26ff5a99-86a3-4bc8-8668-e48d9ed086f6",
+      "name": "LookDelta",
+      "type": 2,
+      "nature": 1,
+      "aggregation": 0
+    },
+    {
+      "id": "b136e863-3e98-4e6c-9f7d-ae228b27d232",
+      "name": "LookRate",
+      "type": 2,
+      "nature": 2,
+      "aggregation": 0
+    },
+    {
+      "id": "172db044-427e-4b65-9042-9c645648c37f",
+      "name": "Jump",
+      "type": 0,
+      "nature": 0,
+      "aggregation": 0
+    }
+  ],
+  "contexts": [
+    {
+      "id": "df500085-d399-4d61-b1ea-18e635e2291f",
+      "name": "Gameplay",
+      "priority": 0,
+      "consumption": 1,
+      "reacquire": 0,
+      "bindings": [
+        {
+          "id": "cca2057b-82f1-4f5d-b215-78124aad1877",
+          "action": "c680c109-5f1c-46ec-a004-718d8f5fb00a",
+          "nature": 2,
+          "composite": 2,
+          "parts": [
+            {
+              "path": {
+                "device": 0,
+                "kind": 0,
+                "control": 87
+              },
+              "contribution": [
+                0,
+                1,
+                0
+              ]
+            },
+            {
+              "path": {
+                "device": 0,
+                "kind": 0,
+                "control": 83
+              },
+              "contribution": [
+                0,
+                -1,
+                0
+              ]
+            },
+            {
+              "path": {
+                "device": 0,
+                "kind": 0,
+                "control": 65
+              },
+              "contribution": [
+                -1,
+                0,
+                0
+              ]
+            },
+            {
+              "path": {
+                "device": 0,
+                "kind": 0,
+                "control": 68
+              },
+              "contribution": [
+                1,
+                0,
+                0
+              ]
+            }
+          ],
+          "processors": [
+            {
+              "kind": 3
+            }
+          ]
+        },
+        {
+          "id": "4371622d-6bfe-4637-8a1f-dfdc59bb1a91",
+          "action": "c680c109-5f1c-46ec-a004-718d8f5fb00a",
+          "nature": 2,
+          "composite": 2,
+          "parts": [
+            {
+              "path": {
+                "device": 2,
+                "kind": 1,
+                "control": 0
+              },
+              "contribution": [
+                1,
+                0,
+                0
+              ]
+            },
+            {
+              "path": {
+                "device": 2,
+                "kind": 1,
+                "control": 1
+              },
+              "contribution": [
+                0,
+                -1,
+                0
+              ]
+            }
+          ],
+          "processors": [
+            {
+              "kind": 2,
+              "minimum": 0.15,
+              "maximum": 1
+            }
+          ]
+        },
+        {
+          "id": "8ebd434b-a644-4eee-ab2f-a16447caadf0",
+          "action": "26ff5a99-86a3-4bc8-8668-e48d9ed086f6",
+          "nature": 1,
+          "composite": 0,
+          "parts": [
+            {
+              "path": {
+                "device": 1,
+                "kind": 3,
+                "control": 0
+              },
+              "contribution": [
+                1,
+                0,
+                0
+              ]
+            }
+          ],
+          "processors": []
+        },
+        {
+          "id": "8315247a-37ef-4b25-942d-c7cfc9b1155b",
+          "action": "b136e863-3e98-4e6c-9f7d-ae228b27d232",
+          "nature": 2,
+          "composite": 2,
+          "parts": [
+            {
+              "path": {
+                "device": 2,
+                "kind": 1,
+                "control": 2
+              },
+              "contribution": [
+                1,
+                0,
+                0
+              ]
+            },
+            {
+              "path": {
+                "device": 2,
+                "kind": 1,
+                "control": 3
+              },
+              "contribution": [
+                0,
+                -1,
+                0
+              ]
+            }
+          ],
+          "processors": [
+            {
+              "kind": 2,
+              "minimum": 0.15,
+              "maximum": 1
+            }
+          ]
+        },
+        {
+          "id": "c6944877-a431-4509-afc5-48f4c0bab8bf",
+          "action": "172db044-427e-4b65-9042-9c645648c37f",
+          "nature": 0,
+          "composite": 0,
+          "parts": [
+            {
+              "path": {
+                "device": 0,
+                "kind": 0,
+                "control": 32
+              },
+              "contribution": [
+                1,
+                0,
+                0
+              ]
+            }
+          ],
+          "processors": []
+        },
+        {
+          "id": "1635c277-d1c4-4123-9b0d-fef4d93d19a5",
+          "action": "172db044-427e-4b65-9042-9c645648c37f",
+          "nature": 0,
+          "composite": 0,
+          "parts": [
+            {
+              "path": {
+                "device": 2,
+                "kind": 0,
+                "control": 0
+              },
+              "contribution": [
+                1,
+                0,
+                0
+              ]
+            }
+          ],
+          "processors": []
+        }
+      ]
+    }
+  ]
+}

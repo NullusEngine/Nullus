@@ -1,4 +1,5 @@
 #pragma once
+#include "Assets/ArtifactWriter.h"
 
 #include "Assets/AssetDiagnostics.h"
 #include "Assets/ArtifactDatabase.h"
@@ -207,6 +208,13 @@ public:
     std::string GenerateUniqueAssetPath(const std::string& desiredAssetPath) const;
 
     void AddArtifactManifest(NLS::Core::Assets::ArtifactManifest manifest);
+    std::optional<NLS::Core::Assets::ArtifactManifest> PublishDistanceFieldArtifactPatch(
+        const std::string& assetPath, const std::string& expectedSourceIdentity,
+        const std::string& expectedImportSettings,
+        const std::map<std::string, std::string>& expectedDistanceFieldSettings,
+        const std::vector<NLS::Core::Assets::ArtifactPayload>& payloads,
+        const std::vector<std::string>& removedSubAssets,
+        const NLS::Core::Assets::IArtifactWriteCancellation* cancellation = nullptr);
     std::optional<NLS::Core::Assets::ArtifactManifest> GetArtifactManifestForAssetPath(
         const std::string& assetPath) const;
     bool IsArtifactManifestCurrentForAssetPath(
@@ -404,6 +412,7 @@ private:
     std::vector<PendingImportedPrefabPreviewRegistration>
         m_pendingImportedPrefabPreviewRegistrations;
     bool m_assetEditing = false;
+    bool m_registerDistanceFieldSources = true;
     size_t m_artifactDatabaseFlushBatchDepth = 0u;
     bool m_knownCurrentArtifactManifestSnapshotDirty = false;
     size_t m_completedImports = 0u;

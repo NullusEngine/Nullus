@@ -14,12 +14,13 @@ public:
     ~VfxEditor() override;
     bool OpenDocument(const std::filesystem::path& path);
     bool OwnsShortcuts() const;
+    bool CanUseShortcuts() const;
     size_t DocumentCount() const;
     // Editor commands are the single entry point for the toolbar, the Window
     // menu and the keyboard shortcuts, mirroring NiagaraEditorCommands. They
     // are public so tests and editor scripting can drive the same path.
-    bool ExecuteCommand(const std::string& id);
-    bool IsCommandEnabled(const std::string& id) const;
+    bool ExecuteCommand(const std::string& id, const std::string& targetId = {});
+    bool IsCommandEnabled(const std::string& id, const std::string& targetId = {}) const;
     bool IsCommandChecked(const std::string& id) const;
     // Number of emitters in the active document (tests and editor scripting).
     size_t ActiveEmitterCount() const;
@@ -32,7 +33,9 @@ private:
     struct Document;
     struct State;
     std::unique_ptr<State> m_state;
-    bool ExecuteCommand(Document* document, const std::string& id);
+    bool ExecuteDocumentCommand(Document* document, const std::string& id);
+    bool InvokeDocumentCommand(Document* document, const std::string& id);
+    Document* ResolveDocument(const std::string& targetId) const;
     bool IsCommandEnabled(const Document* document, const std::string& id) const;
     bool IsCommandChecked(const Document* document, const std::string& id) const;
     Document* ActiveDocument();
@@ -55,6 +58,5 @@ private:
     void Save(Document& document);
     void Publish(Document& document);
     void Dialogs();
-    void Shortcuts(Document& document);
 };
 }

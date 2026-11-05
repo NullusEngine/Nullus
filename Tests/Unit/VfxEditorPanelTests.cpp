@@ -30,6 +30,9 @@
 #include <Engine/Assets/ParticleSystemAsset.h>
 #include "Core/PanelsManager.h"
 #include <UI/Modules/Canvas.h>
+#include <Input/InputSystem.h>
+#include <Core/ServiceLocator.h>
+#include "Shortcuts/EditorShortcutService.h"
 
 namespace
 {
@@ -617,13 +620,53 @@ TEST(VfxEditorCommands, ShortcutKeysDriveTheSameCommandsAsTheToolbar)
     ImGui::SetNextWindowFocus(); panel.Draw(); ImGui::Render();
     gui.Frame(panel); gui.Frame(panel);
     ASSERT_TRUE(panel.OwnsShortcuts());
+    double time = 0;
+    Input::InputSystem input([&] { return time; });
+    Editor::Shortcuts::EditorShortcutService shortcuts;
+    shortcuts.RegisterContext({"vfx-editor", "VFX", 50, "focused-panel", [&] { return panel.CanUseShortcuts(); }});
+    for (const std::string local : {"Emitter.Add", "Select.Isolate"})
+    {
+        Editor::Shortcuts::ShortcutCommand command;
+        command.id = "vfx-editor." + local; command.context = "vfx-editor";
+        command.availability = [&panel, local] { return panel.IsCommandEnabled(local); };
+        command.execute = [&panel, local] { panel.ExecuteCommand(local); };
+        ASSERT_TRUE(shortcuts.RegisterCommand(std::move(command)));
+    }
+    shortcuts.InitializeInput(input);
+    const auto defaults = std::filesystem::path(__FILE__).parent_path().parent_path().parent_path() / "App/Assets/Editor/Input/EditorShortcuts.inputactions";
+    std::vector<std::string> diagnostics; ASSERT_TRUE(shortcuts.LoadDefaults(defaults, diagnostics));
+    auto* previousShortcuts = Core::ServiceLocator::Contains<Editor::Shortcuts::EditorShortcutService>() ?
+        &Core::ServiceLocator::Get<Editor::Shortcuts::EditorShortcutService>() : nullptr;
+    Core::ServiceLocator::Provide(shortcuts);
+    struct RestoreShortcuts
+    {
+        Editor::Shortcuts::EditorShortcutService* previous;
+        ~RestoreShortcuts()
+        {
+            if (previous) Core::ServiceLocator::Provide(*previous);
+            else Core::ServiceLocator::Remove<Editor::Shortcuts::EditorShortcutService>();
+        }
+    } restoreShortcuts{previousShortcuts};
+    const auto press = [&](ImGuiKey guiKey, uint16_t key)
+    {
+        for (bool down : {true, false})
+        {
+            Input::InputEvent event; event.device = input.GetKeyboard(); event.control = key;
+            event.type = down ? Input::InputEventType::ButtonDown : Input::InputEventType::ButtonUp;
+            ASSERT_TRUE(input.SubmitEvent(event));
+            ImGui::GetIO().AddKeyEvent(guiKey, down);
+            Editor::Shortcuts::EditorInputRoute route; route.workbenchOwnsInput = true; route.ownedScope = "vfx-editor";
+            shortcuts.PrepareInput(route); gui.Frame(panel); shortcuts.DispatchInput(route);
+            input.EndFrame(); time += 1.0 / 60;
+        }
+    };
     const auto before = panel.ActiveEmitterCount();
-    gui.Key(panel,ImGuiKey_E);
+    press(ImGuiKey_E, 69);
     EXPECT_EQ(panel.ActiveEmitterCount(),before+1);
     EXPECT_FALSE(panel.IsCommandChecked("Select.Isolate"));
-    gui.Key(panel,ImGuiKey_S);
+    press(ImGuiKey_S, 83);
     EXPECT_TRUE(panel.IsCommandChecked("Select.Isolate"));
-    gui.Key(panel,ImGuiKey_S);
+    press(ImGuiKey_S, 83);
     EXPECT_FALSE(panel.IsCommandChecked("Select.Isolate"));
 }
 TEST(VfxEditorCommands, WindowMenuTogglesWorkspacePanelsAndResetLayoutRestoresThem)

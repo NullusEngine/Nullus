@@ -1,4 +1,5 @@
 #include "ScriptComponent.h"
+#include "ScriptEngineApi.h"
 #include "CoreClrScriptBackend.h"
 
 #include "Gen/MetaGenerated.h"
@@ -258,8 +259,9 @@ void ScriptComponent::Invoke(ScriptCallback callback, float deltaTime)
         return;
 
     ScriptInvocationContext context;
-    context.frame.deltaTime = deltaTime;
-    context.frame.unscaledDeltaTime = deltaTime;
+    context.frame = ScriptEngineApi::GetFrameContext();
+    if(callback==ScriptCallback::Update||callback==ScriptCallback::FixedUpdate||callback==ScriptCallback::LateUpdate)
+        context.frame.deltaTime=deltaTime;
     context.owner = owner;
     m_runtime->Invoke(m_instance, callback, context);
 }

@@ -33,6 +33,8 @@ if(_nls_render_sources)
     "${CMAKE_CURRENT_SOURCE_DIR}/Assets/MeshReduction.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/Assets/StaticMeshBuilder.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/Assets/DistanceFieldBuilder.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/Assets/DistanceFieldBuildKernel.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/Assets/DistanceFieldBuildService.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/Assets/StaticMeshCookBuilder.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/Assets/StaticMeshLODSettings.cpp")
   list(REMOVE_ITEM _nls_render_sources ${_nls_static_mesh_build_sources})
@@ -62,6 +64,7 @@ target_link_libraries(NLS_StaticMeshBuild PUBLIC NLS_Render PRIVATE meshoptimize
 set_target_properties(NLS_StaticMeshBuild PROPERTIES
   FOLDER "Runtime/Build"
   POSITION_INDEPENDENT_CODE ON)
+include("${NLS_ROOT_DIR}/ThirdParty/embree.cmake")
 
 if(Vulkan_FOUND)
   target_link_libraries(NLS_Render PUBLIC Vulkan::Vulkan)

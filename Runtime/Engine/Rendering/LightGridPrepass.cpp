@@ -533,6 +533,7 @@ namespace NLS::Engine::Rendering
         key.farPlane = frameDescriptor.camera->GetFar();
         key.settings = m_settings;
         key.hasSkyboxTexture = preparedFrameInputs.hasSkyboxTexture;
+        key.applyToneMapping = frameDescriptor.applyToneMapping;
         key.lights = preparedFrameInputs.lights;
         return key;
     }
@@ -695,7 +696,7 @@ namespace NLS::Engine::Rendering
             lhs.nearPlane == rhs.nearPlane &&
             lhs.farPlane == rhs.farPlane &&
             AreSameLightGridSettings(lhs.settings, rhs.settings) &&
-            lhs.hasSkyboxTexture == rhs.hasSkyboxTexture &&
+            lhs.applyToneMapping == rhs.applyToneMapping && lhs.hasSkyboxTexture == rhs.hasSkyboxTexture &&
             AreSameCapturedLights(lhs.lights, rhs.lights);
     }
 
@@ -942,11 +943,11 @@ namespace NLS::Engine::Rendering
         }
 
         outFrameData.forwardLightData.viewMatrix = NLS::Maths::Matrix4::Transpose(frameDescriptor.camera->GetViewMatrix());
-        outFrameData.forwardLightData.projectionMatrix = NLS::Maths::Matrix4::Transpose(frameDescriptor.camera->GetProjectionMatrix());
-        const auto viewProjection = frameDescriptor.camera->GetProjectionMatrix() * frameDescriptor.camera->GetViewMatrix();
+        outFrameData.forwardLightData.projectionMatrix = NLS::Maths::Matrix4::Transpose(frameDescriptor.camera->GetGpuProjectionMatrix());
+        const auto viewProjection = frameDescriptor.camera->GetGpuProjectionMatrix() * frameDescriptor.camera->GetViewMatrix();
         outFrameData.forwardLightData.inverseViewProjection = NLS::Maths::Matrix4::Transpose(NLS::Maths::Matrix4::Inverse(viewProjection));
         outFrameData.forwardLightData.clipToView = NLS::Maths::Matrix4::Transpose(
-            NLS::Maths::Matrix4::Inverse(frameDescriptor.camera->GetProjectionMatrix()));
+            NLS::Maths::Matrix4::Inverse(frameDescriptor.camera->GetGpuProjectionMatrix()));
         outFrameData.forwardLightData.cameraWorldPositionNearPlane = {
             frameDescriptor.camera->GetPosition().x,
             frameDescriptor.camera->GetPosition().y,
@@ -1020,7 +1021,7 @@ namespace NLS::Engine::Rendering
         outFrameData.forwardLightData.pixelParams = {
             static_cast<float>(m_settings.lightGridPixelSize),
             1.0f / static_cast<float>(frameDescriptor.renderHeight == 0u ? 1u : frameDescriptor.renderHeight),
-            0.0f,
+            frameDescriptor.applyToneMapping ? 0.0f : 1.0f,
             0.0f
         };
 
@@ -1074,11 +1075,11 @@ namespace NLS::Engine::Rendering
 
         outFrameData = {};
         outFrameData.forwardLightData.viewMatrix = NLS::Maths::Matrix4::Transpose(frameDescriptor.camera->GetViewMatrix());
-        outFrameData.forwardLightData.projectionMatrix = NLS::Maths::Matrix4::Transpose(frameDescriptor.camera->GetProjectionMatrix());
-        const auto viewProjection = frameDescriptor.camera->GetProjectionMatrix() * frameDescriptor.camera->GetViewMatrix();
+        outFrameData.forwardLightData.projectionMatrix = NLS::Maths::Matrix4::Transpose(frameDescriptor.camera->GetGpuProjectionMatrix());
+        const auto viewProjection = frameDescriptor.camera->GetGpuProjectionMatrix() * frameDescriptor.camera->GetViewMatrix();
         outFrameData.forwardLightData.inverseViewProjection = NLS::Maths::Matrix4::Transpose(NLS::Maths::Matrix4::Inverse(viewProjection));
         outFrameData.forwardLightData.clipToView = NLS::Maths::Matrix4::Transpose(
-            NLS::Maths::Matrix4::Inverse(frameDescriptor.camera->GetProjectionMatrix()));
+            NLS::Maths::Matrix4::Inverse(frameDescriptor.camera->GetGpuProjectionMatrix()));
         outFrameData.forwardLightData.cameraWorldPositionNearPlane = {
             frameDescriptor.camera->GetPosition().x,
             frameDescriptor.camera->GetPosition().y,
@@ -1117,7 +1118,7 @@ namespace NLS::Engine::Rendering
         outFrameData.forwardLightData.pixelParams = {
             static_cast<float>(m_settings.lightGridPixelSize),
             1.0f / static_cast<float>(frameDescriptor.renderHeight == 0u ? 1u : frameDescriptor.renderHeight),
-            0.0f,
+            frameDescriptor.applyToneMapping ? 0.0f : 1.0f,
             0.0f
         };
 

@@ -36,6 +36,7 @@ namespace NLS::meta
             TypeKey registrationKey);
         static void RegisterAll(ReflectionDatabase &db);
         static void Unload(TypeKey moduleKey);
+        static bool TryUnload(TypeKey moduleKey);
     };
 
     template<ReflectionRegisterFunction Function>

@@ -2,8 +2,13 @@
 // Licensed under the BSD-Clause 2 license.
 // See license.txt file in the project root for full license information.
 
+using System.Collections.Generic;
+
 namespace CppAst
 {
+    /// <summary>A file buffer consumed by libclang, with its SHA-256 content fingerprint.</summary>
+    public sealed record CppSourceFile(string Path, string ContentHash);
+
     /// <summary>
     /// The result of a compilation for a sets of C++ files.
     /// </summary>
@@ -28,6 +33,9 @@ namespace CppAst
         /// Gets the final input header text used by this compilation.
         /// </summary>
         public string InputText { get; set; }
+
+        /// <summary>Transitive source inputs, populated when CollectSourceFiles is enabled.</summary>
+        public List<CppSourceFile> SourceFiles { get; } = new List<CppSourceFile>();
 
         /// <summary>
         /// Gets a boolean indicating whether this instance has errors. See <see cref="Diagnostics"/> for more details.

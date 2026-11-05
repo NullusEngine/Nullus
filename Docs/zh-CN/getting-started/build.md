@@ -7,7 +7,7 @@
 | 依赖 | 要求 | 说明 |
 | --- | --- | --- |
 | Git | 任意近期版本 | 需要拉取子模块 |
-| CMake | 3.18 及以上 | 工程声明的最低版本 |
+| CMake | 3.22 及以上 | 工程及 Box2D 3.2.0 声明的最低版本 |
 | C++ 编译器 | 支持 C++20 | Windows 用 MSVC（VS 2022），Linux 用 GCC/Clang，macOS 用 Xcode 工具链 |
 | Python | 3.8 及以上 | 供 `SetupDependencies` 脚本使用 |
 | .NET SDK | 8.0.408 | 由 `global.json` 固定；缺失时 CMake 会下载到仓库内，不修改系统 `PATH` |
@@ -89,6 +89,8 @@ macOS 构建默认选择 Metal 后端。Metal 在非 Apple 平台上不受支持
 | `Launcher` | 项目启动器 |
 | `NullusBuild` | 无界面打包命令行与共享构建流水线 |
 | `NullusUnitTests` | 行为测试（需要 `NLS_BUILD_TESTS=ON`） |
+| `NullusGpuTests` | 集中的 GPU 测试（需要 `NLS_BUILD_TESTS=ON`） |
+| `NullusBuildTests` / `NullusPropertyControlsTests` | 打包与 UI 依赖边界测试 |
 | `NullusPerformanceTests` | 性能与压力测试（需要 `NLS_BUILD_PERFORMANCE_TESTS=ON`） |
 | `ReflectionTest` | 反射冒烟工具 |
 

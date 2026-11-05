@@ -204,7 +204,9 @@ namespace
 		const ScenePrimitiveSnapshotRecord& record,
 		const SceneVisibilityPipelineOptions& options)
 	{
-		if (!record.occupied || record.tombstoned || !record.ownerAlive || !record.ownerActive)
+		if (std::binary_search(options.hiddenPrimitiveIndices.begin(), options.hiddenPrimitiveIndices.end(), record.handle.index))
+                return CullReason::Inactive;
+			if (!record.occupied || record.tombstoned || !record.ownerAlive || !record.ownerActive)
 			return CullReason::Inactive;
 		if (!record.hasMeshBinding)
 			return CullReason::MissingMesh;
@@ -225,7 +227,9 @@ namespace
 		const ScenePrimitiveSnapshotRecord& record,
 		const SceneVisibilityPipelineOptions& options)
 	{
-		if (!record.occupied || record.tombstoned || !record.ownerAlive)
+		if (std::binary_search(options.hiddenPrimitiveIndices.begin(), options.hiddenPrimitiveIndices.end(), record.handle.index))
+                return CullReason::Inactive;
+			if (!record.occupied || record.tombstoned || !record.ownerAlive)
 			return CullReason::Inactive;
 		if (!record.hasMeshBinding)
 			return CullReason::MissingMesh;

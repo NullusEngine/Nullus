@@ -137,6 +137,7 @@ namespace NLS::Engine::Rendering
             float farPlane = 0.0f;
             ClusteredShadingSettings settings{};
             bool hasSkyboxTexture = false;
+            bool applyToneMapping = true;
             std::vector<CapturedLight> lights;
         };
 

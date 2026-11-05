@@ -1,5 +1,6 @@
 #pragma once
 
+#include <span>
 #include <cstddef>
 #include <cstdint>
 #include <deque>
@@ -75,7 +76,8 @@ namespace NLS::Engine::Rendering
                     const SceneProxyPayload&,
                     const SceneProxyTransformState&)>& visitor) const;
             void ForEachLight(
-                const std::function<void(const NLS::Render::Entities::Light&)>& visitor) const;
+                const std::function<void(const NLS::Render::Entities::Light&)>& visitor,
+                std::span<const int32_t> hiddenObjectIds = {}) const;
             void ForEachSkyBox(
                 const std::function<void(
                     const SceneProxyHandle&,
@@ -125,7 +127,8 @@ namespace NLS::Engine::Rendering
                 const SceneProxyTransformState&)>& visitor) const;
 
         void ForEachLight(
-            const std::function<void(const NLS::Render::Entities::Light&)>& visitor) const;
+            const std::function<void(const NLS::Render::Entities::Light&)>& visitor,
+                std::span<const int32_t> hiddenObjectIds = {}) const;
         void ForEachSkyBox(
             const std::function<void(
                 const SceneProxyHandle&,
@@ -152,7 +155,8 @@ namespace NLS::Engine::Rendering
                 const SceneProxyPayload&,
                 const SceneProxyTransformState&)>& visitor) const;
         void ForEachLightInternal(
-            const std::function<void(const NLS::Render::Entities::Light&)>& visitor) const;
+            const std::function<void(const NLS::Render::Entities::Light&)>& visitor,
+                std::span<const int32_t> hiddenObjectIds = {}) const;
         void ForEachSkyBoxInternal(
             const std::function<void(
                 const SceneProxyHandle&,

@@ -1,6 +1,8 @@
 #pragma once
+#include "InputScriptApi.h"
 
 #include "IScriptBackend.h"
+#include "Core/Modules/ModuleSystem.h"
 
 #include <filesystem>
 #include <functional>
@@ -185,6 +187,16 @@ struct NLS_SCRIPTING_API NativeApiTable
     ScriptAbiResult (*createGameObject)(const char* name, const char* tag, uint64_t* output) = nullptr;
     ScriptAbiResult (*getActiveScene)(const char** path, uint32_t* size, uint8_t* loaded) = nullptr;
     ScriptAbiResult (*loadScene)(const char* path) = nullptr;
+    ScriptAbiResult (*invokeMember)(uint64_t owner,uint64_t member,const ScriptAbiValue* arguments,uint32_t count,ScriptAbiValue* result) = nullptr;
+
+    // Appended to the v2 table: older hosts see the original layout and newer
+    // managed runtimes use header.size to detect these optional functions.
+    void (*logDetailed)(ScriptErrorSeverity severity, const char* message, const char* stack,
+        const char* sourcePath, int32_t line) = nullptr;
+    uint8_t (*getLogStackMode)(ScriptErrorSeverity severity) = nullptr;
+    ScriptAbiResult (*readInputAction)(uint64_t user, const char* id, uint32_t operation, uint64_t after, ScriptInputValue* output) = nullptr;
+    ScriptAbiResult (*inputCommand)(uint64_t user, uint32_t operation, const char* id, uint64_t argument, uint64_t* output) = nullptr;
+    ScriptAbiResult (*getInputBindingName)(uint64_t user, const char* id, const char** output, uint32_t* size) = nullptr;
 
     NativeApiTable()
     {
@@ -259,6 +271,7 @@ class NLS_SCRIPTING_API CoreClrScriptBackend final : public IScriptBackend, publ
 {
 public:
     explicit CoreClrScriptBackend(ScriptBackendId id = {1});
+    std::unique_ptr<Core::Modules::IModule> CreatePluginModule(const std::filesystem::path& path,const std::string& entry);
 
     ScriptBackendId GetBackendId() const override { return m_id; }
     ScriptLanguage GetLanguage() const override { return ScriptLanguage::CSharp; }

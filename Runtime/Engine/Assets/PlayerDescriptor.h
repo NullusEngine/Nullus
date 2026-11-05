@@ -38,6 +38,7 @@ struct NLS_ENGINE_API PlayerDescriptor
     std::string startScene;
     // Runtime manifest shipped with the player ("Data/User/RuntimeAssetManifest.json").
     std::string runtimeManifestPath;
+    std::string pluginManifestPath, pluginManifestHash;
     // Content packages relative to the install root.
     std::vector<std::string> contentPackages;
     // Install-relative host root the content mounts use ("Data/User").

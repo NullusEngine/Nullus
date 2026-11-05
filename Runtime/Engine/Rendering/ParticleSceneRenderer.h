@@ -6,6 +6,7 @@
 #include <Rendering/FrameGraph/ExternalResourceBridge.h>
 #include <VFX/SystemRenderProxy.h>
 #include <VFX/SpriteRenderer.h>
+#include "SceneRenderOptions.h"
 
 namespace NLS::Engine::Rendering
 {
@@ -18,6 +19,8 @@ struct ParticleViewInput
     std::vector<std::vector<VFX::SpriteMaterial>> materials;
     std::vector<std::vector<std::shared_ptr<const VFX::MeshRenderGeometry>>> meshes;
     std::string materialError;
+    uint64_t ownerId = 0;
+    int32_t sortingLayerRank = 0;
 };
 
 class NLS_ENGINE_API ParticleSceneRenderer final
@@ -28,7 +31,8 @@ public:
     ParticleSceneRenderer(const ParticleSceneRenderer&) = delete;
     ParticleSceneRenderer& operator=(const ParticleSceneRenderer&) = delete;
     bool AppendPass(std::shared_ptr<Render::RHI::RHIDevice> device, Render::Context::RenderScenePackage& package,
-        const Render::FrameGraph::FrozenFrameDescriptor& view, const std::vector<ParticleViewInput>& particles, std::string& error);
+        const Render::FrameGraph::FrozenFrameDescriptor& view, const std::vector<ParticleViewInput>& particles, std::string& error,
+        const SceneRenderOptions& options = {});
 private:
     struct State;
     std::unique_ptr<State> m_state;

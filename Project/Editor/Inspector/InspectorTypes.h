@@ -63,12 +63,35 @@ struct InspectorTargetSet
 {
     std::vector<InspectorTargetHandle> targets;
     uint64_t revision = 0u;
+    std::optional<InspectorTargetHandle> activeTarget;
 
     [[nodiscard]] bool Empty() const { return targets.empty(); }
     [[nodiscard]] bool IsSingleTarget() const { return targets.size() == 1u; }
     [[nodiscard]] const InspectorTargetHandle* Primary() const
     {
         return IsSingleTarget() ? &targets.front() : nullptr;
+    }
+    [[nodiscard]] const InspectorTargetHandle* Active() const
+    {
+        if (activeTarget)
+            for (const auto& target : targets)
+                if (target == *activeTarget)
+                    return &target;
+        return targets.empty() ? nullptr : &targets.back();
+    }
+    [[nodiscard]] bool Contains(const InspectorTargetHandle& target) const
+    {
+        for (const auto& candidate : targets)
+            if (candidate == target)
+                return true;
+        return false;
+    }
+    [[nodiscard]] bool IsGameObjectSelection() const
+    {
+        if (targets.empty()) return false;
+        for (const auto& target : targets)
+            if (target.kind != InspectorTargetKind::GameObject) return false;
+        return true;
     }
 
     void Normalize();

@@ -31,6 +31,8 @@ namespace NLS::Editor::Rendering
 		{
             Maths::Vector3 gridColor;
             Maths::Vector3 viewPosition;
+            std::optional<bool> enabled;
+            bool planarXY = false;
 		};
 
 		/**
@@ -66,6 +68,7 @@ namespace NLS::Editor::Rendering
 		// writes bump the global material mutation epoch, which is part of the
 		// Scene View static frame cache key.
 		void ApplyGridColor(const Maths::Vector3& gridColor);
+        void ApplyGridPlane(bool planarXY);
 		std::optional<NLS::Render::Context::RenderPassCommandInput> BuildThreadedPassInput(
 			NLS::Render::Data::PipelineState p_pso);
         DebugModelRenderer m_debugModelRenderer;
@@ -76,5 +79,6 @@ namespace NLS::Editor::Rendering
 		std::optional<NLS::Render::Context::RenderPassCommandInput> m_preparedThreadedPassInput;
 		Maths::Vector3 m_cachedGridAxesPosition{};
 		bool m_hasCachedGridAxes = false;
+        bool m_cachedGridAxesPlanarXY = false;
 	};
 }

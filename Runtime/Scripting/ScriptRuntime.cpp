@@ -1,6 +1,7 @@
 #include "ScriptRuntime.h"
 #include "ScriptScheduler.h"
 #include "CoreClrScriptBackend.h"
+#include "LuaScriptBackend.h"
 
 #include <algorithm>
 #include <exception>
@@ -96,11 +97,23 @@ ScriptRuntime::ScriptRuntime()
     : m_scheduler(std::make_unique<ScriptScheduler>())
 {
     g_activeRuntime = this;
+    m_pluginModuleProvider.create = [this](const std::string& backend,const std::filesystem::path& path,const std::string& entry) -> std::unique_ptr<Core::Modules::IModule> {
+        if (!m_initialized) return {};
+        if (backend == "Lua")
+            if (auto* lua = dynamic_cast<LuaScriptBackend*>(GetBackend(ScriptLanguage::Lua))) return lua->CreatePluginModule(path);
+        if (backend == "CSharp")
+            if (auto* clr = dynamic_cast<CoreClrScriptBackend*>(GetBackend(ScriptLanguage::CSharp))) return clr->CreatePluginModule(path,entry);
+        return {};
+    };
+    Core::ServiceLocator::Provide(m_pluginModuleProvider);
 }
 
 ScriptRuntime::~ScriptRuntime()
 {
     Shutdown();
+    if (Core::ServiceLocator::Contains<Core::Modules::ScriptModuleProvider>() &&
+        &Core::ServiceLocator::Get<Core::Modules::ScriptModuleProvider>() == &m_pluginModuleProvider)
+        Core::ServiceLocator::Remove<Core::Modules::ScriptModuleProvider>();
     if (g_activeRuntime == this)
         g_activeRuntime = nullptr;
 }
@@ -201,6 +214,32 @@ ScriptStatus ScriptRuntime::Initialize(const ScriptApiDatabase& api)
 
     m_initialized = true;
     return ScriptStatus::Ok();
+}
+
+ScriptStatus ScriptRuntime::BeginPlaySession(uint64_t sessionId)
+{
+    if (!sessionId || m_playSessionId)
+        return ScriptStatus::Error(ScriptStatusCode::InvalidArgument, "Invalid or already active Play session.");
+    const auto api = m_api;
+    Shutdown();
+    const auto status = Initialize(api);
+    if (status.Succeeded()) m_playSessionId = sessionId;
+    return status;
+}
+
+ScriptStatus ScriptRuntime::EndPlaySession(bool restoreScriptHost)
+{
+    if (m_playSessionId)
+    {
+        Shutdown();
+        m_playSessionId = 0;
+    }
+    // Hosts may retire the Play world before attempting to restore tooling.
+    // A failed editor VM must not keep a stopped world or its input alive.
+    if (!restoreScriptHost) return ScriptStatus::Ok();
+    // Inspector metadata remains available in Edit, without game instances.
+    const auto api = m_api;
+    return Initialize(api);
 }
 
 void ScriptRuntime::Shutdown()

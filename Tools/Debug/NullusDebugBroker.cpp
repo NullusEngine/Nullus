@@ -1214,6 +1214,7 @@ std::optional<Json> ExecuteAction(
         {"play", "EnterPlay"},
         {"pause", "PausePlay"},
         {"resume", "ResumePlay"},
+        {"step", "StepPlay"},
         {"stop", "StopPlay"}};
     const auto command = commands.find(action);
     if (command == commands.end())
@@ -1254,7 +1255,7 @@ int main(int argc, char** argv)
         else if (argument == "--help" || argument == "-h")
         {
             std::cout << "Usage: NullusDebugBroker --manifest <Library/IDE/Nullus.Debug.json> "
-                "[--action prepare|prepare-mixed|build-native|status|focus|build|play|pause|resume|stop|watch-events] "
+                "[--action prepare|prepare-mixed|build-native|status|focus|build|play|pause|resume|step|stop|watch-events] "
                 "[--configuration Debug|Release] "
                 "[--after N] [--wait-ms N] [--timeout-ms N]\n";
             return 0;

@@ -221,7 +221,35 @@ namespace NLS::Engine::Rendering
 				*m_pendingSceneFrameInput = packet;
 				*m_pendingHelperDrawCommands = std::move(m_threadedRecordedDrawCommands);
 			}
-			return BaseSceneRenderer::BuildRenderSceneCommand(packet);
+                auto build=BaseSceneRenderer::BuildRenderSceneCommand(packet);
+                const auto view=packet.view;
+                return [build=std::move(build),view](size_t slot) mutable
+                {
+                    auto package=build(slot);
+                    if (!view) return package;
+                    const auto& frame=view->descriptor;
+                    if (frame.outputViewport)
+                    {
+                        auto apply=[&](NLS::Render::Context::RenderPassCommandInput& pass)
+                        {
+                            if (pass.kind!=NLS::Render::Context::RenderPassCommandKind::Compute &&
+                                (pass.usesColorAttachment || pass.usesDepthStencilAttachment)) pass.outputViewport=frame.outputViewport;
+                        };
+                        for(auto& pass:package.passCommandInputs) apply(pass);
+                        for(auto& unit:package.parallelCommandWorkUnits) apply(unit.commandInput);
+                    }
+                    if (frame.gameUiSnapshot)
+                    {
+                        // UI always covers the whole game output after the last camera.
+                        if (package.externalSceneOutputColorView)
+                        {
+                            const auto size=package.externalSceneOutputColorView->GetTexture()->GetDesc().extent;
+                            package.renderWidth=size.width;package.renderHeight=size.height;
+                        }
+                        NLS::Render::Context::AttachUiOverlaySnapshotToRenderScenePackage(package,frame.gameUiSnapshot);
+                    }
+                    return package;
+                };
 		}
 
 	void ForwardSceneRenderer::BeginSceneFrame(
@@ -247,7 +275,7 @@ namespace NLS::Engine::Rendering
 		// pointer, which work running on the render thread would then read while the
 		// game thread advances the next frame.
 		auto frozenFrame =
-			NLS::Render::FrameGraph::FreezeFrameDescriptor(p_frameDescriptor);
+				NLS::Render::FrameGraph::FreezeFrameDescriptor(GetFrameDescriptor());
 
 		// Game-thread half of the parse: it captures which scenes this frame renders
 		// and collects each one's proxy update batch. The resolve half - apply,
@@ -279,7 +307,7 @@ namespace NLS::Engine::Rendering
 			return;
 		}
 
-		auto pendingPacket = BuildRenderFramePacket(p_frameDescriptor);
+			auto pendingPacket = BuildRenderFramePacket(GetFrameDescriptor());
 		if (pendingPacket.has_value())
 		{
 			SetPendingRenderFramePacket(pendingPacket.value());
@@ -394,7 +422,10 @@ namespace NLS::Engine::Rendering
 								"Forward",
 								preparedDraw) &&
 							QueueThreadedRecordedDraw(std::move(preparedDraw), *recordedDrawCommands))
-							++transparentDrawCount;
+                            {
+                                recordedDrawCommands->back().transparentSortKey = CaptureTransparentSortKey(entry.second, frozenFrame, drawables->defaultSortingLayerRank);
+								++transparentDrawCount;
+                            }
 					}
 					SetActivePreparedPassBindingSet(nullptr);
 
@@ -422,6 +453,7 @@ namespace NLS::Engine::Rendering
 						package,
 						frozenFrame.descriptor);
 						AppendParticleScenePass(package,frozenFrame,drawables->particles);
+						AppendSpriteScenePass(package,frozenFrame,drawables->sprites);
                         AppendDistanceFieldScenePass(package,frozenFrame,GetDistanceFieldDebugSettings(),packet.frameId);
 						NLS::Render::Context::DriverRendererAccess::PrepareSwapchainSceneOutput(m_driver, package);
 					return package;

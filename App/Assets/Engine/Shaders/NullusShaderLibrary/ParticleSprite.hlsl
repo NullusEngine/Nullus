@@ -1,7 +1,7 @@
 #ifndef NULLUS_PARTICLE_SPRITE_INCLUDED
 #define NULLUS_PARTICLE_SPRITE_INCLUDED
 
-// ParticleSprite material ABI 7. The engine supplies SpriteVS. A ShaderLab
+// ParticleSprite material ABI 8. The engine supplies SpriteVS. A ShaderLab
 // ParticleSprite pass supplies EvaluateParticleMaterial and uses ParticleMaterialPS.
 cbuffer VfxSpriteView : register(b0, space1)
 {
@@ -12,6 +12,7 @@ cbuffer VfxSpriteView : register(b0, space1)
     uint VfxCapacity; uint VfxSorted; uint VfxAlignment; uint VfxBlend;
     uint VfxSubImagesX; uint VfxSubImagesY; uint VfxBlendSubImages; uint VfxCircularMask;
     float4 VfxDynamicDefaults[4];
+    float4 VfxSceneDebugOptions;
 };
 Texture2D<float4> VfxSpriteTexture : register(t2, space1);
 Texture2D<float> VfxSceneDepth : register(t3, space1);
@@ -91,7 +92,7 @@ float4 ParticleMaterialPS(SpriteVertex input) : SV_Target0
         float2 centered = input.uv*2-1; float radius = dot(centered,centered);
         clip(1-radius); color.a *= saturate((1-radius)*4);
     }
-    if (VfxShading.z > 0)
+    if (VfxShading.z > 0 && VfxSceneDebugOptions.x != 7)
     {
         uint width,height; VfxSceneDepth.GetDimensions(width,height);
         int2 pixel = clamp(int2(input.position.xy),int2(0,0),int2(width-1,height-1));
@@ -102,6 +103,24 @@ float4 ParticleMaterialPS(SpriteVertex input) : SV_Target0
     if (VfxBlend == 2) clip(color.a-VfxShading.y);
     if (VfxBlend == 2 || VfxBlend == 3) color.a = 1;
     if (VfxBlend == 4) color.rgb *= color.a;
+    uint debugMode = (uint)VfxSceneDebugOptions.x;
+    if (debugMode >= 1 && debugMode <= 4 || debugMode >= 9 && debugMode <= 10) return float4(0.35f, 0.35f, 0.35f, 1);
+    if (debugMode == 5) return float4(1, 0.85f, 0, 1);
+    if (debugMode == 6) return float4(0, 0, 0, color.a);
+    if (debugMode == 7) return 1;
+    if (debugMode == 8)
+    {
+        if (VfxSceneDebugOptions.y < 0.5f) return float4(0.35f, 0.35f, 0.35f, 1);
+        uint width,height; VfxSpriteTexture.GetDimensions(width,height);
+        float2 uv = ParticleSpriteUV(input.uv, frame);
+        float2 dx = ddx(uv)*float2(width,height), dy = ddy(uv)*float2(width,height);
+        float lod = 0.5f*log2(max(max(dot(dx,dx),dot(dy,dy)),1e-12f));
+        float3 tint = float3(0, 0.65f, 0);
+        if (lod > 1) tint = lerp(tint,float3(1,0,0),saturate((lod-1)/3));
+        if (lod < -1) tint = lerp(tint,float3(0,0.2f,1),saturate((-lod-1)/3));
+        return float4(tint,1);
+    }
+    if (debugMode == 11) return 1;
     return color;
 }
 #endif

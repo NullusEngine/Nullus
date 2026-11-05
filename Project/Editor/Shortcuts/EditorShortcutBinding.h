@@ -5,10 +5,14 @@
 #include <tuple>
 
 #include <Windowing/Inputs/EKey.h>
+#include "Reflection/Macros.h"
+#if !defined(__REFLECTION_PARSER__)
+#include "Project/Editor/Shortcuts/EditorShortcutBinding.generated.h"
+#endif
 
 namespace NLS::Editor::Shortcuts
 {
-    enum class EShortcutModifier : uint8_t
+    ENUM(EShortcutModifier) : uint8_t
     {
         Ctrl = 1 << 0,
         Shift = 1 << 1,
@@ -20,11 +24,15 @@ namespace NLS::Editor::Shortcuts
 
     using ShortcutModifiers = uint8_t;
 
-    struct ShortcutBinding
+    STRUCT(ShortcutBinding)
     {
+        GENERATED_BODY()
+        PROPERTY()
         bool assigned = false;
+        PROPERTY()
         Windowing::Inputs::EKey primaryKey = Windowing::Inputs::EKey::KEY_UNKNOWN;
-        ShortcutModifiers modifiers = 0;
+        PROPERTY()
+        uint8_t modifiers = 0;
 
         static ShortcutBinding Unassigned();
         static ShortcutBinding FromKey(Windowing::Inputs::EKey p_key, ShortcutModifiers p_modifiers = 0);

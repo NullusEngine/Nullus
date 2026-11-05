@@ -11,6 +11,7 @@
 
 #include "Core/ApplicationIdleFramePolicy.h"
 #include "Core/Application.h"
+#include "Core/Modules/ModuleServices.h"
 #include "Core/EditorActions.h"
 #include "Core/ResizeRefreshPolicy.h"
 #include "Core/StartupSceneReadyGate.h"
@@ -109,6 +110,7 @@ Editor::Core::Application::Application(const std::string& p_projectPath, const s
             ? StartupResourcePrewarmMode::Pipelined
             : StartupResourcePrewarmMode::Async;
     m_context.SetStartupResourcePrewarmMode(mode);
+    NLS::Core::Modules::AdvanceHostPhase(NLS::Core::Modules::LoadingPhase::PostEngine);
     NLS_LOG_INFO(std::string("[Startup] StartupResourcePipeline mode=") +
         (mode == StartupResourcePrewarmMode::Legacy ? "legacy" :
             mode == StartupResourcePrewarmMode::Pipelined ? "pipelined" : "async"));
@@ -397,7 +399,9 @@ Editor::Core::Application::~Application()
 {
     // Panel/preview destructors still need the render and RHI lanes to retire work.
     m_editor.reset();
-    m_context.ShutdownThreadedRendering();
+    NLS::Core::Modules::CloseHostModules();
+    // Context drains accepted jobs while the named lanes are still registered,
+    // then closes rendering, the global graph, and the application Jobs owner.
 }
 
 bool Editor::Core::Application::DidShowEditorWindow() const
@@ -928,6 +932,8 @@ void Editor::Core::Application::PaceIdleFrameIfNeeded()
 
 bool Editor::Core::Application::IsRunning() const
 {
+    if(m_context.window->ShouldClose() && m_editorWindowShown && m_editor && !m_editor->PrepareForClose())
+        m_context.window->SetShouldClose(false);
     return !m_context.window->ShouldClose();
 }
 

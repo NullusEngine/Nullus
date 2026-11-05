@@ -61,6 +61,8 @@ namespace NLS::Base::TaskGraph
 
     struct NLS_BASE_API TaskGraphConfig
     {
+        /** Used when starting the shared Jobs pool. An existing pool is reused
+         * with its actual count; this never creates a private pool. */
         uint32_t workerCount = kAutoTaskGraphWorkerCount;
         bool forceInlineExecution = false;
         bool enableDiagnostics = true;
@@ -71,6 +73,8 @@ namespace NLS::Base::TaskGraph
          * were copied before recycling stay valid and observable.
          */
         size_t retainedTerminalTaskCount = 1024u;
+        /** Maximum accepted nonterminal nodes; saturation rejects submission. */
+        size_t maxPendingTaskCount = 65536u;
     };
 
     struct NLS_BASE_API TaskDesc
@@ -87,10 +91,11 @@ namespace NLS::Base::TaskGraph
 
     /**
      * Copyable completion token. Waiting from a registered named thread pumps
-     * that thread's queue while it waits, so dependency chains that terminate
+     * every lane owned by that thread, so dependency chains that terminate
      * on the same named thread cannot deadlock the caller. Waiting from a pool
-     * worker assists the pool instead of parking, so a nested wait cannot
-     * deadlock even when the graph owns a single worker.
+     * worker assists the shared Jobs pool. Explicit self/dependency waits are
+     * rejected; owners must still pump their named lanes. User mutex cycles
+     * cannot be made safe by scheduler assistance.
      */
     class NLS_BASE_API TaskCompletion final
     {
@@ -110,6 +115,49 @@ namespace NLS::Base::TaskGraph
         std::shared_ptr<TaskCompletionState> m_state;
     };
 
+    struct TaskSubmission
+    {
+        TaskHandle handle;
+        TaskCompletion completion;
+    };
+
+    class TaskGraph;
+
+    /** Completion of every node, including independent branches after a failure. */
+    class NLS_BASE_API GraphCompletion final
+    {
+    public:
+        [[nodiscard]] bool IsValid() const noexcept { return m_valid; }
+        [[nodiscard]] bool IsComplete() const;
+        [[nodiscard]] TaskStatus GetStatus() const;
+        TaskStatus Wait();
+        bool WaitFor(std::chrono::milliseconds timeout);
+        [[nodiscard]] const std::vector<TaskSubmission>& GetTasks() const { return m_tasks; }
+
+    private:
+        friend class TaskGraph;
+        bool m_valid = false;
+        std::vector<TaskSubmission> m_tasks;
+    };
+
+    /** Build, then execute once. Edges refer to node indices; Execute validates
+     * the entire DAG before accepting any work. No mutation after Execute. */
+    class NLS_BASE_API TaskGraphBatch final
+    {
+    public:
+        using NodeId = size_t;
+        static constexpr NodeId InvalidNode = static_cast<NodeId>(-1);
+        NodeId Add(TaskDesc task);
+        bool DependsOn(NodeId node, NodeId prerequisite);
+        GraphCompletion Execute(TaskGraph& graph);
+
+    private:
+        friend class TaskGraph;
+        std::vector<TaskDesc> m_tasks;
+        std::vector<std::vector<NodeId>> m_dependencies;
+        bool m_executed = false;
+    };
+
     class NLS_BASE_API TaskGraph final
     {
     public:
@@ -120,6 +168,10 @@ namespace NLS::Base::TaskGraph
         TaskGraph& operator=(const TaskGraph&) = delete;
 
         bool Start();
+        /** Lifecycle-owner operation, never from a task in this graph. Drain
+         * cancels orphaned named lanes and waits for registered owners to pump.
+         * Immediate cancels unstarted work and waits for running bodies. After
+         * shutdown submissions are rejected until an explicit Start(). */
         void Shutdown(TaskGraphShutdownMode mode = TaskGraphShutdownMode::DrainAcceptedWork);
         [[nodiscard]] bool IsStarted() const noexcept;
 
@@ -131,14 +183,19 @@ namespace NLS::Base::TaskGraph
         [[nodiscard]] NamedThread GetCurrentNamedThread() const;
 
         TaskHandle Submit(TaskDesc desc);
+        /** Returns a retained token atomically with acceptance, even for inline
+         * work or a graph configured to retain zero terminal node records. */
+        TaskSubmission SubmitTracked(TaskDesc desc);
+        GraphCompletion SubmitGraph(TaskGraphBatch& batch);
         TaskHandle Submit(
             std::function<void()> function,
             NamedThread targetThread = NamedThread::Any,
             TaskPriority priority = TaskPriority::Normal,
             std::string debugName = {});
 
-        /** Pumps the current named lane, or assists runnable work on a pool worker. */
+        /** Pumps all owned named lanes within a total task budget, or assists a pool worker. */
         size_t PumpCurrentThread(size_t maxTasks = 0u);
+        /** Only a caller explicitly registered for this lane may pump it. */
         size_t Pump(NamedThread thread, size_t maxTasks = 0u);
         bool WaitForWork(NamedThread thread, std::chrono::milliseconds timeout);
         void WakeNamedThread(NamedThread thread);
@@ -193,6 +250,8 @@ namespace NLS::Base::TaskGraph
         friend struct TaskCompletionState;
 
         struct Impl;
+        bool StartInternal(bool explicitStart);
+        TaskHandle SubmitInternal(TaskDesc desc, TaskCompletion* completion);
         std::shared_ptr<Impl> m_impl;
     };
 }

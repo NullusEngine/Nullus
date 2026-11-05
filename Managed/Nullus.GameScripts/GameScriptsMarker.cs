@@ -23,9 +23,14 @@ public static unsafe class GameScriptsExports
         // hostfxr resolves this method as a component entry point.  Register
         // explicitly as well as through the module initializer because some
         // hosts can resolve a method before running module initializers.
+        RegisterGameplayScripts();
+        return ManagedExports.GetApiTableManaged();
+    }
+
+    public static void RegisterGameplayScripts()
+    {
         EngineScriptsExports.Register();
         NullusScriptAssemblyRegistration.Register();
-        return ManagedExports.GetApiTableManaged();
     }
 
     // Keep diagnostics on the same project assembly entry point that Native

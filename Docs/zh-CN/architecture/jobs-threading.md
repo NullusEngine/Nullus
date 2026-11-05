@@ -1,6 +1,6 @@
 # 任务系统与线程模型
 
-Nullus 有两套并行的调度设施：面向通用 CPU 工作的 **JobSystem**，和面向渲染管线与引擎阶段任务的 **TaskGraph**。前者解决“把工作分出去”，后者解决“阶段之间怎么交接”。
+Nullus 保留两个逻辑层，共享一个计算调度器：**JobSystem** 执行任务并管理 Worker Pool，**TaskGraph** 管理依赖与命名执行队列。阻塞后台 I/O 使用单独计入预算的隔离池。详见[统一架构审查、语义与示例](../../TaskSystemUnification.md)。
 
 ## JobSystem
 
@@ -15,7 +15,7 @@ config.backgroundWorkerCount = 1;
 NLS::Base::Jobs::InitializeJobSystem(config);
 ```
 
-`TryInitializeJobSystem` 是所有权感知的变体：只有本次调用真正创建了运行时才返回 `true`。使用它时，只有在返回 `true` 的分支才应调用 `ShutdownJobSystem`。
+`TryInitializeJobSystem` 是所有权感知的变体：本次取得显式所有权时返回 `true`，也包括认领由图租约预先启动的运行时。只有返回 `true` 的分支才应调用 `ShutdownJobSystem`。首个初始化者确定 Worker 配置，后续图复用实际配置；最后的应用所有者和图租约共同决定最终关闭。
 
 `JobHandle{}` 始终是已完成状态。
 
@@ -34,6 +34,7 @@ NLS::Base::Jobs::InitializeJobSystem(config);
 - `Complete` 等待并清空句柄；
 - `CompleteNoClear` 保留调用方副本，便于后续查询；
 - `HasBeenSynced` 报告句柄是否到达终止状态；
+- `GetCompletionStatus` 区分成功、失败、取消和待完成；`RequestCancel` 取消尚未开始的计算任务组，已经开始的组通过 `IsCancellationRequested` 观察协作取消请求。后台 I/O 保留关闭取消，不支持单句柄取消；
 - 前台任务可提供取消回调，用于释放载荷；回调对“被立即关闭取消”或“依赖失败”的排队中工作最多执行一次；任务开始执行后不再触发取消回调。
 
 ### 批处理与扇入
@@ -52,7 +53,7 @@ NLS::Base::Jobs::InitializeJobSystem(config);
 ### 已知限制
 
 - `ScheduleJobForEach` 拒绝超出原生 `int` 规划范围的迭代次数或批次数；
-- 前台与后台队列仍使用加锁的中央注册表，吞吐优化留待语义稳定之后；
+- 计算 Worker 使用本地优先级队列和 Work Stealing，任务组状态仍由加锁注册表保护。`maxPendingJobCount` 分别约束前台回调与后台任务加主线程延续的在途数量，饱和时拒绝且不接管调用方载荷；
 - 跨队列依赖提升使用显式通知加有界定时回退，正确性不依赖回退，但高跨队列流量仍可能付出轮询延迟。
 
 ### 内存与数据安全
@@ -66,7 +67,7 @@ Nullus 不提供托管容器的竞态检查（例如 `NativeArray` 或安全句�
 ### 后台工作与主线程延续
 
 - 长时或 IO 密集工作使用 `ScheduleBackgroundJob`；
-- 主线程后续工作使用 `ScheduleMainThreadContinuation`，只在 `DrainMainThreadContinuations` 中执行；
+- 主线程后续工作使用 `ScheduleMainThreadContinuation`，只在登记的所有者线程调用 `DrainMainThreadContinuations` 时执行；
 - 就绪的延续被提升到独立就绪队列，避免每次排空都扫描全部阻塞中的延续；
 - 编辑器更新循环每帧在延迟动作之后排空一个有界预算；
 - 关闭不会隐式执行主线程延续，所有者需要在停止 JobSystem 之前排空必要延续。
@@ -89,13 +90,15 @@ Nullus 不提供托管容器的竞态检查（例如 `NativeArray` 或安全句�
 
 ## TaskGraph
 
-TaskGraph 承担渲染调度与引擎阶段任务：
+TaskGraph 承担渲染与引擎阶段的依赖管理：
 
-- 每个 worker 维护按优先级划分的本地队列；
-- 外部提交进入共享注入队列；
-- 空闲 worker 执行 work stealing；
-- `TaskCompletion::Wait()` 在 worker 上协助执行可运行任务，避免嵌套等待死锁；
+- 就绪 Any 任务通过 `Jobs::Internal::DispatchJob` 进入同一个 `JobQueue`，TaskGraph 不再拥有计算线程或 Worker 队列。此桥接复用在途任务组、容量与关闭清理机制，不再为图已有的 TaskCompletion 另外保存 JobHandle 终态历史；
+- Jobs Worker 使用本地 LIFO、外部注入 FIFO 和跨 Worker 窃取。完成等待者使用独立条件变量，任务完成时不会无条件唤醒空闲 Worker；
+- 仅当 Any 任务体与用户载荷析构均已结束时，`Finalize` 才允许把唯一后继留给当前 Worker；多个就绪后继仍唤醒其他 Worker 并允许窃取。在任务体内提交、外部提交与命名通道完成保持正常唤醒，因此提交一个子任务后阻塞的父任务仍能让其他 Worker 执行子任务；
+- `TaskGraphBatch` 在执行前校验一次性 DAG，`GraphCompletion` 等待全部分支，包括其他节点失败后仍在运行的独立分支；
+- `TaskCompletion::Wait()` 在 Worker 上协助共享池，并泵调用方已登记的命名通道；拒绝自身或当前执行栈依赖等待。用户互斥锁循环和无人泵的命名通道仍需调用方避免；
 - `RequestCancel` 沿依赖图传播并唤醒全部等待者。
+- 命名 Pump 要求登记；完成等待与 `PumpCurrentThread` 会处理调用方拥有的所有命名通道。关闭会等待运行中的任务体，取消无人负责通道中的未启动任务；关闭后需显式 Start 才能重新提交。
 
 ## 执行通道
 
@@ -138,7 +141,7 @@ RHI 执行器
 
 ## 线程命名
 
-线程名在启动时注册，性能分析中可见。命名对象包括 Game Thread、`Render Thread`、专用 `RHI Thread`、`TaskGraph Worker <n>`、`Background Job Worker <n>`，以及编辑器的元数据/导入、启动缓存、Prefab 准备、着色器编译与反射、文件监听、脚本构建、调试端点、进度对话框与追踪写出线程。
+线程名在启动时注册，性能分析中可见。命名对象包括 Game Thread、`Render Thread`、专用 `RHI Thread`、共享的 `Job Worker <n>`、`Background Job Worker <n>`，以及编辑器的元数据/导入、启动缓存、Prefab 准备、着色器编译与反射、文件监听、脚本构建、调试端点、进度对话框与追踪写出线程。
 
 `tasks` 模式下 RHI 工作保留物理 worker 的名称，不会伪装成独立 RHI 线程。
 

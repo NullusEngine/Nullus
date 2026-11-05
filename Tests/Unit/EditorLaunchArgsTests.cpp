@@ -671,11 +671,11 @@ TEST(EditorLaunchArgsTests, EditorJobWorkersShareOneHardwareBudget)
         {1u, 1u, 1u},
         {2u, 1u, 1u},
         {4u, 1u, 1u},
-        {8u, 2u, 1u},
-        {12u, 4u, 1u},
-        {16u, 5u, 2u},
-        {20u, 6u, 3u},
-        {64u, 13u, 6u}
+        {8u, 4u, 1u},
+        {12u, 6u, 3u},
+        {16u, 9u, 4u},
+        {20u, 12u, 5u},
+        {64u, 21u, 10u}
     };
 
     for (const auto& testCase : cases)
@@ -685,14 +685,13 @@ TEST(EditorLaunchArgsTests, EditorJobWorkersShareOneHardwareBudget)
         EXPECT_EQ(budget.backgroundWorkerCount, testCase.expectedBackground);
         const auto poolBudget = NLS::Base::Threading::ResolveExecutionPoolBudget(
             testCase.hardwareConcurrency);
-        // The rendering TaskGraph and the Jobs pools must fit inside the same budget.
+        // TaskGraph's count aliases the compute workers and is not additive.
         EXPECT_EQ(budget.foregroundWorkerCount, poolBudget.jobsForegroundWorkerCount);
         EXPECT_EQ(budget.backgroundWorkerCount, poolBudget.jobsBackgroundWorkerCount);
         EXPECT_EQ(
-            poolBudget.taskGraphWorkerCount +
-                budget.foregroundWorkerCount +
-                budget.backgroundWorkerCount,
+            budget.foregroundWorkerCount + budget.backgroundWorkerCount,
             poolBudget.totalPoolWorkerCount);
+        EXPECT_EQ(poolBudget.taskGraphWorkerCount, budget.foregroundWorkerCount);
         EXPECT_EQ(
             budget.foregroundWorkerCount + budget.backgroundWorkerCount,
             poolBudget.jobsWorkerCount);
@@ -702,20 +701,20 @@ TEST(EditorLaunchArgsTests, EditorJobWorkersShareOneHardwareBudget)
 TEST(EditorLaunchArgsTests, EditorJobWorkerOverrideKeepsTheSameTotalBudget)
 {
     const auto twoWorkers = NLS::Editor::Core::ResolveEditorJobWorkerBudget(20u, 2u);
-    EXPECT_EQ(twoWorkers.foregroundWorkerCount, 7u);
+    EXPECT_EQ(twoWorkers.foregroundWorkerCount, 15u);
     EXPECT_EQ(twoWorkers.backgroundWorkerCount, 2u);
 
     const auto eightWorkers = NLS::Editor::Core::ResolveEditorJobWorkerBudget(20u, 8u);
-    EXPECT_EQ(eightWorkers.foregroundWorkerCount, 1u);
+    EXPECT_EQ(eightWorkers.foregroundWorkerCount, 9u);
     EXPECT_EQ(eightWorkers.backgroundWorkerCount, 8u);
 
     const auto sixteenWorkers = NLS::Editor::Core::ResolveEditorJobWorkerBudget(20u, 16u);
     EXPECT_EQ(sixteenWorkers.foregroundWorkerCount, 1u);
-    EXPECT_EQ(sixteenWorkers.backgroundWorkerCount, 8u);
+    EXPECT_EQ(sixteenWorkers.backgroundWorkerCount, 16u);
 
     const auto clampedWorkers = NLS::Editor::Core::ResolveEditorJobWorkerBudget(64u, 64u);
     EXPECT_EQ(clampedWorkers.backgroundWorkerCount, 16u);
-    EXPECT_EQ(clampedWorkers.foregroundWorkerCount, 3u);
+    EXPECT_EQ(clampedWorkers.foregroundWorkerCount, 15u);
 }
 
 TEST(EditorLaunchArgsTests, JobSystemReportsEffectiveBackgroundWorkerCount)

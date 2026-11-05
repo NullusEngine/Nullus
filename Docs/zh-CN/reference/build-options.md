@@ -40,6 +40,8 @@
 | 选项 | 默认 | 说明 |
 | --- | --- | --- |
 | `NLS_ENABLE_PCH` | `ON` | 主要的目标使用窄范围预编译头 |
+| `NLS_ENABLE_EDITOR_ASSET_PCH` | `OFF` | 实验性缓存 EditorProject 的资产头包含链，使用目标私有 PCH |
+| `NLS_ENABLE_PARALLEL_REFLECTION_GENERATION` | `OFF` | 实验性独立调度反射生成，与依赖库编译重叠；辅助项目位于 `CMakePredefinedTargets/Reflection` |
 | `NLS_ENABLE_MSVC_MULTIPROCESSOR_COMPILATION` | `ON` | 目标内启用 MSVC `/MP` |
 | `NLS_MSVC_MP_JOBS` | 空 | 限制目标内 `/MP` 的 worker 数 |
 | `NLS_ENABLE_CXX_MODULES` | `OFF` | 实验性 C++20 modules 试点目标 |

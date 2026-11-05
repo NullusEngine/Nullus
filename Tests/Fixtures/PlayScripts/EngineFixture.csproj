@@ -1,0 +1,18 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <AssemblyName>EngineScripts</AssemblyName>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+    <DefineConstants>$(DefineConstants);NLS_ENGINE_SCRIPTS_PROJECT</DefineConstants>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="../../../Managed/Nullus.EngineScripts/EngineScriptsMarker.cs" Link="EngineScriptsMarker.cs" />
+    <Compile Include="../../../Managed/Nullus.EngineScripts/Scripts/**/*.cs" />
+    <Reference Include="Nullus.Managed" HintPath="$(NullusManagedOutput)/Nullus.Managed.dll" Private="true" />
+    <Analyzer Include="$(NullusManagedOutput)/Nullus.ScriptGenerator.dll" />
+    <AdditionalFiles Include="../../../Library/ScriptApi/ScriptApi.json" />
+  </ItemGroup>
+</Project>

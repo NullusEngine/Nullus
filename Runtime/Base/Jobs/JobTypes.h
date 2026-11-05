@@ -9,6 +9,18 @@ namespace NLS::Base::Jobs
 {
     inline constexpr uint32_t kAutoJobWorkerCount = 0xffffffffu;
 
+#if defined(NLS_ENABLE_TEST_HOOKS)
+    namespace Internal
+    {
+        struct DispatchReuseStats
+        {
+            size_t allocations = 0u;
+            size_t reuses = 0u;
+            size_t cached = 0u;
+        };
+    }
+#endif
+
     struct NLS_BASE_API JobHandle
     {
         uint64_t id = 0u;
@@ -28,7 +40,8 @@ namespace NLS::Base::Jobs
     enum class JobPriority : uint8_t
     {
         Normal = 0,
-        High
+        High,
+        Low
     };
 
     enum class JobSafetyPolicy : uint8_t
@@ -58,6 +71,11 @@ namespace NLS::Base::Jobs
         uint32_t workerCount = kAutoJobWorkerCount;
         uint32_t backgroundWorkerCount = 1u;
         bool enableDiagnostics = false;
+        // Bounds accepted callbacks per execution domain. Foreground callbacks
+        // and the background/main-continuation domain each have this limit,
+        // including waiting and running work. Rejection retains caller payload
+        // ownership; zero is clamped to one.
+        size_t maxPendingJobCount = 65536u;
     };
 
     using JobFunction = void(*)(void* userData);

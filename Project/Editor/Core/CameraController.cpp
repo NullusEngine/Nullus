@@ -5,7 +5,9 @@
 
 #include "Core/CameraController.h"
 #include "Core/SceneCameraFocus.h"
+#include "Core/EditorGuiInput.h"
 #include "Shortcuts/EditorShortcutService.h"
+#include "Panels/SceneView.h"
 
 #include <algorithm>
 
@@ -16,6 +18,7 @@
 #include "UI/UIManager.h"
 #include "ServiceLocator.h"
 using namespace NLS;
+namespace { Editor::Core::CameraController* g_keyboardCamera = nullptr; uint64_t g_keyboardCameraFrame = 0; }
 
 Editor::Core::CameraController::CameraController(
 	Editor::Panels::AView& p_view,
@@ -33,6 +36,7 @@ Editor::Core::CameraController::CameraController(Render::Entities::Camera& camer
 
 Editor::Core::CameraController::~CameraController()
 {
+    if (g_keyboardCamera == this) g_keyboardCamera = nullptr;
     if (IsCameraControlActive() || m_forcedNoMouseCursorChange) ResetMouseInteractionState();
 }
 
@@ -49,54 +53,6 @@ void Editor::Core::CameraController::ClearViewportInputBounds()
     m_leftMousePressed = false; m_firstMouse = true;
     m_currentMovementSpeed = Maths::Vector3::Zero; m_targetSpeed = Maths::Vector3::Zero;
     if (IsCameraControlActive() || m_forcedNoMouseCursorChange) ResetMouseInteractionState();
-}
-
-namespace
-{
-bool IsKeyDown(
-    Windowing::Inputs::InputManager& p_inputManager,
-    const Windowing::Inputs::EKey p_key)
-{
-    return p_inputManager.GetKeyState(p_key) == Windowing::Inputs::EKeyState::KEY_DOWN;
-}
-
-bool AreRequiredModifiersDown(
-    Windowing::Inputs::InputManager& p_inputManager,
-    const Editor::Shortcuts::ShortcutModifiers p_modifiers)
-{
-    using namespace Editor::Shortcuts;
-    using Windowing::Inputs::EKey;
-
-    return (!HasModifier(p_modifiers, EShortcutModifier::Ctrl) ||
-            IsKeyDown(p_inputManager, EKey::KEY_LEFT_CONTROL) ||
-            IsKeyDown(p_inputManager, EKey::KEY_RIGHT_CONTROL)) &&
-        (!HasModifier(p_modifiers, EShortcutModifier::Shift) ||
-            IsKeyDown(p_inputManager, EKey::KEY_LEFT_SHIFT) ||
-            IsKeyDown(p_inputManager, EKey::KEY_RIGHT_SHIFT)) &&
-        (!HasModifier(p_modifiers, EShortcutModifier::Alt) ||
-            IsKeyDown(p_inputManager, EKey::KEY_LEFT_ALT) ||
-            IsKeyDown(p_inputManager, EKey::KEY_RIGHT_ALT)) &&
-        (!HasModifier(p_modifiers, EShortcutModifier::Super) ||
-            IsKeyDown(p_inputManager, EKey::KEY_LEFT_SUPER) ||
-            IsKeyDown(p_inputManager, EKey::KEY_RIGHT_SUPER));
-}
-
-bool IsFlyModeCommandDown(
-    Windowing::Inputs::InputManager& p_inputManager,
-    const std::string& p_commandId,
-    const Windowing::Inputs::EKey p_fallbackKey)
-{
-    if (NLS::Core::ServiceLocator::Contains<Editor::Shortcuts::EditorShortcutService>())
-    {
-        const auto& shortcuts = NLS::Core::ServiceLocator::Get<Editor::Shortcuts::EditorShortcutService>();
-        const auto binding = shortcuts.GetBinding(p_commandId);
-        return binding.IsValid() &&
-            IsKeyDown(p_inputManager, binding.primaryKey) &&
-            AreRequiredModifiersDown(p_inputManager, binding.modifiers);
-    }
-
-    return IsKeyDown(p_inputManager, p_fallbackKey);
-}
 }
 
 float GetActorFocusDist(Engine::GameObject& p_gameObject)
@@ -134,72 +90,79 @@ float GetActorFocusDist(Engine::GameObject& p_gameObject)
 	return distance;
 }
 
-void Editor::Core::CameraController::HandleInputs(float p_deltaTime)
+Editor::Core::CameraController* Editor::Core::CameraController::GetKeyboardInputTarget()
 {
+    return g_keyboardCamera && g_keyboardCameraFrame == g_keyboardCamera->m_inputManager.GetInputSystem().GetFrameIndex() ? g_keyboardCamera : nullptr;
+}
+bool Editor::Core::CameraController::IsSceneViewCamera() const { return dynamic_cast<Panels::SceneView*>(m_view) != nullptr; }
+bool Editor::Core::CameraController::NavigationOwnsInput()
+{
+    auto* camera = g_keyboardCamera;
+    if (!camera || camera->m_inputBlocked || !camera->m_inputManager.HasFocusedWindow()) return false;
+    if (camera->IsCameraControlActive()) return true;
+    const auto fly = Shortcuts::GetEditorInputState(Shortcuts::EditorInputAction::CameraFly);
+    return fly.pressed && fly.actuated &&
+        camera->m_view && camera->m_view->IsMouseHoveringView(camera->m_inputManager.GetMousePosition());
+}
+bool Editor::Core::CameraController::FocusInputTarget(const Maths::Vector3& angle)
+{
+    auto* target = GetTargetGameObject();
+    if (m_inputBlocked || (!target && (!m_focusState || !m_focusState->hasFocus))) return false;
+    const auto point = target ? target->GetTransform()->GetWorldPosition() : m_focusState->focusPoint;
+    const auto distance = target ? GetActorFocusDist(*target) : m_focusState->focusDistance;
+    if (angle == Maths::Vector3::Zero) { MoveToPoint(point, distance); return true; }
+    if (m_planarNavigation) return false;
+    const auto position = point + angle * distance;
+    const auto direction = Maths::Vector3::Normalize(point - position);
+    m_camera.SetRotation(Maths::Quaternion::LookAt(direction, std::abs(direction.y) == 1.0f ? Maths::Vector3::Right : Maths::Vector3::Up));
+    m_cameraDestinations.push({position, m_camera.GetRotation()});
+    if (m_focusState) *m_focusState = {point, distance, true};
+    return true;
+}
+
+bool Editor::Core::CameraController::UpdatePointerState(bool& viewportInputAvailable, bool& mouseOverView)
+{
+    viewportInputAvailable = mouseOverView = false;
     if (m_inputBlocked)
     {
         ResetMouseInteractionState();
-        return;
+        return false;
     }
 
-    if (!m_window.IsFocused())
+    if (!m_inputManager.HasFocusedWindow())
     {
         ResetMouseInteractionState();
-        return;
+        return false;
     }
 
     const Maths::Vector2 mousePosition = m_inputManager.GetMousePosition();
-    const bool viewportInputAvailable = m_view ? m_view->HasViewportImageInputBounds() : m_hasViewportBounds;
-    const bool mouseOverView = viewportInputAvailable && (m_view ? m_view->IsMouseHoveringView(mousePosition) :
+    if (IsCameraControlActive() && !m_inputManager.GetPlatformBackend().OwnsPointerCapture(this)) ResetNavigationInteractionState();
+    viewportInputAvailable = m_view ? m_view->HasViewportImageInputBounds() : m_hasViewportBounds;
+    mouseOverView = viewportInputAvailable && (m_view ? m_view->IsMouseHoveringView(mousePosition) :
         mousePosition.x >= m_viewportMin.x && mousePosition.x < m_viewportMax.x &&
         mousePosition.y >= m_viewportMin.y && mousePosition.y < m_viewportMax.y);
     const bool inputActive = mouseOverView && (!m_view || m_inputActive);
+    if (inputActive && !ImGui::IsAnyItemActive())
+    { g_keyboardCamera = this; g_keyboardCameraFrame = m_inputManager.GetInputSystem().GetFrameIndex(); }
     const bool capturingMouse = m_leftMousePressed || IsCameraControlActive();
     const bool shouldProcessMouseState = inputActive || capturingMouse;
 
-	if (shouldProcessMouseState)
-	{
-		UpdateMouseState(inputActive);
+    if (shouldProcessMouseState) UpdateMouseState(inputActive);
+    return true;
+}
 
-		if (mouseOverView && !NLS_SERVICE(NLS::UI::UIManager).IsAnyItemActive())
-		{
-			auto* target = GetTargetGameObject();
-			if (target || (!m_view && m_focusState && m_focusState->hasFocus))
-			{
-                auto targetPos = target ? target->GetTransform()->GetWorldPosition() : m_focusState->focusPoint;
+void Editor::Core::CameraController::RefreshPointerCaptureAfterUi()
+{
+    const bool wasNavigating = IsCameraControlActive();
+    bool viewportInputAvailable = false, mouseOverView = false;
+    if (UpdatePointerState(viewportInputAvailable, mouseOverView) && !wasNavigating && IsCameraControlActive())
+        ConsumeSuppressedMouseDelta(m_inputManager.GetMousePosition());
+}
 
-				float dist = target ? GetActorFocusDist(*target) : m_focusState->focusDistance;
-
-				if (m_inputManager.IsKeyPressed(Windowing::Inputs::EKey::KEY_F))
-				{
-                    MoveToPoint(targetPos,dist);
-				}
-
-				auto focusObjectFromAngle = [this, &targetPos, &dist]( const Maths::Vector3& offset)
-				{
-					auto camPos = targetPos + offset * dist;
-					auto direction = Maths::Vector3::Normalize(targetPos - camPos);
-					m_camera.SetRotation(Maths::Quaternion::LookAt(direction, abs(direction.y) == 1.0f ? Maths::Vector3::Right : Maths::Vector3::Up));
-					m_cameraDestinations.push({ camPos, m_camera.GetRotation() });
-                    if (m_focusState != nullptr)
-                    {
-                        *m_focusState = {
-                            targetPos,
-                            dist,
-                            true
-                        };
-                    }
-				};
-
-				if (m_inputManager.IsKeyPressed(Windowing::Inputs::EKey::KEY_UP))			focusObjectFromAngle(Maths::Vector3::Up);
-				if (m_inputManager.IsKeyPressed(Windowing::Inputs::EKey::KEY_DOWN))		focusObjectFromAngle(-Maths::Vector3::Up);
-				if (m_inputManager.IsKeyPressed(Windowing::Inputs::EKey::KEY_RIGHT))		focusObjectFromAngle(Maths::Vector3::Right);
-				if (m_inputManager.IsKeyPressed(Windowing::Inputs::EKey::KEY_LEFT))		focusObjectFromAngle(-Maths::Vector3::Right);
-				if (m_inputManager.IsKeyPressed(Windowing::Inputs::EKey::KEY_PAGE_UP))	focusObjectFromAngle(Maths::Vector3::Forward);
-				if (m_inputManager.IsKeyPressed(Windowing::Inputs::EKey::KEY_PAGE_DOWN))	focusObjectFromAngle(-Maths::Vector3::Forward);
-			}
-		}
-	}
+void Editor::Core::CameraController::HandleInputs(float p_deltaTime)
+{
+    bool viewportInputAvailable = false, mouseOverView = false;
+    if (!UpdatePointerState(viewportInputAvailable, mouseOverView)) return;
 
 	if (!m_cameraDestinations.empty())
 	{
@@ -228,7 +191,7 @@ void Editor::Core::CameraController::HandleInputs(float p_deltaTime)
 	{
         if (IsCameraControlActive())
         {
-            const Maths::Vector2 wrapCompensation = m_inputManager.PollInfiniteCursorWrap();
+            m_inputManager.PollInfiniteCursorWrap();
 			auto pos = m_inputManager.GetMousePosition();
 
             if (!ConsumeSuppressedMouseDelta(pos))
@@ -241,11 +204,7 @@ void Editor::Core::CameraController::HandleInputs(float p_deltaTime)
                     m_firstMouse = false;
                 }
 
-                Maths::Vector2 mouseOffset
-                {
-                    static_cast<float>(pos.x - m_lastMousePosX - wrapCompensation.x),
-                    static_cast<float>(m_lastMousePosY - pos.y + wrapCompensation.y)
-                };
+                Maths::Vector2 mouseOffset = Shortcuts::GetEditorInputState(Shortcuts::EditorInputAction::CameraLook).value.AsVector2();
                 const float maxMouseDeltaPerFrame = m_interactionState == SceneViewCameraInteractionStateId::Fly
                     ? GetMaxLookMouseDeltaPerFrame()
                     : GetMaxPanOrbitMouseDeltaPerFrame();
@@ -291,6 +250,8 @@ void Editor::Core::CameraController::MoveToTarget(Engine::GameObject& p_target)
 
 void Editor::Core::CameraController::MoveToPoint(const Maths::Vector3& focusPoint,const float focusDistance)
 {
+    if (m_camera.GetProjectionMode() == Render::Settings::EProjectionMode::ORTHOGRAPHIC)
+        m_camera.SetSize(std::max(0.01f, focusDistance * 0.5f));
 	m_cameraDestinations.push({
 		focusPoint -
 		m_camera.GetRotation() *
@@ -326,7 +287,7 @@ void Editor::Core::CameraController::ResetNavigationInteractionState()
     }
     if (ownedCursorControl)
     {
-        m_window.SetInfiniteCursorWrapEnabled(false);
+        m_inputManager.SetPointerCapture(false, this);
         m_window.SetCursorMode(Cursor::ECursorMode::NORMAL);
     }
     if (const auto restoredCursorShape = m_cursorShapeLease.Release())
@@ -354,12 +315,19 @@ bool Editor::Core::CameraController::ConsumeSuppressedMouseDelta(const Maths::Ve
 
     ResetLastMousePosition(p_mousePosition);
     --m_pendingMouseDeltaSuppressionFrames;
+    if (m_interactionState == SceneViewCameraInteractionStateId::Fly)
+    {
+        // Seed the look orientation during the suppressed capture frame, so
+        // the next movement is not discarded as another "first" sample.
+        HandleCameraFPSMouse({}, true);
+        m_firstMouse = false;
+    }
     return true;
 }
 
 void Editor::Core::CameraController::SetSpeed(float p_speed)
 {
-	m_cameraMoveSpeed = p_speed;
+	m_cameraMoveSpeed = std::clamp(p_speed, m_minCameraSpeed, m_maxCameraSpeed);
 }
 
 float Editor::Core::CameraController::GetSpeed() const
@@ -459,7 +427,13 @@ Engine::GameObject* Editor::Core::CameraController::GetTargetGameObject() const
 void Editor::Core::CameraController::HandleCameraPanning(const Maths::Vector2& p_mouseOffset, bool p_firstMouset)
 {
     Maths::Vector3 panDelta;
-    if (m_focusState != nullptr && m_focusState->hasFocus)
+    if (m_camera.GetProjectionMode() == Render::Settings::EProjectionMode::ORTHOGRAPHIC)
+    {
+        const float unitsPerPixel = 2.0f * m_camera.GetSize() / std::max(1.0f, m_viewportHeight);
+        panDelta = m_camera.transform->GetWorldRight() * (p_mouseOffset.x * unitsPerPixel) -
+            m_camera.transform->GetWorldUp() * (p_mouseOffset.y * unitsPerPixel);
+    }
+    else if (m_focusState != nullptr && m_focusState->hasFocus)
     {
         panDelta = GetSceneCameraPanDelta(
             m_camera.GetRotation(),
@@ -534,9 +508,15 @@ void Editor::Core::CameraController::HandleCameraOrbit(
 
 void Editor::Core::CameraController::HandleCameraZoom()
 {
-    const float mouseWheel = m_inputManager.GetWheelMovement().y;
+    const float mouseWheel = Shortcuts::GetEditorInputState(Shortcuts::EditorInputAction::CameraZoom).value.vector.y;
     if (mouseWheel == 0.0f)
         return;
+
+    if (m_camera.GetProjectionMode() == Render::Settings::EProjectionMode::ORTHOGRAPHIC)
+    {
+        m_camera.SetSize(std::clamp(m_camera.GetSize() * std::exp(-mouseWheel * 0.15f), 0.01f, 100000.0f));
+        return;
+    }
 
     const float focusDistance =
         (m_focusState != nullptr && m_focusState->hasFocus)
@@ -580,28 +560,27 @@ void Editor::Core::CameraController::HandleCameraFPSKeyboard(float p_deltaTime)
 {
 	m_targetSpeed = Maths::Vector3(0.f, 0.f, 0.f);
 
-	if (m_interactionState == SceneViewCameraInteractionStateId::Fly)
+    if (!m_planarNavigation && m_interactionState == SceneViewCameraInteractionStateId::Fly)
 	{
-        using Windowing::Inputs::EKey;
-
-		bool run = m_inputManager.GetKeyState(EKey::KEY_LEFT_SHIFT) == Windowing::Inputs::EKeyState::KEY_DOWN;
+            const bool run = Shortcuts::GetEditorInputState(Shortcuts::EditorInputAction::CameraBoost).actuated;
 		float velocity = m_cameraMoveSpeed * p_deltaTime * (run ? 2.0f : 1.0f);
 
-		if (IsFlyModeCommandDown(m_inputManager, "scene-view.fly-forward", EKey::KEY_W))
-			m_targetSpeed += m_camera.transform->GetWorldForward() * velocity;
-		if (IsFlyModeCommandDown(m_inputManager, "scene-view.fly-backward", EKey::KEY_S))
-			m_targetSpeed += m_camera.transform->GetWorldForward() * -velocity;
-		if (IsFlyModeCommandDown(m_inputManager, "scene-view.fly-left", EKey::KEY_A))
-			m_targetSpeed += m_camera.transform->GetWorldRight() * velocity;
-		if (IsFlyModeCommandDown(m_inputManager, "scene-view.fly-right", EKey::KEY_D))
-			m_targetSpeed += m_camera.transform->GetWorldRight() * -velocity;
-		if (IsFlyModeCommandDown(m_inputManager, "scene-view.fly-up", EKey::KEY_E))
-			m_targetSpeed += {0.0f, velocity, 0.0f};
-		if (IsFlyModeCommandDown(m_inputManager, "scene-view.fly-down", EKey::KEY_Q))
-			m_targetSpeed += {0.0f, -velocity, 0.0f};
+        if (NLS::Core::ServiceLocator::Contains<Editor::Shortcuts::EditorShortcutService>())
+        {
+            const auto move = NLS_SERVICE(Editor::Shortcuts::EditorShortcutService).GetNavigationValue();
+            m_targetSpeed = (m_camera.transform->GetWorldForward() * move.z -
+                m_camera.transform->GetWorldRight() * move.x + Maths::Vector3(0, move.y, 0)) * velocity;
+        }
 	}
 
-	m_currentMovementSpeed = Maths::Vector3::Lerp(m_currentMovementSpeed, m_targetSpeed, 10.0f * p_deltaTime);
+	if (Maths::Vector3::Length(m_targetSpeed) > 0.0f)
+    {
+        m_flyMovementDuration += std::max(0.0f, p_deltaTime);
+        if (m_cameraAcceleration) m_targetSpeed *= std::min(8.0f, 1.0f + m_flyMovementDuration * 0.5f);
+    }
+    else m_flyMovementDuration = 0.0f;
+    m_currentMovementSpeed = m_cameraEasing ?
+        Maths::Vector3::Lerp(m_currentMovementSpeed, m_targetSpeed, std::clamp(10.0f * p_deltaTime, 0.0f, 1.0f)) : m_targetSpeed;
 	m_camera.SetPosition(m_camera.GetPosition() + m_currentMovementSpeed);
     if (m_focusState != nullptr && Maths::Vector3::Length(m_currentMovementSpeed) > 0.0f)
         *m_focusState = UpdateSceneCameraFocusAfterPan(*m_focusState, m_currentMovementSpeed);
@@ -609,6 +588,7 @@ void Editor::Core::CameraController::HandleCameraFPSKeyboard(float p_deltaTime)
 
 void Editor::Core::CameraController::ApplyInteractionTransition(const SceneViewCameraInteractionTransition& p_transition)
 {
+    if (p_transition.shouldAcquireCursorControl && !m_forcedNoMouseCursorChange && !m_inputManager.SetPointerCapture(true, this)) return;
     if (p_transition.shouldReleaseCursorControl && m_forcedNoMouseCursorChange)
     {
         NLS_SERVICE(NLS::UI::UIManager).PopCustomCursorControl();
@@ -616,7 +596,7 @@ void Editor::Core::CameraController::ApplyInteractionTransition(const SceneViewC
     }
 
     if (p_transition.shouldDisableInfiniteWrap)
-        m_window.SetInfiniteCursorWrapEnabled(false);
+        m_inputManager.SetPointerCapture(false, this);
 
     if (p_transition.shouldResetTransientMouseState)
     {
@@ -634,7 +614,7 @@ void Editor::Core::CameraController::ApplyInteractionTransition(const SceneViewC
     if (p_transition.shouldEnableInfiniteWrap)
     {
         m_window.SetCursorMode(Cursor::ECursorMode::NORMAL);
-        m_window.SetInfiniteCursorWrapEnabled(true);
+        m_inputManager.SetPointerCapture(true, this);
     }
 
     if (p_transition.cursorShape.has_value())
@@ -676,16 +656,34 @@ void Editor::Core::CameraController::UpdateMouseState(const bool p_sceneInputAll
     SceneViewCameraInteractionInputSnapshot inputSnapshot;
     inputSnapshot.sceneInputAllowed = p_sceneInputAllowed;
     inputSnapshot.cameraInputBlocked = m_inputBlocked;
-    inputSnapshot.windowFocused = m_window.IsFocused();
-    inputSnapshot.wantTextInput = ImGui::GetIO().WantTextInput;
-    inputSnapshot.altDown =
-        m_inputManager.GetKeyState(Windowing::Inputs::EKey::KEY_LEFT_ALT) == Windowing::Inputs::EKeyState::KEY_DOWN;
-    inputSnapshot.middlePressed = m_inputManager.IsMouseButtonPressed(EMouseButton::MOUSE_BUTTON_MIDDLE);
-    inputSnapshot.rightPressed = m_inputManager.IsMouseButtonPressed(EMouseButton::MOUSE_BUTTON_RIGHT);
-    inputSnapshot.middleDown =
-        m_inputManager.GetMouseButtonState(EMouseButton::MOUSE_BUTTON_MIDDLE) == EMouseButtonState::MOUSE_DOWN;
-    inputSnapshot.rightDown =
-        m_inputManager.GetMouseButtonState(EMouseButton::MOUSE_BUTTON_RIGHT) == EMouseButtonState::MOUSE_DOWN;
+    inputSnapshot.windowFocused = m_inputManager.HasFocusedWindow();
+    inputSnapshot.wantTextInput = IsEditorTextInputActive();
+    const auto fly = Shortcuts::GetEditorInputState(Shortcuts::EditorInputAction::CameraFly);
+    const auto pan = Shortcuts::GetEditorInputState(Shortcuts::EditorInputAction::CameraPan);
+    const auto orbit = Shortcuts::GetEditorInputState(Shortcuts::EditorInputAction::CameraOrbit);
+    inputSnapshot.altDown = orbit.actuated;
+    inputSnapshot.middlePressed = (pan.pressed && pan.actuated) || (orbit.pressed && orbit.actuated);
+    inputSnapshot.rightPressed = fly.pressed && fly.actuated;
+    inputSnapshot.middleDown = pan.actuated || orbit.actuated;
+    inputSnapshot.rightDown = fly.actuated;
+    if (m_planarNavigation)
+    {
+        inputSnapshot.altDown = false;
+        inputSnapshot.middlePressed |= inputSnapshot.rightPressed;
+        inputSnapshot.middleDown |= inputSnapshot.rightDown;
+        inputSnapshot.rightPressed = false;
+        inputSnapshot.rightDown = false;
+    }
     const auto transition = SceneViewCameraInteractionStateMachine::EvaluateTransition(m_interactionState, inputSnapshot);
     ApplyInteractionTransition(transition);
+}
+
+void Editor::Core::CameraController::SetPlanarNavigation(const bool enabled)
+{
+    if (m_planarNavigation == enabled) return;
+    ResetMouseInteractionState();
+    m_planarNavigation = enabled;
+    m_cameraDestinations = {};
+    m_targetSpeed = Maths::Vector3::Zero;
+    m_currentMovementSpeed = Maths::Vector3::Zero;
 }

@@ -18,6 +18,7 @@
     <NullusUsePrebuiltScriptGenerator Condition="'$(BuildingInsideVisualStudio)' == 'true'">true</NullusUsePrebuiltScriptGenerator>
     <NullusForceScriptGenerator Condition="'$(NullusForceScriptGenerator)' == ''">false</NullusForceScriptGenerator>
     <NullusScriptGeneratorPath Condition="'$(NullusScriptGeneratorPath)' == ''">$(MSBuildProjectDirectory)\..\..\build-scripting-vs5\Managed\Debug\Nullus.ScriptGenerator.dll</NullusScriptGeneratorPath>
+    <NullusScriptApiManifest Condition="'$(NullusScriptApiManifest)' == ''">$(MSBuildProjectDirectory)\..\..\Library\ScriptApi\ScriptApi.json</NullusScriptApiManifest>
     <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
   </PropertyGroup>
   <ItemGroup>
@@ -30,7 +31,6 @@
                       Condition="'$(NullusUsePrebuiltScriptGenerator)' != 'true'" />
     <Analyzer Include="$(NullusScriptGeneratorPath)"
               Condition="'$(NullusUsePrebuiltScriptGenerator)' == 'true' and ('$(BuildingInsideVisualStudio)' != 'true' or '$(NullusForceScriptGenerator)' == 'true')" />
-    <AdditionalFiles Include="$(MSBuildProjectDirectory)\..\..\Library\ScriptApi\ScriptApi.json"
-                     Condition="Exists('$(MSBuildProjectDirectory)\..\..\Library\ScriptApi\ScriptApi.json')" />
+    <AdditionalFiles Include="$(NullusScriptApiManifest)" Condition="Exists('$(NullusScriptApiManifest)')" />
   </ItemGroup>
 </Project>

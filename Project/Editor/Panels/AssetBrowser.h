@@ -174,6 +174,9 @@ public:
         const std::string& p_editorAssetFolder = "",
         NLS::Editor::Assets::AssetThumbnailFeatureConfig thumbnailFeatureConfig = {});
     ~AssetBrowser();
+    // Close producers before the application's shared scheduler is drained.
+    void StopBackgroundWork();
+    bool ExecuteCommand(const std::string& id, const std::string& targetPath = {});
 
     /**
      * Fill the asset browser panels with widgets corresponding to elements in the asset folder
@@ -189,6 +192,7 @@ public:
      * Refresh the asset browser widgets (Clear + Fill)
      */
     void Refresh();
+    bool QueueProjectAssetReimport(const std::string& assetPath);
     void PrepareStartupWatchers();
     void AdoptStartupWatchers(
         Core::AssetFileWatcher engineAssetsWatcher,
@@ -361,7 +365,6 @@ public:
     void RebuildProjectAssetPresentationAfterWorkflow();
     void ScheduleProjectAssetPreimportForPath(std::string projectRelativePath);
     void ScheduleProjectAssetPreimportForPath(const std::filesystem::path& projectRelativePath);
-    void HandleProjectAssetBrowserShortcuts();
     void HandleProjectAssetBrowserDroppedFiles(const std::vector<std::string>& paths);
     void BeginInlineRenameProjectItem(const NLS::Editor::Assets::AssetBrowserItem& item);
     void CancelInlineRenameProjectItem();
@@ -740,6 +743,8 @@ private:
     std::unordered_set<std::string> m_expandedProjectAssetItems;
     Core::AssetFileWatcher m_engineAssetsWatcher;
     Core::AssetFileWatcher m_projectAssetsWatcher;
+    std::vector<std::filesystem::path> m_deferredEngineWatcherChanges;
+    std::vector<std::filesystem::path> m_deferredProjectWatcherChanges;
     std::future<WatcherStartupResult> m_watcherStartup;
     bool m_watchersStartupQueued = false;
     bool m_watchersReadyRefreshQueued = false;

@@ -42,5 +42,13 @@ $env:DOTNET_SKIP_FIRST_TIME_EXPERIENCE = "1"
 $env:DOTNET_NOLOGO = "1"
 $env:DOTNET_ADD_GLOBAL_TOOLS_TO_PATH = "0"
 
+# dotnet build starts its own MSBuild workers independently of the native
+# CMake /m:1 setting. Reused workers can carry the host's duplicate Path/PATH
+# environment back into a clean invocation. Keep this repository SDK boundary
+# serialized as well; this does not change projects or compilation features.
+if ($dotnetArguments.Count -gt 0 -and $dotnetArguments[0] -in @("build", "test", "publish", "restore", "msbuild")) {
+    $dotnetArguments += @("/m:1", "/nr:false")
+}
+
 & $dotnetPath @dotnetArguments
 exit $LASTEXITCODE

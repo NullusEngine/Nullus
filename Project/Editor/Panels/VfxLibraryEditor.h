@@ -12,6 +12,7 @@ public:
     ~VfxLibraryEditor() override;
     bool OpenDocument(const std::filesystem::path& path);
     bool OwnsShortcuts() const;
+    bool ExecuteCommand(const std::string& id);
 protected:
     void OnBeforeDrawWidgets() override;
 private:

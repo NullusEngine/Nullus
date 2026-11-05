@@ -153,7 +153,7 @@ jobs:
           $buildArgs = @(
             "--build", "build/windows",
             "--config", "${{ env.NLS_BUILD_CONFIGURATION }}",
-            "--target", "NullusUnitTests", "ReflectionTest",
+            "--target", "NullusUnitTests", "NullusGpuTests", "NullusBuildTests", "NullusPropertyControlsTests", "ReflectionTest",
             "--",
             "/m:1",
             "/flp:logfile=build_windows_${{ env.NLS_BUILD_CONFIGURATION }}_msbuild.log;verbosity=diagnostic",
@@ -222,6 +222,11 @@ jobs:
             Write-Output "::error::NullusUnitTests failed with exit code $unitExit"
             Get-Content $unitLog -Tail 200 | ForEach-Object { Write-Output "::error::$_" }
             exit $unitExit
+          }
+          & ctest --test-dir build/windows -C "${{ env.NLS_BUILD_CONFIGURATION }}" --output-on-failure `
+            -R '^(NullusGpuTests|NullusBuildTests|NullusPropertyControlsTests)$'
+          if ($LASTEXITCODE -ne 0) {
+            exit $LASTEXITCODE
           }
           $reflectionCommand = '"' + $reflectionExe + '" 2>&1'
           cmd /d /c $reflectionCommand | Tee-Object -FilePath $reflectionLog

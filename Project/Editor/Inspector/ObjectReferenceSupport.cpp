@@ -536,6 +536,12 @@ bool AssignInspectorAssetReference(
     const Assets::EditorAssetDragPayload& payload)
 {
     const auto artifactType = Assets::GetEditorAssetDragPayloadArtifactType(payload);
+    if (artifactType == NLS::Core::Assets::ArtifactType::Texture &&
+        IsCompatibleInspectorReferenceArtifact(type, NLS::Core::Assets::ArtifactType::Sprite))
+    {
+        const auto sprite = Assets::ResolveSpriteDragPayload(payload);
+        return sprite && AssignInspectorAssetReference(value, type, *sprite);
+    }
     if (!IsCompatibleInspectorReferenceArtifact(type, artifactType))
         return false;
 

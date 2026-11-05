@@ -19,6 +19,7 @@
     <NullusUsePrebuiltScriptGenerator Condition="'$(BuildingInsideVisualStudio)' == 'true'">true</NullusUsePrebuiltScriptGenerator>
     <NullusForceScriptGenerator Condition="'$(NullusForceScriptGenerator)' == ''">false</NullusForceScriptGenerator>
     <NullusScriptGeneratorPath Condition="'$(NullusScriptGeneratorPath)' == ''">$(MSBuildProjectDirectory)\..\..\build-scripting-vs5\Managed\Debug\Nullus.ScriptGenerator.dll</NullusScriptGeneratorPath>
+    <NullusScriptApiManifest Condition="'$(NullusScriptApiManifest)' == ''">$(MSBuildProjectDirectory)\..\..\Library\ScriptApi\ScriptApi.json</NullusScriptApiManifest>
   </PropertyGroup>
   <ItemGroup>
     <!-- SerializedObject/SerializedProperty belong to the editor host and are
@@ -40,6 +41,6 @@
          second ScriptApiManifest definition. -->
     <Compile Remove="Generated\ScriptApiManifest.VisualStudio.cs"
              Condition="'$(BuildingInsideVisualStudio)' != 'true' or '$(NullusForceScriptGenerator)' == 'true'" />
-    <AdditionalFiles Include="$(MSBuildProjectDirectory)\..\..\Library\ScriptApi\ScriptApi.json" Condition="Exists('$(MSBuildProjectDirectory)\..\..\Library\ScriptApi\ScriptApi.json')" />
+    <AdditionalFiles Include="$(NullusScriptApiManifest)" Condition="Exists('$(NullusScriptApiManifest)')" />
   </ItemGroup>
 </Project>

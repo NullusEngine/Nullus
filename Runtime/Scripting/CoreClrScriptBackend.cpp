@@ -1,4 +1,5 @@
 #include "CoreClrScriptBackend.h"
+#include "PlayScriptBindings.h"
 
 #include "Base/Object/Object.h"
 #include "Engine/Components/TransformComponent.h"
@@ -14,6 +15,7 @@
 #include "Windowing/Inputs/EKey.h"
 #include "Windowing/Inputs/EMouseButton.h"
 #include "Platform/Process/Process.h"
+#include <Debug/Logger.h>
 
 #include <Json/json.hpp>
 
@@ -90,9 +92,41 @@ static_assert(sizeof(ScriptAbiResult) == 16, "Script ABI result must remain a fi
 static_assert(sizeof(ScriptAbiValue) == 80, "Script ABI value must remain a fixed 80-byte layout.");
 static_assert(offsetof(ScriptAbiValue, utf8Data) == 48, "Script ABI value string pointer offset changed.");
 static_assert(offsetof(ScriptAbiValue, bytes) == 64, "Script ABI value byte pointer offset changed.");
-static_assert(sizeof(NativeApiTable) == 304, "Native scripting API table layout changed.");
+static_assert(sizeof(NativeApiTable) == 352, "Native scripting API table layout changed.");
+static_assert(offsetof(NativeApiTable, readInputAction) == 328, "Input API must append to the existing v2 table.");
+static_assert(sizeof(ScriptInputValue) == 56, "Input value ABI layout changed.");
 static_assert(offsetof(NativeApiTable, isAlive) == 24, "Native scripting API table pointer layout changed.");
+static_assert(offsetof(NativeApiTable, logDetailed) == 312, "Appended logging API must preserve the v2 layout.");
 static_assert(offsetof(ScriptAbiDiagnostic, sourcePath) == 16, "Managed diagnostic source pointer layout changed.");
+
+NLS::Debug::ELogLevel NativeLogLevel(ScriptErrorSeverity severity)
+{
+    if (severity == ScriptErrorSeverity::Warning) return NLS::Debug::ELogLevel::LOG_WARNING;
+    if (severity == ScriptErrorSeverity::Error || severity == ScriptErrorSeverity::Fatal) return NLS::Debug::ELogLevel::LOG_ERROR;
+    return NLS::Debug::ELogLevel::LOG_INFO;
+}
+
+void NativeLogDetailed(ScriptErrorSeverity severity, const char* message, const char* stack,
+    const char* sourcePath, int32_t line)
+{
+    try
+    {
+        NLS::Debug::Logger::LogWithContext(message ? message : "", NativeLogLevel(severity),
+            NLS::Debug::ELogMode::CONSOLE_AND_FILE, sourcePath, line, nullptr,
+            NLS::Debug::ELogSource::CSharp, stack ? stack : "");
+    }
+    catch (...) { /* Exceptions must not cross the unmanaged ABI. */ }
+}
+
+void NativeLog(ScriptErrorSeverity severity, const char* message)
+{
+    NativeLogDetailed(severity, message, nullptr, nullptr, 0);
+}
+
+uint8_t NativeLogStackMode(ScriptErrorSeverity severity)
+{
+    return static_cast<uint8_t>(NLS::Debug::Logger::GetStackTraceMode(NativeLogLevel(severity)));
+}
 
 uint64_t AssetKey(const NLS::Core::Assets::AssetId& assetId)
 {
@@ -600,6 +634,7 @@ ScriptAbiResult NativeSetQuaternion(
 
 ScriptAbiResult NativeCreatePrimitive(uint64_t owner, const char* typeName, uint64_t* output)
 {
+    if(!ScriptEngineApi::IsAcceptingPlayRequests())return NativeError(ScriptStatusCode::RuntimeError,"The Play session is stopping.");
     if (!output)
         return NativeError(ScriptStatusCode::InvalidArgument, "Native primitive output is null.");
     *output = 0;
@@ -627,6 +662,7 @@ ScriptAbiResult NativeCreatePrimitive(uint64_t owner, const char* typeName, uint
 
 ScriptAbiResult NativeCreateGameObject(const char* name, const char* tag, uint64_t* output)
 {
+    if(!ScriptEngineApi::IsAcceptingPlayRequests())return NativeError(ScriptStatusCode::RuntimeError,"The Play session is stopping.");
     if (!output)
         return NativeError(ScriptStatusCode::InvalidArgument, "Native GameObject output is null.");
     *output = 0;
@@ -717,6 +753,9 @@ ScriptAbiResult NativeGetComponent(uint64_t owner, uint64_t typeId, uint64_t* ou
     if (!gameObject)
         return NativeError(ScriptStatusCode::InvalidHandle, "Native GameObject handle is no longer alive.");
     const auto transformId = MakeStableScriptId("Nullus.Transform");
+    NLS::Engine::Components::Component* playComponent=nullptr;
+    if(ResolvePlayComponent(*gameObject,typeId,false,playComponent))
+    { *output=playComponent?NativeObjectHandle::FromInstanceId(playComponent->GetInstanceID()).value:0;return NativeOk(); }
     const auto nativeTransformId = MakeStableScriptId("NLS::Engine::Components::TransformComponent");
     const auto cameraId = MakeStableScriptId("Nullus.Camera");
     const auto nativeCameraId = MakeStableScriptId("NLS::Engine::Components::CameraComponent");
@@ -886,49 +925,63 @@ ScriptAbiResult NativeInputResult(bool value, uint8_t* output)
     return NativeOk();
 }
 
+ScriptAbiResult NativeReadInputAction(uint64_t user, const char* id, uint32_t operation, uint64_t after, ScriptInputValue* output)
+{
+    if (!output || !InputScriptApi::Read(user, id, operation, after, *output)) return NativeError(ScriptStatusCode::InvalidArgument, "Input user or ActionId is invalid.");
+    return NativeOk();
+}
+ScriptAbiResult NativeInputCommand(uint64_t user, uint32_t operation, const char* id, uint64_t argument, uint64_t* output)
+{
+    if (!output) return NativeError(ScriptStatusCode::InvalidArgument, "Input command output is null.");
+    try
+    {
+        std::string error;
+        if (!InputScriptApi::Command(user, operation, id, argument, *output, error)) return NativeError(ScriptStatusCode::InvalidArgument, error.c_str());
+        return NativeOk();
+    }
+    catch (const std::exception& error) { return NativeError(ScriptStatusCode::InvalidArgument, error.what()); }
+}
+ScriptAbiResult NativeInputBindingName(uint64_t user, const char* id, const char** output, uint32_t* size)
+{
+    if (!output || !size) return NativeError(ScriptStatusCode::InvalidArgument, "Binding name output is null.");
+    static thread_local std::string value;
+    value = InputScriptApi::BindingDisplayName(user, id); *output = value.c_str(); *size = static_cast<uint32_t>(value.size()); return NativeOk();
+}
 ScriptAbiResult NativeGetKey(int32_t key, uint8_t* output)
 {
-    auto* input = ScriptEngineApi::GetInputManager();
-    return NativeInputResult(input && input->GetKeyState(static_cast<NLS::Windowing::Inputs::EKey>(key)) == NLS::Windowing::Inputs::EKeyState::KEY_DOWN, output);
+    return NativeInputResult(ScriptEngineApi::ReadKey(key, 0), output);
 }
 
 ScriptAbiResult NativeGetKeyDown(int32_t key, uint8_t* output)
 {
-    auto* input = ScriptEngineApi::GetInputManager();
-    return NativeInputResult(input && input->IsKeyPressed(static_cast<NLS::Windowing::Inputs::EKey>(key)), output);
+    return NativeInputResult(ScriptEngineApi::ReadKey(key, 1), output);
 }
 
 ScriptAbiResult NativeGetKeyUp(int32_t key, uint8_t* output)
 {
-    auto* input = ScriptEngineApi::GetInputManager();
-    return NativeInputResult(input && input->IsKeyReleased(static_cast<NLS::Windowing::Inputs::EKey>(key)), output);
+    return NativeInputResult(ScriptEngineApi::ReadKey(key, 2), output);
 }
 
 ScriptAbiResult NativeGetMouseButton(int32_t button, uint8_t* output)
 {
-    auto* input = ScriptEngineApi::GetInputManager();
-    return NativeInputResult(input && input->GetMouseButtonState(static_cast<NLS::Windowing::Inputs::EMouseButton>(button)) == NLS::Windowing::Inputs::EMouseButtonState::MOUSE_DOWN, output);
+    return NativeInputResult(ScriptEngineApi::ReadMouseButton(button, 0), output);
 }
 
 ScriptAbiResult NativeGetMouseButtonDown(int32_t button, uint8_t* output)
 {
-    auto* input = ScriptEngineApi::GetInputManager();
-    return NativeInputResult(input && input->IsMouseButtonPressed(static_cast<NLS::Windowing::Inputs::EMouseButton>(button)), output);
+    return NativeInputResult(ScriptEngineApi::ReadMouseButton(button, 1), output);
 }
 
 ScriptAbiResult NativeGetMouseButtonUp(int32_t button, uint8_t* output)
 {
-    auto* input = ScriptEngineApi::GetInputManager();
-    return NativeInputResult(input && input->IsMouseButtonReleased(static_cast<NLS::Windowing::Inputs::EMouseButton>(button)), output);
+    return NativeInputResult(ScriptEngineApi::ReadMouseButton(button, 2), output);
 }
 
 ScriptAbiResult NativeGetMousePosition(float* x, float* y)
 {
     if (!x || !y)
         return NativeError(ScriptStatusCode::InvalidArgument, "Native mouse position output is null.");
-    const auto value = ScriptEngineApi::GetInputManager()
-        ? ScriptEngineApi::GetInputManager()->GetMousePosition()
-        : NLS::Maths::Vector2{};
+    const auto value = ScriptEngineApi::ReadMousePosition();
     *x = value.x;
     *y = value.y;
     return NativeOk();
@@ -938,9 +991,7 @@ ScriptAbiResult NativeGetMouseScrollDelta(float* x, float* y)
 {
     if (!x || !y)
         return NativeError(ScriptStatusCode::InvalidArgument, "Native mouse scroll output is null.");
-    const auto value = ScriptEngineApi::GetInputManager()
-        ? ScriptEngineApi::GetInputManager()->GetWheelMovement()
-        : NLS::Maths::Vector2{};
+    const auto value = ScriptEngineApi::ReadMouseScroll();
     *x = value.x;
     *y = value.y;
     return NativeOk();
@@ -991,31 +1042,10 @@ ScriptAbiResult NativeLoadScene(const char* path)
 
 ScriptAbiResult NativeDestroy(uint64_t owner, float delay)
 {
-    auto* object = NLS::Object::IDToPointerNoThreadCheck(static_cast<NLS::InstanceID>(owner & 0xFFFFFFFFu));
-    if (!object)
-        return NativeError(ScriptStatusCode::InvalidHandle, "Native object handle is no longer alive.");
-    auto* gameObject = dynamic_cast<NLS::Engine::GameObject*>(object);
-    if (gameObject)
-    {
-        if (delay > 0.0f)
-            return ScriptEngineApi::QueueDestroy({owner}, delay)
-                ? NativeOk()
-                : NativeError(ScriptStatusCode::InvalidArgument, "Invalid delayed GameObject destruction request.");
-        gameObject->MarkAsDestroy();
-        return NativeOk();
-    }
-    auto* component = dynamic_cast<NLS::Engine::Components::Component*>(object);
-    if (!component || !component->gameobject())
-        return NativeError(ScriptStatusCode::InvalidHandle, "Native Component handle is no longer alive.");
-    if (delay > 0.0f)
-        return ScriptEngineApi::QueueDestroy({owner}, delay)
-            ? NativeOk()
-            : NativeError(ScriptStatusCode::InvalidArgument, "Invalid delayed Component destruction request.");
-    if (component->GetType() == NLS_TYPEOF(NLS::Engine::Components::TransformComponent))
-        return NativeError(ScriptStatusCode::Unsupported, "Transform cannot be destroyed.");
-    return component->gameobject()->RemoveComponent(component)
-        ? NativeOk()
-        : NativeError(ScriptStatusCode::InvalidHandle, "Native Component could not be destroyed.");
+    auto* object=NLS::Object::IDToPointerNoThreadCheck(static_cast<NLS::InstanceID>(owner&0xffffffffu));
+    if(!object)return NativeError(ScriptStatusCode::InvalidHandle,"Native object handle is no longer alive.");
+    if(dynamic_cast<NLS::Engine::Components::TransformComponent*>(object))return NativeError(ScriptStatusCode::Unsupported,"Transform cannot be destroyed.");
+    return ScriptEngineApi::QueueDestroy({owner},delay)?NativeOk():NativeError(ScriptStatusCode::InvalidArgument,"The Play session does not accept destruction requests.");
 }
 
 NLS::Engine::GameObject* CloneGameObjectTree(
@@ -1055,6 +1085,7 @@ NLS::Engine::GameObject* CloneGameObjectTree(
 
 ScriptAbiResult NativeInstantiate(uint64_t owner, uint64_t* output)
 {
+    if(!ScriptEngineApi::IsAcceptingPlayRequests())return NativeError(ScriptStatusCode::RuntimeError,"The Play session is stopping.");
     if (!output)
         return NativeError(ScriptStatusCode::InvalidArgument, "Native instantiate output is null.");
     *output = 0;
@@ -1094,6 +1125,7 @@ ScriptAbiResult NativeFindWithTag(const char* tag, uint64_t* output)
 
 ScriptAbiResult NativeAddComponent(uint64_t owner, uint64_t typeId, uint64_t* output)
 {
+    if(!ScriptEngineApi::IsAcceptingPlayRequests())return NativeError(ScriptStatusCode::RuntimeError,"The Play session is stopping.");
     if (!output)
         return NativeError(ScriptStatusCode::InvalidArgument, "Native AddComponent output is null.");
     *output = 0;
@@ -1127,6 +1159,9 @@ ScriptAbiResult NativeAddComponent(uint64_t owner, uint64_t typeId, uint64_t* ou
         return component ? NativeOk() : NativeError(ScriptStatusCode::RuntimeError, "Native Light creation failed.");
     }
     const ManagedBehaviourManifestEntry* manifestEntry = nullptr;
+    NLS::Engine::Components::Component* playComponent=nullptr;
+    if(ResolvePlayComponent(*gameObject,typeId,true,playComponent))
+    { *output=playComponent?NativeObjectHandle::FromInstanceId(playComponent->GetInstanceID()).value:0;return NativeOk(); }
     if (g_activeCoreClrBackend)
     {
         for (const auto& entry : g_activeCoreClrBackend->GetBehaviourManifest())
@@ -1237,9 +1272,12 @@ ScriptStatus CoreClrHost::Load(const std::filesystem::path& runtimeConfig, const
         return ScriptStatus::Error(ScriptStatusCode::AlreadyInitialized, "CoreCLR host is already loaded.");
 
     g_hostFxrError.clear();
-    const auto hostFxrPath = LocateHostFxr(m_dotnetRoot);
+    auto hostFxrPath = LocateHostFxr(m_dotnetRoot);
     if (hostFxrPath.empty())
         return ScriptStatus::Error(ScriptStatusCode::BackendUnavailable, "hostfxr for the configured .NET runtime was not found.");
+    std::error_code pathError;
+    const auto canonicalHostFxr = std::filesystem::weakly_canonical(hostFxrPath, pathError);
+    if (!pathError) hostFxrPath = canonicalHostFxr;
 
     if (g_sharedHostFxr.context && g_sharedHostFxr.hostFxrPath == hostFxrPath)
     {
@@ -1325,14 +1363,18 @@ ScriptStatus CoreClrHost::Load(const std::filesystem::path& runtimeConfig, const
     const auto runtimeConfigString = runtimeConfig.string();
     const auto result = initializeNarrow(runtimeConfigString.c_str(), &parameters, &context);
 #endif
-    if (result != 0 || !context)
+    // hostfxr also returns successful compatible-host statuses 1 and 2.
+    // CoreCLR retains its first process configuration across Play sessions.
+    if (result < 0 || !context)
     {
 #if defined(_WIN32)
         if (library) FreeLibrary(static_cast<HMODULE>(library));
 #else
         if (library) dlclose(library);
 #endif
-        return ScriptStatus::Error(ScriptStatusCode::BackendUnavailable, "hostfxr failed to initialize the configured runtimeconfig.");
+        return ScriptStatus::Error(ScriptStatusCode::BackendUnavailable,
+            "hostfxr failed to initialize the configured runtimeconfig (result=" + std::to_string(result) + ")." +
+            (g_hostFxrError.empty() ? std::string{} : " " + g_hostFxrError));
     }
 
     m_runtimeConfig = runtimeConfig;
@@ -1430,10 +1472,9 @@ void CoreClrHost::Unload()
     {
         if (g_sharedHostFxr.references > 0)
             --g_sharedHostFxr.references;
-        // Do not close or unload the shared hostfxr context.  CoreCLR remains
-        // loaded after the first managed call and hostfxr cannot initialize a
-        // fresh context in the same process; the OS reclaims this process-wide
-        // host state at exit.
+        // CoreCLR remains loaded after the first managed call. Retain this
+        // process host and delegate for later Play sessions; the OS reclaims
+        // the shared host state at exit.
     }
     else
     {
@@ -1469,6 +1510,10 @@ CoreClrScriptBackend::CoreClrScriptBackend(ScriptBackendId id)
 
 void CoreClrScriptBackend::InstallDefaultNativeApi()
 {
+    if (!m_nativeApi.log) m_nativeApi.log = &NativeLog;
+    if (!m_nativeApi.logDetailed && m_nativeApi.log == &NativeLog) m_nativeApi.logDetailed = &NativeLogDetailed;
+    if (!m_nativeApi.getLogStackMode && m_nativeApi.logDetailed == &NativeLogDetailed)
+        m_nativeApi.getLogStackMode = &NativeLogStackMode;
     if (!m_nativeApi.isAlive)
         m_nativeApi.isAlive = &NativeIsAlive;
     if (!m_nativeApi.getObject)
@@ -1527,6 +1572,9 @@ void CoreClrScriptBackend::InstallDefaultNativeApi()
         m_nativeApi.getMouseButtonUp = &NativeGetMouseButtonUp;
     if (!m_nativeApi.getMousePosition)
         m_nativeApi.getMousePosition = &NativeGetMousePosition;
+        m_nativeApi.readInputAction = &NativeReadInputAction;
+        m_nativeApi.inputCommand = &NativeInputCommand;
+        m_nativeApi.getInputBindingName = &NativeInputBindingName;
     if (!m_nativeApi.getMouseScrollDelta)
         m_nativeApi.getMouseScrollDelta = &NativeGetMouseScrollDelta;
     if (!m_nativeApi.getTimeScale)
@@ -1539,6 +1587,7 @@ void CoreClrScriptBackend::InstallDefaultNativeApi()
         m_nativeApi.getActiveScene = &NativeGetActiveScene;
     if (!m_nativeApi.loadScene)
         m_nativeApi.loadScene = &NativeLoadScene;
+    if (!m_nativeApi.invokeMember) m_nativeApi.invokeMember=&InvokePlayMember;
 }
 
 ScriptStatus CoreClrScriptBackend::ValidateTable(bool validateSchema) const
@@ -1591,6 +1640,14 @@ ScriptStatus CoreClrScriptBackend::Initialize(const ScriptApiDatabase& api)
         const auto schemaStatus = ValidateTable(true);
         if (!schemaStatus.Succeeded())
             return schemaStatus;
+        // hostfxr keeps the CLR alive. Reload the gameplay assembly into a fresh
+        // collectible context so another Play never reuses project statics.
+        if (m_managedApi.reloadAssembly && !m_assembly.empty())
+        {
+            const auto reload = FromAbiResult(m_managedApi.reloadAssembly(
+                0, m_assembly.string().c_str(), m_api.GetSchemaHashHex().c_str()), ScriptLanguage::CSharp);
+            if (!reload.Succeeded()) return reload;
+        }
         const auto manifestStatus = RefreshBehaviourManifest();
         if (!manifestStatus.Succeeded() && manifestStatus.code != ScriptStatusCode::Unsupported)
             return manifestStatus;
@@ -2025,58 +2082,22 @@ ScriptStatus CoreClrScriptBackend::BindManagedApi(std::string_view typeName, std
             return hostStatus;
     }
 
+    auto abiAssembly = m_assembly;
+    auto abiType = std::string(typeName);
+    const auto portableAssembly = m_assembly.parent_path() / "Nullus.Managed.dll";
+    if (typeName == "Nullus.GameScripts.GameScriptsExports, GameScripts"
+        && methodName == "GetApiTable" && std::filesystem::is_regular_file(portableAssembly))
+    {
+        // hostfxr resolves an assembly-qualified type through its dependency
+        // manifest. GameScripts.<hash>.dll still declares GameScripts.dll,
+        // which is deliberately absent from the content-addressed cache.
+        // Bind the stable ABI here; Initialize loads project registrations in
+        // the collectible context using the actual versioned assembly path.
+        abiAssembly = portableAssembly;
+        abiType = "Nullus.ManagedExports, Nullus.Managed";
+    }
     void* function = nullptr;
-    auto resolveStatus = m_host.GetUnmanagedFunctionPointer(m_assembly, typeName, methodName, function);
-    if (!resolveStatus.Succeeded()
-        && typeName == "Nullus.GameScripts.GameScriptsExports, GameScripts"
-        && methodName == "GetApiTable")
-    {
-        // hostfxr already receives the project assembly path, so its primary
-        // lookup form is the unqualified type name.  Resolve this before
-        // falling back to Nullus.Managed: the project entry point explicitly
-        // runs the generated registration initializer, which installs the
-        // factory and Behaviour manifest for this project's scripts.
-        resolveStatus = m_host.GetUnmanagedFunctionPointer(
-            m_assembly,
-            "Nullus.GameScripts.GameScriptsExports",
-            methodName,
-            function);
-    }
-    if (!resolveStatus.Succeeded()
-        && typeName == "Nullus.GameScripts.GameScriptsExports, GameScripts"
-        && methodName == "GetApiTable")
-    {
-        // hostfxr accepts both assembly-qualified and assembly-local type
-        // names.  The unqualified form is useful for single-file/project
-        // outputs whose AssemblyName is rewritten during packaging.
-        resolveStatus = m_host.GetUnmanagedFunctionPointer(
-            m_assembly,
-            "Nullus.GameScripts.GameScriptsExports",
-            methodName,
-            function);
-    }
-    if (!resolveStatus.Succeeded()
-        && typeName == "Nullus.GameScripts.GameScriptsExports, GameScripts"
-        && methodName == "GetApiTable")
-    {
-        // A runtime-only deployment may not carry GameScripts.dll. Keep the
-        // portable managed ABI as the final compatibility fallback.
-        resolveStatus = m_host.GetUnmanagedFunctionPointer(
-            m_assembly,
-            "Nullus.ManagedExports, Nullus",
-            methodName,
-            function);
-    }
-    if (!resolveStatus.Succeeded()
-        && typeName == "Nullus.ManagedExports, Nullus"
-        && methodName == "GetApiTable")
-    {
-        resolveStatus = m_host.GetUnmanagedFunctionPointer(
-            m_assembly,
-            "Nullus.GameScripts.GameScriptsExports, GameScripts",
-            methodName,
-            function);
-    }
+    const auto resolveStatus = m_host.GetUnmanagedFunctionPointer(abiAssembly, abiType, methodName, function);
     if (!resolveStatus.Succeeded())
         return resolveStatus;
     using GetApiTableFn = void* (*)();

@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Assets/ArtifactDatabase.h"
+#include "Assets/ArtifactDatabasePatch.h"
 
 #if defined(_WIN32)
 #ifndef NOMINMAX
@@ -134,10 +135,7 @@ inline std::optional<NLS::Core::Assets::ArtifactManifest> LoadArtifactManifestFr
     // import or reimport. Load the authoritative snapshot for each query while
     // holding the project database mutex; callers still avoid concurrent LMDB
     // access and get correct cache identities.
-    NLS::Core::Assets::ArtifactDatabase database;
-    if (!database.Load(databasePath))
-        return std::nullopt;
-    return database.BuildManifestForSource(sourceAssetId, targetPlatform);
+    return NLS::Core::Assets::ReadArtifactDatabaseManifest(databasePath,sourceAssetId,targetPlatform);
 }
 
 }

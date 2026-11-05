@@ -13,6 +13,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <functional>
+#include <memory>
 #include <optional>
 #include <span>
 #include <string>
@@ -21,6 +22,8 @@
 #include <utility>
 #include <variant>
 #include <vector>
+
+namespace NLS::Debug { struct NativeStackTrace; }
 
 namespace NLS::Scripting
 {
@@ -41,6 +44,15 @@ enum class ScriptCallback : uint16_t
     FixedUpdate,
     LateUpdate,
     OnDestroy,
+    OnCollisionEnter,
+    OnCollisionStay,
+    OnCollisionExit,
+    OnTriggerEnter,
+    OnTriggerStay,
+    OnTriggerExit,
+    OnApplicationFocus,
+    OnApplicationPause,
+    OnApplicationQuit,
     Count,
 
     // Source compatibility for the original P0 names.  The ABI uses the
@@ -297,7 +309,7 @@ struct NLS_SCRIPTING_API ScriptFrameContext
     float unscaledDeltaTime = 0.0f;
     double time = 0.0;
     uint64_t frameIndex = 0;
-    float fixedDeltaTime = 0.02f;
+    float fixedDeltaTime = 1.0f / 60.0f;
     float timeScale = 1.0f;
     double unscaledTime = 0.0;
     uint64_t fixedFrameIndex = 0;
@@ -367,6 +379,8 @@ struct NLS_SCRIPTING_API ScriptError
     std::string sourcePath;
     int line = 0;
     int column = 0;
+    std::string logDate;
+    std::shared_ptr<NLS::Debug::NativeStackTrace> nativeStack;
 };
 
 struct NLS_SCRIPTING_API ScriptBackendCapabilities

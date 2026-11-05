@@ -302,6 +302,7 @@ void NLS::Context::Device::SetVsync(bool p_value)
 void NLS::Context::Device::PollEvents() const
 {
 	glfwPollEvents();
+	const_cast<Device*>(this)->InputPollCompletedEvent.Invoke();
 }
 
 float NLS::Context::Device::GetElapsedTime() const

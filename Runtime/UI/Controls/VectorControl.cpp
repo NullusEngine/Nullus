@@ -15,9 +15,7 @@ const std::array<ComponentLabel, 4> axes{{{"X", "X axis", {.91f, .31f, .31f, 1}}
 ControlResult FloatComponents(const char* id, std::span<float> values, std::span<const ComponentLabel> labels,
                               float speed, const ControlOptions& options)
 {
-    MixedLabel(options);
     auto componentOptions = options;
-    componentOptions.mixed = false;
 
     ControlResult result;
     if (values.empty())
@@ -53,6 +51,7 @@ ControlResult FloatComponents(const char* id, std::span<float> values, std::span
         ScalarOptions scalar;
         scalar.drag = true;
         scalar.speed = speed;
+        componentOptions.mixed = options.mixed && (options.mixedComponents & (1ull << i));
         auto component = Numeric("##Value", values[i], scalar, componentOptions);
         component.components = component.changed ? 1ull << i : 0;
         result.Merge(component);
@@ -65,15 +64,14 @@ ControlResult FloatComponents(const char* id, std::span<float> values, std::span
 }
 ControlResult IntComponents(const char* id, std::span<int32_t> values, const ControlOptions& options)
 {
-    MixedLabel(options);
     auto componentOptions = options;
-    componentOptions.mixed = false;
 
     ControlResult result;
     ImGui::PushID(id);
     for (size_t i = 0; i < values.size(); ++i)
     {
         ImGui::PushID(static_cast<int>(i));
+        componentOptions.mixed = options.mixed && (options.mixedComponents & (1ull << i));
         auto item = Numeric(axes[i % 4].name, values[i], {}, componentOptions);
         item.components = item.changed ? 1ull << i : 0;
         result.Merge(item);

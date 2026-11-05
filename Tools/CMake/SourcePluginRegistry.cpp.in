@@ -1,0 +1,8 @@
+#include "Plugins/SourcePluginRegistry.h"
+#include "Plugins/PluginManager.h"
+@NLS_SOURCE_PLUGIN_INCLUDES@
+void NLS::Plugins::RegisterCompiledSourcePlugins(PluginManager& manager)
+{
+    (void)manager;
+@NLS_SOURCE_PLUGIN_REGISTRATIONS@
+}

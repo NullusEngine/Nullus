@@ -40,6 +40,8 @@ std::string PlayerDescriptor::ToJson() const
     json["buildNumber"] = buildNumber;
     json["startScene"] = startScene;
     json["runtimeManifestPath"] = runtimeManifestPath;
+    json["pluginManifestPath"] = pluginManifestPath;
+    json["pluginManifestHash"] = pluginManifestHash;
     json["contentRoot"] = contentRoot;
     json["contentPackages"] = contentPackages;
     json["scriptBackends"] = scriptBackends;
@@ -75,6 +77,8 @@ std::optional<PlayerDescriptor> PlayerDescriptor::FromJson(const std::string& js
         descriptor.buildNumber = parsed.value("buildNumber", std::string {});
         descriptor.startScene = parsed.value("startScene", std::string {});
         descriptor.runtimeManifestPath = parsed.value("runtimeManifestPath", std::string {});
+        descriptor.pluginManifestPath = parsed.value("pluginManifestPath", std::string{});
+        descriptor.pluginManifestHash = parsed.value("pluginManifestHash", std::string{});
         descriptor.contentRoot = parsed.value("contentRoot", std::string {});
         if (descriptor.contentRoot.empty())
             descriptor.contentRoot = "Data/User";

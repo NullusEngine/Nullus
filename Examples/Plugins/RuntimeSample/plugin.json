@@ -1,0 +1,14 @@
+{
+  "schemaVersion": 1,
+  "id": "org.nullus.sample.runtime",
+  "name": "Runtime Sample",
+  "version": "1.0.0",
+  "author": "Nullus",
+  "description": "An SDK-only runtime DLL that counts RuntimePlaySession ticks.",
+  "engineVersion": "^1.0.0",
+  "pluginApiVersion": 1,
+  "modules": [{ "name": "RuntimeSample", "type": "Runtime", "loadingPhase": "PostEngine", "binary": "Binaries/NullusRuntimeSample", "safeUnload": true }],
+  "dependencies": [],
+  "content": [{ "name": "content", "path": "Content", "runtimeKeep": ["RuntimeMessage.txt"] }],
+  "canPackage": true
+}

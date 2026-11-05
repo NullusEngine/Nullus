@@ -1,11 +1,13 @@
 #pragma once
 
+#include "Reflection/Macros.h"
+
 namespace NLS::Windowing::Inputs
 {
 /**
  * Keyboard keys
  */
-enum class EKey
+ENUM(EKey)
 {
     KEY_UNKNOWN = -1,
     KEY_SPACE = 32,

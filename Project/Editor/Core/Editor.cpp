@@ -1,5 +1,11 @@
 
 #include <filesystem>
+#include "Core/Modules/ModuleServices.h"
+#include "Plugins/PluginManagerPanel.h"
+#include "Panels/ECSBakingPanel.h"
+#include "ECS/BakingAssetImport.h"
+#include <ImGui/imgui_internal.h>
+#include "Core/EditorGuiInput.h"
 #include <algorithm>
 #include <array>
 #include <cctype>
@@ -24,6 +30,7 @@
 #include "Scripting/EditorScriptHost.h"
 #include <Jobs/BackgroundJobQueue.h>
 #include <Jobs/JobSystem.h>
+#include <TaskGraph/TaskGraphSystem.h>
 #include <Profiling/PerformanceStageStats.h>
 #include <Profiling/Profiler.h>
 #include <Profiling/TracyProfiler.h>
@@ -32,14 +39,20 @@
 #include <Scripting/ScriptEngineApi.h>
 #include <ServiceLocator.h>
 #include <Threading/ExecutionThreadBudget.h>
+#include <Utils/SystemCalls.h>
 #include <imgui.h>
 
 #include "Core/Editor.h"
+#include "Core/EditorInputFrame.h"
 #include "Scripting/ManagedScriptDebugSession.h"
 #include "Debug/EditorDebugEndpoint.h"
+#include "Debug/ExternalCodeEditor.h"
 #include "Core/EditorCameraPerformanceBenchmark.h"
 #include "Core/EditorJobSystemPolicy.h"
 #include "Core/ThumbnailTelemetrySummary.h"
+#include "Settings/EditorSettings.h"
+#include "Settings/EditorSettingsPersistence.h"
+#include "Settings/EditorSettingsRegistry.h"
 #include "UI/Settings/PanelWindowSettings.h"
 #include "Assembly.h"
 #include "Core/AssemblyCore.h"
@@ -50,10 +63,12 @@
 
 #include "Panels/EditorTopBar.h"
 #include "Panels/EditorStatusBar.h"
+#include "Panels/BackgroundTasks.h"
 #include "Panels/AssetBrowser.h"
 #include "Panels/FrameInfo.h"
 #include "Panels/IconBrowser.h"
 #include "Panels/Console.h"
+#include "Panels/ConsoleSourceLocation.h"
 #include "Panels/Inspector.h"
 #include "Panels/Hierarchy.h"
 #include "Panels/HierarchyUndo.h"
@@ -62,10 +77,12 @@
 #include "Panels/AssetView.h"
 #include "Panels/ViewFrameLifecycle.h"
 #include "Panels/UIDocumentDesigner.h"
+#include "Panels/InputAssetEditor.h"
 #include "Panels/VfxEditor.h"
 #include "Panels/VfxLibraryEditor.h"
 #include "Panels/MaterialEditor.h"
 #include "Panels/AnimationWorkbench.h"
+#include "Panels/SpriteEditor.h"
 #include "Animation/AnimationPreview.h"
 #include "Panels/ProjectSettings.h"
 #include "Panels/BuildProfilesPanel.h"
@@ -946,8 +963,8 @@ Editor::Core::EditorJobWorkerBudget Editor::Core::ResolveEditorJobWorkerBudget(
     const uint32_t hardwareConcurrency,
     const std::optional<uint32_t> backgroundWorkerOverride)
 {
-    // The rendering TaskGraph and the Jobs pools share one hardware budget so a
-    // 32-core machine does not end up with two independent hardware - 3 pools.
+    // TaskGraph uses the foreground Jobs workers. Budget that compute pool once
+    // alongside the separate pool for blocking background work.
     const auto poolBudget = NLS::Base::Threading::ResolveExecutionPoolBudget(
         hardwareConcurrency,
         backgroundWorkerOverride.value_or(0u));
@@ -956,7 +973,7 @@ Editor::Core::EditorJobWorkerBudget Editor::Core::ResolveEditorJobWorkerBudget(
         poolBudget.jobsBackgroundWorkerCount};
 }
 
-Editor::Core::Editor::JobSystemLifetime::JobSystemLifetime()
+Editor::Core::Context::JobSystemLifetime::JobSystemLifetime()
 {
     std::optional<uint32_t> backgroundWorkerOverride;
     if (const char* value = std::getenv("NLS_EDITOR_BACKGROUND_WORKERS"))
@@ -988,23 +1005,25 @@ Editor::Core::Editor::JobSystemLifetime::JobSystemLifetime()
         (ownsJobSystem ? "true" : "false"));
 }
 
-Editor::Core::Editor::JobSystemLifetime::~JobSystemLifetime()
+Editor::Core::Context::JobSystemLifetime::~JobSystemLifetime()
 {
     Shutdown();
 }
 
-void Editor::Core::Editor::JobSystemLifetime::Shutdown()
+void Editor::Core::Context::JobSystemLifetime::Shutdown()
 {
     if (!ownsJobSystem)
         return;
 
+    // Also covers partial Context construction after Driver created the graph.
+    if (!NLS::Render::Context::RenderingThreadSystem::HasRenderingThreadOwners())
+        NLS::Base::TaskGraph::ShutdownGlobalTaskGraph();
     ownsJobSystem = false;
     NLS::Base::Jobs::ShutdownJobSystem(NLS::Base::Jobs::JobSystemShutdownMode::DrainAcceptedWork);
 }
 
 Editor::Core::Editor::Editor(Context& p_context)
-    : m_context(p_context), m_undoService(), m_panelsManager(m_canvas),
-    m_jobSystemLifetime(),
+    : m_context(p_context), m_undoService(), m_bakingService(m_undoService), m_panelsManager(m_canvas),
     m_editorActions(m_context, m_panelsManager)
 {
     NLS::Base::Profiling::Profiler::SetEnabled(false);
@@ -1029,13 +1048,19 @@ Editor::Core::Editor::Editor(Context& p_context)
     {
         m_context.uiManager->SetPostCanvasDrawCallback([this]
         {
-            HandleGlobalShortcuts();
+            if (m_inputUpdatePending)
+            {
+                m_inputUpdatePending = false;
+                m_panelsManager.GetPanelAs<Panels::SceneView>("Scene View").RefreshCameraInputAfterUi();
+                HandleGlobalShortcuts();
+            }
         });
     }
     m_context.SetDebugControlCallbacks(
         [this] { m_editorActions.StartPlaying(); },
         [this] { m_editorActions.PauseGame(); },
         [this] { m_editorActions.StartPlaying(); },
+        [this] { m_editorActions.NextFrame(); },
         [this] { m_editorActions.StopPlaying(); },
         [this]
         {
@@ -1065,7 +1090,17 @@ Editor::Core::Editor::Editor(Context& p_context)
     m_context.PresentStartupProgressFrame("Preparing editor shortcuts", 0.62f);
     PublishReflectionDiagnosticsToLog();
     RegisterShortcutContexts();
-    RegisterDefaultShortcuts();
+    RegisterEditorCommands();
+    RegisterPanelCommands();
+    m_graphInput = std::make_unique<Shortcuts::EditorGraphInput>(m_shortcutService);
+    m_shortcutService.InitializeInput(m_context.inputManager->GetInputSystem());
+    std::vector<std::string> inputDiagnostics;
+    if (!m_shortcutService.LoadDefaults(std::filesystem::path(m_context.editorAssetsPath) / "Input" / "EditorShortcuts.inputactions", inputDiagnostics))
+        NLS_LOG_WARNING(inputDiagnostics.empty() ? "Editor input defaults could not be loaded." : inputDiagnostics.front());
+    if (!m_shortcutService.LoadProfile(std::filesystem::path(m_context.projectPath) / "UserSettings" / "editor.inputprofile",
+        std::filesystem::path(m_context.projectPath) / "UserSettings" / "shortcuts.json"))
+        NLS_LOG_WARNING("Could not load editor input profile; retaining the current input configuration.");
+    for (const auto& diagnostic : m_shortcutService.GetProfileDiagnostics()) NLS_LOG_WARNING(diagnostic);
     m_sceneSourcePathChangedListener = m_context.sceneManager.CurrentSceneSourcePathChangedEvent += [this](const std::string& p_scenePath)
     {
         RememberLastOpenedScene(p_scenePath);
@@ -1074,26 +1109,23 @@ Editor::Core::Editor::Editor(Context& p_context)
 	{
 		m_undoService.ClearAll(Undo::UndoClearReason::SceneLoaded);
 	};
-	m_editorModeChangedListener = m_editorActions.EditorModeChangedEvent += [this](const EditorActions::EEditorMode mode)
-	{
-		if (mode == EditorActions::EEditorMode::EDIT)
-		{
-			if (m_historyFrozenForPlayMode)
-			{
-				m_undoService.Unfreeze(Undo::UndoFreezeReason::PlayMode);
-				m_historyFrozenForPlayMode = false;
-			}
-			return;
-		}
-
-		if (!m_historyFrozenForPlayMode)
-		{
-			m_undoService.Freeze(Undo::UndoFreezeReason::PlayMode);
-			m_historyFrozenForPlayMode = true;
-		}
-	};
+    m_editorModeChangedListener = m_editorActions.EditorModeChangedEvent += [this](const EditorActions::EEditorMode)
+    {
+        // EditorActions owns the transition freeze. The active Play domain
+        // remains editable without exposing the suspended Edit timeline.
+    };
 
     m_context.PresentStartupProgressFrame("Loading startup scene models and shaders", 0.65f);
+    NLS::Core::Modules::AdvanceHostPhase(NLS::Core::Modules::LoadingPhase::PostEditor);
+    if (NLS::Core::ServiceLocator::Contains<NLS::Plugins::PluginHost>() &&
+        NLS::Core::ServiceLocator::Contains<NLS::Plugins::PluginManager>())
+    {
+        m_pluginExtensions = std::make_unique<NLS::Editor::PluginSupport::EditorExtensionAdapter>(m_panelsManager,
+            NLS::Core::ServiceLocator::Get<NLS::Plugins::PluginManager>(), NLS::Core::ServiceLocator::Get<NLS::Plugins::PluginHost>());
+        auto& managerPanel = static_cast<NLS::Editor::PluginSupport::PluginManagerPanel&>(m_panelsManager.AddPanel("Plugin Manager",
+            std::make_unique<NLS::Editor::PluginSupport::PluginManagerPanel>(NLS::Core::ServiceLocator::Get<NLS::Plugins::PluginManager>(),NLS::Core::ServiceLocator::Get<NLS::Plugins::PluginHost>())));
+        m_panelsManager.GetPanelAs<Panels::EditorTopBar>("Editor Top Bar").RegisterWindowPanel("Plugin Manager",managerPanel);
+    }
 
     try
     {
@@ -1125,8 +1157,25 @@ Editor::Core::Editor::Editor(Context& p_context)
     }
 }
 
+bool Editor::Core::Editor::PrepareForClose()
+{
+    if(m_closePrepared)return true;
+    m_editorActions.StopPlaying();m_editorActions.PumpPlayRequests();
+    if(m_editorActions.GetPlayModeController().IsActive())
+    { NLS_LOG_ERROR("Editor close deferred: " + m_editorActions.GetPlayModeController().GetError());return false; }
+    if(!m_editorActions.PromptSaveCurrentSceneIfDirty())return false;
+    m_closePrepared=true;return true;
+}
+
 Editor::Core::Editor::~Editor()
 {
+    if (m_context.managedScriptDebugSession)
+    {
+        m_context.managedScriptDebugSession->SetBuildBoundary({});
+        m_context.managedScriptDebugSession->SetBuildCallbacks({}, {});
+    }
+    m_editorActions.StopPlaying();
+    m_editorActions.PumpPlayRequests();
     if (m_context.uiManager)
         m_context.uiManager->SetPostCanvasDrawCallback({});
 
@@ -1136,7 +1185,7 @@ Editor::Core::Editor::~Editor()
 		m_editorActions.EditorModeChangedEvent -= m_editorModeChangedListener;
 	m_undoService.ClearAll(Undo::UndoClearReason::EditorShutdown);
 
-    m_shortcutService.SaveProfile(std::filesystem::path(m_context.projectPath) / "UserSettings" / "shortcuts.json");
+    m_shortcutService.SaveProfile({});
     if (m_uiOverlaySupplementInstalled &&
         NLS::Core::ServiceLocator::Contains<NLS::UI::UIManager>())
     {
@@ -1145,12 +1194,21 @@ Editor::Core::Editor::~Editor()
         NLS::Core::ServiceLocator::Get<NLS::UI::UIManager>().SetOverlaySnapshotSupplement({});
         m_uiOverlaySupplementInstalled = false;
     }
-    m_editorActions.PromptSaveCurrentSceneIfDirty();
+    if(!m_closePrepared)m_editorActions.PromptSaveCurrentSceneIfDirty();
     WriteThumbnailTelemetrySummaryIfRequested(m_context);
-    m_jobSystemLifetime.Shutdown();
+    if (m_panelsManager.HasPanel("Plugin Manager")) m_panelsManager.GetPanelAs<NLS::Editor::PluginSupport::PluginManagerPanel>("Plugin Manager").CancelPending();
+    m_editorActions.StopBackgroundTasks();
+    m_panelsManager.GetPanelAs<Panels::AssetBrowser>("Asset Browser").StopBackgroundWork();
+    m_context.DrainJobSystem();
     NLS::Base::Profiling::Profiler::UnregisterDestination(
         m_panelsManager.GetPanelAs<Panels::ProfilerPanel>("Profiler").GetTimelineSink());
+    m_editorActions.PlayEvent -= m_consolePlayListener;
+    m_consolePlayListener = 0;
+    m_editorActions.BuildEvent -= m_consoleBuildListener;
+    m_consoleBuildListener = 0;
+    m_pluginExtensions.reset();
     m_panelsManager.DestroyPanels();
+    m_graphInput.reset();
 	m_context.sceneManager.CurrentSceneSourcePathChangedEvent -= m_sceneSourcePathChangedListener;
 	NLS::Core::ServiceLocator::Remove<NLS::Editor::Undo::EditorUndoService>();
 	m_context.sceneManager.UnloadCurrentScene();
@@ -1193,12 +1251,131 @@ void Editor::Core::Editor::SetupUI()
         m_context.editorAssetsPath,
         m_context.GetAssetThumbnailFeatureConfig());
     logSetupStep("AssetBrowser");
+    m_panelsManager.CreatePanel<Panels::ECSBakingPanel>("ECS Baking", false, settings,
+        m_bakingService, std::filesystem::path(m_context.projectAssetsPath),
+        [this](const std::filesystem::path& path)
+        {
+            NLS::Editor::Assets::AssetDatabaseFacade database(std::vector<std::filesystem::path>{
+                m_context.projectPath, m_context.engineAssetsPath});
+            std::string error;
+            if (!ECSAuthoring::ImportBakedSceneAsset(database, path, error))
+                throw std::runtime_error(error);
+            m_panelsManager.GetPanelAs<Panels::AssetBrowser>("Asset Browser").Refresh();
+            m_context.RefreshRuntimeAssetDatabaseFromArtifactDB();
+            return true;
+        });
     m_panelsManager.CreatePanel<Panels::ProfilerPanel>("Profiler", false, settings);
     logSetupStep("Profiler");
     auto& profilerPanel = m_panelsManager.GetPanelAs<Panels::ProfilerPanel>("Profiler");
     NLS::Base::Profiling::Profiler::RegisterDestination(profilerPanel.GetTimelineSink());
     logSetupStep("RegisterProfiler");
     m_panelsManager.CreatePanel<Panels::Console>("Console", false, settings);
+    m_panelsManager.CreatePanel<Panels::BackgroundTasks>("Background Tasks", false, settings, m_context.taskProgress);
+    auto& statusConsole = m_panelsManager.GetPanelAs<Panels::Console>("Console");
+    SyncConsoleSettings();
+    {
+        statusConsole.SetOptionsChanged([this](const Panels::ConsoleOptions& value)
+        {
+            auto& target = NLS::Editor::Settings::EditorSettings::GetConsoleSettingsObject();
+            target.clearOnPlay = value.clearOnPlay;
+            target.clearOnBuild = value.clearOnBuild;
+            target.clearOnRecompile = value.clearOnRecompile;
+            target.collapse = value.collapse;
+            target.errorPause = value.errorPause;
+            target.showTimestamp = value.showTimestamp;
+            target.messages = value.messages;
+            target.warnings = value.warnings;
+            target.errors = value.errors;
+            target.csharp = value.csharp;
+            target.lua = value.lua;
+            target.build = value.build;
+            target.lineCount = value.lineCount;
+            target.detailRatio = value.detailRatio;
+            target.messageStack = value.messageStack;
+            target.warningStack = value.warningStack;
+            target.errorStack = value.errorStack;
+            NLS::Editor::Settings::EditorSettingsRegistry registry;
+            NLS::Editor::Settings::EditorSettings::RegisterSettingObjects(registry);
+            const auto path = std::filesystem::path(m_context.projectPath) / "UserSettings" / "editor-settings.json";
+            if (!NLS::Editor::Settings::EditorSettingsPersistence::Save(path, registry))
+                NLS_LOG_WARNING("Could not save Console preferences: " + path.string());
+        });
+    }
+    statusConsole.SetOpenLogFile([]
+    {
+        NLS::Debug::Logger::Flush();
+        NLS::Platform::SystemCalls::OpenFile(NLS::Debug::FileHandler::GetLogFilePath());
+    });
+    statusConsole.SetSourceAvailability([this](const std::string& source)
+    {
+        try
+        {
+            const auto path = Panels::ResolveConsoleSourcePath(
+                std::filesystem::u8path(source), std::filesystem::path(m_context.projectPath));
+            std::error_code error;
+            return std::filesystem::is_regular_file(path, error);
+        }
+        catch (const std::exception&) { return false; }
+    });
+    statusConsole.SetScriptConsole(
+        m_context.scriptDebugService ? &m_context.scriptDebugService->GetConsole() : nullptr,
+        [this](const NLS::Scripting::ScriptError& error)
+        {
+            if (error.sourcePath.empty()) return;
+            const auto configuredPath = m_context.projectSettings.GetOrDefault<std::string>("vscode_path", "");
+            const std::filesystem::path vscodePath = configuredPath.empty() ? std::filesystem::path{} : std::filesystem::path(configuredPath);
+            std::filesystem::path sourcePath;
+            try { sourcePath = std::filesystem::u8path(error.sourcePath); }
+            catch (const std::exception&) { sourcePath = std::filesystem::path(error.sourcePath); }
+            sourcePath = Panels::ResolveConsoleSourcePath(sourcePath, std::filesystem::path(m_context.projectPath));
+            std::error_code pathError;
+            if (!std::filesystem::exists(sourcePath, pathError))
+            {
+                const std::filesystem::path nativePath(error.sourcePath);
+                pathError.clear();
+                if (std::filesystem::exists(nativePath, pathError)) sourcePath = nativePath;
+            }
+            const auto result = NLS::Editor::Debug::ExternalCodeEditor::OpenAtLine(
+                sourcePath, error.line, error.column,
+                vscodePath.is_absolute() ? vscodePath : std::filesystem::path{});
+            if (!result.success && !result.errorMessage.empty()) NLS_LOG_WARNING("Unable to open diagnostic: " + result.errorMessage);
+        });
+    if (m_context.managedScriptDebugSession)
+    {
+        m_context.managedScriptDebugSession->SetBuildCallbacks(
+            [console = &statusConsole] { console->ClearOnRecompile(); },
+            [console = &statusConsole](const NLS::Editor::Scripting::ManagedScriptBuildResult& result)
+            {
+                std::vector<Panels::ConsoleLogEntry> entries;
+                for (const auto& diagnostic : NLS::Editor::Scripting::ManagedScriptBuildService::ReadDiagnostics(result))
+                {
+                    Panels::ConsoleLogEntry entry;
+                    entry.received = std::chrono::steady_clock::now();
+                    entry.source = Panels::ConsoleEntrySource::Build;
+                    entry.level = diagnostic.severity == NLS::Editor::Scripting::ManagedBuildDiagnostic::Severity::Error
+                        ? NLS::Debug::ELogLevel::LOG_ERROR
+                        : diagnostic.severity == NLS::Editor::Scripting::ManagedBuildDiagnostic::Severity::Warning
+                            ? NLS::Debug::ELogLevel::LOG_WARNING : NLS::Debug::ELogLevel::LOG_INFO;
+                    entry.message = diagnostic.message;
+                    entry.sourcePath = diagnostic.sourcePath;
+                    entry.line = diagnostic.line;
+                    entry.column = diagnostic.column;
+                    entries.push_back(std::move(entry));
+                }
+                console->ReplaceCompilerDiagnostics(std::move(entries));
+            });
+    }
+    m_consolePlayListener = m_editorActions.PlayEvent += [console = &statusConsole] { console->ClearOnPlay(); };
+    m_consoleBuildListener = m_editorActions.BuildEvent += [console = &statusConsole] { console->ClearOnBuild(); };
+    m_panelsManager.GetPanelAs<Panels::EditorStatusBar>("Editor Status Bar").SetSources(
+        m_panelsManager.GetPanelAs<Panels::Console>("Console"), m_context.taskProgress,
+        [this] { OpenConsole(); },
+        [this]
+        {
+            auto& tasks = m_panelsManager.GetPanelAs<Panels::BackgroundTasks>("Background Tasks");
+            tasks.Open(); tasks.Focus();
+        },
+        [this] { return GetCurrentFrameRate(); });
     logSetupStep("Console");
     m_panelsManager.CreatePanel<Panels::AssetView>("Asset View", false, settings);
     logSetupStep("AssetView");
@@ -1215,6 +1392,7 @@ void Editor::Core::Editor::SetupUI()
     m_panelsManager.CreatePanel<Panels::IconBrowser>("Icon Browser", false, settings);
     logSetupStep("IconBrowser");
     m_panelsManager.CreatePanel<Panels::UIDocumentDesigner>("UI Designer", false, settings);
+    m_panelsManager.CreatePanel<Panels::InputAssetEditor>("Input Editor", false, settings);
     logSetupStep("UIDocumentDesigner");
     if (!SkipOptionalVfxPanels())
     {
@@ -1230,6 +1408,7 @@ void Editor::Core::Editor::SetupUI()
     m_panelsManager.CreatePanel<AnimationTools::AnimationPreview>("Animation Preview",false,settings);
     auto& animationPreview=m_panelsManager.GetPanelAs<AnimationTools::AnimationPreview>("Animation Preview");
     m_panelsManager.CreatePanel<Panels::AnimationWorkbench>("Animation Workbench",false,settings,std::filesystem::path(m_context.projectPath),animationPreview);
+    m_panelsManager.CreatePanel<Panels::SpriteEditor>("Sprite Editor",false,settings,std::filesystem::path(m_context.projectPath));
     m_panelsManager.CreatePanel<Panels::ProjectSettings>("Project Settings", false, settings);
     logSetupStep("ProjectSettings");
     m_panelsManager.CreatePanel<Panels::BuildProfilesPanel>("Build Profiles", false, settings);
@@ -1242,13 +1421,16 @@ void Editor::Core::Editor::SetupUI()
     topBar.RegisterWindowPanel("Frame Info", m_panelsManager.GetPanelAs<Panels::FrameInfo>("Frame Info"));
     topBar.RegisterWindowPanel("Icon Browser", m_panelsManager.GetPanelAs<Panels::IconBrowser>("Icon Browser"));
     topBar.RegisterWindowPanel("Profiler", profilerPanel);
+    topBar.RegisterWindowPanel("ECS Baking", m_panelsManager.GetPanelAs<Panels::ECSBakingPanel>("ECS Baking"));
     topBar.RegisterWindowPanel("Console", m_panelsManager.GetPanelAs<Panels::Console>("Console"));
+    topBar.RegisterWindowPanel("Background Tasks", m_panelsManager.GetPanelAs<Panels::BackgroundTasks>("Background Tasks"));
     topBar.RegisterWindowPanel("Asset View", m_panelsManager.GetPanelAs<Panels::AssetView>("Asset View"));
     topBar.RegisterWindowPanel("Hierarchy", m_panelsManager.GetPanelAs<Panels::Hierarchy>("Hierarchy"));
     topBar.RegisterWindowPanel("Inspector", m_panelsManager.GetPanelAs<Panels::Inspector>("Inspector"));
     topBar.RegisterWindowPanel("Scene View", m_panelsManager.GetPanelAs<Panels::SceneView>("Scene View"));
     topBar.RegisterWindowPanel("Game View", m_panelsManager.GetPanelAs<Panels::GameView>("Game View"));
     topBar.RegisterWindowPanel("UI Designer", m_panelsManager.GetPanelAs<Panels::UIDocumentDesigner>("UI Designer"));
+    topBar.RegisterWindowPanel("Input Editor", m_panelsManager.GetPanelAs<Panels::InputAssetEditor>("Input Editor"));
     if (!SkipOptionalVfxPanels())
     {
         topBar.RegisterWindowPanel("Particle Editor", m_panelsManager.GetPanelAs<Panels::VfxEditor>("Particle Editor"));
@@ -1256,6 +1438,7 @@ void Editor::Core::Editor::SetupUI()
     }
     topBar.RegisterWindowPanel("Material Editor",m_panelsManager.GetPanelAs<Panels::MaterialEditor>("Material Editor"));
     topBar.RegisterWindowPanel("Animation Workbench",m_panelsManager.GetPanelAs<Panels::AnimationWorkbench>("Animation Workbench"));
+    topBar.RegisterWindowPanel("Sprite Editor",m_panelsManager.GetPanelAs<Panels::SpriteEditor>("Sprite Editor"));
     topBar.RegisterWindowPanel("Animation Preview",m_panelsManager.GetPanelAs<AnimationTools::AnimationPreview>("Animation Preview"));
     topBar.RegisterWindowPanel("Build Profiles", m_panelsManager.GetPanelAs<Panels::BuildProfilesPanel>("Build Profiles"));
     logSetupStep("RegisterWindows");
@@ -1286,8 +1469,34 @@ void Editor::Core::Editor::SetupUI()
     logSetupStep("CloseGameViewForStartup");
 }
 
+void Editor::Core::Editor::SyncConsoleSettings()
+{
+    if (!m_panelsManager.HasPanel("Console")) return;
+    const auto& saved = NLS::Editor::Settings::EditorSettings::GetConsoleSettingsObject();
+    Panels::ConsoleOptions options;
+    options.clearOnPlay = saved.clearOnPlay;
+    options.clearOnBuild = saved.clearOnBuild;
+    options.clearOnRecompile = saved.clearOnRecompile;
+    options.collapse = saved.collapse;
+    options.errorPause = saved.errorPause;
+    options.showTimestamp = saved.showTimestamp;
+    options.messages = saved.messages;
+    options.warnings = saved.warnings;
+    options.errors = saved.errors;
+    options.csharp = saved.csharp;
+    options.lua = saved.lua;
+    options.build = saved.build;
+    options.lineCount = saved.lineCount;
+    options.detailRatio = saved.detailRatio;
+    options.messageStack = saved.messageStack;
+    options.warningStack = saved.warningStack;
+    options.errorStack = saved.errorStack;
+    m_panelsManager.GetPanelAs<Panels::Console>("Console").SetOptions(options);
+}
+
 void Editor::Core::Editor::PreUpdate()
 {
+    m_inputUpdatePending = false;
     if (NLS::Core::ServiceLocator::Contains<NLS::Editor::Materials::MaterialEditingService>())
         NLS::Core::ServiceLocator::Get<NLS::Editor::Materials::MaterialEditingService>().Pump();
     (void)NLS::Render::Context::RenderingThreadSystem::PumpGameThreadTasks(64u);
@@ -1298,6 +1507,7 @@ void Editor::Core::Editor::PreUpdate()
         NLS_PROFILE_NAMED_SCOPE("Editor::PollEvents");
         m_context.device->PollEvents();
     }
+    m_inputUpdatePending = true;
 }
 
 void Editor::Core::Editor::BeginProfilerFrame()
@@ -1395,6 +1605,7 @@ void Editor::Core::Editor::UpdateThumbnailTelemetrySummaryExport()
 void Editor::Core::Editor::Update(float p_deltaTime)
 {
     NLS_PROFILE_SCOPE();
+    if (m_context.uiManager && m_context.uiManager->PrepareFrame()) m_shortcutService.PrepareInput(GetInputRoute());
     const auto editorFrameBegin = std::chrono::steady_clock::now();
 
     const bool logUpdateStages = m_logNextUpdateStages;
@@ -1467,6 +1678,12 @@ void Editor::Core::Editor::Update(float p_deltaTime)
     if (m_context.managedScriptDebugSession)
     {
         NLS_PROFILE_NAMED_SCOPE("Editor::PollManagedScriptDebugBuild");
+        m_context.managedScriptDebugSession->SetBuildBoundary([this]
+        {
+            if (!m_editorActions.GetPlayModeController().IsActive()) return true;
+            m_editorActions.StopPlaying();
+            return false;
+        });
         m_context.managedScriptDebugSession->Poll();
 
         if (m_context.editorDebugEndpoint)
@@ -1492,6 +1709,10 @@ void Editor::Core::Editor::Update(float p_deltaTime)
     }
     {
         NLS_PROFILE_NAMED_SCOPE("Editor::UpdateCurrentEditorMode");
+        auto& console=m_panelsManager.GetPanelAs<Panels::Console>("Console");
+        console.UpdateLogState();
+        if (console.ConsumeErrorPauseRequest() && m_editorActions.GetPlayModeController().IsActive())
+            m_editorActions.PauseGame();
         UpdateCurrentEditorMode(p_deltaTime);
     }
     if (m_context.editorDebugEndpoint && m_context.debugStateProvider)
@@ -1738,30 +1959,43 @@ Render::Data::FrameInfo Editor::Core::Editor::GetCameraPerformanceViewCumulative
 
 void Editor::Core::Editor::HandleGlobalShortcuts()
 {
-    if(m_panelsManager.GetPanelAs<Panels::AnimationWorkbench>("Animation Workbench").OwnsShortcuts())return;
-    if ((!SkipOptionalVfxPanels() &&
+    m_shortcutService.DispatchInput(GetInputRoute());
+}
+
+Editor::Shortcuts::EditorInputRoute Editor::Core::Editor::GetInputRoute()
+{
+    auto& gameView = m_panelsManager.GetPanelAs<Panels::GameView>("Game View");
+    Shortcuts::EditorInputRoute route;
+    const auto windows = m_context.inputManager->GetInputSystem().GetWindows();
+    route.windowFocused = std::any_of(windows.begin(), windows.end(), [](const auto& window) { return window.registered && window.focused; });
+    const auto& gui = *ImGui::GetCurrentContext();
+    route.textEditing = IsEditorTextInputActive();
+    route.widgetOwnsPointer = gui.HoveredId != 0 || (gui.ActiveId != 0 && gui.ActiveIdSource == ImGuiInputSource_Mouse);
+    route.widgetKeyboardActivation = gui.NavActivateId != 0;
+    route.modal = ImGui::GetTopMostPopupModal() != nullptr;
+    route.menuActive = ImGui::IsPopupOpen("", ImGuiPopupFlags_AnyPopupId | ImGuiPopupFlags_AnyPopupLevel);
+    route.gameOwnsInput = gameView.OwnsGameInput();
+    route.allowEditorInGame = Settings::EditorSettings::GetGameViewSettingsObject().editorShortcuts;
+    route.workbenchOwnsInput = m_panelsManager.GetPanelAs<Panels::AnimationWorkbench>("Animation Workbench").OwnsShortcuts() ||
+        ((!SkipOptionalVfxPanels() &&
             (m_panelsManager.GetPanelAs<Panels::VfxEditor>("Particle Editor").OwnsShortcuts() ||
              m_panelsManager.GetPanelAs<Panels::VfxLibraryEditor>("Particle Library Editor").OwnsShortcuts())) ||
-        m_panelsManager.GetPanelAs<Panels::UIDocumentDesigner>("UI Designer").OwnsShortcuts())
-        return;
-	// Continuous edits own Escape until they have either committed or restored
-	// their before state. Text widgets retain their native editing behaviour.
-	if (m_undoService.HasActiveEditSession() && !ImGui::GetIO().WantTextInput &&
-		m_context.inputManager->IsKeyPressed(Windowing::Inputs::EKey::KEY_ESCAPE))
-	{
-		static_cast<void>(m_undoService.RequestUndo());
-		return;
-	}
-
-    m_shortcutService.ExecutePressedShortcut(
-        [this](Windowing::Inputs::EKey p_key)
-        {
-            return m_context.inputManager->IsKeyPressed(p_key);
-        },
-        [this](Windowing::Inputs::EKey p_key)
-        {
-            return m_context.inputManager->GetKeyState(p_key);
-        });
+        m_panelsManager.GetPanelAs<Panels::UIDocumentDesigner>("UI Designer").OwnsShortcuts());
+    route.gestureOwnsEscape = m_undoService.HasActiveEditSession();
+    if (m_panelsManager.GetPanelAs<Panels::UIDocumentDesigner>("UI Designer").HasCurrentKeyboardFocus()) route.ownedScope = "ui-designer";
+    if (!SkipOptionalVfxPanels())
+    {
+        if (m_panelsManager.GetPanelAs<Panels::VfxEditor>("Particle Editor").OwnsShortcuts()) route.ownedScope = "vfx-editor";
+        if (m_panelsManager.GetPanelAs<Panels::VfxLibraryEditor>("Particle Library Editor").HasCurrentKeyboardFocus()) route.ownedScope = "vfx-library";
+    }
+    if (m_panelsManager.GetPanelAs<Panels::AnimationWorkbench>("Animation Workbench").HasCurrentKeyboardFocus()) route.ownedScope = "animation-workbench";
+    if (m_panelsManager.GetPanelAs<Panels::InputAssetEditor>("Input Editor").HasCurrentKeyboardFocus()) route.ownedScope = "input-editor";
+    if (m_panelsManager.GetPanelAs<Panels::SpriteEditor>("Sprite Editor").OwnsShortcuts()) route.ownedScope = "sprite-editor";
+    route.graphOwnsInput = m_graphInput && m_graphInput->HasFocus();
+    route.cameraOwnsInput = Core::CameraController::GetKeyboardInputTarget() || Core::CameraController::NavigationOwnsInput();
+    route.workbenchOwnsInput |= route.graphOwnsInput;
+    route.workbenchOwnsInput = route.workbenchOwnsInput || !route.ownedScope.empty();
+    return route;
 }
 
 void Editor::Core::Editor::RegisterShortcutContexts()
@@ -1771,7 +2005,8 @@ void Editor::Core::Editor::RegisterShortcutContexts()
 
     const auto isSceneViewFocused = [this]
     {
-        return m_panelsManager.GetPanelAs<Panels::SceneView>("Scene View").IsFocused();
+        const auto& scene = m_panelsManager.GetPanelAs<Panels::SceneView>("Scene View");
+        return scene.HasCurrentKeyboardFocus() && !scene.IsToolbarInteractionActive();
     };
 
     m_shortcutService.RegisterContext({
@@ -1786,10 +2021,13 @@ void Editor::Core::Editor::RegisterShortcutContexts()
         "Scene View/Fly Mode",
         40,
         "scene-navigation-mode",
-        [this, isSceneViewFocused]
+        [this]
         {
-            return isSceneViewFocused() &&
-                m_context.inputManager->GetMouseButtonState(EMouseButton::MOUSE_BUTTON_RIGHT) == EMouseButtonState::MOUSE_DOWN;
+            auto& scene = m_panelsManager.GetPanelAs<Panels::SceneView>("Scene View");
+            return Core::CameraController::NavigationOwnsInput() || scene.GetCameraController().IsCameraControlActive() ||
+                (m_shortcutService.GetInputState(EditorInputAction::CameraFly).pressed &&
+                 m_shortcutService.GetInputState(EditorInputAction::CameraFly).actuated &&
+                 scene.IsMouseHoveringView(m_context.inputManager->GetMousePosition()));
         }});
 
     m_shortcutService.RegisterContext({
@@ -1799,7 +2037,7 @@ void Editor::Core::Editor::RegisterShortcutContexts()
         "focused-panel",
         [this]
         {
-            return m_panelsManager.GetPanelAs<Panels::Hierarchy>("Hierarchy").IsFocused();
+            return m_panelsManager.GetPanelAs<Panels::Hierarchy>("Hierarchy").HasCurrentKeyboardFocus();
         }});
 
     m_shortcutService.RegisterContext({
@@ -1809,14 +2047,15 @@ void Editor::Core::Editor::RegisterShortcutContexts()
         "",
         []
         {
-            return ImGui::GetIO().WantTextInput;
+            return IsEditorTextInputActive();
         }});
+    m_shortcutService.RegisterContext({"edit-gesture", "Active Edit Gesture", 150, "", [this]
+    { return m_undoService.HasActiveEditSession() && !IsEditorTextInputActive(); }});
 }
 
-void Editor::Core::Editor::RegisterDefaultShortcuts()
+void Editor::Core::Editor::RegisterEditorCommands()
 {
     using namespace NLS::Editor::Shortcuts;
-    using Windowing::Inputs::EKey;
 
     const auto registerCommand = [this](ShortcutCommand p_command)
     {
@@ -1827,7 +2066,6 @@ void Editor::Core::Editor::RegisterDefaultShortcuts()
                           std::string p_displayName,
                           std::string p_category,
                           ShortcutContextId p_context,
-                          ShortcutBinding p_binding,
                           std::function<void()> p_execute)
     {
         ShortcutCommand command;
@@ -1835,7 +2073,6 @@ void Editor::Core::Editor::RegisterDefaultShortcuts()
         command.displayName = std::move(p_displayName);
         command.category = std::move(p_category);
         command.context = std::move(p_context);
-        command.defaultBinding = p_binding;
         command.execute = std::move(p_execute);
         return command;
     };
@@ -1845,7 +2082,6 @@ void Editor::Core::Editor::RegisterDefaultShortcuts()
         "New Scene",
         "File",
         ShortcutContexts::Global,
-        ShortcutBinding::FromKey(EKey::KEY_N, EShortcutModifier::Ctrl),
         [this] { m_editorActions.LoadEmptyScene(); }));
 
     registerCommand(makeCommand(
@@ -1853,7 +2089,6 @@ void Editor::Core::Editor::RegisterDefaultShortcuts()
         "Save Scene",
         "File",
         ShortcutContexts::Global,
-        ShortcutBinding::FromKey(EKey::KEY_S, EShortcutModifier::Ctrl),
         [this] { m_editorActions.SaveSceneChanges(); }));
 
     registerCommand(makeCommand(
@@ -1861,7 +2096,6 @@ void Editor::Core::Editor::RegisterDefaultShortcuts()
         "Save Scene As",
         "File",
         ShortcutContexts::Global,
-        ShortcutBinding::FromKey(EKey::KEY_S, EShortcutModifier::Ctrl | EShortcutModifier::Shift),
         [this] { m_editorActions.SaveAs(); }));
 
 	// These are global timeline operations. They deliberately do not use the
@@ -1872,8 +2106,7 @@ void Editor::Core::Editor::RegisterDefaultShortcuts()
 		"Undo",
 		"Edit",
 		ShortcutContexts::Global,
-		ShortcutBinding::FromKey(EKey::KEY_Z, EShortcutModifier::Primary),
-        [this] { static_cast<void>(m_undoService.RequestUndo()); });
+		[this] { static_cast<void>(m_undoService.RequestUndo()); });
 	undoCommand.availability = [this] { return m_undoService.CanUndo(); };
 	registerCommand(std::move(undoCommand));
 
@@ -1882,40 +2115,44 @@ void Editor::Core::Editor::RegisterDefaultShortcuts()
 		"Redo",
 		"Edit",
 		ShortcutContexts::Global,
-		ShortcutBinding::FromKey(EKey::KEY_Y, EShortcutModifier::Primary),
 		[this] { static_cast<void>(m_undoService.RequestRedo()); });
-	redoCommand.alternateBindings.push_back(
-		ShortcutBinding::FromKey(EKey::KEY_Z, EShortcutModifier::Primary | EShortcutModifier::Shift));
 	redoCommand.availability = [this] { return m_undoService.CanRedo(); };
 	registerCommand(std::move(redoCommand));
 
-    registerCommand(makeCommand(
-        "editor.play",
-        "Play",
-        "Editor",
-        ShortcutContexts::Global,
-        ShortcutBinding::FromKey(EKey::KEY_F5),
-        [this] { m_editorActions.StartPlaying(); }));
-
-    auto stopCommand = makeCommand(
-        "editor.stop",
-        "Stop",
-        "Editor",
-        ShortcutContexts::Global,
-        ShortcutBinding::FromKey(EKey::KEY_ESCAPE),
+    auto playCommand = makeCommand("editor.play", "Play / Stop", "Editor", ShortcutContexts::Global,
+        [this] { m_editorActions.TogglePlaying(); });
+    registerCommand(std::move(playCommand));
+    auto stopCommand = makeCommand("editor.stop", "Stop", "Editor", ShortcutContexts::Global,
         [this] { m_editorActions.StopPlaying(); });
-    stopCommand.availability = [this]
-    {
-        return m_editorActions.GetCurrentEditorMode() != EditorActions::EEditorMode::EDIT;
-    };
+    stopCommand.availability = [this] { return m_editorActions.GetPlayModeController().IsActive(); };
     registerCommand(std::move(stopCommand));
+    auto pauseCommand = makeCommand("editor.pause", "Pause / Resume", "Editor", ShortcutContexts::Global,
+        [this]
+        {
+            if (m_editorActions.GetCurrentEditorMode() == EditorActions::EEditorMode::PAUSE) m_editorActions.StartPlaying();
+            else m_editorActions.PauseGame();
+        });
+    pauseCommand.availability = [this] { return m_editorActions.GetPlayModeController().IsActive(); };
+    registerCommand(std::move(pauseCommand));
+    auto stepCommand = makeCommand("editor.step", "Step", "Editor", ShortcutContexts::Global,
+        [this] { m_editorActions.NextFrame(); });
+    stepCommand.availability = [this] { return m_editorActions.GetPlayModeController().IsActive(); };
+    registerCommand(std::move(stepCommand));
+
+    auto releaseGame = makeCommand("editor.release-game-input", "Release Game Input", "Editor", ShortcutContexts::Global,
+        [this] { m_panelsManager.GetPanelAs<Panels::GameView>("Game View").ReleaseGameInput(); });
+    releaseGame.availability = [this] { return m_panelsManager.GetPanelAs<Panels::GameView>("Game View").OwnsGameInput(); };
+    registerCommand(std::move(releaseGame));
+    auto cancelEdit = makeCommand("edit.cancel-active-edit", "Cancel Active Edit", "Edit", "edit-gesture",
+        [this] { static_cast<void>(m_undoService.RequestUndo()); });
+    cancelEdit.availability = [this] { return m_undoService.HasActiveEditSession(); };
+    registerCommand(std::move(cancelEdit));
 
     auto captureCommand = makeCommand(
         "debug.renderdoc.capture-next-frame",
         "Capture Next Frame",
         "Debugging",
         ShortcutContexts::Global,
-        ShortcutBinding::FromKey(EKey::KEY_F11),
         [this]
         {
             if (Render::Context::DriverUIAccess::IsRenderDocAvailable(*m_context.driver))
@@ -1929,7 +2166,6 @@ void Editor::Core::Editor::RegisterDefaultShortcuts()
         "Open Latest RenderDoc Capture",
         "Debugging",
         ShortcutContexts::Global,
-        ShortcutBinding::FromKey(EKey::KEY_F11, EShortcutModifier::Ctrl),
         [this]
         {
             Render::Context::DriverUIAccess::OpenLatestRenderDocCapture(*m_context.driver);
@@ -1939,7 +2175,6 @@ void Editor::Core::Editor::RegisterDefaultShortcuts()
 
     const auto registerSceneToolCommand = [&](std::string p_id,
                                               std::string p_displayName,
-                                              const EKey p_key,
                                               std::function<void(Panels::SceneView&)> p_execute)
     {
         registerCommand(makeCommand(
@@ -1947,114 +2182,80 @@ void Editor::Core::Editor::RegisterDefaultShortcuts()
             std::move(p_displayName),
             "Scene View",
             ShortcutContexts::SceneView,
-            ShortcutBinding::FromKey(p_key),
             [this, execute = std::move(p_execute)]
             {
                 execute(m_panelsManager.GetPanelAs<Panels::SceneView>("Scene View"));
             }));
     };
 
-    registerCommand(makeCommand(
-        "scene-view.fly-forward",
-        "Fly Mode Forward",
-        "Scene View/Fly Mode",
-        ShortcutContexts::SceneViewFlyMode,
-        ShortcutBinding::FromKey(EKey::KEY_W),
-        [] {}));
-    registerCommand(makeCommand(
-        "scene-view.fly-backward",
-        "Fly Mode Backward",
-        "Scene View/Fly Mode",
-        ShortcutContexts::SceneViewFlyMode,
-        ShortcutBinding::FromKey(EKey::KEY_S),
-        [] {}));
-    registerCommand(makeCommand(
-        "scene-view.fly-left",
-        "Fly Mode Left",
-        "Scene View/Fly Mode",
-        ShortcutContexts::SceneViewFlyMode,
-        ShortcutBinding::FromKey(EKey::KEY_A),
-        [] {}));
-    registerCommand(makeCommand(
-        "scene-view.fly-right",
-        "Fly Mode Right",
-        "Scene View/Fly Mode",
-        ShortcutContexts::SceneViewFlyMode,
-        ShortcutBinding::FromKey(EKey::KEY_D),
-        [] {}));
-    registerCommand(makeCommand(
-        "scene-view.fly-up",
-        "Fly Mode Up",
-        "Scene View/Fly Mode",
-        ShortcutContexts::SceneViewFlyMode,
-        ShortcutBinding::FromKey(EKey::KEY_E),
-        [] {}));
-    registerCommand(makeCommand(
-        "scene-view.fly-down",
-        "Fly Mode Down",
-        "Scene View/Fly Mode",
-        ShortcutContexts::SceneViewFlyMode,
-        ShortcutBinding::FromKey(EKey::KEY_Q),
-        [] {}));
-
     registerSceneToolCommand(
         "scene-view.view-tool",
         "View",
-        EKey::KEY_Q,
         [](Panels::SceneView&) {});
     registerSceneToolCommand(
         "scene-view.move-tool",
         "Move",
-        EKey::KEY_W,
         [](Panels::SceneView& p_sceneView) { p_sceneView.SetCurrentGizmoOperation(EGizmoOperation::TRANSLATE); });
     registerSceneToolCommand(
         "scene-view.rotate-tool",
         "Rotate",
-        EKey::KEY_E,
         [](Panels::SceneView& p_sceneView) { p_sceneView.SetCurrentGizmoOperation(EGizmoOperation::ROTATE); });
     registerSceneToolCommand(
         "scene-view.scale-tool",
         "Scale",
-        EKey::KEY_R,
         [](Panels::SceneView& p_sceneView) { p_sceneView.SetCurrentGizmoOperation(EGizmoOperation::SCALE); });
     registerSceneToolCommand(
         "scene-view.rect-tool",
         "Rect",
-        EKey::KEY_T,
-        [](Panels::SceneView& p_sceneView) { p_sceneView.SetCurrentGizmoOperation(EGizmoOperation::TRANSLATE); });
+        [](Panels::SceneView& p_sceneView) { p_sceneView.SetCurrentGizmoOperation(EGizmoOperation::RECT); });
     registerSceneToolCommand(
         "scene-view.transform-tool",
         "Transform",
-        EKey::KEY_Y,
         [](Panels::SceneView& p_sceneView) { p_sceneView.SetCurrentGizmoOperation(EGizmoOperation::TRANSLATE); });
     registerSceneToolCommand(
         "scene-view.toggle-pivot-position",
         "Toggle Pivot Position",
-        EKey::KEY_Z,
         [](Panels::SceneView& p_sceneView) { p_sceneView.ToggleCurrentGizmoPivot(); });
     registerSceneToolCommand(
         "scene-view.toggle-pivot-orientation",
         "Toggle Pivot Orientation",
-        EKey::KEY_X,
         [](Panels::SceneView& p_sceneView) { p_sceneView.ToggleCurrentGizmoSpace(); });
 
-    const auto deleteSelectedGameObjectThroughUndo = [this]
+    registerSceneToolCommand(
+        "scene-view.toggle-selected-visibility", "Toggle Selected Scene Visibility",
+        [](Panels::SceneView& sceneView)
+        {
+            if (auto* active = EDITOR_EXEC(GetActiveGameObject()))
+            {
+                const bool visible = sceneView.IsObjectHidden(*active);
+                for (auto* object : EDITOR_EXEC(GetSelectedGameObjects())) sceneView.SetObjectVisibility(*object, visible);
+            }
+        });
+
+    const auto deleteSelectedGameObjectThroughUndo = [this](const InvocationContext& invocation)
     {
-        auto* selected = m_editorActions.GetSelectedGameObject();
-        if (selected == nullptr || selected->GetScene() == nullptr)
-            return;
+        auto selected = m_editorActions.GetSelectedGameObjects();
+        if (invocation.targetInstance != 0)
+        {
+            auto* target = Object::IDToPointer<Engine::GameObject>(invocation.targetInstance);
+            if (!target) return CommandResult::TargetExpired;
+            if (std::find(selected.begin(), selected.end(), target) == selected.end()) selected = {target};
+        }
+        if (selected.empty() || selected.front()->GetScene() == nullptr)
+            return CommandResult::TargetExpired;
 
-        const auto scope = m_editorActions.GetUndoScopeForScene(*selected->GetScene());
+        const auto scope = m_editorActions.GetUndoScopeForScene(*selected.front()->GetScene());
         if (!scope.IsValid())
-            return;
+            return CommandResult::Disabled;
 
-        const auto result = Panels::HierarchyUndo::DeleteGameObject(m_undoService, *selected, scope);
+        const auto result = Panels::HierarchyUndo::DeleteGameObjects(m_undoService, selected, scope);
         if (!result.Succeeded())
         {
             NLS_LOG_WARNING(
                 "Delete Selected GameObject was rejected by the global Undo service: " +
                 (result.message.empty() ? std::string("Unknown error.") : result.message));
         }
+        return result.Succeeded() ? CommandResult::Completed : CommandResult::Failed;
     };
 
     registerCommand(makeCommand(
@@ -2062,10 +2263,9 @@ void Editor::Core::Editor::RegisterDefaultShortcuts()
         "Delete Selected GameObject",
         "Edit",
         ShortcutContexts::SceneView,
-        ShortcutBinding::FromKey(EKey::KEY_DELETE),
         [deleteSelectedGameObjectThroughUndo]
         {
-            deleteSelectedGameObjectThroughUndo();
+            deleteSelectedGameObjectThroughUndo({});
         }));
 
     registerCommand(makeCommand(
@@ -2073,13 +2273,58 @@ void Editor::Core::Editor::RegisterDefaultShortcuts()
         "Delete Selected GameObject",
         "Edit",
         ShortcutContexts::Hierarchy,
-        ShortcutBinding::FromKey(EKey::KEY_DELETE),
         [deleteSelectedGameObjectThroughUndo]
         {
-            deleteSelectedGameObjectThroughUndo();
+            deleteSelectedGameObjectThroughUndo({});
         }));
 
-    m_shortcutService.LoadProfile(std::filesystem::path(m_context.projectPath) / "UserSettings" / "shortcuts.json");
+    m_shortcutService.GetRegistry().FindCommand("edit.delete-selected-gameobject")->invoke = deleteSelectedGameObjectThroughUndo;
+    m_shortcutService.GetRegistry().FindCommand("edit.delete-selected-gameobject-hierarchy")->invoke = deleteSelectedGameObjectThroughUndo;
+    for (const auto& context : {ShortcutContexts::SceneView, ShortcutContexts::Hierarchy})
+    {
+        const std::string suffix = context == ShortcutContexts::SceneView ? "scene" : "hierarchy";
+        registerCommand(makeCommand("edit.duplicate-selection-" + suffix, "Duplicate Selected GameObjects", "Edit", context,
+            [this]
+            {
+                const auto objects = m_editorActions.GetSelectedGameObjects();
+                if (objects.empty()) return;
+                const auto result = Panels::HierarchyUndo::DuplicateGameObjects(m_undoService, objects,
+                    m_editorActions.GetUndoScopeForScene(*objects.front()->GetScene()));
+                if (!result.Succeeded()) NLS_LOG_WARNING("Duplicate selection failed: " + result.message);
+            }));
+        registerCommand(makeCommand("edit.select-all-" + suffix, "Select All GameObjects", "Edit", context,
+            [this, context]
+            {
+                if (context == ShortcutContexts::Hierarchy) m_panelsManager.GetPanelAs<Panels::Hierarchy>("Hierarchy").SelectAll();
+                else m_panelsManager.GetPanelAs<Panels::SceneView>("Scene View").SelectAll();
+            }));
+        registerCommand(makeCommand("edit.frame-selection-" + suffix, "Frame Selected GameObjects", "Edit", context,
+            [this] { m_panelsManager.GetPanelAs<Panels::SceneView>("Scene View").FocusSelection(); }));
+        m_shortcutService.GetRegistry().FindCommand("edit.duplicate-selection-" + suffix)->invoke = [this](const InvocationContext& invocation)
+        {
+            auto objects = m_editorActions.GetSelectedGameObjects();
+            if (invocation.targetInstance)
+            {
+                auto* target = Object::IDToPointer<Engine::GameObject>(invocation.targetInstance);
+                if (!target) return CommandResult::TargetExpired;
+                if (std::find(objects.begin(), objects.end(), target) == objects.end()) objects = {target};
+            }
+            if (objects.empty() || !objects.front()->GetScene()) return CommandResult::TargetExpired;
+            const auto result = Panels::HierarchyUndo::DuplicateGameObjects(m_undoService, objects, m_editorActions.GetUndoScopeForScene(*objects.front()->GetScene()));
+            return result.Succeeded() ? CommandResult::Completed : CommandResult::Failed;
+        };
+        m_shortcutService.GetRegistry().FindCommand("edit.frame-selection-" + suffix)->invoke = [this](const InvocationContext& invocation)
+        {
+            if (invocation.targetInstance)
+            {
+                auto* target = Object::IDToPointer<Engine::GameObject>(invocation.targetInstance);
+                if (!target) return CommandResult::TargetExpired;
+                m_editorActions.MoveToTarget(*target);
+            }
+            else m_panelsManager.GetPanelAs<Panels::SceneView>("Scene View").FocusSelection();
+            return CommandResult::Completed;
+        };
+    }
 }
 
 void Editor::Core::Editor::RestoreStartupScene()
@@ -2337,6 +2582,14 @@ void Editor::Core::Editor::ApplyStartupValidationDirectives()
             CreateValidationOcclusionStack(m_editorActions, *camera, diagnostics.editorValidationOcclusionStackCount);
     }
 
+#if defined(NLS_ENABLE_TEST_HOOKS)
+    if (const auto* source = std::getenv("NLS_SPRITE_EDITOR_VALIDATION_SOURCE"); source && *source)
+    {
+        auto& sprites = m_panelsManager.GetPanelAs<Panels::SpriteEditor>("Sprite Editor");
+        const bool opened = sprites.OpenDocument(source);
+        NLS_LOG_INFO(std::string("Sprite Editor validation open: ") + (opened ? "ready " : "failed ") + source);
+    }
+#endif
     WritePrefabDragProxyValidationSummaryIfRequested(m_context, &sceneView);
 
     if (!diagnostics.editorValidationCreateAsset.empty())
@@ -2415,6 +2668,11 @@ void Editor::Core::Editor::ApplyStartupValidationDirectives()
 
 void Editor::Core::Editor::UpdateCurrentEditorMode(float p_deltaTime)
 {
+    m_editorActions.PumpPlayRequests();
+    auto& game = m_panelsManager.GetPanelAs<Panels::GameView>("Game View");
+    auto input = game.CaptureGameInput();
+    if (m_editorActions.GetPlayModeController().IsActive())
+        NLS::Scripting::ScriptEngineApi::SetGameInputFrame(std::move(input));
     {
         NLS_PROFILE_NAMED_SCOPE("Editor::UpdateModeState");
         if (auto editorMode = m_editorActions.GetCurrentEditorMode(); editorMode == EditorActions::EEditorMode::PLAY || editorMode == EditorActions::EEditorMode::FRAME_BY_FRAME)
@@ -2433,85 +2691,30 @@ void Editor::Core::Editor::UpdateCurrentEditorMode(float p_deltaTime)
 void Editor::Core::Editor::UpdatePlayMode(float p_deltaTime)
 {
     NLS_PROFILE_SCOPE();
-    auto currentScene = m_context.sceneManager.GetCurrentScene();
-	const float unscaledDelta = std::max(0.0f, p_deltaTime);
-	NLS::Scripting::ScriptEngineApi::SetInputManager(m_context.inputManager.get());
-	NLS::Scripting::ScriptEngineApi::SetSceneManager(&m_context.sceneManager);
-	NLS::Scripting::ScriptEngineApi::SetScene(currentScene);
-	const float delta = NLS::Scripting::ScriptEngineApi::ScaleDeltaTime(unscaledDelta);
-	NLS::Scripting::ScriptEngineApi::AdvanceFrame(unscaledDelta);
-	m_scriptUnscaledTime += unscaledDelta;
-	m_scriptTime += delta;
-	++m_scriptFrameIndex;
-
-	{
-		NLS_PROFILE_NAMED_SCOPE("Scene::Update");
-		NLS::Scripting::ScriptFrameContext scriptFrame;
-		scriptFrame.deltaTime = delta;
-		scriptFrame.unscaledDeltaTime = unscaledDelta;
-		scriptFrame.time = m_scriptTime;
-		scriptFrame.unscaledTime = m_scriptUnscaledTime;
-		scriptFrame.frameIndex = m_scriptFrameIndex;
-	scriptFrame.fixedDeltaTime = NLS::Scripting::ScriptEngineApi::GetFixedDeltaTime();
-	scriptFrame.timeScale = NLS::Scripting::ScriptEngineApi::GetTimeScale();
-		m_fixedAccumulator += delta;
-		while (m_fixedAccumulator + 1e-6f >= scriptFrame.fixedDeltaTime)
-		{
-			NLS::Scripting::ScriptFrameContext fixedFrame = scriptFrame;
-			fixedFrame.deltaTime = scriptFrame.fixedDeltaTime * scriptFrame.timeScale;
-			fixedFrame.unscaledDeltaTime = scriptFrame.fixedDeltaTime;
-			fixedFrame.fixedFrameIndex = ++m_scriptFixedFrameIndex;
-			const auto fixedSchedule = m_context.scriptRuntime.BeginScheduledFrame(
-				NLS::Scripting::ScriptCallback::FixedUpdate,
-				fixedFrame);
-			currentScene->FixedUpdate(fixedFrame.deltaTime);
-			if (fixedSchedule.Succeeded())
-			{
-				const auto flushStatus = m_context.scriptRuntime.FlushScheduledFrame();
-				if (!flushStatus.Succeeded())
-					NLS_LOG_WARNING("Script FixedUpdate batch failed: " + flushStatus.message);
-			}
-			m_fixedAccumulator -= scriptFrame.fixedDeltaTime;
-		}
-		const auto updateSchedule = m_context.scriptRuntime.BeginScheduledFrame(
-			NLS::Scripting::ScriptCallback::Update,
-			scriptFrame);
-			currentScene->UpdateGameplay(delta);
-		if (updateSchedule.Succeeded())
-		{
-			const auto flushStatus = m_context.scriptRuntime.FlushScheduledFrame();
-			if (!flushStatus.Succeeded())
-				NLS_LOG_WARNING("Script Update batch failed: " + flushStatus.message);
-		}
-			currentScene->UpdateAnimations(delta);
-	}
-
-	{
-		NLS_PROFILE_NAMED_SCOPE("Scene::LateUpdate");
-		NLS::Scripting::ScriptFrameContext scriptFrame;
-		scriptFrame.deltaTime = delta;
-		scriptFrame.unscaledDeltaTime = unscaledDelta;
-		scriptFrame.time = m_scriptTime;
-		scriptFrame.unscaledTime = m_scriptUnscaledTime;
-		scriptFrame.frameIndex = m_scriptFrameIndex;
-		scriptFrame.fixedDeltaTime = NLS::Scripting::ScriptEngineApi::GetFixedDeltaTime();
-		scriptFrame.timeScale = NLS::Scripting::ScriptEngineApi::GetTimeScale();
-		const auto lateSchedule = m_context.scriptRuntime.BeginScheduledFrame(
-			NLS::Scripting::ScriptCallback::LateUpdate,
-			scriptFrame);
-		currentScene->LateUpdate(delta);
-		if (lateSchedule.Succeeded())
-	{
-			const auto flushStatus = m_context.scriptRuntime.FlushScheduledFrame();
-			if (!flushStatus.Succeeded())
-				NLS_LOG_WARNING("Script LateUpdate batch failed: " + flushStatus.message);
-	}
-	NLS::Scripting::ScriptEngineApi::FlushDeferredDestructions();
-}
-
-
-    if (m_editorActions.GetCurrentEditorMode() == EditorActions::EEditorMode::FRAME_BY_FRAME)
-        m_editorActions.PauseGame();
+    auto& runtime = m_editorActions.GetRuntimePlaySession();
+    const auto& presentation=m_panelsManager.GetPanelAs<Panels::GameView>("Game View").GetPresentation();
+    runtime.ConfigureUI(m_context.projectAssetsPath,std::max(1u,presentation.width),std::max(1u,presentation.height),1,
+        Settings::EditorSettings::GetGameViewSettingsObject().display);
+    runtime.SetMuted(Settings::EditorSettings::GetGameViewSettingsObject().muteAudio);
+    try
+    {
+        if (m_editorActions.GetPlayModeController().GetState() == PlaySessionState::Stepping)
+        {
+            runtime.Step();
+            m_editorActions.GetPlayModeController().CompleteStep();
+        }
+        else runtime.Tick(p_deltaTime);
+    }
+    catch(const std::exception& error)
+    {
+        NLS_LOG_ERROR(std::string("Play session failed: ")+error.what());
+        m_editorActions.StopPlaying();m_editorActions.PumpPlayRequests();
+    }
+    catch(...)
+    {
+        NLS_LOG_ERROR("Play session failed with an unknown host error.");
+        m_editorActions.StopPlaying();m_editorActions.PumpPlayRequests();
+    }
 }
 
 void Editor::Core::Editor::UpdateEditMode(float p_deltaTime)
@@ -2523,6 +2726,10 @@ void Editor::Core::Editor::UpdateEditMode(float p_deltaTime)
 void Editor::Core::Editor::UpdateEditorPanels(float p_deltaTime)
 {
     NLS_PROFILE_SCOPE();
+    m_bakingService.Tick(m_context.sceneManager.GetCurrentScene(),
+        m_editorActions.GetCurrentEditorMode() == EditorActions::EEditorMode::EDIT &&
+        !m_context.sceneManager.IsPlaySandboxActive());
+    m_panelsManager.GetPanelAs<Panels::Console>("Console").UpdateLogState();
     (void)p_deltaTime;
     auto& frameInfo = m_panelsManager.GetPanelAs<NLS::Editor::Panels::FrameInfo>("Frame Info");
     auto& sceneView = m_panelsManager.GetPanelAs<NLS::Editor::Panels::SceneView>("Scene View");
@@ -2620,6 +2827,9 @@ void Editor::Core::Editor::PostUpdate()
         m_context.inputManager->ClearEvents();
     }
     ++m_elapsedFrames;
+    if (m_pluginExtensions) m_pluginExtensions->Sync();
+    if (NLS::Core::ServiceLocator::Contains<NLS::Plugins::PluginManager>())
+        NLS::Core::ServiceLocator::Get<NLS::Plugins::PluginManager>().Pump();
     if (Render::Settings::GetThreadDiagnosticsSettings().dx12LogFrameFlow)
         NLS_LOG_INFO("Editor::PostUpdate: end");
 }

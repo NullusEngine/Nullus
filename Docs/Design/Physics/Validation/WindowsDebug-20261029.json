@@ -1,0 +1,68 @@
+{
+  "schema": 1,
+  "recorded_utc": "2026-10-29T05:17:39.5204953Z",
+  "platform": "Windows",
+  "configuration": "Debug",
+  "physx": "5.6.1",
+  "box2d": "3.2.0",
+  "total_tests": 101.0,
+  "skipped": 0,
+  "failures": 0,
+  "suites": [
+    {
+      "target": "NullusPhysicsTests",
+      "tests": 41,
+      "failures": 0,
+      "errors": 0,
+      "disabled": 0,
+      "skipped": 0,
+      "seconds": 0.088,
+      "log": "build/physics-validation/Debug/NullusPhysicsTests.log",
+      "xml": "build/physics-validation/Debug/NullusPhysicsTests.xml"
+    },
+    {
+      "target": "NullusPhysicsSceneTests",
+      "tests": 25,
+      "failures": 0,
+      "errors": 0,
+      "disabled": 0,
+      "skipped": 0,
+      "seconds": 0.092,
+      "log": "build/physics-validation/Debug/NullusPhysicsSceneTests.log",
+      "xml": "build/physics-validation/Debug/NullusPhysicsSceneTests.xml"
+    },
+    {
+      "target": "NullusPlayModeTests",
+      "tests": 34,
+      "failures": 0,
+      "errors": 0,
+      "disabled": 0,
+      "skipped": 0,
+      "seconds": 19.029,
+      "log": "build/physics-validation/Debug/NullusPlayModeTests.log",
+      "xml": "build/physics-validation/Debug/NullusPlayModeTests.xml"
+    },
+    {
+      "target": "NullusPlayLoopNoUiTests",
+      "tests": 1,
+      "failures": 0,
+      "errors": 0,
+      "disabled": 0,
+      "skipped": 0,
+      "seconds": 0.0,
+      "log": "build/physics-validation/Debug/NullusPlayLoopNoUiTests.log",
+      "xml": "build/physics-validation/Debug/NullusPlayLoopNoUiTests.xml"
+    }
+  ],
+  "scoped_build": "Isolated OutDir, BuildProjectReferences=false, prebuilt dependencies, clean-environment wrapper",
+  "runtime_libraries_sha256": {
+    "NLS_ECSd.dll": "ADDB7D484C196F5ADD3638C5DCC54C70713634E66DD7C18D30C9532361273A43",
+    "NLS_Physicsd.dll": "FF966F14B71521BFF6293BD30E7C72CC0D9A2181B046661CD5E2F1D6E1BC6371",
+    "NLS_Engined.dll": "D8865E7FD40134A0C2FDBA05F27463C523CEF7D4C372E84206D15A2F9463D516",
+    "NLS_Scriptingd.dll": "B40B6B0D39AD268CD58EE4FD962C8189B0A225B8551F1427A8B79E0CEC5173BC"
+  },
+  "editor_interaction": "Not Started",
+  "linux_macos": "Not Started",
+  "cuda": "Not Started",
+  "all_repository_regression": "Not run"
+}

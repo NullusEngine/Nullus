@@ -13,13 +13,16 @@
 #include <Core/ResourceManagement/TextureManager.h>
 #include <Core/ResourceManagement/ShaderManager.h>
 #include <Core/ResourceManagement/MaterialManager.h>
+#include <Core/ResourceManagement/ResourceLifetimeRegistry.h>
 #include <Engine/Assets/RuntimeAssetDatabase.h>
 #include <SceneSystem/SceneManager.h>
 #include "Core/Filesystem/IniFile.h"
 #include "Rendering/Settings/DriverSettings.h"
 #include <optional>
+#include <filesystem>
 #include <Eventing/Event.h>
 #include <Scripting/ScriptRuntime.h>
+#include <Engine/Audio/AudioDevice.h>
 
 namespace NLS::Game
 {
@@ -28,6 +31,15 @@ namespace NLS::Game
 	*/
 	class Context
 	{
+        struct JobSystemLifetime
+        {
+            ~JobSystemLifetime();
+            void Shutdown();
+            bool ownsJobSystem = false;
+        };
+        // Keep the pool alive through all producers and unwind failed startup.
+        JobSystemLifetime m_jobSystemLifetime;
+
 	public:
 		/**
 		* Constructor
@@ -48,12 +60,12 @@ namespace NLS::Game
 		void ShutdownThreadedRendering();
 
 			/**
-			 * Starts the general Jobs pool from the rendering budget.
+			 * Starts the shared compute and background pools before Driver.
 			 *
 			 * The pool must outlive any background artifact work and must be
 			 * drained before the rendering threads unregister, so it is started
-			 * right after the Driver resolves the shared hardware budget and
-			 * shut down ahead of ShutdownThreadedRendering(). Uses
+			 * before Driver creates its TaskGraph. Before the RHI mode is known,
+			 * the budget conservatively reserves a dedicated RHI lane. Uses
 			 * TryInitializeJobSystem so an embedding host that already owns a
 			 * pool keeps it.
 			 */
@@ -70,9 +82,13 @@ namespace NLS::Game
 		std::unique_ptr<Windowing::Inputs::InputManager> inputManager;
 		std::unique_ptr<NLS::Render::Context::Driver> driver;
 
-		// Context-owned scripting state.  It is declared before sceneManager so
+			// Render snapshots retain resource leases until their submitted work retires.
+			NLS::Core::ResourceManagement::ResourceLifetimeRegistry resourceLifetimeRegistry;
+
+			// Context-owned scripting state.  It is declared before sceneManager so
 		// Scene/ScriptComponent destruction runs while the runtime is alive.
-		NLS::Scripting::ScriptRuntime scriptRuntime;
+            std::shared_ptr<NLS::Engine::Audio::AudioDevice> audioDevice = NLS::Engine::Audio::AudioDevice::AcquireHost();
+			NLS::Scripting::ScriptRuntime scriptRuntime;
 		Engine::SceneSystem::SceneManager sceneManager;
 
 		NLS::Core::ResourceManagement::MeshManager meshManager;
@@ -80,6 +96,8 @@ namespace NLS::Game
 		NLS::Core::ResourceManagement::ShaderManager shaderManager;
 		NLS::Core::ResourceManagement::MaterialManager materialManager;
 		std::optional<NLS::Engine::Assets::RuntimeAssetDatabase> runtimeAssetDatabase;
+			std::filesystem::path runtimeContentRoot;
+			bool packagedContent = false;
 
 		NLS::Filesystem::IniFile projectSettings;
 
@@ -89,6 +107,5 @@ namespace NLS::Game
 		std::optional<std::string> m_projectPathOverride;
 		NLS::ListenerID m_sceneLoadListener = NLS::InvalidListenerID;
 		NLS::ListenerID m_sceneComponentAddedListener = NLS::InvalidListenerID;
-			bool m_ownsJobSystem = false;
 	};
 }

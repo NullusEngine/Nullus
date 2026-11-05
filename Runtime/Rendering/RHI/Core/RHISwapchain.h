@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Rendering/RHI/Core/RHICommand.h"
+#include <optional>
 
 namespace NLS::Render::RHI
 {
@@ -29,6 +30,7 @@ namespace NLS::Render::RHI
         // Backend should wait on this semaphore before presenting to ensure UI rendering completes first
         NativeHandle uiSignalSemaphore;
         uint64_t uiSignalValue = 0u;
+        std::optional<bool> vsyncOverride;
     };
 
     enum class RHIQueueOperationStatusCode : uint8_t

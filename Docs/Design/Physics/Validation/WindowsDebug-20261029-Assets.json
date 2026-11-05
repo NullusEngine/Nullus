@@ -1,0 +1,469 @@
+{
+  "recordedUtc": "2026-10-29T12:58:51.9342926Z",
+  "platform": "Windows x64",
+  "configuration": "Debug",
+  "scope": "PhysicsMaterial/CollisionMesh resources, offline cooking/cache, guarded editor import and source-independent runtime loading; full physics delivery remains Partial",
+  "tests": [
+    {
+      "target": "NullusPhysicsTests",
+      "tests": 82,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0,
+      "exitCode": 0,
+      "executable": "D:/Code/Nullus/build/physics-validation/assets/Debug/run/NullusPhysicsTests.exe",
+      "executableSha256": "121BD0728E08415AAC3454F7B2D78E9EBB0540E0401DFACE2B877BCDC7625BA4",
+      "xml": "D:/Code/Nullus/build/physics-validation/assets/Debug/NullusPhysicsTests.xml",
+      "log": "D:/Code/Nullus/build/physics-validation/assets/Debug/NullusPhysicsTests.log",
+      "xmlUtc": "2026-10-29T12:57:35.6486323Z"
+    },
+    {
+      "target": "NullusPhysicsAssetTests",
+      "tests": 11,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0,
+      "exitCode": 0,
+      "executable": "D:/Code/Nullus/build/physics-validation/assets/Debug/run/NullusPhysicsAssetTests.exe",
+      "executableSha256": "547357E7CE55D2594C5249A56DC43F08688FF94D8BA379804191549B92991D1A",
+      "xml": "D:/Code/Nullus/build/physics-validation/assets/Debug/NullusPhysicsAssetTests.xml",
+      "log": "D:/Code/Nullus/build/physics-validation/assets/Debug/NullusPhysicsAssetTests.log",
+      "xmlUtc": "2026-10-29T12:57:37.6609475Z"
+    },
+    {
+      "target": "NullusPhysicsSceneTests",
+      "tests": 62,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0,
+      "exitCode": 0,
+      "executable": "D:/Code/Nullus/build/physics-validation/assets/Debug/run/NullusPhysicsSceneTests.exe",
+      "executableSha256": "A82A7A45067A07F554E26FA293A61225C5C058F10DC7BEF3C5CFD6751BE3725D",
+      "xml": "D:/Code/Nullus/build/physics-validation/assets/Debug/NullusPhysicsSceneTests.xml",
+      "log": "D:/Code/Nullus/build/physics-validation/assets/Debug/NullusPhysicsSceneTests.log",
+      "xmlUtc": "2026-10-29T12:57:38.1437384Z"
+    },
+    {
+      "target": "NullusPlayModeTests",
+      "tests": 40,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0,
+      "exitCode": 0,
+      "executable": "D:/Code/Nullus/build/physics-validation/assets/Debug/run/NullusPlayModeTests.exe",
+      "executableSha256": "98A8302906C914370F5066075280E272A6F6CB1D098D0118759E7640433236CF",
+      "xml": "D:/Code/Nullus/build/physics-validation/assets/Debug/NullusPlayModeTests.xml",
+      "log": "D:/Code/Nullus/build/physics-validation/assets/Debug/NullusPlayModeTests.log",
+      "xmlUtc": "2026-10-29T12:57:59.9390615Z"
+    },
+    {
+      "target": "NullusPlayLoopNoUiTests",
+      "tests": 1,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0,
+      "exitCode": 0,
+      "executable": "D:/Code/Nullus/build/physics-validation/assets/Debug/run/NullusPlayLoopNoUiTests.exe",
+      "executableSha256": "44F11BC602C3EFFB5BAB6470B9EFD1DE0A632F06F0543962F759E914D8D998CF",
+      "xml": "D:/Code/Nullus/build/physics-validation/assets/Debug/NullusPlayLoopNoUiTests.xml",
+      "log": "D:/Code/Nullus/build/physics-validation/assets/Debug/NullusPlayLoopNoUiTests.log",
+      "xmlUtc": "2026-10-29T12:58:00.1203691Z"
+    },
+    {
+      "target": "NullusPhysicsAssetEditorTests",
+      "tests": 4,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0,
+      "exitCode": 0,
+      "executable": "D:/Code/Nullus/build/physics-validation/assets/Debug/run/NullusPhysicsAssetEditorTests.exe",
+      "executableSha256": "36F9646136F639A7D78028B431143BCB447AAFA229D5C4D38ACF833690E8FCCF",
+      "xml": "D:/Code/Nullus/build/physics-validation/assets/Debug/NullusPhysicsAssetEditorTests.xml",
+      "log": "D:/Code/Nullus/build/physics-validation/assets/Debug/NullusPhysicsAssetEditorTests.log",
+      "xmlUtc": "2026-10-29T12:58:02.2008060Z"
+    }
+  ],
+  "totalTests": 200,
+  "failures": 0,
+  "skipped": 0,
+  "modules": [
+    {
+      "name": "NLS_Based.dll",
+      "built": "D:/Code/Nullus/build/physics-validation/assets/Debug/lib/NLS_Based.dll",
+      "loaded": "D:/Code/Nullus/build/physics-validation/assets/Debug/run/NLS_Based.dll",
+      "sha256": "3CB128F03BF767EA9632E5AE34DB036D8E48716B7F1BD137C8291A656FCFD805",
+      "matchesBuilt": true,
+      "builtUtc": "2026-10-29T11:48:48.6723336Z"
+    },
+    {
+      "name": "NLS_Cored.dll",
+      "built": "D:/Code/Nullus/build/physics-validation/assets/Debug/lib/NLS_Cored.dll",
+      "loaded": "D:/Code/Nullus/build/physics-validation/assets/Debug/run/NLS_Cored.dll",
+      "sha256": "9B2CE00950464140309D154C7962EA7E42175F230BFCC9E081D26CEE884EA817",
+      "matchesBuilt": true,
+      "builtUtc": "2026-10-29T11:48:57.2464864Z"
+    },
+    {
+      "name": "NLS_Physicsd.dll",
+      "built": "D:/Code/Nullus/build/physics-validation/assets/Debug/lib/NLS_Physicsd.dll",
+      "loaded": "D:/Code/Nullus/build/physics-validation/assets/Debug/run/NLS_Physicsd.dll",
+      "sha256": "F0FB72511F1CCE457C45D773788E87ACCB79631F833B1D1AB463DA222DB68D42",
+      "matchesBuilt": true,
+      "builtUtc": "2026-10-29T12:07:22.5298679Z"
+    },
+    {
+      "name": "NLS_ECSd.dll",
+      "built": "D:/Code/Nullus/build/physics-validation/assets/Debug/lib/NLS_ECSd.dll",
+      "loaded": "D:/Code/Nullus/build/physics-validation/assets/Debug/run/NLS_ECSd.dll",
+      "sha256": "C64EF2063982D6D518AAC8439C73B52465741C3AB5B67E1184620F5147C54E3E",
+      "matchesBuilt": true,
+      "builtUtc": "2026-10-29T11:54:15.1768977Z"
+    },
+    {
+      "name": "NLS_Engined.dll",
+      "built": "D:/Code/Nullus/build/physics-validation/assets/Debug/lib/NLS_Engined.dll",
+      "loaded": "D:/Code/Nullus/build/physics-validation/assets/Debug/run/NLS_Engined.dll",
+      "sha256": "E28D411EF608E480F7FDF61B7598EF2BE657208975FAD1355A1B699A3FB9D40C",
+      "matchesBuilt": true,
+      "builtUtc": "2026-10-29T12:51:29.3422201Z"
+    },
+    {
+      "name": "NLS_Scriptingd.dll",
+      "built": "D:/Code/Nullus/build/physics-validation/assets/Debug/lib/NLS_Scriptingd.dll",
+      "loaded": "D:/Code/Nullus/build/physics-validation/assets/Debug/run/NLS_Scriptingd.dll",
+      "sha256": "7635E1F0F2B8FFC8CA64B711711B83502AE8288FE0C82597F4FEE515FAD88E5E",
+      "matchesBuilt": true,
+      "builtUtc": "2026-10-29T11:59:30.6892599Z"
+    },
+    {
+      "name": "NLS_Cookd.dll",
+      "built": "D:/Code/Nullus/build/physics-validation/assets/Debug/lib/NLS_Cookd.dll",
+      "loaded": "D:/Code/Nullus/build/physics-validation/assets/Debug/run/NLS_Cookd.dll",
+      "sha256": "340EC14F5CA17F713E96DEFEE2F22DE342A94F25018FDA888A2E621615F0A6A8",
+      "matchesBuilt": true,
+      "builtUtc": "2026-10-29T12:09:38.2189963Z"
+    }
+  ],
+  "sourceSnapshot": [
+    {
+      "path": "Runtime/Physics/CollisionMesh.h",
+      "module": "NLS_Physicsd.dll",
+      "sha256": "C8437D50FE233AD6957ECD8431A0EFA89F06DD5343444945CB97AC56CE52B7DB"
+    },
+    {
+      "path": "Runtime/Physics/PhysicsWorld.h",
+      "module": "NLS_Physicsd.dll",
+      "sha256": "A90E06A0F7A628171EC0CB5627B2FCDC3E53A84B76C7BD8EFF5541ACCFFF35EB"
+    },
+    {
+      "path": "Runtime/Physics/PhysicsWorld.cpp",
+      "module": "NLS_Physicsd.dll",
+      "sha256": "656AC651B36B5CE5A5B4A681F27C5A6E10609545F4CE74E83E1BD6A4CD6A5FEE"
+    },
+    {
+      "path": "Runtime/Physics/PhysicsCommandBuffer.h",
+      "module": "NLS_Physicsd.dll",
+      "sha256": "72E92CDC41CABFC58C936EFDFAA6ECD4496069A10DBA7860B8E78B91B063E2A0"
+    },
+    {
+      "path": "Runtime/Physics/PhysicsCommandBuffer.cpp",
+      "module": "NLS_Physicsd.dll",
+      "sha256": "F220E3883E943CC715448E0FB34807DCC285FF78C706E51716BEB5B8D0BD3CA5"
+    },
+    {
+      "path": "Runtime/Core/Assets/ArtifactManifest.h",
+      "module": "NLS_Cored.dll",
+      "sha256": "687E811738227171248C27733D54AAF1FDF77AB9D2C2D940137630DB5BC13B90"
+    },
+    {
+      "path": "Runtime/Core/Assets/AssetMeta.h",
+      "module": "NLS_Cored.dll",
+      "sha256": "3C928A88B516198F7B2C1514D214B61BA50A4ABE488779FDFD20D35EE787DD0D"
+    },
+    {
+      "path": "Runtime/Core/Assets/AssetMeta.cpp",
+      "module": "NLS_Cored.dll",
+      "sha256": "22BF21AE425DDE6A368E468CC651C18AA9043BB04AB09F88EFFC48CB1AC32371"
+    },
+    {
+      "path": "Runtime/Core/Assets/NativeArtifactContainer.cpp",
+      "module": "NLS_Cored.dll",
+      "sha256": "2688F56D3BB1958EC2C8CBA3D2A5AF4BA9D899F0689054C8742AF0DA91349604"
+    },
+    {
+      "path": "Runtime/Core/Assets/ArtifactWriter.cpp",
+      "module": "NLS_Cored.dll",
+      "sha256": "50847B2BBCBEA88AE134505309BB9B7241FE30F5D5911F6650F9A1F098BF1121"
+    },
+    {
+      "path": "Runtime/Core/Assets/AssetVersion.cpp",
+      "module": "NLS_Cored.dll",
+      "sha256": "BD10D1E6FE5BDB3384653416F6321B68D07344014A76970096D44CAA9A96432B"
+    },
+    {
+      "path": "Runtime/Engine/Assets/PhysicsMaterial.h",
+      "module": "NLS_Engined.dll",
+      "sha256": "B2715DFA5429E48CF5186FA70039C7C8235EA6BFDF7F9ADDE22829A8AD8A0F76"
+    },
+    {
+      "path": "Runtime/Engine/Assets/CollisionMeshAsset.h",
+      "module": "NLS_Engined.dll",
+      "sha256": "F8C2C2920B8793DCDB5D24543C1DB3DEB35A653C4369F662B9AAE7811C127579"
+    },
+    {
+      "path": "Runtime/Engine/Assets/PhysicsAssetCompiler.h",
+      "module": "NLS_Engined.dll",
+      "sha256": "DF1002960FD88AE44171FE1C585D1B55B61622FA6B15EED765FEEEFDD29CC760"
+    },
+    {
+      "path": "Runtime/Engine/Assets/PhysicsAssetCompiler.cpp",
+      "module": "NLS_Engined.dll",
+      "sha256": "B046DDC33DDA5DDC9F928005A17A0B1D78C37479B1965C6EF7C10AF7BE504410"
+    },
+    {
+      "path": "Runtime/Engine/Assets/PhysicsAssets.cpp",
+      "module": "NLS_Engined.dll",
+      "sha256": "C1243044C5FB752E256610F89D0BC3958044D0ED82AD7D8251654CD9DD88D347"
+    },
+    {
+      "path": "Runtime/Engine/Assets/PhysicsAssetReadScope.h",
+      "module": "NLS_Engined.dll",
+      "sha256": "A79D9E905A2C5EACFC18EB5C97C4E8C0B4AD7653A31A1932625B4692FEAAB6B3"
+    },
+    {
+      "path": "Runtime/Engine/Components/PhysicsColliderComponent.h",
+      "module": "NLS_Engined.dll",
+      "sha256": "E701DCF94319B07E33618A0BA771ED5B3F866358BF8EE44DABCA5F236EE15AE8"
+    },
+    {
+      "path": "Runtime/Engine/Components/PhysicsColliderComponent.cpp",
+      "module": "NLS_Engined.dll",
+      "sha256": "3CA96C77B5C7CDD5E8F2D2561FBC400F005B8D636FAE0AFB6A69BD5AFCE4F837"
+    },
+    {
+      "path": "Runtime/Engine/Components/PhysicsCollider2DComponent.h",
+      "module": "NLS_Engined.dll",
+      "sha256": "DA5A335167D15FCE80D4CD88C1165CCC09D541E0B13733E59789A9617A49F622"
+    },
+    {
+      "path": "Runtime/Engine/Components/PhysicsCollider2DComponent.cpp",
+      "module": "NLS_Engined.dll",
+      "sha256": "E2228B1DD525CF773B46A8B6974CA3546ED39B37E0B452185FE580B2881D8AC5"
+    },
+    {
+      "path": "Runtime/Engine/Serialize/PPtrResourceTypes.h",
+      "module": "NLS_Engined.dll",
+      "sha256": "9F535AF7A6F2DB1E9E0697C50A8021A9EEE3F10BDD8777DF10A02B489063450D"
+    },
+    {
+      "path": "Runtime/Engine/SceneSystem/Scene.cpp",
+      "module": "NLS_Engined.dll",
+      "sha256": "457C5CB6D2207A01089A7CB51C45A35D20457CACA83377BB2B37D4EE62030F8A"
+    },
+    {
+      "path": "Runtime/Cook/AssetCooker.cpp",
+      "module": "NLS_Cookd.dll",
+      "sha256": "351421784915451F0CBE20F4BE6D0E6CA4E6F32A7E0E83A48EA36D2915837521"
+    },
+    {
+      "path": "Project/Editor/Assets/AssetDatabaseFacade.cpp",
+      "module": "EditorProjectd.lib",
+      "sha256": "F6DFF2B888513FD31AE81A97572EBCADC668FF2497F3125ADC30B4BEB2DED645"
+    }
+  ],
+  "testSourceSnapshot": [
+    {
+      "path": "Tests/Unit/PhysicsCookingTests.cpp",
+      "target": "NullusPhysicsTests",
+      "sha256": "4358F15141556187AC09B67BFE15DFEE16A8A0A24D81B06E81458B8E06B954B6"
+    },
+    {
+      "path": "Tests/Unit/PhysicsAssetTests.cpp",
+      "target": "NullusPhysicsAssetTests",
+      "sha256": "50B1C7DC1EFB2A0F59271D8BD50F5BA086297C35E0958ED659703BE87490687C"
+    },
+    {
+      "path": "Tests/Unit/PhysicsAssetEditorTests.cpp",
+      "target": "NullusPhysicsAssetEditorTests",
+      "sha256": "E4A72F5E44C73AA183600CBE7ED6BBD9A992121577BB7291EEC82AE1697C78A7"
+    }
+  ],
+  "reusedNativeDependencies": [
+    {
+      "name": "assimp-vc143-mtd.dll",
+      "path": "D:\\Code\\Nullus\\build\\physics-validation\\assets\\Debug\\run\\assimp-vc143-mtd.dll",
+      "sha256": "AAE25CCEDE833787AE386C4FCE3DE70BFC9DFF56E127BBD78CA494F289F25D94"
+    },
+    {
+      "name": "glfw3d.dll",
+      "path": "D:\\Code\\Nullus\\build\\physics-validation\\assets\\Debug\\run\\glfw3d.dll",
+      "sha256": "240078F75E450CDD7704309E462FDAE02E56F9AB1ADCF17EFDA800A9A7F7B32D"
+    },
+    {
+      "name": "ImGuid.dll",
+      "path": "D:\\Code\\Nullus\\build\\physics-validation\\assets\\Debug\\run\\ImGuid.dll",
+      "sha256": "7D107A490FA7FBD2337915567590F76AE4F3BE6BDBC69B2212E7DE16CC54C61C"
+    },
+    {
+      "name": "NLS_AnimationCompilerd.dll",
+      "path": "D:\\Code\\Nullus\\build\\physics-validation\\assets\\Debug\\run\\NLS_AnimationCompilerd.dll",
+      "sha256": "62C5902AB018BB9A20962BD6670CC3000FC5BABE4BAF1680AD604F4BFC8270C1"
+    },
+    {
+      "name": "NLS_Animationd.dll",
+      "path": "D:\\Code\\Nullus\\build\\physics-validation\\assets\\Debug\\run\\NLS_Animationd.dll",
+      "sha256": "D4615ABCBC3E698D0410BF32431207A545C36333025D37ACD88F86A8EA2B3DA0"
+    },
+    {
+      "name": "NLS_Buildd.dll",
+      "path": "D:\\Code\\Nullus\\build\\physics-validation\\assets\\Debug\\run\\NLS_Buildd.dll",
+      "sha256": "C994BDE4A9A0570058AAD32A88D0279F923EBAC81D0C357BEDED55C19D72731E"
+    },
+    {
+      "name": "NLS_Inputd.dll",
+      "path": "D:\\Code\\Nullus\\build\\physics-validation\\assets\\Debug\\run\\NLS_Inputd.dll",
+      "sha256": "DE996D9BCE0DCA6194300A9884B3B7685BED3EBDB2FA9E4401BCB56B6C1C1B4F"
+    },
+    {
+      "name": "NLS_Mathd.dll",
+      "path": "D:\\Code\\Nullus\\build\\physics-validation\\assets\\Debug\\run\\NLS_Mathd.dll",
+      "sha256": "ADD0148A62CE0897C3B88B5128BF53DECC5807D3375B250649F406C0F56BE3EA"
+    },
+    {
+      "name": "NLS_Packagesd.dll",
+      "path": "D:\\Code\\Nullus\\build\\physics-validation\\assets\\Debug\\run\\NLS_Packagesd.dll",
+      "sha256": "DA052B2DF90FD20E963C77A68D602CFE0EB49E913434602ECCB52C2FE930B4A8"
+    },
+    {
+      "name": "NLS_Platformd.dll",
+      "path": "D:\\Code\\Nullus\\build\\physics-validation\\assets\\Debug\\run\\NLS_Platformd.dll",
+      "sha256": "DFC22AC3FC960018F7651F3F28B1EEDE35A06F28AEC9A5B51102BA2F361FB2CE"
+    },
+    {
+      "name": "NLS_Pluginsd.dll",
+      "path": "D:\\Code\\Nullus\\build\\physics-validation\\assets\\Debug\\run\\NLS_Pluginsd.dll",
+      "sha256": "689A6161F72B02279EDDD70FA075EDE4C110082E1A31CDDCC17C866B5E16B804"
+    },
+    {
+      "name": "NLS_Renderd.dll",
+      "path": "D:\\Code\\Nullus\\build\\physics-validation\\assets\\Debug\\run\\NLS_Renderd.dll",
+      "sha256": "42D377E1033D6CD8515E38BF27D17F1E14FF9A34FDD7F0DD10E9B6EC54906DD4"
+    },
+    {
+      "name": "NLS_UId.dll",
+      "path": "D:\\Code\\Nullus\\build\\physics-validation\\assets\\Debug\\run\\NLS_UId.dll",
+      "sha256": "D16EFC78FC5F08633B45F4A69A83DC84F9799F236A33A71E05BA9C3AB32E6E06"
+    },
+    {
+      "name": "NLS_VFXCompilerd.dll",
+      "path": "D:\\Code\\Nullus\\build\\physics-validation\\assets\\Debug\\run\\NLS_VFXCompilerd.dll",
+      "sha256": "3D55AD3F00A105D926AC8A03443799C98FE88BB01D06D7CC3096820E317576D4"
+    },
+    {
+      "name": "NLS_VFXd.dll",
+      "path": "D:\\Code\\Nullus\\build\\physics-validation\\assets\\Debug\\run\\NLS_VFXd.dll",
+      "sha256": "E712FACB7BACD19A55F73D81ADA9472B1AF9911F5A98B14A5ED95E65D1AF18AB"
+    }
+  ],
+  "managedFixtureSnapshot": [
+    {
+      "path": "Library/ScriptApi/ScriptApi.json",
+      "sha256": "3A2629F3F4AB5134A408CFBD39B7A8ECF738A5330508B5635D36F9497200F8AE"
+    },
+    {
+      "path": "build/play-tests-managed/Debug/Nullus.Managed.dll",
+      "sha256": "A40DFE4604BD780398C30B2C662655AC2F35C156BEEC56281C46A212BA5D9A86"
+    },
+    {
+      "path": "build/play-tests-managed/Debug/EngineScripts.dll",
+      "sha256": "FCE215D8632F09F406C7B21CAF6E7DB2E95EBA91CBD7980B4B0B3D89DCE876CF"
+    },
+    {
+      "path": "build/play-tests-managed/Debug/GameScripts.dll",
+      "sha256": "87C4B3FC83D1DB9BC8E749E1A77E66C87B146CE2B7EA52FCF8B34740A9CEFB63"
+    },
+    {
+      "path": "build/play-tests-managed/Debug/GameScripts.runtimeconfig.json",
+      "sha256": "162D81F468BEC570EC15E527433F4DE5D5729FFE338AB79B22671F38760D34BD"
+    }
+  ],
+  "editorLibrary": {
+    "path": "D:/Code/Nullus/build/physics-validation/assets/Debug/run/EditorProjectd.lib",
+    "sha256": "2939BDB0F641E8930E3563F13A9068F9763D9DEC9B7D39D994D82001CC26EB19",
+    "responseFile": "D:/Code/Nullus/build/physics-validation/assets/PrivateEditorLink.rsp",
+    "responseSha256": "8E85A4310002A98CBE2578BF0AD96665F2D16F6D8DEF2438AA06DCC75574AB9D",
+    "linkExitCode": 0,
+    "note": "Compiled editor-test objects linked directly with the verified private archive and generated normal dependencies; shared archive was preserved"
+  },
+  "validated": [
+    "Actual convex, triangle and heightfield cooked streams, runtime loading without cooking and sharing across six independent worlds",
+    "Mirrored triangle front faces/source remapping; baked heightfield supports a falling rigid body at the expected height",
+    "Invalid/degenerate/oversized/numeric source data and corrupt cooked streams rejected; unsupported heightfield scales reject before SDK geometry calls",
+    "PhysX average/minimum/maximum combine modes change measured rebound; one material drives real 2D and 3D rebound",
+    "GUID/meta identity, existing native artifact containers/ArtifactDB and RuntimeManifestBuilder rather than a separate physics database",
+    "Cold/warm cache and invalidation for bake scale, meta revision, backend fingerprint and target; foreign native OS/CPU requests rejected",
+    "Full artifact SHA-256, type/schema/GUID/fileID/runtime-target validation and retained snapshots on invalid reload",
+    "Resource caching respects full persistent reference identity including file type; existing references remain independent",
+    "One authoring database snapshot per read scope; new committed revision visible after scope exit",
+    "Typed PPtr scene text round trip, cloned scene resources and independent runtime body handles",
+    "Runtime manifest loads and simulates cooked collision after deleting sources/meta and moving ArtifactDB out of use",
+    "Real editor import/reopen, invalid reimport, source/meta edits during compile/final-write progress and cancellation preserve previous artifacts",
+    "Existing native, scene, particles, Lua/C#, Play/Stop/Step, lifecycle and TimeScale-zero regressions"
+  ],
+  "build": {
+    "native": "Base/Core/Physics/ECS/Engine/Scripting/Cook compiled and linked into isolated output; private DLL hashes match test-directory copies",
+    "reflection": "Repository MetaParser completed NLS_Engine, 33 types; generated files were not hand-edited",
+    "editor": "EditorProject static library built; final test link explicitly selects that archive via the recorded response file",
+    "tests": "Six test executables compiled/linked; actual process exits and fresh XML checked; no post-build deployment",
+    "managed": "Only the Play fixture assemblies were refreshed against the current generated API",
+    "configuration": "Temporary local override attempts are not required by repository targets; shared build returned to normal configuration",
+    "logs": [
+      "build/physics-validation/assets-core-build.log",
+      "build/physics-validation/assets-native-final-build.log",
+      "build/physics-validation/assets-metaparser.log",
+      "build/physics-validation/assets-runtime-retry.log",
+      "build/physics-validation/assets-runtime-final-build.log",
+      "build/physics-validation/assets-loader-final-build.log",
+      "build/physics-validation/assets-resource-identity-build.log",
+      "build/physics-validation/assets-tests-build.log",
+      "build/physics-validation/assets-identity-tests-build.log",
+      "build/physics-validation/assets-editor-build.log",
+      "build/physics-validation/assets-editor-direct-link.log",
+      "build/physics-validation/assets-managed-fixture-build.log",
+      "build/physics-validation/assets-configure-restored.log"
+    ]
+  },
+  "correctedFailures": [
+    "Initial Engine compilation preceded completed reflection generation and omitted ObjectGraphDocument.h for stable fileID declarations; regenerated/include-corrected build passed",
+    "New common test harness required NLS_ROOT_DIR; target definition corrected",
+    "Initial editor tests selected an older default-output archive and failed two publication gates; local build-hook attempts were not accepted as validation",
+    "Final direct response-file link records the private editor archive explicitly; all four actual import/publication tests passed"
+  ],
+  "documentation": {
+    "command": "python Tools/Docs/nullus_docs.py check",
+    "exitCode": 1,
+    "log": "build/physics-validation/assets-docs-check.log",
+    "reportedErrors": [
+      "[error] Docs/zh-CN/architecture/jobs-threading.md:3: markdown file is not part of the navigation manifest: Docs/TaskSystemUnification.md",
+      "[error] Docs/en/architecture/jobs-threading.md:3: markdown file is not part of the navigation manifest: Docs/TaskSystemUnification.md",
+      "[error] Docs\\zh-CN\\2DGettingStarted.md: markdown file is not declared in the navigation manifest",
+      "[error] Docs\\zh-CN\\PluginDevelopment.md: markdown file is not declared in the navigation manifest"
+    ],
+    "physicsPageErrorsReported": 0,
+    "note": "Full check remains failed on four unrelated navigation errors; those concurrent pages were preserved"
+  },
+  "diffCheckExitCode": 0,
+  "unverified": [
+    "Full Editor/Player executables and complete Player Cook",
+    "Visible Inspector/import/drag-drop/Undo/Debugger interaction",
+    "Dedicated Shape and advanced physics resources/UI",
+    "Complete background editor job workflows",
+    "Complete C#/Lua physics facade parity",
+    "Release/long stress benchmarks",
+    "GPU pixels",
+    "Linux/macOS CI",
+    "CUDA hardware",
+    "Completion of the remaining physics plan"
+  ],
+  "workspace": "Unrelated dirty work and running processes preserved. Validation DLLs and the editor archive used private output; no running Editor/runtime binary was replaced. No staging or commits."
+}

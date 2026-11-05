@@ -81,6 +81,10 @@ void InspectorTargetSet::Normalize()
             normalized.push_back(target);
     }
     targets = std::move(normalized);
+    if (targets.empty())
+        activeTarget.reset();
+    else if (!activeTarget || !Contains(*activeTarget))
+        activeTarget = targets.back();
 }
 
 std::vector<InspectorTargetHandle> GetPropertyNodeTargets(const PropertyNode& node)
@@ -114,7 +118,10 @@ void SetPropertyNodeTargets(
 
 bool InspectorTargetSet::operator==(const InspectorTargetSet& other) const
 {
-    return targets == other.targets;
+    if (targets != other.targets) return false;
+    const auto* active = Active();
+    const auto* otherActive = other.Active();
+    return active && otherActive ? *active == *otherActive : active == otherActive;
 }
 
 PropertyPath PropertyPath::Field(const std::string_view name) const

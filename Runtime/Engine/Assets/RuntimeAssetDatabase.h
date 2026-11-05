@@ -154,8 +154,8 @@ private:
 };
 
 NLS_ENGINE_API bool IsRuntimePackagedAssetPath(const std::string& path);
-// Editor manifests may include native texture artifacts for their host. Packaged
-// platform targets and other artifact types require an exact platform match.
+// Editor manifests may include host texture artifacts or portable encoded audio.
+// Other artifact types require an exact platform match.
 NLS_ENGINE_API bool IsRuntimeAssetPlatformCompatible(Core::Assets::ArtifactType type, const std::string& platform, const std::string& target);
 NLS_ENGINE_API bool IsRuntimeAssetApiAvailable(const std::string& apiName);
 }

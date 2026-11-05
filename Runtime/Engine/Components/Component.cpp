@@ -19,10 +19,10 @@ void Component::DestroyFromOwner()
         return;
     }
 
-    if (m_owner && m_owner->IsActive() && m_enabled)
-        OnDisable();
+    if (!m_runtimeDestroyed && m_owner && m_owner->IsActive() && m_enabled)
+        RuntimeDisable();
 
-    OnDestroy();
+    RuntimeDestroy();
     m_destroyedFromOwner = true;
     m_owner = nullptr;
 }
@@ -42,9 +42,44 @@ void Component::SetEnabled(bool enabled)
     m_enabled = enabled;
     const bool isActive = IsActiveAndEnabled();
     if (wasActive && !isActive)
-        OnDisable();
+    {
+        if (m_runtimeAwake) RuntimeDisable(); else OnDisable();
+    }
     else if (!wasActive && isActive)
-        OnEnable();
+    {
+        if (m_runtimeAwake) RuntimeEnable(); else OnEnable();
+    }
+}
+
+void Component::RuntimeAwake()
+{
+    if (m_runtimeAwake || m_runtimeDestroyed) return;
+    m_runtimeAwake = true;
+    OnAwake();
+}
+void Component::RuntimeEnable()
+{
+    if (!m_runtimeAwake || m_runtimeDestroyed || m_runtimeEnabled || !IsActiveAndEnabled()) return;
+    m_runtimeEnabled = true;
+    OnEnable();
+}
+void Component::RuntimeStart()
+{
+    if (!m_runtimeEnabled || m_runtimeStarted || m_runtimeDestroyed || !IsActiveAndEnabled()) return;
+    m_runtimeStarted = true;
+    OnStart();
+}
+void Component::RuntimeDisable()
+{
+    if (!m_runtimeEnabled || m_runtimeDestroyed) return;
+    m_runtimeEnabled = false;
+    OnDisable();
+}
+void Component::RuntimeDestroy()
+{
+    if (m_runtimeDestroyed) return;
+    m_runtimeDestroyed = true;
+    OnDestroy();
 }
 
 bool Component::IsActiveAndEnabled() const

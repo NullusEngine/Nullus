@@ -1,6 +1,7 @@
 #pragma once
 
 #include "ScriptTypes.h"
+#include "GameInputFrame.h"
 
 #include <string>
 
@@ -22,6 +23,24 @@ namespace NLS::Scripting
 class NLS_SCRIPTING_API ScriptEngineApi final
 {
 public:
+    static void ResetPlayState(uint64_t sessionId);
+    static uint64_t GetPlaySessionId();
+    static void StopAcceptingPlayRequests();
+    static bool IsAcceptingPlayRequests();
+    static NativeObjectHandle GetEventOther();
+    static bool GetEventBoolean();
+    static void SetPlayEvent(NativeObjectHandle other, bool value = false);
+    static const ScriptFrameContext& GetFrameContext();
+    static void SetFrameContext(const ScriptFrameContext& frame);
+    static void SetScreenSize(uint32_t width,uint32_t height);
+    static uint32_t GetScreenWidth();
+    static uint32_t GetScreenHeight();
+    static void SetGameInputFrame(GameInputFrame frame);
+    static const GameInputFrame* GetGameInputFrame();
+    static bool ReadKey(int key, int transition = 0);
+    static bool ReadMouseButton(int button, int transition = 0);
+    static Maths::Vector2 ReadMousePosition();
+    static Maths::Vector2 ReadMouseScroll();
     static void SetScene(NLS::Engine::SceneSystem::Scene* scene);
     static NLS::Engine::SceneSystem::Scene* GetScene();
     static void SetSceneManager(NLS::Engine::SceneSystem::SceneManager* sceneManager);

@@ -1,21 +1,22 @@
 #include <gtest/gtest.h>
 
 #include "Shortcuts/EditorShortcutRegistry.h"
-#include "Shortcuts/EditorShortcutResolver.h"
-#include "Shortcuts/EditorShortcutService.h"
+#include "EditorInputTestSupport.h"
+using NLS::Tests::TestEditorShortcutService;
+using NLS::Tests::TestShortcutCommand;
 
 using namespace NLS::Editor::Shortcuts;
 using namespace NLS::Windowing::Inputs;
 
 namespace
 {
-ShortcutCommand MakeCommand(
+TestShortcutCommand MakeCommand(
     std::string id,
     ShortcutContextId context,
     ShortcutBinding binding,
     int& callCount)
 {
-    ShortcutCommand command;
+    TestShortcutCommand command;
     command.id = std::move(id);
     command.displayName = command.id;
     command.category = "Test";
@@ -46,7 +47,7 @@ TEST(EditorShortcutResolutionTests, RejectsDuplicateCommandIds)
 
 TEST(EditorShortcutResolutionTests, ExecutesOnlyTopPriorityActiveContextCommand)
 {
-    EditorShortcutService service;
+    TestEditorShortcutService service;
     bool sceneActive = true;
     bool hierarchyActive = false;
     int globalCalls = 0;
@@ -59,7 +60,7 @@ TEST(EditorShortcutResolutionTests, ExecutesOnlyTopPriorityActiveContextCommand)
     service.RegisterCommand(MakeCommand("scene.frame-selected", ShortcutContexts::SceneView, ShortcutBinding::FromKey(EKey::KEY_F), sceneCalls));
     service.RegisterCommand(MakeCommand("hierarchy.frame-selected", ShortcutContexts::Hierarchy, ShortcutBinding::FromKey(EKey::KEY_F), hierarchyCalls));
 
-    EXPECT_TRUE(service.ExecuteShortcut(ShortcutBinding::FromKey(EKey::KEY_F)));
+    service.Press(ShortcutBinding::FromKey(EKey::KEY_F));
 
     EXPECT_EQ(globalCalls, 0);
     EXPECT_EQ(sceneCalls, 1);
@@ -68,7 +69,7 @@ TEST(EditorShortcutResolutionTests, ExecutesOnlyTopPriorityActiveContextCommand)
 
 TEST(EditorShortcutResolutionTests, SuppressesNormalShortcutsDuringTextInput)
 {
-    EditorShortcutService service;
+    TestEditorShortcutService service;
     bool textInputActive = true;
     int blockedCalls = 0;
     int allowedCalls = 0;
@@ -90,8 +91,9 @@ TEST(EditorShortcutResolutionTests, SuppressesNormalShortcutsDuringTextInput)
     allowed.allowDuringTextInput = true;
     service.RegisterCommand(allowed);
 
-    EXPECT_FALSE(service.ExecuteShortcut(ShortcutBinding::FromKey(EKey::KEY_S, EShortcutModifier::Ctrl)));
-    EXPECT_TRUE(service.ExecuteShortcut(ShortcutBinding::FromKey(EKey::KEY_F11)));
+    EditorInputRoute route; route.textEditing = textInputActive;
+    service.Press(ShortcutBinding::FromKey(EKey::KEY_S, EShortcutModifier::Ctrl), route);
+    service.Press(ShortcutBinding::FromKey(EKey::KEY_F11), route);
 
     EXPECT_EQ(blockedCalls, 0);
     EXPECT_EQ(allowedCalls, 1);
@@ -99,7 +101,7 @@ TEST(EditorShortcutResolutionTests, SuppressesNormalShortcutsDuringTextInput)
 
 TEST(EditorShortcutResolutionTests, ExecutesLogicalPrimaryWithThePlatformPrimaryKey)
 {
-    EditorShortcutService service;
+    TestEditorShortcutService service;
     int callCount = 0;
     service.RegisterCommand(MakeCommand(
         "edit.undo",
@@ -108,13 +110,13 @@ TEST(EditorShortcutResolutionTests, ExecutesLogicalPrimaryWithThePlatformPrimary
         callCount));
 
     const auto primaryModifier = GetPrimaryModifierForCurrentPlatform();
-    EXPECT_TRUE(service.ExecuteShortcut(ShortcutBinding::FromKey(EKey::KEY_Z, primaryModifier)));
+    service.Press(ShortcutBinding::FromKey(EKey::KEY_Z, primaryModifier));
     EXPECT_EQ(callCount, 1);
 }
 
 TEST(EditorShortcutResolutionTests, ReadsLogicalPrimaryFromThePlatformKeyState)
 {
-    EditorShortcutService service;
+    TestEditorShortcutService service;
     int callCount = 0;
     service.RegisterCommand(MakeCommand(
         "edit.undo",
@@ -122,26 +124,17 @@ TEST(EditorShortcutResolutionTests, ReadsLogicalPrimaryFromThePlatformKeyState)
         ShortcutBinding::FromKey(EKey::KEY_Z, EShortcutModifier::Primary),
         callCount));
 
-    const auto primaryModifier = GetPrimaryModifierForCurrentPlatform();
-    const auto isPrimaryKey = [primaryModifier](const EKey p_key)
-    {
-        if (primaryModifier == EShortcutModifier::Ctrl)
-            return p_key == EKey::KEY_LEFT_CONTROL || p_key == EKey::KEY_RIGHT_CONTROL;
-        return p_key == EKey::KEY_LEFT_SUPER || p_key == EKey::KEY_RIGHT_SUPER;
-    };
-
-    EXPECT_TRUE(service.ExecutePressedShortcut(
-        [](const EKey p_key) { return p_key == EKey::KEY_Z; },
-        [&isPrimaryKey](const EKey p_key)
-        {
-            return isPrimaryKey(p_key) ? EKeyState::KEY_DOWN : EKeyState::KEY_UP;
-        }));
+    const bool super = GetPrimaryModifierForCurrentPlatform() == EShortcutModifier::Super;
+    const uint32_t mask = (super ? 8u : 2u);
+    service.Key(super ? 343 : 341, true, mask);
+    service.Key(90, true, mask); service.Key(90, false, mask);
+    service.UpdateInput({});
     EXPECT_EQ(callCount, 1);
 }
 
 TEST(EditorShortcutResolutionTests, ExecutesAlternateBinding)
 {
-    EditorShortcutService service;
+    TestEditorShortcutService service;
     int callCount = 0;
     auto command = MakeCommand(
         "edit.redo",
@@ -152,16 +145,16 @@ TEST(EditorShortcutResolutionTests, ExecutesAlternateBinding)
         ShortcutBinding::FromKey(EKey::KEY_Z, EShortcutModifier::Primary | EShortcutModifier::Shift));
     service.RegisterCommand(std::move(command));
 
-    EXPECT_TRUE(service.ExecuteShortcut(
+    service.Press(
         ShortcutBinding::FromKey(
             EKey::KEY_Z,
-            EShortcutModifier::Primary | EShortcutModifier::Shift)));
+            EShortcutModifier::Primary | EShortcutModifier::Shift));
     EXPECT_EQ(callCount, 1);
 }
 
 TEST(EditorShortcutResolutionTests, ExecutesAlternateBindingFromPressedKeyState)
 {
-    EditorShortcutService service;
+    TestEditorShortcutService service;
     int callCount = 0;
     auto command = MakeCommand(
         "edit.redo",
@@ -172,31 +165,18 @@ TEST(EditorShortcutResolutionTests, ExecutesAlternateBindingFromPressedKeyState)
         ShortcutBinding::FromKey(EKey::KEY_Z, EShortcutModifier::Primary | EShortcutModifier::Shift));
     service.RegisterCommand(std::move(command));
 
-    const auto primaryModifier = GetPrimaryModifierForCurrentPlatform();
-    const auto isPrimaryKey = [primaryModifier](const EKey p_key)
-    {
-        if (primaryModifier == EShortcutModifier::Ctrl)
-            return p_key == EKey::KEY_LEFT_CONTROL || p_key == EKey::KEY_RIGHT_CONTROL;
-        return p_key == EKey::KEY_LEFT_SUPER || p_key == EKey::KEY_RIGHT_SUPER;
-    };
-
-    EXPECT_TRUE(service.ExecutePressedShortcut(
-        [](const EKey p_key) { return p_key == EKey::KEY_Z; },
-        [&isPrimaryKey](const EKey p_key)
-        {
-            if (isPrimaryKey(p_key) ||
-                p_key == EKey::KEY_LEFT_SHIFT || p_key == EKey::KEY_RIGHT_SHIFT)
-            {
-                return EKeyState::KEY_DOWN;
-            }
-            return EKeyState::KEY_UP;
-        }));
+    const bool super = GetPrimaryModifierForCurrentPlatform() == EShortcutModifier::Super;
+    const uint32_t mask = (super ? 8u : 2u) | 1u;
+    service.Key(super ? 343 : 341, true, mask);
+    service.Key(340, true, mask);
+    service.Key(90, true, mask); service.Key(90, false, mask);
+    service.UpdateInput({});
     EXPECT_EQ(callCount, 1);
 }
 
 TEST(EditorShortcutResolutionTests, CustomBindingReplacesDefaultAndAlternateGestures)
 {
-    EditorShortcutService service;
+    TestEditorShortcutService service;
     int callCount = 0;
     auto command = MakeCommand(
         "edit.redo",
@@ -210,20 +190,20 @@ TEST(EditorShortcutResolutionTests, CustomBindingReplacesDefaultAndAlternateGest
     const auto replacement = ShortcutBinding::FromKey(EKey::KEY_R, EShortcutModifier::Primary);
     ASSERT_TRUE(service.SetBinding("edit.redo", replacement));
 
-    EXPECT_FALSE(service.ExecuteShortcut(
-        ShortcutBinding::FromKey(EKey::KEY_Y, EShortcutModifier::Primary)));
-    EXPECT_FALSE(service.ExecuteShortcut(
+    service.Press(
+        ShortcutBinding::FromKey(EKey::KEY_Y, EShortcutModifier::Primary));
+    service.Press(
         ShortcutBinding::FromKey(
             EKey::KEY_Z,
-            EShortcutModifier::Primary | EShortcutModifier::Shift)));
-    EXPECT_TRUE(service.ExecuteShortcut(replacement));
+            EShortcutModifier::Primary | EShortcutModifier::Shift));
+    service.Press(replacement);
     EXPECT_EQ(callCount, 1);
     EXPECT_EQ(service.GetBindingDisplayText("edit.redo"), ToDisplayString(replacement));
 }
 
 TEST(EditorShortcutResolutionTests, DisplaysPrimaryAndAlternateBindings)
 {
-    EditorShortcutService service;
+    TestEditorShortcutService service;
     int callCount = 0;
     auto command = MakeCommand(
         "edit.redo",
@@ -244,7 +224,7 @@ TEST(EditorShortcutResolutionTests, DisplaysPrimaryAndAlternateBindings)
 
 TEST(EditorShortcutResolutionTests, RegistersDefaultEditorShortcutCommandIds)
 {
-    EditorShortcutService service;
+    TestEditorShortcutService service;
     int callCount = 0;
 
     service.RegisterCommand(MakeCommand("file.new-scene", ShortcutContexts::Global, ShortcutBinding::FromKey(EKey::KEY_N, EShortcutModifier::Ctrl), callCount));
@@ -300,7 +280,7 @@ TEST(EditorShortcutResolutionTests, RegistersDefaultEditorShortcutCommandIds)
 
 TEST(EditorShortcutResolutionTests, ListsCommandsBySearchText)
 {
-    EditorShortcutService service;
+    TestEditorShortcutService service;
     int callCount = 0;
     service.RegisterCommand(MakeCommand("file.save-scene", ShortcutContexts::Global, ShortcutBinding::FromKey(EKey::KEY_S, EShortcutModifier::Ctrl), callCount));
     service.RegisterCommand(MakeCommand("debug.capture", ShortcutContexts::Global, ShortcutBinding::FromKey(EKey::KEY_F11), callCount));
@@ -316,7 +296,7 @@ TEST(EditorShortcutResolutionTests, ListsCommandsBySearchText)
 
 TEST(EditorShortcutResolutionTests, ExecutesOnlyAvailableCommands)
 {
-    EditorShortcutService service;
+    TestEditorShortcutService service;
     bool available = false;
     int callCount = 0;
     auto command = MakeCommand(
@@ -327,10 +307,31 @@ TEST(EditorShortcutResolutionTests, ExecutesOnlyAvailableCommands)
     command.availability = [&available] { return available; };
     service.RegisterCommand(command);
 
-    EXPECT_FALSE(service.ExecuteShortcut(ShortcutBinding::FromKey(EKey::KEY_ESCAPE)));
+    service.Press(ShortcutBinding::FromKey(EKey::KEY_ESCAPE));
     EXPECT_EQ(callCount, 0);
 
     available = true;
-    EXPECT_TRUE(service.ExecuteShortcut(ShortcutBinding::FromKey(EKey::KEY_ESCAPE)));
+    service.Press(ShortcutBinding::FromKey(EKey::KEY_ESCAPE));
     EXPECT_EQ(callCount, 1);
+}
+
+TEST(EditorShortcutResolutionTests, ReplacedCommandCannotRunItsFormerCanExecuteOrExecute)
+{
+    EditorShortcutRegistry registry;
+    int oldPredicate = 0, oldExecute = 0, replacementExecute = 0;
+    ShortcutCommand command; command.id = "dynamic.command";
+    command.execute = [&] { ++oldExecute; };
+    command.canExecute = [&](const InvocationContext&) { ++oldPredicate; return true; };
+    command.availability = [&]
+    {
+        EXPECT_TRUE(registry.UnregisterCommand("dynamic.command"));
+        ShortcutCommand replacement; replacement.id = "dynamic.command"; replacement.execute = [&] { ++replacementExecute; };
+        EXPECT_TRUE(registry.RegisterCommand(std::move(replacement)));
+        return true;
+    };
+    ASSERT_TRUE(registry.RegisterCommand(std::move(command)));
+    EXPECT_EQ(registry.TryExecuteCommand("dynamic.command"), CommandResult::TargetExpired);
+    EXPECT_EQ(oldPredicate, 0); EXPECT_EQ(oldExecute, 0); EXPECT_EQ(replacementExecute, 0);
+    EXPECT_EQ(registry.TryExecuteCommand("dynamic.command"), CommandResult::Completed);
+    EXPECT_EQ(replacementExecute, 1);
 }

@@ -620,6 +620,7 @@ namespace NLS::Engine::Rendering
 		DrainPublishedFramesBeforeTeardown();
 		ReleaseDeferredDecalPipelineResources();
 		m_gBufferMaterialCache.clear();
+        m_sceneDebugMaterialCache.clear();
 		m_hzbOcclusionBindingSet.reset();
 		m_hzbBuildBindingSets.clear();
 		m_hzbOcclusionPipeline.reset();
@@ -639,7 +640,11 @@ namespace NLS::Engine::Rendering
 		m_fullscreenQuad.reset();
 		NLS::Render::Resources::Loaders::ShaderLoader::Destroy(m_hzbOcclusionShader);
 		NLS::Render::Resources::Loaders::ShaderLoader::Destroy(m_hzbBuildShader);
-		NLS::Render::Resources::Loaders::ShaderLoader::Destroy(m_lightingShader);
+		m_sceneWireframeMaterial.reset();
+        NLS::Render::Resources::Loaders::ShaderLoader::Destroy(m_sceneWireframeShader);
+        NLS::Render::Resources::Loaders::ShaderLoader::Destroy(m_sceneDebugShader);
+        NLS::Render::Resources::Loaders::ShaderLoader::Destroy(m_sceneDebugResolveShader);
+        NLS::Render::Resources::Loaders::ShaderLoader::Destroy(m_lightingShader);
 		NLS::Render::Resources::Loaders::ShaderLoader::Destroy(m_gBufferShader);
 	}
 
@@ -674,7 +679,10 @@ DeferredSceneRenderer::EstimateThreadedDeferredDrawCounts(const AllDrawables& dr
 			++counts.transparentDrawCount;
 	}
 
-	// The deferred lighting composite is captured once whenever the deferred
+	if (drawables.viewOptions.geometryMode == SceneGeometryDrawMode::ShadedWireframe || !drawables.viewOptions.selectionWireIds.empty())
+            counts.transparentDrawCount += counts.gBufferDrawCount + counts.transparentDrawCount;
+
+        // The deferred lighting composite is captured once whenever the deferred
 	// scene itself is captured.
 	if (!drawables.opaques.empty() ||
 		!drawables.decals.empty() ||
@@ -757,6 +765,7 @@ DeferredSceneRenderer::EstimateThreadedDeferredDrawCounts(const AllDrawables& dr
                     overrides.SetColorSpaces(std::span<const RHI::TextureColorSpace>{});
                     overrides.colorWrite=false;overrides.blending=false;overrides.depthTest=true;overrides.depthWrite=true;
                     overrides.hasDepthAttachment=true;overrides.depthFormat=FrameGraph::kDeferredGBufferDepthFormat;
+                    ApplySceneGeometryOverrides(drawables.viewOptions, overrides);
                     overrides.stencilTest=true;overrides.stencilWriteMask=FrameGraph::kForwardOpaqueStencilBit;
                     overrides.stencilReadMask=FrameGraph::kForwardOpaqueStencilBit;overrides.stencilReference=FrameGraph::kForwardOpaqueStencilBit;
                     overrides.stencilCompare=Settings::EComparaisonAlgorithm::ALWAYS;overrides.stencilPassOp=Settings::EOperation::REPLACE;
@@ -770,7 +779,8 @@ DeferredSceneRenderer::EstimateThreadedDeferredDrawCounts(const AllDrawables& dr
 			CaptureDrawPhaseTimings phaseTimings;
 			CaptureDrawPhaseTimings* phaseTimingsOut = logPreparedDrawResults ? &phaseTimings : nullptr;
 			auto& gbufferMaterial = ResolveGBufferDrawableMaterial(*drawable.material);
-			const auto gBufferOverrides = BuildGBufferMaterialOverrides(*drawable.material);
+			auto gBufferOverrides = BuildGBufferMaterialOverrides(*drawable.material);
+            ApplySceneGeometryOverrides(drawables.viewOptions, gBufferOverrides);
 			PreparedRecordedDraw preparedDraw;
 			const auto captureStart = logPreparedDrawResults
 				? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point {};
@@ -886,6 +896,8 @@ DeferredSceneRenderer::EstimateThreadedDeferredDrawCounts(const AllDrawables& dr
 		if (m_lightingMaterial->GetParameterBlock().Contains("u_SkyboxCube"))
 			m_lightingMaterial->Set<NLS::Render::Resources::TextureCube*>("u_SkyboxCube", skyboxTexture);
 		EnsureDeferredLightingSkyParameters(*m_lightingMaterial, skyboxMaterial);
+        m_lightingMaterial->SetRawParameter("u_BackgroundColor", drawables.viewOptions.backgroundColor);
+        m_lightingMaterial->SetRawParameter("u_SceneDebugMode", static_cast<int>(drawables.viewOptions.debugMode));
 		NLS::Render::Entities::Drawable lightingDrawable;
 		lightingDrawable.mesh = m_fullscreenQuad.get();
 		lightingDrawable.material = m_lightingMaterial.get();
@@ -928,14 +940,20 @@ DeferredSceneRenderer::EstimateThreadedDeferredDrawCounts(const AllDrawables& dr
                 NLS::Render::Resources::MaterialPipelineStateOverrides overrides;
                 overrides.depthWrite=false;overrides.depthTest=true;overrides.blending=false;
                 overrides.depthCompare=NLS::Render::Settings::EComparaisonAlgorithm::EQUAL;
+                ApplySceneGeometryOverrides(drawables.viewOptions, overrides);
                 overrides.hasDepthAttachment=true;overrides.depthFormat=NLS::Render::FrameGraph::kDeferredGBufferDepthFormat;
                 PreparedRecordedDraw color;
-                if(!CaptureThreadedPreparedDraw(drawable,overrides,NLS::Render::Settings::EComparaisonAlgorithm::EQUAL,"Forward",color) ||
-                    !QueueThreadedRecordedDraw(std::move(color),result.forwardOpaqueColor))
+                const bool bufferDebug = Render::Debug::IsGBufferDebugMode(drawables.viewOptions.debugMode);
+                auto* debugMaterial = bufferDebug ? &ResolveSceneDebugMaterial(*drawable.material, drawables.viewOptions, true, false) : nullptr;
+                const bool capturedColor = debugMaterial ?
+                    CaptureThreadedPreparedDraw(drawable, *debugMaterial, overrides, NLS::Render::Settings::EComparaisonAlgorithm::EQUAL, GetSceneDebugLightMode(*debugMaterial), color) :
+                    CaptureThreadedPreparedDraw(drawable, overrides, NLS::Render::Settings::EComparaisonAlgorithm::EQUAL, "Forward", color);
+                if(!capturedColor || !QueueThreadedRecordedDraw(std::move(color),result.forwardOpaqueColor))
                     throw std::runtime_error("Cannot capture ForwardOpaque color pass");
             }
 			NLS::Render::Resources::MaterialPipelineStateOverrides transparentOverrides;
 		transparentOverrides.depthWrite = false;
+        ApplySceneGeometryOverrides(drawables.viewOptions, transparentOverrides);
 		const auto transparentPso = CreateSceneDefaultPipelineState(*this);
 		for (const auto& entry : drawables.transparents)
 		{
@@ -944,24 +962,56 @@ DeferredSceneRenderer::EstimateThreadedDeferredDrawCounts(const AllDrawables& dr
 				continue;
 
 			PreparedRecordedDraw preparedDraw;
-			const bool captured = CaptureThreadedPreparedDraw(
-				drawable,
-				transparentOverrides,
-				transparentPso.depthFunc,
-				"Forward",
-				preparedDraw);
+            const bool bufferDebug = Render::Debug::IsGBufferDebugMode(drawables.viewOptions.debugMode);
+            auto* debugMaterial = bufferDebug ? &ResolveSceneDebugMaterial(*drawable.material, drawables.viewOptions, true, true) : nullptr;
+            if (bufferDebug) transparentOverrides.blending = false;
+            const bool captured = debugMaterial ?
+                CaptureThreadedPreparedDraw(drawable, *debugMaterial, transparentOverrides, transparentPso.depthFunc, GetSceneDebugLightMode(*debugMaterial), preparedDraw) :
+                CaptureThreadedPreparedDraw(drawable, transparentOverrides, transparentPso.depthFunc, "Forward", preparedDraw);
 			bool queued = false;
 			if (captured)
 				queued = queueCapturedDraw("Transparent", preparedDraw);
 			if (!captured && logPreparedDrawResults)
 				LogPreparedDrawResult("Transparent", false, false, preparedDraw);
-			if (queued)
-				++result.drawCounts.transparentDrawCount;
+				if (queued)
+                {
+                    outCommands.back().transparentSortKey = CaptureTransparentSortKey(drawable,
+                        Render::FrameGraph::FreezeFrameDescriptor(GetFrameDescriptor()), drawables.defaultSortingLayerRank);
+					++result.drawCounts.transparentDrawCount;
+                }
 		}
 		if (logPreparedDrawResults)
 			NLS_LOG_INFO("[DeferredSceneRenderer] CaptureThreadedDeferredDraws transparent complete queued=" + std::to_string(result.drawCounts.transparentDrawCount));
 
-		SetActivePreparedPassBindingSet(nullptr);
+		if (drawables.viewOptions.geometryMode == SceneGeometryDrawMode::ShadedWireframe || !drawables.viewOptions.selectionWireIds.empty())
+        {
+            const auto overrides = BuildSceneWireframeOverlayOverrides();
+            const auto captureOverlay = [&](const auto& entries)
+            {
+                for (const auto& entry : entries)
+                {
+                    const auto& drawable = entry.second;
+                    const auto* wire = drawable.template TryGetDescriptor<SceneWireOverlayDescriptor>();
+                    const bool selected = wire && wire->selected;
+                    if (drawables.viewOptions.geometryMode != SceneGeometryDrawMode::ShadedWireframe && !selected) continue;
+                    if (!drawable.mesh || !drawable.material) continue;
+                    auto* wireMaterial = &ResolveSceneDebugMaterial(*drawable.material, drawables.viewOptions,
+                        false, drawable.material->IsBlendable(), true,
+                        selected ? Maths::Vector4(1.0f, 0.6f, 0.0f, 1.0f) : Maths::Vector4(0.06f, 0.06f, 0.06f, 1.0f));
+                    PreparedRecordedDraw prepared;
+                    if (!CaptureThreadedPreparedDraw(drawable, *wireMaterial, overrides,
+                        NLS::Render::Settings::EComparaisonAlgorithm::LESS_EQUAL, GetSceneDebugLightMode(*wireMaterial), prepared))
+                        throw std::runtime_error("Cannot capture a scene wireframe overlay");
+                    if (!queueCapturedDraw("SceneWireframeOverlay", prepared))
+                        throw std::runtime_error("Cannot queue a scene wireframe overlay");
+                    ++result.wireOverlayDrawCount;
+                    ++result.drawCounts.transparentDrawCount;
+                }
+            };
+            captureOverlay(drawables.opaques);
+            captureOverlay(drawables.transparents);
+        }
+        SetActivePreparedPassBindingSet(nullptr);
 		return result;
 	}
 
@@ -1041,6 +1091,7 @@ NLS::Render::Context::RenderSceneBuildCommand DeferredSceneRenderer::BuildDeferr
                 NLS::Render::FrameGraph::RegisterPreferredReadbackTexture(
                     package, preferredReadbackTexture, preferredReadbackTextureGeneration);
             package.renderTargetUseCount += additionalRenderTargetUseCount;
+            if (captureInput.drawables) AppendSceneDebugPasses(package, *frozenFrame, *captureInput.drawables);
             AppendDistanceFieldScenePass(package, *frozenFrame, distanceFieldDebug, packet.frameId);
             NLS::Render::FrameGraph::FinalizePreparedDeferredScenePackage(package, frameDescriptorForBuilder);
             return package;
@@ -1071,9 +1122,27 @@ NLS::Render::Context::RenderSceneBuildCommand DeferredSceneRenderer::BuildDeferr
             if (captureInput.hzbReadbackHandoff != nullptr)
                 m_threadedHZBReadbackHandoffs.push_back(captureInput.hzbReadbackHandoff);
             const bool resolvedScene = ResolveThreadedSceneCapture(snapshot, captureInput, *frozenFrame);
-            const bool buildDeferredScene = includeDeferredSceneExecution && resolvedScene;
+            // The diagnostic wireframe pass completely replaces shaded output.
+            // Do not create per-material G-buffer wireframe pipelines, lighting
+            // or a second set of particle draws just to overwrite their result.
+            const bool wireframeOnly = captureInput.drawables != nullptr &&
+                captureInput.drawables->viewOptions.geometryMode == SceneGeometryDrawMode::Wireframe;
+            const bool buildDeferredScene = includeDeferredSceneExecution && resolvedScene && !wireframeOnly;
             if (!buildDeferredScene)
             {
+                if (wireframeOnly)
+                {
+                    EnsureDeferredPipelineResourceAssets();
+                    // Editor helpers already reference this depth attachment.
+                    // The wireframe pass must produce the same current depth.
+                    EnsureGBufferTargets(frameDescriptorForBuilder.renderWidth, frameDescriptorForBuilder.renderHeight);
+                    // The flat command list contains only captured helpers on
+                    // this route.  The diagnostic pass adds its own typed draws.
+                    snapshot.visibleOpaqueDrawCount = 0u;
+                    snapshot.visibleDecalDrawCount = 0u;
+                    snapshot.visibleTransparentDrawCount = 0u;
+                    snapshot.visibleSkyboxDrawCount = 0u;
+                }
                 if (captureInput.hzbReadbackHandoff != nullptr)
                 {
                     std::lock_guard lock(captureInput.hzbReadbackHandoff->mutex);
@@ -1095,7 +1164,8 @@ NLS::Render::Context::RenderSceneBuildCommand DeferredSceneRenderer::BuildDeferr
                     {
                         return std::move(appendedPassInputs);
                     });
-                if (captureInput.drawables) AppendParticleScenePass(package,*frozenFrame,captureInput.drawables->particles);
+                if (!wireframeOnly && captureInput.drawables && captureInput.drawables->viewOptions.includeParticles) AppendParticleScenePass(package,*frozenFrame,captureInput.drawables->particles,captureInput.drawables->viewOptions);
+                if (captureInput.drawables) AppendSpriteScenePass(package,*frozenFrame,captureInput.drawables->sprites);
                 return finishPackage(std::move(package));
             }
 
@@ -1132,9 +1202,12 @@ NLS::Render::Context::RenderSceneBuildCommand DeferredSceneRenderer::BuildDeferr
                     captureInput.logPreparedDrawResults, snapshot.recordedDrawCommands);
                 snapshot.visibleDecalDrawCount -= (std::min)(
                     snapshot.visibleDecalDrawCount, captureResult.unresolvedDecalDrawCount);
+                // Overlays share the transparent output pass, but are additional
+                // draws rather than entries in the captured scene's transparent list.
                 if (ShouldSkipThreadedDeferredFramePublish(snapshot,
                     captureResult.drawCounts.gBufferDrawCount+captureResult.forwardOpaqueDepth.size(), captureResult.drawCounts.decalDrawCount,
-                    captureResult.drawCounts.lightingDrawCount, captureResult.drawCounts.transparentDrawCount))
+                    captureResult.drawCounts.lightingDrawCount,
+                    captureResult.drawCounts.transparentDrawCount - captureResult.wireOverlayDrawCount))
                     throw std::runtime_error("Deferred Render Command captured an incomplete scene draw queue");
                 queuedDrawCounts.lightingDrawCount = captureResult.drawCounts.lightingDrawCount;
                 queuedDrawCounts.decalDrawCount = captureResult.drawCounts.decalDrawCount;
@@ -1179,7 +1252,8 @@ NLS::Render::Context::RenderSceneBuildCommand DeferredSceneRenderer::BuildDeferr
             NLS::Render::FrameGraph::CompileAndApplyPreparedDeferredLightGridSceneExecution(
                 package, lightGridContext, deferredResources, std::move(appendedPassInputs),
                 appendedPassMetadata, queuedDrawCounts, hzbSource, &externalSceneOutputAttachments);
-            if (captureInput.drawables) AppendParticleScenePass(package,*frozenFrame,captureInput.drawables->particles);
+            if (captureInput.drawables && captureInput.drawables->viewOptions.includeParticles) AppendParticleScenePass(package,*frozenFrame,captureInput.drawables->particles,captureInput.drawables->viewOptions);
+            if (captureInput.drawables) AppendSpriteScenePass(package,*frozenFrame,captureInput.drawables->sprites);
             if (hzbPostSubmitReadback.has_value())
                 package.postSubmitBufferReadbacks.push_back(hzbPostSubmitReadback.value());
             return finishPackage(std::move(package));
@@ -1466,7 +1540,8 @@ void DeferredSceneRenderer::BeginFrame(const NLS::Render::Data::FrameDescriptor&
     std::optional<NLS::Render::Context::RenderFramePacket> snapshot;
     {
         NLS_PROFILE_NAMED_SCOPE("DeferredSceneRenderer::BeginFrame::BuildFramePacket");
-        snapshot = BuildRenderFramePacket(p_frameDescriptor);
+        // BaseSceneRenderer has applied the per-view display options.
+        snapshot = BuildRenderFramePacket(GetFrameDescriptor());
     }
     if (!snapshot.has_value() || snapshot->view == nullptr)
     {
@@ -2786,7 +2861,8 @@ void DeferredSceneRenderer::DrawFrame()
 
 			auto& gbufferMaterial = ResolveGBufferDrawableMaterial(*drawable.material);
 
-			const auto gBufferOverrides = BuildGBufferMaterialOverrides(*drawable.material);
+			auto gBufferOverrides = BuildGBufferMaterialOverrides(*drawable.material);
+            ApplySceneGeometryOverrides(scene.drawables->viewOptions, gBufferOverrides);
 
 			DrawEntity(drawable, gbufferMaterial, gBufferOverrides, pso.depthFunc, "GBuffer");
 		}
@@ -2853,6 +2929,8 @@ void DeferredSceneRenderer::DrawFrame()
 		if (m_lightingMaterial->GetParameterBlock().Contains("u_SkyboxCube"))
 			m_lightingMaterial->Set<NLS::Render::Resources::TextureCube*>("u_SkyboxCube", skyboxTexture);
 		EnsureDeferredLightingSkyParameters(*m_lightingMaterial, skyboxMaterial);
+        m_lightingMaterial->SetRawParameter("u_BackgroundColor", scene.drawables->viewOptions.backgroundColor);
+        m_lightingMaterial->SetRawParameter("u_SceneDebugMode", static_cast<int>(scene.drawables->viewOptions.debugMode));
 		NLS::Render::Entities::Drawable lightingDrawable;
 		lightingDrawable.mesh = m_fullscreenQuad.get();
 		lightingDrawable.material = m_lightingMaterial.get();
@@ -2883,7 +2961,20 @@ void DeferredSceneRenderer::DrawFrame()
 		SubmitPreparedDraw(preparedDraw);
 	}
 
-	void DeferredSceneRenderer::DrawTransparents(NLS::Render::Data::PipelineState pso)
+	NLS::Render::Resources::Material& DeferredSceneRenderer::GetSceneWireframeMaterial()
+    {
+        if (!m_sceneWireframeMaterial)
+        {
+            m_sceneWireframeShader = NLS::Render::Resources::Loaders::ShaderLoader::CreateBuiltInHlsl(
+                ResolveEngineShaderPath("SceneWireframe.hlsl"),
+                NLS::Core::ResourceManagement::ShaderManager::ProjectAssetsRoot());
+            if (!m_sceneWireframeShader) throw std::runtime_error("Scene wireframe shader is unavailable");
+            m_sceneWireframeMaterial = std::make_unique<NLS::Render::Resources::Material>(m_sceneWireframeShader);
+        }
+        return *m_sceneWireframeMaterial;
+    }
+
+    void DeferredSceneRenderer::DrawTransparents(NLS::Render::Data::PipelineState pso)
 	{
 		NLS_PROFILE_SCOPE();
 		const auto& scene = GetDescriptor<DeferredSceneDescriptor>();
@@ -2894,13 +2985,39 @@ void DeferredSceneRenderer::DrawFrame()
 		if (scene.drawables == nullptr)
 			return;
 
-		for (const auto& entry : scene.drawables->transparents)
+		ApplySceneGeometryOverrides(scene.drawables->viewOptions, transparentOverrides);
+        for (const auto& entry : scene.drawables->transparents)
 		{
 			const auto& drawable = entry.second;
 			if (drawable.material == nullptr || drawable.mesh == nullptr)
 				continue;
-			DrawEntity(drawable, transparentOverrides, pso.depthFunc, "Forward");
+			if (scene.drawables->viewOptions.debugMode == SceneDisplayDebugMode::RenderPaths)
+                {
+                    auto& material = GetSceneWireframeMaterial();
+                    material.SetRawParameter("u_WireColor", Maths::Vector4(1, 0.85f, 0, 1));
+                    DrawEntity(drawable, material, transparentOverrides, pso.depthFunc, "Forward");
+                }
+                else DrawEntity(drawable, transparentOverrides, pso.depthFunc, "Forward");
 		}
+        if (scene.drawables->viewOptions.geometryMode == SceneGeometryDrawMode::ShadedWireframe || !scene.drawables->viewOptions.selectionWireIds.empty())
+        {
+            auto& material = GetSceneWireframeMaterial();
+            const auto overrides = BuildSceneWireframeOverlayOverrides();
+            const auto drawOverlay = [&](const auto& entries)
+            {
+                for (const auto& entry : entries)
+                {
+                    const auto* wire = entry.second.template TryGetDescriptor<SceneWireOverlayDescriptor>();
+                    const bool selected = wire && wire->selected;
+                    if (scene.drawables->viewOptions.geometryMode != SceneGeometryDrawMode::ShadedWireframe && !selected) continue;
+                    material.SetRawParameter("u_WireColor", selected ? Maths::Vector4(1, 0.6f, 0, 1) : Maths::Vector4(0.06f, 0.06f, 0.06f, 1));
+                    DrawEntity(entry.second, material, overrides, NLS::Render::Settings::EComparaisonAlgorithm::LESS_EQUAL, "Forward");
+                }
+            };
+            drawOverlay(scene.drawables->opaques);
+            drawOverlay(scene.drawables->transparents);
+        }
+
 	}
 
 	NLS::Render::Resources::Material& DeferredSceneRendererTestAccess::GetOrCreateGBufferMaterial(

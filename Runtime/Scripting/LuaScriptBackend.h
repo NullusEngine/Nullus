@@ -1,8 +1,10 @@
 #pragma once
 
 #include "IScriptBackend.h"
+#include "Core/Modules/ModuleSystem.h"
 
 #include <functional>
+#include <filesystem>
 #include <optional>
 #include <span>
 #include <unordered_map>
@@ -42,6 +44,7 @@ public:
         const ScriptInvocationContext&)>;
 
     explicit LuaScriptBackend(ScriptBackendId id = {2});
+    std::unique_ptr<Core::Modules::IModule> CreatePluginModule(const std::filesystem::path& path);
 
     ScriptBackendId GetBackendId() const override { return m_id; }
     ScriptLanguage GetLanguage() const override { return ScriptLanguage::Lua; }
@@ -113,6 +116,7 @@ private:
     std::vector<ScriptFrameContext> m_frames;
     Callback m_callback;
     lua_State* m_state = nullptr;
+    std::shared_ptr<lua_State> m_pluginVm;
     float m_lastPublishedTimeScale = 1.0f;
     uint32_t m_nextIndex = 1;
     uint16_t m_nextGeneration = 1;

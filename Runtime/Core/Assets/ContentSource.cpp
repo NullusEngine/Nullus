@@ -14,7 +14,8 @@ namespace
 {
 std::string NormalizePathText(const std::filesystem::path& path)
 {
-    auto text = path.lexically_normal().generic_string();
+    const auto utf8 = path.lexically_normal().generic_u8string();
+    std::string text(reinterpret_cast<const char*>(utf8.data()),utf8.size());
     while (text.size() > 1u && text.back() == '/')
         text.pop_back();
     return text;
@@ -85,7 +86,7 @@ std::filesystem::path DirectoryContentSource::ResolveHostPath(const std::string_
 {
     if (path.empty())
         return {};
-    const std::filesystem::path relative{std::string(path)};
+    const auto relative=std::filesystem::u8path(path.begin(),path.end());
     if (relative.is_absolute() || relative.has_root_name() || relative.has_root_directory())
         return {};
     for (const auto& part : relative)
@@ -213,6 +214,20 @@ void ContentSourceTable::Mount(std::string hostRoot, std::shared_ptr<const ICont
     }
     m_mounts.emplace_back(std::move(normalizedRoot), std::move(source));
 }
+bool ContentSourceTable::Unmount(const std::filesystem::path& hostRoot, const IContentSource* expectedSource)
+{
+    const auto key = NormalizePathText(hostRoot);
+    std::shared_ptr<const IContentSource> retired;
+    {
+        std::lock_guard lock(m_mutex);
+        auto it = std::find_if(m_mounts.begin(), m_mounts.end(), [&](const auto& mount) {
+            return mount.first == key && mount.second.get() == expectedSource;
+        });
+        if (it == m_mounts.end()) return false;
+        retired = std::move(it->second); m_mounts.erase(it);
+    }
+    return true;
+}
 
 void ContentSourceTable::Clear()
 {
@@ -323,7 +338,7 @@ std::optional<ContentSourceTable::Resolution> ContentSourceTable::ResolveContent
         {
             if (root.empty())
                 continue;
-            if (auto resolved = Resolve(std::filesystem::path(root) / hostOrLogicalPath);
+            if (auto resolved = Resolve(std::filesystem::u8path(root) / hostOrLogicalPath);
                 resolved.has_value())
             {
                 return resolved;

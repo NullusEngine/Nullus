@@ -1,4 +1,8 @@
 #pragma once
+#include <array>
+#include <span>
+#include <unordered_map>
+#include <unordered_set>
 
 #include <cstdint>
 #include <vector>
@@ -65,12 +69,14 @@ namespace NLS::Editor::Rendering
         Engine::LayerMask visibleLayers { 0xFFFFFFFFu };
         const NLS::Render::Data::Frustum* frustum = nullptr;
         bool excludeEditorOnlyObjects = true;
+        std::vector<int32_t> hiddenObjectIds;
     };
 
     inline bool IsSelectedDebugActorVisibleToSceneView(
         const Engine::GameObject& actor,
         const DebugGameObjectSelectionFilter& filter)
     {
+        if (std::binary_search(filter.hiddenObjectIds.begin(), filter.hiddenObjectIds.end(), actor.GetInstanceID())) return false;
         if (!filter.visibleLayers.ContainsLayer(actor.GetLayer()))
             return false;
 
@@ -97,22 +103,30 @@ namespace NLS::Editor::Rendering
         return filter.frustum->BoundsInFrustum(item.mesh->GetBounds(),item.worldMatrix);
     }
 
-    inline void CollectSelectedDebugGameObjectDebugDrawItems(
-        Engine::GameObject& selectedGameObject,
+    inline void CollectSelectedDebugGameObjectsDebugDrawItems(
+        std::span<Engine::GameObject* const> selectedGameObjects,
         DebugGameObjectDebugDrawItems& outItems,
         const bool collectCameras = true,
         const bool collectLights = true,
         const DebugGameObjectSelectionFilter& filter = {})
     {
         outItems.Clear();
+        std::unordered_set<Engine::GameObject*> visited;
+        std::unordered_map<Engine::GameObject*, float> explicitGroups;
+        for (auto* object : selectedGameObjects)
+            if (object && !explicitGroups.contains(object)) explicitGroups.emplace(object, static_cast<float>(explicitGroups.size() + 1));
 
-        auto collect = [&outItems, collectCameras, collectLights, &filter](
+        auto collect = [&outItems, collectCameras, collectLights, &filter, &visited, &explicitGroups](
             Engine::GameObject& actor,
             const uint32_t actorDepth,
+            float group,
             auto&& collectSelf) -> void
         {
-            if (!actor.IsActive())
+            if (!actor.IsActive() || !visited.insert(&actor).second)
                 return;
+            const auto explicitGroup = explicitGroups.find(&actor);
+            const bool explicitlySelected = explicitGroup != explicitGroups.end();
+            if (explicitlySelected) group = explicitGroup->second;
 
             ++outItems.visitedGameObjects;
             const bool actorVisibleToSceneView = IsSelectedDebugActorVisibleToSceneView(actor, filter);
@@ -170,8 +184,8 @@ namespace NLS::Editor::Rendering
                         transform->GetWorldScale(),
                         transform->GetWorldRotation(),
                         transform->GetWorldPosition(),
-                        1.0f,
-                        actorDepth == 0u ? kSelectionOutlineParentClassification : kSelectionOutlineChildClassification
+                        group,
+                        explicitlySelected ? kSelectionOutlineParentClassification : kSelectionOutlineChildClassification
                     };
                     if (IsSelectedDebugMeshVisibleToSceneView(item, filter))
                         outItems.selectionMeshItems.push_back(item);
@@ -185,8 +199,8 @@ namespace NLS::Editor::Rendering
                     cameraComponent,
                     transform->GetWorldPosition(),
                     transform->GetWorldRotation(),
-                    1.0f,
-                    actorDepth == 0u ? kSelectionOutlineParentClassification : kSelectionOutlineChildClassification
+                    group,
+                    explicitlySelected ? kSelectionOutlineParentClassification : kSelectionOutlineChildClassification
                 });
             }
 
@@ -196,10 +210,19 @@ namespace NLS::Editor::Rendering
             for (auto* child : actor.GetChildren())
             {
                 if (child != nullptr)
-                    collectSelf(*child, actorDepth + 1u, collectSelf);
+                    collectSelf(*child, actorDepth + 1u, group, collectSelf);
             }
         };
 
-        collect(selectedGameObject, 0u, collect);
+        for (auto* object : selectedGameObjects)
+            if (object) collect(*object, 0u, explicitGroups[object], collect);
+    }
+    inline void CollectSelectedDebugGameObjectDebugDrawItems(
+        Engine::GameObject& selectedGameObject, DebugGameObjectDebugDrawItems& outItems,
+        const bool collectCameras = true, const bool collectLights = true,
+        const DebugGameObjectSelectionFilter& filter = {})
+    {
+        std::array objects{&selectedGameObject};
+        CollectSelectedDebugGameObjectsDebugDrawItems(objects, outItems, collectCameras, collectLights, filter);
     }
 }

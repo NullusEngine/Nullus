@@ -37,6 +37,8 @@ namespace
         case ArtifactType::MorphTarget: return "morphTarget";
         case ArtifactType::Prefab: return "prefab";
         case ArtifactType::Scene: return "scene";
+        case ArtifactType::ECSScene: return "ecs-scene";
+        case ArtifactType::ECSPrefab: return "ecs-prefab";
         case ArtifactType::Shader: return "shader";
         case ArtifactType::Audio: return "audio";
         case ArtifactType::Unknown:

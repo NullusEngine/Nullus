@@ -52,12 +52,12 @@ using SpriteDrawResources = ParticleDrawResources;
 class NLS_VFX_API ParticleRenderer
 {
 public:
-    [[nodiscard]] bool WritesDepth() const { return m_settings.blend == SpriteBlendMode::Masked || m_settings.blend == SpriteBlendMode::Opaque; }
+    [[nodiscard]] bool WritesDepth() const { return m_debugMode != 7 && (m_settings.blend == SpriteBlendMode::Masked || m_settings.blend == SpriteBlendMode::Opaque); }
     bool Initialize(std::shared_ptr<Render::RHI::RHIDevice> device, const std::vector<Attribute>& attributes,
         const Render::RHI::RHIShaderModuleDesc& vertex, const Render::RHI::RHIShaderModuleDesc& fragment,
         const Render::RHI::RHIRenderTargetLayoutDesc& targets, std::string& error, const GpuSortShaders* sorting = nullptr,
         const GpuVisibilityShaders* visibility = nullptr, const GpuBoundsShaders* bounds = nullptr,
-        const SpriteSettings& settings = {}, const MeshSettings* mesh = nullptr);
+        const SpriteSettings& settings = {}, const MeshSettings* mesh = nullptr, uint32_t debugMode = 0);
     [[nodiscard]] std::shared_ptr<const SpriteDrawResources> Prepare(
         const ParticleRenderData& data, const SpriteView& view, std::string& error, const SpriteDrawContext& context = {}) const;
     [[nodiscard]] std::shared_ptr<const SpriteDrawResources> Record(Render::RHI::RHICommandBuffer& commands,
@@ -87,6 +87,7 @@ private:
     std::shared_ptr<Render::RHI::RHITextureView> m_white, m_farDepth;
     SpriteSettings m_settings;
     bool m_meshRenderer = false;
+    uint32_t m_debugMode = 0;
     uint32_t m_meshSlotCount = 0;
     int32_t m_meshLodIndex = -1;
 };

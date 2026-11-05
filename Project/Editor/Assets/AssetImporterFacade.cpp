@@ -217,7 +217,7 @@ bool AssetImporterFacade::Refresh()
     std::vector<NLS::Core::Assets::SourceAssetRoot> scanRoots;
     scanRoots.reserve(m_roots.size());
     for (const auto& root : m_roots)
-        scanRoots.push_back({root.path, root.readOnly});
+        scanRoots.push_back({root.path, root.readOnly, root.identityNamespace});
 
     const auto ok = m_sourceDatabase.ScanRoots(scanRoots);
     RebuildPathIndex();

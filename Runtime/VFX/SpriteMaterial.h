@@ -65,6 +65,7 @@ struct SpriteMaterial
 };
 struct SpriteDrawContext
 {
+    uint32_t debugMode = 0;
     SpriteMaterial material;
     // Mesh slots; one entry per captured subasset with its LOD chain.
     std::vector<std::shared_ptr<const MeshRenderGeometry>> meshes;

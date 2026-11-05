@@ -7,7 +7,7 @@ This page walks through building Nullus from scratch: dependencies, the three pl
 | Dependency | Requirement | Notes |
 | --- | --- | --- |
 | Git | Any recent version | Submodules must be fetched |
-| CMake | 3.18 or newer | Minimum declared by the project |
+| CMake | 3.22 or newer | Minimum required by the project and Box2D 3.2.0 |
 | C++ compiler | C++20 capable | MSVC (VS 2022) on Windows, GCC/Clang on Linux, Xcode toolchain on macOS |
 | Python | 3.8 or newer | Used by the dependency setup scripts |
 | .NET SDK | 8.0.408 | Pinned by `global.json`; when missing, CMake downloads it into the repository instead of touching the system `PATH` |
@@ -89,6 +89,8 @@ This uses the `build/wsl-vulkan` directory. `--install-deps` installs the Vulkan
 | `Launcher` | Project launcher |
 | `NullusBuild` | Headless packaging CLI and shared build pipeline |
 | `NullusUnitTests` | Behavior tests (needs `NLS_BUILD_TESTS=ON`) |
+| `NullusGpuTests` | Consolidated GPU tests (needs `NLS_BUILD_TESTS=ON`) |
+| `NullusBuildTests` / `NullusPropertyControlsTests` | Packaging and UI dependency boundary tests |
 | `NullusPerformanceTests` | Performance and stress tests (needs `NLS_BUILD_PERFORMANCE_TESTS=ON`) |
 | `ReflectionTest` | Reflection smoke tool |
 

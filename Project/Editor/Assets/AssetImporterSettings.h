@@ -3,12 +3,20 @@
 #include "Assets/AssetMeta.h"
 #include "Assets/AssetDiagnostics.h"
 #include "Rendering/Assets/ImportedScene.h"
+#include "Rendering/DistanceField/DistanceFieldTypes.h"
+#include "Reflection/Macros.h"
+#if !defined(__REFLECTION_PARSER__)
+#include "Project/Editor/Assets/AssetImporterSettings.generated.h"
+#endif
 
 #include <cstdint>
 #include <map>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <vector>
+
+namespace NLS::meta { class Type; class Variant; }
 
 namespace NLS::Editor::Assets
 {
@@ -41,6 +49,23 @@ struct ModelImporterSettings
     double animationSampleRate = 0;
     std::vector<std::string> animationTakes;
     std::string animationTargetSkeleton;
+};
+
+ENUM(TextureImporterType) { Default, Sprite, NormalMap, Mask };
+ENUM(SpriteImporterMode) { Single, Multiple };
+
+// Types of the enum fields in the metadata-backed importer draft.
+STRUCT(ImporterSettingsSchema)
+{
+    GENERATED_BODY()
+    PROPERTY(DisplayName("Distance Field Generation"))
+    NLS::Render::DistanceField::GenerationMode DISTANCE_FIELD_GENERATION = NLS::Render::DistanceField::GenerationMode::Inherit;
+    PROPERTY(DisplayName("FBX Reader"))
+    NLS::Animation::FbxReaderSelection MODEL_FBX_READER = NLS::Animation::FbxReaderSelection::AutodeskWithAssimpFallback;
+    PROPERTY(DisplayName("Texture Type"))
+    TextureImporterType TEXTURE_TYPE = TextureImporterType::Default;
+    PROPERTY(DisplayName("Sprite Mode"))
+    SpriteImporterMode SPRITE_MODE = SpriteImporterMode::Single;
 };
 
 struct TexturePlatformOverride
@@ -129,6 +154,9 @@ void ClearModelTextureRemapSetting(
 std::string ComputeModelTextureSettingsFingerprint(const NLS::Core::Assets::AssetMeta& meta);
 ModelImporterSettings ModelImporterSettingsFromSerialized(
     const std::map<std::string, std::string>& settings);
+NLS::meta::Type GetImporterSettingType(const std::string& name);
+std::string ImporterEnumToSettingString(const NLS::meta::Variant& value);
+NLS::meta::Variant ImporterEnumFromSettingString(const NLS::meta::Type& type, std::string_view value);
 NLS::Render::Assets::SceneImportSettings ToSceneImportSettings(const ModelImporterSettings& settings);
 NLS::Render::Assets::SceneImportSettings ToSceneImportSettings(
     const std::map<std::string, std::string>& settings);

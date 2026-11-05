@@ -1,4 +1,5 @@
 #include "Rendering/UI/UIDrawSnapshotAdapter.h"
+#include <ImGui/imgui.h>
 
 #include <algorithm>
 #include <iterator>
@@ -69,6 +70,18 @@ namespace NLS::Render::UI
 
         if (target->drawListCount != 0u)
         {
+            ImVec2 whiteUv{};
+            const bool hasFontAtlas = ImGui::GetCurrentContext() != nullptr && ImGui::GetIO().Fonts != nullptr;
+            if (hasFontAtlas)
+            {
+                // Untextured retained UI quads use the ImGui font binding in
+                // the overlay renderer. Sample its white texel, not the whole
+                // font atlas as if it were a regular image.
+                unsigned char* pixels = nullptr;
+                int width = 0, height = 0;
+                ImGui::GetIO().Fonts->GetTexDataAsRGBA32(&pixels, &width, &height);
+                whiteUv = ImGui::GetIO().Fonts->TexUvWhitePixel;
+            }
             UiDrawListSnapshot drawList;
             drawList.vertices.reserve(source.vertices.size());
             for (const auto& sourceVertex : source.vertices)
@@ -88,6 +101,16 @@ namespace NLS::Render::UI
             drawList.commands.reserve(source.batches.size());
             for (const auto& sourceBatch : source.batches)
             {
+                if (hasFontAtlas && sourceBatch.textureId == 0u)
+                {
+                    const auto end = std::min<size_t>(drawList.vertices.size(),
+                        static_cast<size_t>(sourceBatch.firstVertex) + sourceBatch.vertexCount);
+                    for (size_t index = sourceBatch.firstVertex; index < end; ++index)
+                    {
+                        drawList.vertices[index].uv[0] = whiteUv.x;
+                        drawList.vertices[index].uv[1] = whiteUv.y;
+                    }
+                }
                 UiDrawCommandSnapshot command;
                 command.elementCount = sourceBatch.indexCount;
                 command.indexOffset = sourceBatch.firstIndex;

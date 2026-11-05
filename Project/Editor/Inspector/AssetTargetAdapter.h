@@ -7,6 +7,8 @@
 
 #include "Inspector/InspectorTypes.h"
 
+namespace NLS::Core::Assets { struct AssetMeta; }
+
 namespace NLS::Editor::Inspector
 {
 /**
@@ -65,6 +67,9 @@ void SeedImporterDraftForTesting(
 
 // Removes the matching stream-backend test fixture and its transient draft.
 void ClearImporterDraftForTesting(const InspectorTargetHandle& target);
+std::map<std::string, std::string> BuildImporterSettingsForApplyForTesting(
+    const NLS::Core::Assets::AssetMeta& original,
+    const std::map<std::string, std::string>& draft);
 }
 #endif
 } // namespace NLS::Editor::Inspector

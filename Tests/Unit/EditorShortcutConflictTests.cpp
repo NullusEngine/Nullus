@@ -1,18 +1,20 @@
 #include <gtest/gtest.h>
 
-#include "Shortcuts/EditorShortcutService.h"
+#include "EditorInputTestSupport.h"
+using NLS::Tests::TestEditorShortcutService;
+using NLS::Tests::TestShortcutCommand;
 
 using namespace NLS::Editor::Shortcuts;
 using namespace NLS::Windowing::Inputs;
 
 namespace
 {
-ShortcutCommand Command(
+TestShortcutCommand Command(
     std::string id,
     ShortcutContextId context,
     ShortcutBinding binding)
 {
-    ShortcutCommand command;
+    TestShortcutCommand command;
     command.id = std::move(id);
     command.displayName = command.id;
     command.category = "Test";
@@ -25,7 +27,7 @@ ShortcutCommand Command(
 
 TEST(EditorShortcutConflictTests, BlocksDuplicateGlobalBindings)
 {
-    EditorShortcutService service;
+    TestEditorShortcutService service;
     service.RegisterCommand(Command("file.save", ShortcutContexts::Global, ShortcutBinding::FromKey(EKey::KEY_S, EShortcutModifier::Ctrl)));
     service.RegisterCommand(Command("file.save-as", ShortcutContexts::Global, ShortcutBinding::FromKey(EKey::KEY_N, EShortcutModifier::Ctrl)));
 
@@ -38,7 +40,7 @@ TEST(EditorShortcutConflictTests, BlocksDuplicateGlobalBindings)
 
 TEST(EditorShortcutConflictTests, TreatsLogicalPrimaryAsThePlatformPrimaryModifier)
 {
-    EditorShortcutService service;
+    TestEditorShortcutService service;
     service.RegisterCommand(Command(
         "edit.undo",
         ShortcutContexts::Global,
@@ -58,7 +60,7 @@ TEST(EditorShortcutConflictTests, TreatsLogicalPrimaryAsThePlatformPrimaryModifi
 
 TEST(EditorShortcutConflictTests, ChecksAlternateBindingsForCollisions)
 {
-    EditorShortcutService service;
+    TestEditorShortcutService service;
     auto redo = Command(
         "edit.redo",
         ShortcutContexts::Global,
@@ -82,7 +84,7 @@ TEST(EditorShortcutConflictTests, ChecksAlternateBindingsForCollisions)
 
 TEST(EditorShortcutConflictTests, BlocksDuplicateBindingsInSameContext)
 {
-    EditorShortcutService service;
+    TestEditorShortcutService service;
     service.RegisterCommand(Command("scene.frame", ShortcutContexts::SceneView, ShortcutBinding::FromKey(EKey::KEY_F)));
     service.RegisterCommand(Command("scene.focus", ShortcutContexts::SceneView, ShortcutBinding::FromKey(EKey::KEY_G)));
 
@@ -94,7 +96,7 @@ TEST(EditorShortcutConflictTests, BlocksDuplicateBindingsInSameContext)
 
 TEST(EditorShortcutConflictTests, AllowsSameBindingInMutuallyExclusiveContexts)
 {
-    EditorShortcutService service;
+    TestEditorShortcutService service;
     service.RegisterContext({ ShortcutContexts::SceneView, "Scene View", 20, "focused-panel", [] { return false; } });
     service.RegisterContext({ ShortcutContexts::Hierarchy, "Hierarchy", 20, "focused-panel", [] { return false; } });
     service.RegisterCommand(Command("scene.delete", ShortcutContexts::SceneView, ShortcutBinding::FromKey(EKey::KEY_DELETE)));
@@ -107,7 +109,7 @@ TEST(EditorShortcutConflictTests, AllowsSameBindingInMutuallyExclusiveContexts)
 
 TEST(EditorShortcutConflictTests, AllowsFlyModeBindingsToMirrorSceneViewToolBindings)
 {
-    EditorShortcutService service;
+    TestEditorShortcutService service;
     service.RegisterContext({ ShortcutContexts::SceneView, "Scene View", 20, "focused-panel", [] { return false; } });
     service.RegisterContext({ ShortcutContexts::SceneViewFlyMode, "Scene View/Fly Mode", 40, "scene-navigation-mode", [] { return false; } });
     service.RegisterCommand(Command("scene-view.move", ShortcutContexts::SceneView, ShortcutBinding::FromKey(EKey::KEY_W)));
@@ -120,7 +122,7 @@ TEST(EditorShortcutConflictTests, AllowsFlyModeBindingsToMirrorSceneViewToolBind
 
 TEST(EditorShortcutConflictTests, BlocksGlobalContextCollisionWithoutOverride)
 {
-    EditorShortcutService service;
+    TestEditorShortcutService service;
     service.RegisterCommand(Command("file.save", ShortcutContexts::Global, ShortcutBinding::FromKey(EKey::KEY_S, EShortcutModifier::Ctrl)));
     service.RegisterCommand(Command("scene.special", ShortcutContexts::SceneView, ShortcutBinding::FromKey(EKey::KEY_G)));
 
@@ -132,7 +134,7 @@ TEST(EditorShortcutConflictTests, BlocksGlobalContextCollisionWithoutOverride)
 
 TEST(EditorShortcutConflictTests, AllowsExplicitContextOverrideOfGlobalBinding)
 {
-    EditorShortcutService service;
+    TestEditorShortcutService service;
     service.RegisterCommand(Command("file.save", ShortcutContexts::Global, ShortcutBinding::FromKey(EKey::KEY_S, EShortcutModifier::Ctrl)));
     auto contextCommand = Command("scene.special", ShortcutContexts::SceneView, ShortcutBinding::FromKey(EKey::KEY_G));
     contextCommand.allowContextOverride = true;
@@ -145,7 +147,7 @@ TEST(EditorShortcutConflictTests, AllowsExplicitContextOverrideOfGlobalBinding)
 
 TEST(EditorShortcutConflictTests, BlocksInvalidBindings)
 {
-    EditorShortcutService service;
+    TestEditorShortcutService service;
     service.RegisterCommand(Command("file.save", ShortcutContexts::Global, ShortcutBinding::FromKey(EKey::KEY_S, EShortcutModifier::Ctrl)));
 
     const auto conflicts = service.ValidateBinding("file.save", ShortcutBinding::FromKey(EKey::KEY_LEFT_CONTROL));

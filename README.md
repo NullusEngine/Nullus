@@ -1,7 +1,7 @@
 # Nullus
 
 <p align="center">
-    <img src="NullusLogo.png" width="320" alt="Nullus Engine logo">
+    <img src="NullusLogo.svg" width="320" alt="Nullus Engine logo">
 </p>
 
 <p align="center">

@@ -2,9 +2,33 @@
 #include "Components/TransformComponent.h"
 #include "GameObject.h"
 #include "Rendering/Entities/Camera.h"
+#include "SceneSystem/Scene.h"
 
 namespace NLS::Engine::Components
 {
+struct CameraComponent::PresentationCamera
+{
+    Maths::Transform pose;
+    Render::Entities::Camera camera{&pose};
+};
+
+Render::Entities::Camera* CameraComponent::GetRenderCamera()
+{
+    if (!m_camera || !m_owner) return m_camera;
+    const auto* scene = m_owner->GetScene();
+    if (!scene || !scene->IsPlaying() || !scene->GetPhysicsSettings().interpolate) return m_camera;
+    const auto presented = scene->CapturePhysicsPresentationTransform(*m_owner);
+    if (!presented.usesPhysicsPose) return m_camera;
+    if (!m_presentationCamera) m_presentationCamera = std::make_shared<PresentationCamera>();
+    auto& snapshot = *m_presentationCamera;
+    snapshot.pose.SetLocalPosition(presented.worldPosition);
+    snapshot.pose.SetLocalRotation(presented.worldRotation);
+    snapshot.pose.SetLocalScale(presented.worldScale);
+    snapshot.camera = *m_camera;
+    snapshot.camera.transform = &snapshot.pose;
+    return &snapshot.camera;
+}
+
 CameraComponent::CameraComponent()
 {
 }

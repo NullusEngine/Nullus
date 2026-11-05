@@ -39,6 +39,7 @@ struct PropertyEditorContext
     std::function<std::optional<meta::Variant>(const PropertyNode&)> defaultValue;
     std::function<std::optional<meta::Variant>(const PropertyNode&)> inheritedValue;
     std::function<bool(const PropertyNode&)> restoreInherited;
+    bool livePreview = false;
 };
 
 enum class PropertyEditorLayout

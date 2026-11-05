@@ -2223,7 +2223,7 @@ TEST(AssetBrowserPresentationTests, GeneratedArtifactProjectionIsExhaustive)
     using NLS::Editor::Assets::AssetBrowserGeneratedArtifactItemType;
     using NLS::Editor::Assets::AssetBrowserItemType;
 
-    const std::array<std::optional<AssetBrowserItemType>,
+    std::array<std::optional<AssetBrowserItemType>,
         static_cast<size_t>(ArtifactType::Count) + 1u> expected {
         std::nullopt,
         std::nullopt,
@@ -2240,6 +2240,7 @@ TEST(AssetBrowserPresentationTests, GeneratedArtifactProjectionIsExhaustive)
         std::nullopt,
         std::nullopt
     };
+    expected[static_cast<size_t>(ArtifactType::Sprite)] = AssetBrowserItemType::Texture;
 
     for (size_t index = 0u; index < expected.size(); ++index)
     {

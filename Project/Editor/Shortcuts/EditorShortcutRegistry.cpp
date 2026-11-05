@@ -1,7 +1,6 @@
 #include "Shortcuts/EditorShortcutRegistry.h"
 
 #include <algorithm>
-#include <sstream>
 
 namespace NLS::Editor::Shortcuts
 {
@@ -13,6 +12,8 @@ namespace NLS::Editor::Shortcuts
         const auto index = m_commands.size();
         m_commandIndices.emplace(p_command.id, index);
         m_commands.emplace_back(std::move(p_command));
+        ++m_generation;
+        m_commandGenerations[m_commands.back().id] = m_generation;
         return true;
     }
 
@@ -37,186 +38,50 @@ namespace NLS::Editor::Shortcuts
         return m_commands;
     }
 
-    bool EditorShortcutRegistry::SetBinding(const std::string& p_id, const ShortcutBinding& p_binding)
+    bool EditorShortcutRegistry::CanExecute(const std::string& id, const InvocationContext& context) const
     {
-        if (FindCommand(p_id) == nullptr)
-            return false;
+        const auto* command = FindCommand(id);
+        if (!command || (!command->invoke && !command->execute)) return false;
+        const auto generation = GetCommandGeneration(id);
+        const auto availability = command->availability;
+        const auto canExecute = command->canExecute;
+        if (availability && !availability()) return false;
+        if (GetCommandGeneration(id) != generation) return false;
+        if (canExecute && !canExecute(context)) return false;
+        return GetCommandGeneration(id) == generation;
+    }
 
-        m_bindingOverrides[p_id] = p_binding;
+    CommandResult EditorShortcutRegistry::TryExecuteCommand(const std::string& id, const InvocationContext& context)
+    {
+        const auto generation = GetCommandGeneration(id);
+        if (!FindCommand(id)) return CommandResult::UnknownCommand;
+        const bool available = CanExecute(id, context);
+        if (GetCommandGeneration(id) != generation) return CommandResult::TargetExpired;
+        if (!available) return CommandResult::Disabled;
+        // CanExecute and Execute may register/unregister commands. Never retain
+        // a vector element or callback reference across either call.
+        const auto* command = FindCommand(id);
+        if (!command) return CommandResult::TargetExpired;
+        auto invoke = command->invoke;
+        auto execute = command->execute;
+        if (invoke) return invoke(context);
+        if (!execute) return CommandResult::Disabled;
+        execute();
+        return CommandResult::Completed;
+    }
+
+    bool EditorShortcutRegistry::UnregisterCommand(const std::string& id)
+    {
+        const auto it = m_commandIndices.find(id);
+        if (it == m_commandIndices.end()) return false;
+        m_commandGenerations.erase(id);
+        m_commands.erase(m_commands.begin() + static_cast<std::ptrdiff_t>(it->second));
+        m_commandIndices.clear();
+        for (size_t i = 0; i < m_commands.size(); ++i) m_commandIndices.emplace(m_commands[i].id, i);
+        ++m_generation;
         return true;
     }
+    uint64_t EditorShortcutRegistry::GetCommandGeneration(const std::string& id) const
+    { const auto it=m_commandGenerations.find(id); return it==m_commandGenerations.end()?0:it->second; }
 
-    bool EditorShortcutRegistry::ClearBinding(const std::string& p_id)
-    {
-        if (FindCommand(p_id) == nullptr)
-            return false;
-
-        m_bindingOverrides[p_id] = ShortcutBinding::Unassigned();
-        return true;
-    }
-
-    bool EditorShortcutRegistry::ResetBinding(const std::string& p_id)
-    {
-        if (FindCommand(p_id) == nullptr)
-            return false;
-
-        m_bindingOverrides.erase(p_id);
-        return true;
-    }
-
-    ShortcutBinding EditorShortcutRegistry::GetBinding(const std::string& p_id) const
-    {
-        const auto overrideIt = m_bindingOverrides.find(p_id);
-        if (overrideIt != m_bindingOverrides.end())
-            return overrideIt->second;
-
-        if (const auto* command = FindCommand(p_id))
-            return command->defaultBinding;
-
-        return ShortcutBinding::Unassigned();
-    }
-
-    std::vector<ShortcutBinding> EditorShortcutRegistry::GetBindings(const std::string& p_id) const
-    {
-        const auto* command = FindCommand(p_id);
-        if (command == nullptr)
-            return {};
-
-        // A user assignment is an explicit replacement for the command's
-        // default gestures. This keeps rebinding deterministic and prevents a
-        // hidden alternate from continuing to fire after the user chose a new
-        // shortcut.
-        if (const auto overrideIt = m_bindingOverrides.find(p_id);
-            overrideIt != m_bindingOverrides.end())
-        {
-            return {overrideIt->second};
-        }
-
-        std::vector<ShortcutBinding> result;
-        result.reserve(1u + command->alternateBindings.size());
-        const auto appendDistinct = [&result](const ShortcutBinding& binding)
-        {
-            if (!binding.assigned)
-            {
-                if (result.empty())
-                    result.push_back(binding);
-                return;
-            }
-
-            const auto duplicate = std::find_if(
-                result.begin(),
-                result.end(),
-                [&binding](const ShortcutBinding& existing)
-                {
-                    return AreShortcutBindingsEquivalentForCurrentPlatform(existing, binding);
-                });
-            if (duplicate == result.end())
-                result.push_back(binding);
-        };
-
-        appendDistinct(command->defaultBinding);
-        for (const auto& alternate : command->alternateBindings)
-            appendDistinct(alternate);
-        return result;
-    }
-
-    std::vector<ShortcutConflict> EditorShortcutRegistry::ValidateBinding(
-        const std::string& p_id,
-        const ShortcutBinding& p_binding,
-        const std::function<bool(const ShortcutContextId&, const ShortcutContextId&)>& p_areContextsMutuallyExclusive) const
-    {
-        std::vector<ShortcutConflict> conflicts;
-
-        const auto* targetCommand = FindCommand(p_id);
-        if (targetCommand == nullptr)
-            return conflicts;
-
-        const auto addConflict = [&conflicts, &p_binding](
-            const EShortcutConflictType p_type,
-            const std::string& p_firstCommandId,
-            const std::string& p_secondCommandId,
-            const std::string& p_message)
-        {
-            ShortcutConflict conflict;
-            conflict.type = p_type;
-            conflict.binding = p_binding;
-            conflict.commandIds = { p_firstCommandId, p_secondCommandId };
-            conflict.message = p_message;
-            conflict.blocking = true;
-            conflicts.emplace_back(std::move(conflict));
-        };
-
-        if (!p_binding.IsValid())
-        {
-            ShortcutConflict conflict;
-            conflict.type = EShortcutConflictType::InvalidBinding;
-            conflict.binding = p_binding;
-            conflict.commandIds = { p_id };
-            conflict.message = "Shortcut binding is invalid.";
-            conflicts.emplace_back(std::move(conflict));
-            return conflicts;
-        }
-
-        for (const auto& otherCommand : m_commands)
-        {
-            if (otherCommand.id == p_id)
-                continue;
-
-            const auto otherBindings = GetBindings(otherCommand.id);
-            const auto duplicateBinding = std::find_if(
-                otherBindings.begin(),
-                otherBindings.end(),
-                [&p_binding](const ShortcutBinding& otherBinding)
-                {
-                    return otherBinding.IsValid() &&
-                        AreShortcutBindingsEquivalentForCurrentPlatform(otherBinding, p_binding);
-                });
-            if (duplicateBinding == otherBindings.end())
-                continue;
-
-            const bool targetGlobal = targetCommand->context == ShortcutContexts::Global;
-            const bool otherGlobal = otherCommand.context == ShortcutContexts::Global;
-
-            if (targetGlobal && otherGlobal)
-            {
-                addConflict(
-                    EShortcutConflictType::DuplicateGlobal,
-                    p_id,
-                    otherCommand.id,
-                    "Shortcut is already assigned to another global command.");
-                continue;
-            }
-
-            if (targetCommand->context == otherCommand.context)
-            {
-                addConflict(
-                    EShortcutConflictType::DuplicateContext,
-                    p_id,
-                    otherCommand.id,
-                    "Shortcut is already assigned in this context.");
-                continue;
-            }
-
-            if (!targetGlobal && !otherGlobal &&
-                p_areContextsMutuallyExclusive(targetCommand->context, otherCommand.context))
-            {
-                continue;
-            }
-
-            if (targetGlobal || otherGlobal)
-            {
-                const auto& contextCommand = targetGlobal ? otherCommand : *targetCommand;
-                if (contextCommand.allowContextOverride)
-                    continue;
-
-                addConflict(
-                    EShortcutConflictType::GlobalContextCollision,
-                    p_id,
-                    otherCommand.id,
-                    "Shortcut collides with a global command.");
-            }
-        }
-
-        return conflicts;
-    }
 }

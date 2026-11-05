@@ -65,8 +65,10 @@ Icons::IconId AssetIconResolver::ResolveAssetType(
     case AssetType::Material:        return kMaterialIcon;
     case AssetType::Audio:           return kAudioIcon;
     case AssetType::Scene:           return kSceneIcon;
+    case AssetType::ECSScene:        return kSceneIcon;
     case AssetType::Script:          return kScriptIcon;
     case AssetType::Prefab:          return kPrefabIcon;
+    case AssetType::ECSPrefab:       return kPrefabIcon;
     case AssetType::Font:            return kFontIcon;
     case AssetType::UIDocument:      return kUIDocumentIcon;
     case AssetType::UIStyleSheet:    return kUIStyleIcon;

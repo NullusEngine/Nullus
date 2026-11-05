@@ -1,8 +1,15 @@
+#include <Engine/Audio/AudioDevice.h>
+#include <Engine/ECS/ECSAssets.h>
+#include <Engine/Assets/PhysicsAssetCompiler.h>
 #include "Assets/AssetDatabaseFacade.h"
+#include <Core/Inputs/InputSerialization.h>
 #include <AnimationCompiler/AnimationSourceCompiler.h>
 #include "Rendering/Assets/DistanceFieldArtifact.h"
+#include "Rendering/Assets/DistanceFieldBuildService.h"
+#include "Project/Editor/Assets/DistanceFieldBuildService.h"
 
 #include "Assets/ArtifactDatabase.h"
+#include "Assets/ArtifactDatabasePatch.h"
 #include "Assets/ArtifactDatabaseManifestUtils.h"
 #include "Assets/ArtifactWriter.h"
 #include "Assets/AssetMeta.h"
@@ -32,6 +39,8 @@
 #include "MaterialCompiler/MaterialShaderCompiler.h"
 #include "MaterialCompiler/MaterialGraph.h"
 #include "Rendering/Assets/TextureArtifact.h"
+#include "Assets/SpriteArtifact.h"
+#include "Assets/SpriteSheet.h"
 #include "Rendering/Assets/TextureBuildSettings.h"
 #include "Rendering/Assets/TextureEncoder.h"
 #include "Rendering/Assets/TextureFormatResolver.h"
@@ -365,6 +374,8 @@ std::string AssetMetaStamp(
     const std::filesystem::path& metaPath,
     const NLS::Core::Assets::AssetMeta& meta)
 {
+    if(meta.assetType==NLS::Core::Assets::AssetType::ModelScene)
+        return NLS::Core::Assets::ComputeModelImportSettingsFingerprint(meta);
     auto stamp = FileStamp(metaPath);
     if (!stamp.empty())
         return stamp;
@@ -418,7 +429,7 @@ std::vector<NLS::Core::Assets::AssetDependencyRecord> BuildNativeAssetManifestDe
 
     editorAssetPath = NormalizeEditorAssetPath(std::move(editorAssetPath));
     editorMetaPath = NormalizeEditorAssetPath(std::move(editorMetaPath));
-    return {
+    std::vector<NLS::Core::Assets::AssetDependencyRecord> result {
         {
             NLS::Core::Assets::AssetDependencyKind::SourceFileHash,
             std::move(editorAssetPath),
@@ -440,6 +451,15 @@ std::vector<NLS::Core::Assets::AssetDependencyRecord> BuildNativeAssetManifestDe
             editorTarget
         }
     };
+    if (NLS::Core::ServiceLocator::Contains<NLS::Core::Assets::PluginContentRoots>())
+        for (const auto& root : NLS::Core::ServiceLocator::Get<NLS::Core::Assets::PluginContentRoots>().roots)
+        {
+            const auto relative = absolutePath.lexically_relative(root.physicalPath);
+            if (relative.empty() || relative.is_absolute() || *relative.begin() == "..") continue;
+            for (const auto& input : root.importInputs)
+                result.push_back({NLS::Core::Assets::AssetDependencyKind::SourceFileHash, input.generic_string(), SourceFileContentHash(input)});
+        }
+    return result;
 }
 
 void AddNativeAssetManifestDependencies(
@@ -646,10 +666,12 @@ bool ShouldPublishKnownCurrentManifestSnapshotForAssetType(
 {
     using NLS::Core::Assets::AssetType;
     return assetType == AssetType::ModelScene ||
+        assetType == AssetType::PhysicsMaterial || assetType == AssetType::CollisionMesh || assetType == AssetType::PhysicsShape ||
         assetType == AssetType::Prefab ||
+        assetType == AssetType::ECSScene || assetType == AssetType::ECSPrefab ||
         assetType == AssetType::Shader ||
         assetType == AssetType::ShaderGraph ||
-        assetType == AssetType::UIDocument ||
+        assetType == AssetType::UIDocument || assetType == AssetType::InputActions || assetType == AssetType::InputProfile ||
         assetType == AssetType::VfxSystem ||
         assetType == AssetType::AnimationClip || assetType == AssetType::AnimationGraph ||
         assetType == AssetType::BlendSpace || assetType == AssetType::BoneMask ||
@@ -658,6 +680,15 @@ bool ShouldPublishKnownCurrentManifestSnapshotForAssetType(
         assetType == AssetType::LocalizationTable;
 }
 
+bool HasCurrentPhysicsCookingDependency(const NLS::Core::Assets::ArtifactManifest& manifest,NLS::Core::Assets::AssetType type)
+{
+    if(type!=NLS::Core::Assets::AssetType::PhysicsMaterial && type!=NLS::Core::Assets::AssetType::CollisionMesh && type!=NLS::Core::Assets::AssetType::PhysicsShape) return true;
+    return std::any_of(manifest.dependencies.begin(),manifest.dependencies.end(),[](const auto& dependency)
+    {
+        return dependency.kind==NLS::Core::Assets::AssetDependencyKind::PostprocessorVersion && dependency.value=="nullus-physics-cooking" &&
+            dependency.hashOrVersion==NLS::Engine::Assets::PhysicsCookingFingerprint();
+    });
+}
 bool HasCurrentExternalTextureBuildPipelineDependency(
     const NLS::Core::Assets::ArtifactManifest& manifest,
     const NLS::Core::Assets::AssetType assetType)
@@ -1930,6 +1961,7 @@ std::string ToArtifactTypeKey(const NLS::Core::Assets::ArtifactType type)
     case ArtifactType::Mesh: return "mesh";
     case ArtifactType::Material: return "material";
     case ArtifactType::Texture: return "texture";
+    case ArtifactType::Sprite: return "sprite";
     case ArtifactType::Skeleton: return "skeleton";
     case ArtifactType::Skin: return "skin";
     case ArtifactType::AnimationClip: return "animation";
@@ -1939,6 +1971,13 @@ std::string ToArtifactTypeKey(const NLS::Core::Assets::ArtifactType type)
     case ArtifactType::Shader: return "shader";
     case ArtifactType::Audio: return "audio";
     case ArtifactType::UIDocument: return "ui-document";
+    case ArtifactType::InputActions: return "input-actions";
+    case ArtifactType::InputProfile: return "input-profile";
+    case ArtifactType::ECSScene: return "ecs-scene";
+    case ArtifactType::ECSPrefab: return "ecs-prefab";
+    case ArtifactType::PhysicsMaterial: return "physics-material";
+    case ArtifactType::CollisionMesh: return "collision-mesh";
+    case ArtifactType::PhysicsShape: return "physics-shape";
     case ArtifactType::VfxSystem: return "vfx-system";
     case ArtifactType::VfxScript: return "vfx-script";
     case ArtifactType::VfxEmitter: return "vfx-emitter";
@@ -2045,7 +2084,9 @@ std::optional<NLS::Core::Assets::ArtifactManifest> ImportSingleNativeArtifact(
     NLS::Core::Assets::AssetDiagnostics& diagnostics,
     const std::string& targetPlatform = "editor",
     std::string sourceContentHash = {},
-    std::vector<NLS::Core::Assets::AssetDependencyRecord> additionalDependencies = {})
+    std::vector<NLS::Core::Assets::AssetDependencyRecord> additionalDependencies = {},
+    std::vector<NLS::Core::Assets::ArtifactPayload> siblingArtifacts = {},
+    const NLS::Core::Assets::IArtifactWriteCancellation* cancellation = nullptr)
 {
     NLS::Core::Assets::ArtifactWriteRequest writeRequest;
     writeRequest.sourceAssetId = record.id;
@@ -2061,6 +2102,8 @@ std::optional<NLS::Core::Assets::ArtifactManifest> ImportSingleNativeArtifact(
         ToArtifactTypeKey(artifactType),
         std::move(payload)
     });
+    writeRequest.artifacts.insert(writeRequest.artifacts.end(),
+        std::make_move_iterator(siblingArtifacts.begin()), std::make_move_iterator(siblingArtifacts.end()));
     AddNativeAssetManifestDependencies(
         writeRequest.dependencies,
         editorAssetPath,
@@ -2078,7 +2121,8 @@ std::optional<NLS::Core::Assets::ArtifactManifest> ImportSingleNativeArtifact(
     NLS::Core::Assets::ArtifactWriter writer(stagingRoot, artifactRoot);
     const auto writeResult = writer.WriteAndCommit(
         writeRequest,
-        previousManifest.has_value() ? &*previousManifest : nullptr);
+        previousManifest.has_value() ? &*previousManifest : nullptr,
+        cancellation);
     diagnostics.insert(
         diagnostics.end(),
         writeResult.diagnostics.begin(),
@@ -2122,10 +2166,13 @@ std::optional<NLS::Core::Assets::ArtifactManifest> ImportStandaloneTextureArtifa
             NLS::Base::Profiling::PerformanceStageDomain::AssetImport,
             "StandaloneTextureDecodeAndMip",
             NLS::Base::Profiling::PerformanceStageThread::Main);
+        NLS::Render::Assets::TextureMipGeneratorSettings decodeSettings;
+        decodeSettings.colorSpace = NLS::Render::Assets::TextureArtifactColorSpace::Srgb;
+        decodeSettings.mipmapEnabled = !NLS::Core::Assets::IsSpriteTexture(meta);
         artifact = NLS::Render::Assets::DecodeTextureArtifactFromEncodedImage(
             encoded.data(),
             encoded.size(),
-            NLS::Render::Assets::TextureArtifactColorSpace::Srgb,
+            decodeSettings,
             false);
     }
     if (!artifact.has_value())
@@ -2135,7 +2182,7 @@ std::optional<NLS::Core::Assets::ArtifactManifest> ImportStandaloneTextureArtifa
     totalScope.AddCounter("mipCount", artifact->mips.size());
 
     const std::string textureBuildTargetPlatform = StandaloneTextureBuildTargetPlatform();
-    const bool canEncodeBc = textureBuildTargetPlatform == "win64-dx12";
+    const bool canEncodeBc = textureBuildTargetPlatform == "win64-dx12" && !NLS::Core::Assets::IsSpriteTexture(meta);
     auto encoder = canEncodeBc ? CreateDirectXTexTextureEncoder() : nullptr;
 
     NLS::Render::Assets::TextureImportSettingsSnapshot importSettings;
@@ -2146,6 +2193,11 @@ std::optional<NLS::Core::Assets::ArtifactManifest> ImportStandaloneTextureArtifa
     importSettings.maxTextureSize = 0u;
     importSettings.resizePolicy = "keep";
     importSettings.compressionIntent = "default";
+    if (NLS::Core::Assets::IsSpriteTexture(meta))
+    {
+        importSettings.mipmapEnabled = false;
+        importSettings.alphaIsTransparency = true;
+    }
 
     NLS::Render::Assets::TextureSourceDescriptor sourceDescriptor;
     sourceDescriptor.assetPath = editorAssetPath;
@@ -2252,6 +2304,19 @@ std::optional<NLS::Core::Assets::ArtifactManifest> ImportStandaloneTextureArtifa
     if (payload.empty())
         return std::nullopt;
 
+    NLS::Core::Assets::ArtifactWriteRequest spriteSiblings;
+    std::string spriteError;
+    if (!NLS::Core::Assets::AppendSpriteArtifacts(spriteSiblings, meta,
+        sourceDescriptor.width, sourceDescriptor.height, "texture:main",
+        absolutePath.stem().generic_string(), spriteError))
+    {
+        diagnostics.push_back({NLS::Core::Assets::AssetDiagnosticSeverity::Error,
+            "sprite-import-invalid", meta.id, absolutePath, spriteError});
+        return std::nullopt;
+    }
+    spriteSiblings.dependencies.push_back({NLS::Core::Assets::AssetDependencyKind::PostprocessorVersion,
+        kExternalTextureBuildPipelineDependencyName,std::to_string(kExternalTexturePostprocessorVersion)});
+
     {
         NLS::Base::Profiling::PerformanceStageScope commitScope(
             NLS::Base::Profiling::PerformanceStageDomain::AssetImport,
@@ -2274,11 +2339,7 @@ std::optional<NLS::Core::Assets::ArtifactManifest> ImportStandaloneTextureArtifa
             diagnostics,
             textureBuildTargetPlatform,
             resolvedSettings->sourceContentHash,
-            {{
-                NLS::Core::Assets::AssetDependencyKind::PostprocessorVersion,
-                kExternalTextureBuildPipelineDependencyName,
-                std::to_string(kExternalTexturePostprocessorVersion)
-            }});
+            std::move(spriteSiblings.dependencies), std::move(spriteSiblings.artifacts));
     }
 }
 
@@ -2409,6 +2470,7 @@ std::shared_ptr<const AssetDatabaseFacade> AssetDatabaseFacade::CreateReadOnlySn
     snapshot->m_publishedState = other.m_publishedState;
     snapshot->m_currentStateIdentity = other.m_currentStateIdentity;
     snapshot->m_publishedStateIdentity = other.m_publishedStateIdentity;
+    snapshot->m_registerDistanceFieldSources = false;
     return snapshot;
 }
 
@@ -3643,6 +3705,71 @@ void AssetDatabaseFacade::AddArtifactManifest(NLS::Core::Assets::ArtifactManifes
     PublishArtifactManifestToMemory(std::move(manifest));
 }
 
+std::optional<NLS::Core::Assets::ArtifactManifest> AssetDatabaseFacade::PublishDistanceFieldArtifactPatch(
+    const std::string& assetPath, const std::string& expectedSourceIdentity,
+    const std::string& expectedImportSettings, const std::map<std::string,std::string>& expectedSettings,
+    const std::vector<NLS::Core::Assets::ArtifactPayload>& payloads,
+    const std::vector<std::string>& removedSubAssets,
+    const NLS::Core::Assets::IArtifactWriteCancellation* cancellation)
+{
+    namespace ca=NLS::Core::Assets;namespace df=NLS::Render::DistanceField;
+    const auto* record=FindRecordByEditorAssetPath(assetPath);
+    if(!record || !IsEditorMode() || !std::filesystem::is_regular_file(record->absolutePath))return {};
+    const auto artifactRoot=GetArtifactRootForAssetPath(record->absolutePath);
+    const auto databasePath=GetArtifactDatabasePathForAssetPath(record->absolutePath);
+    if(artifactRoot.empty() || databasePath.empty())return {};
+    std::lock_guard publishLock(GetArtifactPublishMutex(artifactRoot));
+    std::unique_lock databaseLock(GetProjectArtifactDatabaseManifestMutex(databasePath));
+    auto previous=ca::ReadArtifactDatabaseManifest(databasePath,record->id,"editor");
+    if(!previous || df::DistanceFieldSourceManifestIdentity(*previous)!=expectedSourceIdentity)return {};
+    const auto meta=ca::AssetMeta::Load(ca::GetAssetMetaPath(record->absolutePath));
+    if(!meta || ca::ComputeModelImportSettingsFingerprint(*meta)!=expectedImportSettings)return {};
+    const auto root=expectedSettings.find("__DF_PROJECT_ROOT");
+    const auto current=df::ReadDistanceFieldBuildSettings(meta->settings,root==expectedSettings.end()?std::filesystem::path{}:std::filesystem::path(root->second));
+    auto expected=df::ReadDistanceFieldBuildSettings(expectedSettings);
+    if(const auto enabled=expectedSettings.find("__DF_PROJECT_ENABLED");enabled!=expectedSettings.end())expected.projectEnabled=enabled->second=="true";
+    if(current.Enabled()!=expected.Enabled() || current.resolutionScale!=expected.resolutionScale || current.twoSided!=expected.twoSided)return {};
+    const auto fieldType=[](ca::ArtifactType type){return type==ca::ArtifactType::MeshDistanceField || type==ca::ArtifactType::MeshDistanceFieldSource;};
+    for(const auto& payload:payloads)if(!fieldType(payload.artifactType))return {};
+    for(const auto& key:removedSubAssets)if(const auto* entry=previous->FindSubAsset(key);entry && !fieldType(entry->artifactType))return {};
+    ca::ArtifactWriteRequest request;
+    request.sourceAssetId=previous->sourceAssetId;request.importerId=previous->importerId;request.importerVersion=previous->importerVersion;
+    request.targetPlatform=previous->targetPlatform;request.primarySubAssetKey=previous->primarySubAssetKey;
+    request.dependencies=previous->dependencies;request.artifacts=payloads;
+    const auto metaPath=NormalizeEditorAssetPath(ToEditorAssetPath(ca::GetAssetMetaPath(record->absolutePath)));
+    const bool keepImportStamp=expectedSettings.contains("__DF_KEEP_IMPORT_STAMP");
+    for(auto& dependency:request.dependencies)
+        if(!keepImportStamp && dependency.kind==ca::AssetDependencyKind::PathToGuidMapping && NormalizeEditorAssetPath(dependency.value)==metaPath)
+            dependency.hashOrVersion=expectedImportSettings;
+    ca::ArtifactWriter writer(GetArtifactStagingRootForAssetPath(record->absolutePath)/"DistanceFields",artifactRoot);
+    auto written=writer.WriteIncrementalAndCommit(request,*previous,removedSubAssets,cancellation);
+    if(!written.committed)
+    {m_diagnostics.insert(m_diagnostics.end(),written.diagnostics.begin(),written.diagnostics.end());return {};}
+    if(cancellation && cancellation->IsCancellationRequested())return {};
+    const auto latestMeta=ca::AssetMeta::Load(ca::GetAssetMetaPath(record->absolutePath));
+    if(!latestMeta || ca::ComputeModelImportSettingsFingerprint(*latestMeta)!=expectedImportSettings)return {};
+    const auto latestSettings=df::ReadDistanceFieldBuildSettings(latestMeta->settings,root==expectedSettings.end()?std::filesystem::path{}:std::filesystem::path(root->second));
+    if(latestSettings.Enabled()!=expected.Enabled() || latestSettings.resolutionScale!=expected.resolutionScale || latestSettings.twoSided!=expected.twoSided)return {};
+    std::string writeError;
+    if(!ca::WriteArtifactDatabaseManifest(databasePath,written.manifest,assetPath,ca::ArtifactRecordStatus::UpToDate,&*previous,&writeError))
+    {AddDiagnostic(ca::AssetDiagnosticSeverity::Error,"distance-field-database-patch-failed",databasePath,std::move(writeError));return {};}
+    {
+        std::lock_guard cacheLock(m_artifactDatabaseCacheMutex);
+        const auto key=databasePath.lexically_normal().generic_string();
+        m_artifactDatabasesByPath.erase(key);m_dirtyArtifactDatabasePaths.erase(key);
+    }
+    databaseLock.unlock();
+    // A DF-only update must not hash source textures or re-evaluate the model
+    // importer's freshness. Its immutable base geometry did not change.
+    df::RegisterDistanceFieldManifest(written.manifest,artifactRoot);
+    {
+        std::lock_guard manifestLock(m_manifestMutex);
+        MutableManifestsBySource()[written.manifest.sourceAssetId]=written.manifest;
+        PublishCurrentStateLocked();
+    }
+    return written.manifest;
+}
+
 std::optional<NLS::Core::Assets::ArtifactManifest> AssetDatabaseFacade::GetArtifactManifestForAssetPath(
     const std::string& assetPath) const
 {
@@ -3659,8 +3786,9 @@ std::optional<NLS::Core::Assets::ArtifactManifest> AssetDatabaseFacade::GetArtif
         const auto manifest = manifests.find(record->id);
         if (manifest != manifests.end())
         {
-            NLS::Render::DistanceField::RegisterDistanceFieldManifest(manifest->second,
-                GetArtifactRootForAssetPath(record->absolutePath));
+            if(m_registerDistanceFieldSources)
+                NLS::Render::DistanceField::RegisterDistanceFieldManifest(manifest->second,
+                    GetArtifactRootForAssetPath(record->absolutePath));
             return manifest->second;
         }
     }
@@ -3817,7 +3945,9 @@ bool AssetDatabaseFacade::IsArtifactManifestCurrentForAssetPathUncached(
     if (manifestCopy.importerId != meta->importerId ||
         manifestCopy.importerVersion != meta->importerVersion ||
         manifestCopy.targetPlatform != expectedTargetPlatform ||
+        !HasCurrentPhysicsCookingDependency(manifestCopy,meta->assetType) ||
         !HasCurrentExternalTextureBuildPipelineDependency(manifestCopy, meta->assetType) ||
+        !NLS::Core::Assets::HasCurrentSpriteCompilerDependency(manifestCopy,*meta) ||
         !HasCurrentShaderCompilerToolchainDependency(manifestCopy, meta->assetType))
     {
         return false;
@@ -3874,7 +4004,8 @@ bool AssetDatabaseFacade::IsArtifactManifestCurrentForAssetPathUncached(
             return false;
 
         const auto currentStamp = checksPrimaryMeta
-            ? AssetMetaStamp(dependencyPath, *meta)
+            ? (meta->assetType==NLS::Core::Assets::AssetType::ModelScene && !dependency.hashOrVersion.starts_with("model-import:")
+                ? FileStamp(dependencyPath) : AssetMetaStamp(dependencyPath, *meta))
             : SourceFileContentHash(dependencyPath);
         if (currentStamp != dependency.hashOrVersion)
             return false;
@@ -5146,7 +5277,7 @@ bool AssetDatabaseFacade::RefreshSourceDatabase()
     std::vector<NLS::Core::Assets::SourceAssetRoot> scanRoots;
     scanRoots.reserve(m_roots.size());
     for (const auto& root : m_roots)
-        scanRoots.push_back({root.path, root.readOnly});
+        scanRoots.push_back({root.path, root.readOnly, root.identityNamespace});
 
     if (!m_sourceDatabase.ScanRoots(scanRoots))
     {
@@ -5168,7 +5299,7 @@ bool AssetDatabaseFacade::RefreshKnownSourceAssetsInternal(
     std::vector<NLS::Core::Assets::SourceAssetRoot> scanRoots;
     scanRoots.reserve(m_roots.size());
     for (const auto& root : m_roots)
-        scanRoots.push_back({root.path, root.readOnly});
+        scanRoots.push_back({root.path, root.readOnly, root.identityNamespace});
     LogTargetedRefreshTiming("root list build", rootListBegin, scanRoots.size());
 
     auto sourceDatabase = m_sourceDatabase;
@@ -5474,6 +5605,14 @@ bool AssetDatabaseFacade::RefreshSingle(
             "prefab",
             std::vector<uint8_t>(sourceText.begin(), sourceText.end())
         });
+        for (const auto& reference : NLS::Engine::Assets::CollectPrefabAssetReferences(importResult.artifact.graph))
+        {
+            const auto subAssetKey = NLS::Engine::Assets::ExtractPrefabAssetReferenceSubAssetKeyHint(reference.filePath);
+            AddUniqueDependency(writeRequest.dependencies, {
+                subAssetKey.empty() ? NLS::Core::Assets::AssetDependencyKind::SourceAssetGuid
+                                    : NLS::Core::Assets::AssetDependencyKind::ImportedArtifact,
+                reference.guid.ToString(), subAssetKey});
+        }
         AddNativeAssetManifestDependencies(
             writeRequest.dependencies,
             editorAssetPath,
@@ -5999,7 +6138,126 @@ bool AssetDatabaseFacade::RefreshSingle(
         if(!manifest||!SaveArtifactManifestForAssetPath(absolutePath,*manifest)){std::error_code ignored;rollback.Restore(&ignored);return false;}
         AddArtifactManifest(*manifest);rollback.Commit();return true;
     }
-    if (record->assetType == NLS::Core::Assets::AssetType::UIDocument ||
+    if (record->assetType==NLS::Core::Assets::AssetType::PhysicsMaterial || record->assetType==NLS::Core::Assets::AssetType::CollisionMesh ||
+        record->assetType==NLS::Core::Assets::AssetType::PhysicsShape)
+    {
+        const auto artifactRoot=GetArtifactRootForAssetPath(absolutePath),stagingRoot=GetArtifactStagingRootForAssetPath(absolutePath);
+        ImportJobId job=existingJob;
+        if(progressTracker && !job.IsValid()) job=progressTracker->BeginJob(meta->id,ToEditorAssetPath(absolutePath),"editor",1u);
+        const auto fail=[&](const std::string& message)
+        {
+            AddDiagnostic(NLS::Core::Assets::AssetDiagnosticSeverity::Error,"assetdatabase-physics-import-failed",absolutePath,message);
+            if(progressTracker && job.IsValid())
+            {
+                const auto token=progressTracker->GetCancellationToken(job);
+                const auto status=token && token->get().IsCancellationRequested()?ImportJobTerminalStatus::Cancelled:ImportJobTerminalStatus::Failed;
+                progressTracker->FinishJob(job,status,m_diagnostics);
+            }
+            return false;
+        };
+        if(artifactRoot.empty() || stagingRoot.empty() || !CanSaveArtifactManifestForAssetPath(absolutePath)) return fail("Physics artifact destination is unavailable.");
+        std::vector<uint8_t> snapshot;
+        std::string error;
+        const auto capturedMeta=NLS::Core::Assets::AssetMeta::Load(NLS::Core::Assets::GetAssetMetaPath(absolutePath));
+        if(!capturedMeta || capturedMeta->id!=meta->id) return fail("Physics source metadata changed before cooking.");
+        if(!NLS::Engine::Assets::CapturePhysicsAssetSource(absolutePath,snapshot,error)) return fail(error);
+        struct PublicationGuard final : NLS::Core::Assets::IArtifactWriteCancellation
+        {
+            std::function<bool()> invalid;
+            bool IsCancellationRequested() const override { return invalid(); }
+        } guard;
+        guard.invalid=[&]
+        {
+            const auto token=progressTracker && job.IsValid()?progressTracker->GetCancellationToken(job):std::optional<ImportCancellationTokenHandle>{};
+            if(token && token->get().IsCancellationRequested()) return true;
+            std::vector<uint8_t> current; std::string readError;
+            return !NLS::Engine::Assets::CapturePhysicsAssetSource(absolutePath,current,readError) || current!=snapshot ||
+                NLS::Core::Assets::AssetMeta::Load(NLS::Core::Assets::GetAssetMetaPath(absolutePath))!=capturedMeta;
+        };
+        if(progressTracker && job.IsValid()) progressTracker->ReportProgress(job,ImportPhase::SourceParse,0.1,"Cooking collision geometry and physics properties");
+        NLS::Core::Assets::ArtifactPayload compiled;
+        if(!NLS::Engine::Assets::CompilePhysicsAsset(record->assetType,
+            std::string_view(reinterpret_cast<const char*>(snapshot.data()),snapshot.size()),"editor",compiled,error)) return fail(error);
+        std::lock_guard publishLock(GetArtifactPublishMutex(artifactRoot));
+        if(guard.IsCancellationRequested())
+            return fail("Physics source/meta revision changed during cooking; previous artifacts are retained.");
+        ArtifactRootRollback rollback(artifactRoot);
+        if(!rollback.Prepare()) return fail("Cannot prepare physics artifact publication.");
+        if(progressTracker && job.IsValid()) progressTracker->ReportProgress(job,ImportPhase::ArtifactWrite,0.8,"Publishing physics artifact");
+        const auto manifest=ImportSingleNativeArtifact(*record,*meta,absolutePath,ToEditorAssetPath(absolutePath),
+            ToEditorAssetPath(NLS::Core::Assets::GetAssetMetaPath(absolutePath)),artifactRoot,stagingRoot,
+            compiled.subAssetKey,compiled.artifactType,compiled.loaderId,absolutePath.stem().generic_string(),std::move(compiled.payload),
+            LoadPreviousArtifactManifestForRecord(*record),m_diagnostics,"editor",NLS::Core::Assets::ComputeNativeArtifactPayloadHash(snapshot),std::move(compiled.dependencies),{},&guard);
+        if(!manifest || guard.IsCancellationRequested() || !SaveArtifactManifestForAssetPath(absolutePath,*manifest))
+        {
+            std::error_code restoreError;
+            if(!rollback.Restore(&restoreError)) ReportArtifactRollbackRestoreFailure(m_diagnostics,artifactRoot,restoreError);
+            return fail("Cannot publish physics artifact manifest.");
+        }
+        AddArtifactManifest(*manifest); rollback.Commit();
+        if(progressTracker && job.IsValid()) progressTracker->FinishJob(job,ImportJobTerminalStatus::Succeeded,{});
+        return true;
+    }
+    if (record->assetType == NLS::Core::Assets::AssetType::ECSScene ||
+        record->assetType == NLS::Core::Assets::AssetType::ECSPrefab)
+    {
+        const auto artifactRoot = GetArtifactRootForAssetPath(absolutePath);
+        const auto stagingRoot = GetArtifactStagingRootForAssetPath(absolutePath);
+        const auto databasePath = GetArtifactDatabasePathForAssetPath(absolutePath);
+        ImportJobId job = existingJob;
+        if (progressTracker && !job.IsValid()) job = progressTracker->BeginJob(meta->id, ToEditorAssetPath(absolutePath), "editor", 1u);
+        const auto fail = [&](const std::string& message)
+        {
+            AddDiagnostic(NLS::Core::Assets::AssetDiagnosticSeverity::Error, "assetdatabase-ecs-import-failed", absolutePath, message);
+            if (progressTracker && job.IsValid()) progressTracker->FinishJob(job, ImportJobTerminalStatus::Failed, m_diagnostics);
+            return false;
+        };
+        if (artifactRoot.empty() || stagingRoot.empty() || !CanSaveArtifactManifestForAssetPath(absolutePath))
+            return fail("ECS artifact manifest cannot be written");
+        NLS::Core::Assets::ArtifactDatabase snapshot;
+        bool snapshotReadable = true;
+        {
+            std::lock_guard databaseLock(GetProjectArtifactDatabaseManifestMutex(databasePath));
+            std::lock_guard cacheLock(m_artifactDatabaseCacheMutex);
+            const auto cached = m_artifactDatabasesByPath.find(databasePath.lexically_normal().generic_string());
+            if (cached != m_artifactDatabasesByPath.end()) snapshot = cached->second;
+            else if (std::filesystem::exists(databasePath) && !snapshot.Load(databasePath)) snapshotReadable = false;
+        }
+        if (!snapshotReadable) return fail("ECS resource ArtifactDB cannot be read");
+        // Import roots keep their artifact cache under <root>/Library/Artifacts.
+        const auto projectRoot = artifactRoot.parent_path().parent_path();
+        NLS::Core::Assets::ArtifactPayload compiled;
+        try
+        {
+            if (std::filesystem::file_size(absolutePath) > NLS::ECS::ArchiveLimits{}.maxBytes)
+                return fail("ECS source exceeds the archive byte limit");
+            if (progressTracker && job.IsValid()) progressTracker->ReportProgress(job, ImportPhase::SourceParse, 0.1, "Validating ECS data and resources");
+            compiled = NLS::Engine::ECSIntegration::CompileECSAsset(ReadTextFile(absolutePath),
+                record->assetType == NLS::Core::Assets::AssetType::ECSScene ? NLS::ECS::DocumentKind::Scene : NLS::ECS::DocumentKind::Prefab,
+                snapshot, "editor", projectRoot);
+        }
+        catch (const std::exception& error) { return fail(error.what()); }
+        std::lock_guard publishLock(GetArtifactPublishMutex(artifactRoot));
+        ArtifactRootRollback rollback(artifactRoot);
+        if (!rollback.Prepare()) return fail("Cannot prepare ECS artifact publication");
+        if (progressTracker && job.IsValid()) progressTracker->ReportProgress(job, ImportPhase::ArtifactWrite, 0.8, "Publishing ECS data");
+        const auto manifest = ImportSingleNativeArtifact(*record, *meta, absolutePath, ToEditorAssetPath(absolutePath),
+            ToEditorAssetPath(NLS::Core::Assets::GetAssetMetaPath(absolutePath)), artifactRoot, stagingRoot,
+            compiled.subAssetKey, compiled.artifactType, compiled.loaderId, absolutePath.stem().generic_string(), compiled.payload,
+            LoadPreviousArtifactManifestForRecord(*record), m_diagnostics, "editor", {}, std::move(compiled.dependencies));
+        if (!manifest || !SaveArtifactManifestForAssetPath(absolutePath, *manifest))
+        {
+            std::error_code error;
+            if (!rollback.Restore(&error)) ReportArtifactRollbackRestoreFailure(m_diagnostics, artifactRoot, error);
+            return fail("Cannot publish ECS artifact and manifest");
+        }
+        AddArtifactManifest(*manifest); rollback.Commit();
+        if (progressTracker && job.IsValid()) progressTracker->FinishJob(job, ImportJobTerminalStatus::Succeeded, {});
+        return true;
+    }
+    if (record->assetType == NLS::Core::Assets::AssetType::InputActions ||
+        record->assetType == NLS::Core::Assets::AssetType::InputProfile ||
+        record->assetType == NLS::Core::Assets::AssetType::UIDocument ||
         record->assetType == NLS::Core::Assets::AssetType::UIStyleSheet ||
         record->assetType == NLS::Core::Assets::AssetType::LocalizationTable)
     {
@@ -6041,7 +6299,22 @@ bool AssetDatabaseFacade::RefreshSingle(
         std::string diagnosticPath;
         std::string diagnosticMessage;
         std::optional<NLS::Engine::UI::UIDocument> parsedUIDocument;
-        if (record->assetType == NLS::Core::Assets::AssetType::UIDocument)
+        if (record->assetType == NLS::Core::Assets::AssetType::InputActions || record->assetType == NLS::Core::Assets::AssetType::InputProfile)
+        {
+            std::vector<std::string> diagnostics;
+            if (record->assetType == NLS::Core::Assets::AssetType::InputActions)
+            {
+                NLS::Input::InputDefinition definition;
+                valid = NLS::Core::Inputs::ParseInputDefinition(sourceText, definition, diagnostics);
+            }
+            else
+            {
+                NLS::Input::InputProfile profile;
+                valid = NLS::Core::Inputs::ParseInputProfile(sourceText, profile, diagnostics);
+            }
+            if (!diagnostics.empty()) diagnosticMessage = diagnostics.front();
+        }
+        else if (record->assetType == NLS::Core::Assets::AssetType::UIDocument)
         {
             std::vector<NLS::Engine::UI::UIDocumentDiagnostic> diagnostics;
             parsedUIDocument = NLS::Engine::UI::UIDocument::LoadFromJson(sourceText, &diagnostics);
@@ -6228,6 +6501,10 @@ bool AssetDatabaseFacade::RefreshSingle(
         std::string loaderId;
         switch (record->assetType)
         {
+        case NLS::Core::Assets::AssetType::InputActions:
+            artifactType = NLS::Core::Assets::ArtifactType::InputActions; loaderId = "input-actions"; break;
+        case NLS::Core::Assets::AssetType::InputProfile:
+            artifactType = NLS::Core::Assets::ArtifactType::InputProfile; loaderId = "input-profile"; break;
         case NLS::Core::Assets::AssetType::UIDocument:
             artifactType = NLS::Core::Assets::ArtifactType::UIDocument;
             loaderId = "ui-document";
@@ -6517,6 +6794,124 @@ bool AssetDatabaseFacade::RefreshSingle(
             if (auto resolver = NLS::Engine::UI::GetUIDocumentResourceResolver())
                 resolver->InvalidateAsset(record->id);
         }
+        if (progressTracker && job.IsValid())
+            progressTracker->FinishJob(job, ImportJobTerminalStatus::Succeeded, {});
+        return true;
+    }
+
+    if (record->assetType == NLS::Core::Assets::AssetType::Audio)
+    {
+        const auto artifactRoot = GetArtifactRootForAssetPath(absolutePath);
+        const auto stagingRoot = GetArtifactStagingRootForAssetPath(absolutePath);
+        const auto editorAssetPath = ToEditorAssetPath(absolutePath);
+        const auto editorMetaPath = ToEditorAssetPath(NLS::Core::Assets::GetAssetMetaPath(absolutePath));
+        if (artifactRoot.empty() ||
+            stagingRoot.empty() ||
+            !CanSaveArtifactManifestForAssetPath(absolutePath))
+        {
+            AddDiagnostic(
+                NLS::Core::Assets::AssetDiagnosticSeverity::Error,
+                "assetdatabase-audio-artifact-manifest-unwritable",
+                GetArtifactManifestPathForAssetPath(absolutePath),
+                "Imported audio artifact manifest cannot be written.");
+            return false;
+        }
+
+        std::error_code audioSizeError;
+        const auto audioSourceSize=std::filesystem::file_size(absolutePath,audioSizeError);
+        if(audioSizeError || audioSourceSize>uint64_t(256)*1024*1024)
+        {
+            AddDiagnostic(NLS::Core::Assets::AssetDiagnosticSeverity::Error,
+                "assetdatabase-audio-source-too-large",absolutePath,"Audio source is unavailable or exceeds 256 MiB.");
+            return false;
+        }
+        auto payload = ReadBinaryFile(absolutePath);
+        if (payload.empty())
+        {
+            AddDiagnostic(
+                NLS::Core::Assets::AssetDiagnosticSeverity::Error,
+                "assetdatabase-audio-source-read-failed",
+                absolutePath,
+                "Audio source file could not be read or is empty.");
+            return false;
+        }
+        std::string decodeError;
+        if (!NLS::Engine::Audio::DecodeAudio(payload, decodeError))
+        {
+            AddDiagnostic(NLS::Core::Assets::AssetDiagnosticSeverity::Error,
+                "assetdatabase-audio-decode-failed",absolutePath,decodeError);
+            return false;
+        }
+        const auto payloadHash = NLS::Core::Assets::ComputeNativeArtifactPayloadHash(payload);
+
+        ImportJobId job = existingJob;
+        if (progressTracker && !job.IsValid())
+            job = progressTracker->BeginJob(meta->id, editorAssetPath, "editor", 1u);
+        if (progressTracker && job.IsValid())
+            progressTracker->ReportProgress(job, ImportPhase::ArtifactWrite, 0.85, "Writing audio artifact");
+
+        auto previousManifest = LoadPreviousArtifactManifestForRecord(*record);
+        std::lock_guard publishLock(GetArtifactPublishMutex(artifactRoot));
+        ArtifactRootRollback artifactRollback(artifactRoot);
+        if (!artifactRollback.Prepare())
+        {
+            AddDiagnostic(
+                NLS::Core::Assets::AssetDiagnosticSeverity::Error,
+                "assetdatabase-audio-artifact-rollback-prepare-failed",
+                artifactRoot,
+                "Previous imported audio artifact root could not be prepared for rollback.");
+            if (progressTracker && job.IsValid())
+                progressTracker->FinishJob(job, ImportJobTerminalStatus::Failed, m_diagnostics);
+            return false;
+        }
+
+        const auto subAssetKey = "audio:" + absolutePath.stem().generic_string();
+        auto manifest = ImportSingleNativeArtifact(
+            *record,
+            *meta,
+            absolutePath,
+            editorAssetPath,
+            editorMetaPath,
+            artifactRoot,
+            stagingRoot,
+            subAssetKey,
+            NLS::Core::Assets::ArtifactType::Audio,
+            "audio",
+            absolutePath.stem().generic_string(),
+            std::move(payload),
+            std::move(previousManifest),
+            m_diagnostics,
+            "editor",
+            payloadHash);
+        if (!manifest.has_value())
+        {
+            std::error_code restoreError;
+            if (!artifactRollback.Restore(&restoreError))
+                ReportArtifactRollbackRestoreFailure(m_diagnostics, artifactRoot, restoreError);
+            if (progressTracker && job.IsValid())
+                progressTracker->FinishJob(job, ImportJobTerminalStatus::Failed, m_diagnostics);
+            return false;
+        }
+
+        if (!SaveArtifactManifestForAssetPath(absolutePath, *manifest))
+        {
+            std::error_code restoreError;
+            if (!artifactRollback.Restore(&restoreError))
+                ReportArtifactRollbackRestoreFailure(m_diagnostics, artifactRoot, restoreError);
+            AddDiagnostic(
+                NLS::Core::Assets::AssetDiagnosticSeverity::Error,
+                "assetdatabase-audio-artifact-manifest-write-failed",
+                GetArtifactManifestPathForAssetPath(absolutePath),
+                "Imported audio artifact manifest could not be written.");
+            if (progressTracker && job.IsValid())
+                progressTracker->FinishJob(job, ImportJobTerminalStatus::Failed, m_diagnostics);
+            return false;
+        }
+
+        AddArtifactManifest(std::move(*manifest));
+        artifactRollback.Commit();
+        if (auto resolver = NLS::Engine::UI::GetUIDocumentResourceResolver())
+            resolver->InvalidateAsset(record->id);
         if (progressTracker && job.IsValid())
             progressTracker->FinishJob(job, ImportJobTerminalStatus::Succeeded, {});
         return true;
@@ -7204,6 +7599,13 @@ void AssetDatabaseFacade::LoadPersistedArtifactManifests()
             record.assetType != NLS::Core::Assets::AssetType::Shader &&
             record.assetType != NLS::Core::Assets::AssetType::Texture &&
             record.assetType != NLS::Core::Assets::AssetType::Material &&
+            record.assetType != NLS::Core::Assets::AssetType::InputActions &&
+            record.assetType != NLS::Core::Assets::AssetType::InputProfile &&
+            record.assetType != NLS::Core::Assets::AssetType::ECSScene &&
+            record.assetType != NLS::Core::Assets::AssetType::ECSPrefab &&
+            record.assetType != NLS::Core::Assets::AssetType::PhysicsMaterial &&
+            record.assetType != NLS::Core::Assets::AssetType::CollisionMesh &&
+            record.assetType != NLS::Core::Assets::AssetType::PhysicsShape &&
             record.assetType != NLS::Core::Assets::AssetType::UIDocument &&
             record.assetType != NLS::Core::Assets::AssetType::VfxSystem &&
             record.assetType != NLS::Core::Assets::AssetType::VfxScript &&
@@ -7325,8 +7727,9 @@ std::optional<NLS::Core::Assets::ArtifactManifest> AssetDatabaseFacade::LoadPers
 
     {
         std::lock_guard manifestLock(m_manifestMutex);
-        NLS::Render::DistanceField::RegisterDistanceFieldManifest(*persistedManifest,
-            GetArtifactRootForAssetPath(record.absolutePath));
+        if(m_registerDistanceFieldSources)
+            NLS::Render::DistanceField::RegisterDistanceFieldManifest(*persistedManifest,
+                GetArtifactRootForAssetPath(record.absolutePath));
         MutableManifestsBySource()[record.id] = *persistedManifest;
         PublishCurrentStateLocked();
     }
@@ -7526,6 +7929,21 @@ void AssetDatabaseFacade::PublishArtifactManifestToMemory(
     const bool markKnownCurrent)
 {
     const auto assetPath = GUIDToAssetPath(manifest.sourceAssetId.ToString());
+    std::optional<DistanceFieldBuildRequest> details;
+    if(!markKnownCurrent && !assetPath.empty() && manifest.FindSubAsset(NLS::Render::DistanceField::DistanceFieldSourceKey) &&
+        DistanceFieldBuildService::CanSchedule())
+    {
+        const bool missing=std::any_of(manifest.subAssets.begin(),manifest.subAssets.end(),[&](const auto& artifact)
+        {return artifact.artifactType==NLS::Core::Assets::ArtifactType::MeshDistanceField && artifact.loaderId=="mesh-distance-field" &&
+            (!manifest.FindSubAsset(artifact.subAssetKey+":mip0") || !manifest.FindSubAsset(artifact.subAssetKey+":mip1"));});
+        const auto* root=FindEditorAssetRootForAbsolutePath(m_roots,ResolveAssetPath(assetPath));
+        if(missing && root && root->mountPath.generic_string()=="Assets" &&
+            !DistanceFieldBuildService::IsBuilding(GetEditorAssetRootLibraryPath(*root).parent_path(),assetPath))
+        {
+            details.emplace();details->projectRoot=GetEditorAssetRootLibraryPath(*root).parent_path();details->assetPath=assetPath;
+            details->sourceIdentityHint=NLS::Render::DistanceField::DistanceFieldSourceManifestIdentity(manifest);
+        }
+    }
     if (!assetPath.empty())
         NLS::Render::DistanceField::RegisterDistanceFieldManifest(manifest,
             GetArtifactRootForAssetPath(ResolveAssetPath(assetPath)));
@@ -7551,6 +7969,7 @@ void AssetDatabaseFacade::PublishArtifactManifestToMemory(
         UpdateKnownCurrentArtifactManifestForAssetPath(assetPath);
     else if (!assetPath.empty())
         m_knownCurrentArtifactManifestSnapshotDirty = true;
+    if(details)DistanceFieldBuildService::Queue(std::move(*details));
 }
 
 bool AssetDatabaseFacade::FlushArtifactDatabaseCache()
@@ -7771,7 +8190,7 @@ bool AssetDatabaseFacade::RegisterImportedDependencySourceAsset(
     std::vector<NLS::Core::Assets::SourceAssetRoot> scanRoots;
     scanRoots.reserve(m_roots.size());
     for (const auto& root : m_roots)
-        scanRoots.push_back({root.path, root.readOnly});
+        scanRoots.push_back({root.path, root.readOnly, root.identityNamespace});
 
     const bool registered = m_sourceDatabase.RegisterSourceAsset(
         assetRoot->path,

@@ -2,8 +2,11 @@
 
 #include "Assets/ModelTextureTextCodec.h"
 #include "Debug/Assertion.h"
+#include "Reflection/Field.h"
+#include "Reflection/Enum.h"
 
 #include <algorithm>
+#include <cctype>
 #include <iomanip>
 #include <limits>
 #include <sstream>
@@ -12,8 +15,28 @@
 
 namespace NLS::Editor::Assets
 {
+meta::Type GetImporterSettingType(const std::string& name)
+{
+    return NLS_TYPEOF(ImporterSettingsSchema).GetField(name).GetType();
+}
+
 namespace
 {
+std::string EnumSettingToken(std::string_view name)
+{
+    std::string result;
+    for (size_t index = 0; index < name.size(); ++index)
+    {
+        const auto c = static_cast<unsigned char>(name[index]);
+        if (index && std::isupper(c) &&
+            (std::islower(static_cast<unsigned char>(name[index - 1])) ||
+             (index + 1 < name.size() && std::islower(static_cast<unsigned char>(name[index + 1])))))
+            result.push_back('-');
+        result.push_back(static_cast<char>(std::tolower(c)));
+    }
+    return result;
+}
+
 constexpr const char* kModelTextureSettingsVersionKey = "MODEL_TEXTURE_SETTINGS_VERSION";
 constexpr const char* kModelTextureUseExternalTexturesKey = "MODEL_TEXTURE_USE_EXTERNAL_TEXTURES";
 constexpr const char* kModelTextureSearchByNameKey = "MODEL_TEXTURE_SEARCH_BY_NAME";
@@ -128,33 +151,30 @@ std::string BoolToImporterSettingString(const bool value)
     return value ? "true" : "false";
 }
 
+std::string ImporterEnumToSettingString(const meta::Variant& value)
+{
+    return EnumSettingToken(value.GetType().GetEnum().GetKey(value));
+}
+
+meta::Variant ImporterEnumFromSettingString(const meta::Type& type, const std::string_view value)
+{
+    const auto enumeration = type.GetEnum();
+    for (const auto& key : enumeration.GetKeys())
+        if (EnumSettingToken(key) == value) return enumeration.GetValue(key);
+    return {};
+}
+
 std::string FbxReaderSelectionToImporterSettingString(const FbxReaderSelection value)
 {
-    switch (value)
-    {
-    case FbxReaderSelection::Assimp:
-        return "assimp";
-    case FbxReaderSelection::AutodeskWithAssimpFallback:
-        return "autodesk-with-assimp-fallback";
-    case FbxReaderSelection::Autodesk:
-        return "autodesk";
-    }
-
-    NLS_ASSERT(false, "Unhandled FBX reader selection.");
-    return "autodesk";
+    return ImporterEnumToSettingString(meta::Variant(value));
 }
 
 FbxReaderSelection FbxReaderSelectionFromImporterSettingString(
     const std::string& value,
     const FbxReaderSelection fallback)
 {
-    if (value == "autodesk")
-        return FbxReaderSelection::Autodesk;
-    if (value == "assimp")
-        return FbxReaderSelection::Assimp;
-    if (value == "autodesk-with-assimp-fallback")
-        return FbxReaderSelection::AutodeskWithAssimpFallback;
-    return fallback;
+    const auto parsed = ImporterEnumFromSettingString(NLS_TYPEOF(FbxReaderSelection), value);
+    return parsed.IsValid() ? parsed.GetValue<FbxReaderSelection>() : fallback;
 }
 
 bool BoolFromImporterSettings(

@@ -77,6 +77,16 @@ namespace NLS::Editor::Core
 		/// </summary>
 		bool HasPanel(const std::string& p_id) const { return m_panels.find(p_id) != m_panels.end(); }
 
+        // Called at a frame boundary, after Canvas::Draw has returned.
+        bool RemovePanel(const std::string& id)
+        {
+            auto it = m_panels.find(id);
+            if (it == m_panels.end()) return false;
+            m_canvas.RemovePanel(*it->second);
+            m_panels.erase(it);
+            return true;
+        }
+
 		void DestroyPanels()
 		{
 			m_canvas.RemoveAllPanels();

@@ -46,7 +46,8 @@ namespace NLS::Render::DistanceField
             float inverseViewProjection[16]{};
             Maths::Vector4 camera;
             float slice=0,traceDistance=2048;
-            uint32_t mostlyStaticOnly=0,padding=0;
+            uint32_t mostlyStaticOnly=0,traceStepsMax=64;
+            Maths::Vector4 sceneMin{},sceneMax{};
         };
         struct FrameOwner
         {
@@ -265,7 +266,7 @@ namespace NLS::Render::DistanceField
         {
             std::optional<MeshDistanceFieldSource> source;
             if(!object.asset) source=FindMeshDistanceFieldSource(object.meshArtifactPath);
-            if(!object.asset && !source) return nullptr;
+            if(!object.asset && (!source || source->mainPath.empty())) return nullptr;
             const std::string key=object.asset?"memory:"+object.asset->buildIdentity:
                 (source->contentHash.empty()?source->mainPath:"artifact:"+source->contentHash);
             auto& asset=assets[key];
@@ -276,11 +277,13 @@ namespace NLS::Render::DistanceField
             if(!asset.future.valid() && !asset.failed && pendingLoads.load()<4)
             {
                 const bool main=!asset.data;
-                const bool detail=asset.data && (asset.data->mips[asset.requestedMip].indirection.empty()) && asset.requestedMip<2;
+                uint32_t availableMip=asset.requestedMip;
+                while(availableMip<2 && asset.source.mipPaths[availableMip].empty())++availableMip;
+                const bool detail=asset.data && availableMip<2 && asset.data->mips[availableMip].indirection.empty();
                 if(main || detail)
                 {
                     auto previous=asset.data;
-                    const auto captured=asset.source; const uint32_t mip=asset.requestedMip;
+                    const auto captured=asset.source; const uint32_t mip=availableMip;
                     ++pendingLoads;
                     asset.future=std::async(std::launch::async,[previous,captured,mip]() -> std::shared_ptr<MeshDistanceFieldArtifact>
                     {
@@ -291,6 +294,7 @@ namespace NLS::Render::DistanceField
                             if(previous) for(uint32_t i=mip;i<2;++i)
                             {
                                 if(!result->mips[i].indirection.empty()) continue;
+                                if(captured.mipPaths[i].empty()) continue;
                                 auto detail=LoadDistanceFieldMip(captured.mipPaths[i]);
                                 if(!detail || detail->grid!=result->mips[i].grid || detail->maxDistance!=result->mips[i].maxDistance) return {};
                                 result->mips[i]=std::move(*detail);
@@ -528,6 +532,7 @@ namespace NLS::Render::DistanceField
         view.residency=impl.residencyRevision;
         std::vector<GpuObject> objects;
         std::vector<uint32_t> indirection;
+        Maths::Vector3 sceneMin{1.e20f,1.e20f,1.e20f},sceneMax{-1.e20f,-1.e20f,-1.e20f};
         std::unordered_map<const Impl::Allocation*,uint32_t> offsets;
         for(const auto& object:view.scene.Objects())
         {
@@ -546,12 +551,26 @@ namespace NLS::Render::DistanceField
             gpu.gridOffset={data.grid[0],data.grid[1],data.grid[2],it->second};
             gpu.worldMinStatic={object.boundsMin.x,object.boundsMin.y,object.boundsMin.z,object.input.mostlyStatic?1.f:0.f};
             gpu.worldMax={object.boundsMax.x,object.boundsMax.y,object.boundsMax.z,float(mip)}; objects.push_back(gpu);
+            const float localVoxel=(std::max)({(max.x-min.x)/data.grid[0],(max.y-min.y)/data.grid[1],(max.z-min.z)/data.grid[2]})/BrickIntervals;
+            for(uint32_t axis=0;axis<3;++axis)
+            {
+                const auto* row=object.input.localToWorld.data+axis*4;
+                const float padding=localVoxel*.5f*(std::abs(row[0])+std::abs(row[1])+std::abs(row[2]));
+                sceneMin.array[axis]=(std::min)(sceneMin.array[axis],object.boundsMin.array[axis]-padding);
+                sceneMax.array[axis]=(std::max)(sceneMax.array[axis],object.boundsMax.array[axis]+padding);
+            }
         }
         Constants constants; constants.objects=static_cast<uint32_t>(objects.size()); constants.dirty=static_cast<uint32_t>(dirtyPages.size());
         constants.capacity=impl.pageCapacity; constants.probes=static_cast<uint32_t>(frame.probePositions.size());
         constants.width=frame.width; constants.height=frame.height; constants.visualization=static_cast<uint32_t>(frame.debug.visualization);
         constants.channel=static_cast<uint32_t>(frame.debug.channel); constants.slice=frame.debug.slicePosition;
         constants.traceDistance=frame.traceDistance; constants.mostlyStaticOnly=frame.debug.mostlyStaticOnly;
+        constants.traceStepsMax=std::clamp<uint32_t>(frame.debug.traceStepsMax,2,512);
+        if(!objects.empty())
+        {
+            constants.sceneMin={sceneMin.x,sceneMin.y,sceneMin.z,0};
+            constants.sceneMax={sceneMax.x,sceneMax.y,sceneMax.z,0};
+        }
         for(int i=0;i<4;++i) { const auto& c=view.state.clipmaps[i]; constants.clips[i]={c.min.x,c.min.y,c.min.z,c.voxelSize}; }
         std::copy_n(frame.inverseViewProjection.data,16,constants.inverseViewProjection);
         constants.camera={frame.cameraPosition.x,frame.cameraPosition.y,frame.cameraPosition.z,1};

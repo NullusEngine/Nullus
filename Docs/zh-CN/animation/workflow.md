@@ -37,8 +37,8 @@ FBX 支持 ASCII/Binary、线性蒙皮、多个 Take、Take 筛选及采样率�
 
 ## 验证与当前边界
 
-测试目标为 `NullusAnimationTests`、`NullusAnimationImportTests`、
-`NullusAnimationGpuTests`、`NullusAnimationEditorTests`。GPU 测试提供 DX12
+测试统一放在 `NullusUnitTests` 和 `NullusGpuTests`，均可用 `--gtest_filter="Animation*.*"` 聚焦。
+GPU 测试提供 DX12
 和 Vulkan 像素读回检查，覆盖权重、位置、法线及保留资源后的绘制。
 测试目标的存在不代表所有设备或后端已经通过验收。
 

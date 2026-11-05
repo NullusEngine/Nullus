@@ -1,5 +1,6 @@
 #include <gtest/gtest.h>
 #include <imgui.h>
+#include <imgui_internal.h>
 
 #include <algorithm>
 #include <array>
@@ -19,6 +20,8 @@
 #include <Math/Vector3.h>
 #include <Reflection/ExternalReflectionRegistration.h>
 #include <Rendering/Resources/Material.h>
+#include <Rendering/DistanceField/DistanceFieldTypes.h>
+#include <Reflection/Enum.h>
 #include <Guid.h>
 #include <Reflection/Macros.h>
 #include <Reflection/ReflectionDatabase.h>
@@ -29,9 +32,11 @@
 #include <Scripting/ScriptTypes.h>
 
 #include "Assets/AssetDatabaseFacade.h"
+#include "Assets/AssetImporterSettings.h"
 #include "Assets/EditorAssetDragPayload.h"
 #include "Assets/PrefabEditorWorkflow.h"
 #include "Inspector/AssetTargetAdapter.h"
+#include "Inspector/AssetImporterEditing.h"
 #include "Inspector/ComponentEditor.h"
 #include "Inspector/EditorExtensionRegistry.h"
 #include "Inspector/UICanvasComponentEditor.h"
@@ -40,6 +45,7 @@
 #include "Inspector/InspectorRegistry.h"
 #include "Inspector/InspectorLayout.h"
 #include "Inspector/InspectorProjectionBuilder.h"
+#include "Inspector/InspectorPropertyEditor.h"
 #include "Inspector/InspectorView.h"
 #include "Inspector/NativeReflectionAdapter.h"
 #include "Inspector/ObjectReferenceSupport.h"
@@ -56,6 +62,7 @@
 #include "Settings/EditorSettingsRegistry.h"
 #include "Undo/EditorUndoMutationContext.h"
 #include "Panels/AssetBrowser.h"
+#include "Properties/PropertyDrawerRegistry.h"
 #include "EditorProject_MetaGenerated.h"
 
 namespace NLS::Editor::Inspector::Tests
@@ -657,7 +664,19 @@ TEST(InspectorCoreTests, GeneratedCanvasUsesTypedDocumentReferenceWithoutHiddenM
     ASSERT_TRUE(renderModeValue.IsValid());
     ASSERT_TRUE(document.IsValid());
     EXPECT_EQ(GetInspectorPropertyKind(cameraId.GetType()), InspectorPropertyKind::UnsignedInteger64);
-    EXPECT_EQ(GetInspectorPropertyKind(renderModeValue.GetType()), InspectorPropertyKind::UnsignedInteger32);
+    EXPECT_EQ(GetInspectorPropertyKind(renderModeValue.GetType()), InspectorPropertyKind::Enum);
+    const std::array<std::pair<const char*, meta::Type>, 4> enums{{
+        {"renderModeValue", NLS_TYPEOF(Engine::Components::UICanvasComponent::RenderMode)},
+        {"worldRenderPathValue", NLS_TYPEOF(Engine::Components::UICanvasComponent::WorldRenderPath)},
+        {"updatePolicy", NLS_TYPEOF(Engine::Components::UICanvasComponent::UpdatePolicy)},
+        {"dpiScaleMode", NLS_TYPEOF(Engine::Components::UICanvasComponent::DpiScaleMode)}}};
+    for (const auto& [name, type] : enums)
+    {
+        const auto field = canvasType.GetField(name);
+        ASSERT_TRUE(field.IsValid()) << name;
+        EXPECT_EQ(field.GetType(), type) << name;
+        EXPECT_TRUE(field.GetType().IsEnum()) << name;
+    }
     EXPECT_EQ(GetInspectorPropertyKind(document.GetType()), InspectorPropertyKind::ObjectReference);
     EXPECT_FALSE(BuildEditorPropertyMetadata(canvasType.GetName(), "document").hideInInspector);
     EXPECT_FALSE(BuildEditorPropertyMetadata(canvasType.GetName(), "cameraId").hideInInspector);
@@ -1071,6 +1090,48 @@ TEST(InspectorCoreTests, CanvasCustomPropertiesUseCanonicalAccessorByteStream)
     EXPECT_EQ(canvas->GetDocumentReference().GetAssetId(), documentId);
 }
 
+TEST(InspectorCoreTests, CanvasEnumsUseTypedAccessorStreamsAndGlobalUndo)
+{
+    ScopedInspectorUndoService undo;
+    using Canvas = Engine::Components::UICanvasComponent;
+    Engine::GameObject object("Canvas enums");
+    auto* canvas = object.AddComponent<Canvas>();
+    ASSERT_NE(canvas, nullptr);
+    Serialization::SerializedTargetSet targets;
+    targets.targets.push_back(InspectorTargetHandle::FromObject(*canvas, InspectorTargetKind::NativeObject));
+    targets.Normalize();
+    Serialization::SerializedObject serialized(targets, Serialization::AccessorSerializedBackend::Create());
+    ASSERT_TRUE(serialized.IsValid()) << serialized.GetLastError();
+    const std::array<std::pair<const char*, meta::Variant>, 4> edits{{
+        {"renderModeValue", meta::Variant(Canvas::RenderMode::World)},
+        {"worldRenderPathValue", meta::Variant(Canvas::WorldRenderPath::RenderTarget)},
+        {"updatePolicy", meta::Variant(Canvas::UpdatePolicy::Manual)},
+        {"dpiScaleMode", meta::Variant(Canvas::DpiScaleMode::ScaleWithScreenSize)}}};
+    for (const auto& [path, value] : edits)
+    {
+        const auto property = serialized.FindProperty(path);
+        ASSERT_TRUE(property) << path;
+        EXPECT_EQ(property.GetPropertyType(), Serialization::SerializedPropertyType::Enum) << path;
+        EXPECT_EQ(property.GetValue().GetType(), value.GetType()) << path;
+        ASSERT_TRUE(property.SetValue(value)) << path;
+    }
+    ASSERT_TRUE(serialized.ApplyModifiedProperties()) << serialized.GetLastError();
+    EXPECT_EQ(canvas->GetRenderMode(), Canvas::RenderMode::World);
+    EXPECT_EQ(canvas->GetWorldRenderPath(), Canvas::WorldRenderPath::RenderTarget);
+    EXPECT_EQ(canvas->GetUpdatePolicy(), Canvas::UpdatePolicy::Manual);
+    EXPECT_EQ(canvas->GetDpiScaleMode(), Canvas::DpiScaleMode::ScaleWithScreenSize);
+    EXPECT_EQ(canvas->GetRenderModeValue(), 2u);
+    EXPECT_EQ(canvas->GetWorldRenderPathValue(), 2u);
+    ASSERT_TRUE(undo.Get().RequestUndo().Succeeded());
+    EXPECT_EQ(canvas->GetRenderMode(), Canvas::RenderMode::ScreenOverlay);
+    EXPECT_EQ(canvas->GetUpdatePolicy(), Canvas::UpdatePolicy::EveryFrame);
+    EXPECT_EQ(canvas->GetDpiScaleMode(), Canvas::DpiScaleMode::ConstantPixelSize);
+    ASSERT_TRUE(undo.Get().RequestRedo().Succeeded());
+    EXPECT_EQ(canvas->GetRenderMode(), Canvas::RenderMode::World);
+    EXPECT_EQ(canvas->GetWorldRenderPath(), Canvas::WorldRenderPath::RenderTarget);
+    EXPECT_EQ(canvas->GetUpdatePolicy(), Canvas::UpdatePolicy::Manual);
+}
+
 TEST(InspectorCoreTests, GameObjectHeaderUsesCanonicalAccessorByteStream)
 {
     Engine::GameObject object("Before");
@@ -1370,6 +1431,177 @@ TEST(InspectorCoreTests, ImporterDraftUsesDirectByteStreamAndGlobalUndoWithoutPr
         targets,
         Serialization::ImporterDraftSerializedBackend::Create());
     EXPECT_DOUBLE_EQ(afterRedo.FindProperty("Importer.Settings.MODEL_SCALE").GetDoubleValue(), 2.5);
+}
+
+TEST(InspectorCoreTests, DistanceFieldGenerationUsesReflectedEnumAndUndo)
+{
+    ScopedInspectorUndoService undoScope;
+    const auto first = InspectorTargetHandle::FromAsset(
+        InspectorTargetKind::AssetImporter, "Assets/FirstField.fbx", "field-choice-first");
+    const auto second = InspectorTargetHandle::FromAsset(
+        InspectorTargetKind::AssetImporter, "Assets/SecondField.fbx", "field-choice-second");
+    struct ScopedDrafts final
+    {
+        InspectorTargetHandle first, second;
+        ~ScopedDrafts()
+        {
+            TestHooks::ClearImporterDraftForTesting(first);
+            TestHooks::ClearImporterDraftForTesting(second);
+        }
+    } cleanup{first, second};
+    TestHooks::SeedImporterDraftForTesting(first, {{"DISTANCE_FIELD_GENERATION", "enabled"}, {"OTHER_SETTING", "true"}});
+    TestHooks::SeedImporterDraftForTesting(second, {{"DISTANCE_FIELD_GENERATION", "disabled"}, {"OTHER_SETTING", "true"}});
+
+    InspectorTargetSet targets;
+    targets.targets = {first, second};
+    targets.Normalize();
+    Serialization::SerializedObject object(targets, Serialization::ImporterDraftSerializedBackend::Create());
+    ASSERT_TRUE(object.IsValid()) << object.GetLastError();
+    const auto generation = object.FindProperty("Importer.Settings.DISTANCE_FIELD_GENERATION");
+    ASSERT_TRUE(generation);
+    EXPECT_EQ(generation.GetPropertyType(), Serialization::SerializedPropertyType::Enum);
+    EXPECT_EQ(generation.GetValue().GetType(), NLS_TYPEOF(Render::DistanceField::GenerationMode));
+    EXPECT_TRUE(generation.HasMultipleDifferentValues());
+    const auto other = object.FindProperty("Importer.Settings.OTHER_SETTING");
+    ASSERT_TRUE(other);
+    EXPECT_EQ(other.GetPropertyType(), Serialization::SerializedPropertyType::Boolean);
+
+    ASSERT_TRUE(generation.SetValue(meta::Variant(Render::DistanceField::GenerationMode::Inherit)));
+    ASSERT_TRUE(object.ApplyModifiedProperties()) << object.GetLastError();
+    EXPECT_EQ(ReadImporterEditingState(first).settings.at("DISTANCE_FIELD_GENERATION"), "inherit");
+    EXPECT_EQ(ReadImporterEditingState(second).settings.at("DISTANCE_FIELD_GENERATION"), "inherit");
+    ASSERT_TRUE(undoScope.Get().RequestUndo().Succeeded());
+    EXPECT_EQ(ReadImporterEditingState(first).settings.at("DISTANCE_FIELD_GENERATION"), "enabled");
+    EXPECT_EQ(ReadImporterEditingState(second).settings.at("DISTANCE_FIELD_GENERATION"), "disabled");
+    ASSERT_TRUE(undoScope.Get().RequestRedo().Succeeded());
+    EXPECT_EQ(ReadImporterEditingState(first).settings.at("DISTANCE_FIELD_GENERATION"), "inherit");
+    EXPECT_EQ(ReadImporterEditingState(second).settings.at("DISTANCE_FIELD_GENERATION"), "inherit");
+}
+
+namespace
+{
+void VerifyImporterEnumDropdown(const char* setting, const char* initial, meta::Type type,
+    const std::array<const char*, 3>& choices, const std::array<const char*, 3>& stored)
+{
+    ScopedInspectorUndoService undoScope;
+    const auto target = InspectorTargetHandle::FromAsset(
+        InspectorTargetKind::AssetImporter, std::string("Assets/") + setting + ".asset", std::string("enum-ui-") + setting);
+    struct ScopedDraft final
+    {
+        InspectorTargetHandle target;
+        ~ScopedDraft() { TestHooks::ClearImporterDraftForTesting(target); }
+    } cleanup{target};
+    TestHooks::SeedImporterDraftForTesting(target, {{setting, initial}});
+    InspectorTargetSet targets;
+    targets.targets.push_back(target);
+    Serialization::SerializedObject object(targets, Serialization::ImporterDraftSerializedBackend::Create());
+    ASSERT_TRUE(object.IsValid()) << object.GetLastError();
+    const auto projection = InspectorProjectionBuilder::BuildPropertyProjection(object, targets, {});
+    const auto path = std::string("Importer.Settings.") + setting;
+    const auto find = [&](const auto& self, const std::vector<PropertyNode>& nodes) -> const PropertyNode*
+    {
+        for (const auto& node : nodes)
+        {
+            if (node.path.ToString() == path) return &node;
+            if (const auto* child = self(self, node.children)) return child;
+        }
+        return nullptr;
+    };
+    const auto* node = find(find, projection);
+    ASSERT_NE(node, nullptr);
+    EXPECT_EQ(node->kind, InspectorPropertyKind::Enum);
+    EXPECT_EQ(node->valueType, type);
+    EXPECT_TRUE(node->choices.empty());
+    Properties::EnsureBuiltinPropertyDrawers();
+    const auto drawer = InspectorRegistry::Get().ResolvePropertyDrawer(*node);
+    ASSERT_TRUE(drawer);
+    EXPECT_EQ(drawer->identifier, "builtin.property." + std::to_string(static_cast<int>(InspectorPropertyKind::Enum)));
+
+    struct GuiScope final
+    {
+        ImGuiContext* previous = ImGui::GetCurrentContext();
+        ImGuiContext* current = ImGui::CreateContext();
+        ~GuiScope() { ImGui::DestroyContext(current); ImGui::SetCurrentContext(previous); }
+    } gui;
+    auto& io = ImGui::GetIO();
+    io.IniFilename = nullptr;
+    io.DisplaySize = ImVec2(800, 600);
+    io.DeltaTime = 1.0f / 60.0f;
+    unsigned char* pixels = nullptr;
+    int width = 0, height = 0;
+    io.Fonts->GetTexDataAsRGBA32(&pixels, &width, &height);
+    ASSERT_NE(pixels, nullptr);
+    InspectorPropertyEditor editor;
+    PropertyEditorContext context;
+    context.object = &object;
+    ImVec2 control{}, popupStart{};
+    bool popupOpen = false;
+    const auto frame = [&]
+    {
+        ImGui::NewFrame();
+        ImGui::SetNextWindowPos(ImVec2(20, 20));
+        ImGui::SetNextWindowSize(ImVec2(500, 300));
+        ImGui::Begin("Importer enum test");
+        const auto result = editor.DrawProperty(*node, context, PropertyEditorLayout::ValueOnly);
+        const auto& popups = ImGui::GetCurrentContext()->OpenPopupStack;
+        popupOpen = !popups.empty() && popups.back().Window;
+        if (popupOpen)
+        {
+            popupStart = popups.back().Window->DC.CursorStartPos;
+        }
+        else
+        {
+            const auto min = ImGui::GetItemRectMin(), max = ImGui::GetItemRectMax();
+            control = ImVec2((min.x + max.x) * .5f, (min.y + max.y) * .5f);
+        }
+        ImGui::End();
+        ImGui::Render();
+        return result;
+    };
+    const auto keys = node->valueType.GetEnum().GetKeys();
+    const auto choose = [&](const std::string& key)
+    {
+        const auto found = std::find(keys.begin(), keys.end(), key);
+        if (found == keys.end()) return false;
+        const auto index = std::distance(keys.begin(), found);
+        frame(); frame();
+        io.AddMousePosEvent(control.x, control.y);
+        io.AddMouseButtonEvent(ImGuiMouseButton_Left, true); frame();
+        io.AddMouseButtonEvent(ImGuiMouseButton_Left, false); frame();
+        if (!popupOpen) return false;
+        frame();
+        io.AddMousePosEvent(popupStart.x + 10,
+            popupStart.y + ImGui::GetTextLineHeightWithSpacing() * index + ImGui::GetTextLineHeight() * .5f);
+        io.AddMouseButtonEvent(ImGuiMouseButton_Left, true); frame();
+        io.AddMouseButtonEvent(ImGuiMouseButton_Left, false); frame();
+        return true;
+    };
+    for (size_t index = 0; index < choices.size(); ++index)
+    {
+        ASSERT_TRUE(choose(choices[index]));
+        EXPECT_EQ(ReadImporterEditingState(target).settings.at(setting), stored[index]);
+    }
+    ASSERT_TRUE(undoScope.Get().RequestUndo().Succeeded());
+    EXPECT_EQ(ReadImporterEditingState(target).settings.at(setting), stored[1]);
+    ASSERT_TRUE(undoScope.Get().RequestRedo().Succeeded());
+    EXPECT_EQ(ReadImporterEditingState(target).settings.at(setting), stored[2]);
+}
+}
+
+TEST(InspectorCoreTests, DistanceFieldGenerationDropdownEditsImporterDraft)
+{
+    VerifyImporterEnumDropdown("DISTANCE_FIELD_GENERATION", "inherit", NLS_TYPEOF(Render::DistanceField::GenerationMode),
+        {"Enabled", "Disabled", "Inherit"}, {"enabled", "disabled", "inherit"});
+}
+
+TEST(InspectorCoreTests, ImporterEnumDropdownsUseNativeTypesAndPreserveStorageTokens)
+{
+    VerifyImporterEnumDropdown("MODEL_FBX_READER", "autodesk", NLS_TYPEOF(Assets::FbxReaderSelection),
+        {"Assimp", "AutodeskWithAssimpFallback", "Autodesk"}, {"assimp", "autodesk-with-assimp-fallback", "autodesk"});
+    VerifyImporterEnumDropdown("TEXTURE_TYPE", "default", NLS_TYPEOF(Assets::TextureImporterType),
+        {"Sprite", "NormalMap", "Mask"}, {"sprite", "normal-map", "mask"});
+    VerifyImporterEnumDropdown("SPRITE_MODE", "single", NLS_TYPEOF(Assets::SpriteImporterMode),
+        {"Multiple", "Single", "Multiple"}, {"multiple", "single", "multiple"});
 }
 
 TEST(InspectorCoreTests, MaterialUsesDirectByteStreamAndGlobalUndoWithoutPropertyBindings)
@@ -1856,7 +2088,11 @@ TEST(InspectorCoreTests, PrefabMenuApplyExecutesThroughUndoAndRoundTripsSourceAn
     Assets::AssetDatabaseFacade sourceDatabase(Assets::MakeProjectEditorAssetRoots(project.root));
     ASSERT_TRUE(sourceDatabase.Refresh());
     ASSERT_TRUE(sourceDatabase.CreateTextAsset(created.prefabSourceText, assetPath, prefabId));
-    ASSERT_TRUE(sourceDatabase.ImportAsset(assetPath));
+    const auto imported = sourceDatabase.ImportAsset(assetPath);
+    if (!imported)
+        for (const auto& diagnostic : sourceDatabase.GetDiagnostics())
+            ADD_FAILURE() << diagnostic.code << ": " << diagnostic.message;
+    ASSERT_TRUE(imported);
     auto importedPrefab = sourceDatabase.LoadPrefabArtifactAtPath(assetPath, subAssetKey);
     ASSERT_TRUE(importedPrefab.has_value());
 

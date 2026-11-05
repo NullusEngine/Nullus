@@ -124,7 +124,8 @@ public static unsafe class ManagedExports
         {
             ReleaseLastDiagnostic();
             ReleaseBehaviourManifest();
-            var frames = exception is null ? null : new StackTrace(exception, true).GetFrames();
+            var captureStack = NativeBinding.ShouldCaptureStack(2);
+            var frames = !captureStack || exception is null ? null : new StackTrace(exception, true).GetFrames();
             StackFrame? userFrame = null;
             if (frames is not null)
             {
@@ -146,7 +147,7 @@ public static unsafe class ManagedExports
                 ? IntPtr.Zero
                 : Marshal.StringToCoTaskMemUTF8(sourcePath);
             _lastDiagnosticMessage = Marshal.StringToCoTaskMemUTF8(message);
-            var stack = exception?.ToString() ?? string.Empty;
+            var stack = captureStack ? exception?.ToString() ?? string.Empty : string.Empty;
             _lastDiagnosticStackTrace = string.IsNullOrEmpty(stack)
                 ? IntPtr.Zero
                 : Marshal.StringToCoTaskMemUTF8(stack);
@@ -216,22 +217,26 @@ public static unsafe class ManagedExports
             if (header == null || header->Size < (uint)sizeof(ScriptAbiHeader) || header->AbiVersion != 2)
                 return Error(10, "Managed scripting ABI header is unsupported.");
             if (nativeApi != null
-                && (nativeApi->Header.Size < (uint)sizeof(NativeApiTable)
+                && (nativeApi->Header.Size < 304u
                     || nativeApi->Header.AbiVersion != 2))
                 return Error(
                     10,
                     $"Native scripting ABI table is unsupported (received size={nativeApi->Header.Size}, " +
-                    $"version={nativeApi->Header.AbiVersion}, expected size>={sizeof(NativeApiTable)}, version=2).");
+                    $"version={nativeApi->Header.AbiVersion}, expected size>=304, version=2).");
             var schema = ReadUtf8(schemaHashHex);
             if (!TryParseHash(ScriptApiManifest.SchemaHash, out var managedHash)
                 || !TryParseHash(schema, out var nativeHash)
                 || managedHash != nativeHash)
-                return Error(10, "Managed and Native Script API schema hashes do not match.");
+                return Error(10, $"Managed and Native Script API schema hashes do not match (managed='{ScriptApiManifest.SchemaHash}', native='{schema}').");
             if (nativeApi != null && nativeApi->Header.SchemaHash != nativeHash)
                 return Error(10, "Native scripting ABI schema hash does not match the managed manifest.");
             header->SchemaHash = managedHash;
             if (nativeApi != null)
-                NativeBinding.Configure(*nativeApi);
+            {
+                NativeApiTable compatible=default;
+                Buffer.MemoryCopy(nativeApi,&compatible,sizeof(NativeApiTable),Math.Min((long)nativeApi->Header.Size,sizeof(NativeApiTable)));
+                NativeBinding.Configure(compatible);
+            }
             lock (Gate)
                 _initialized = true;
             return Ok();
@@ -248,12 +253,15 @@ public static unsafe class ManagedExports
         lock (Gate)
         {
             Instances.Clear();
+            LifecycleInvoker.Reset();
+            NativeObject.ResetSession();
+            NativeBinding.ResetSession();
             LoadedAssets.Clear();
             ManagedScriptRegistry.Reset();
             ReleaseBehaviourManifest();
             _projectLoadContext?.Unload();
             _projectLoadContext = null;
-            ProjectLoadContexts.Clear();
+            ProjectLoadContexts.RemoveAll(reference => !reference.TryGetTarget(out _));
             _assemblyVersion = 0;
             _initialized = false;
             ReleaseLastDiagnostic();
@@ -285,6 +293,7 @@ public static unsafe class ManagedExports
     [UnmanagedCallersOnly]
     private static ScriptAbiResult CreateInstance(ulong assetId, ulong owner, ulong* token)
     {
+        using var sessionScope=PlaySessionGuard.Enter();
         if (!_initialized)
             return Error(6, "Managed scripting runtime is not initialized.");
         if (token == null)
@@ -321,12 +330,16 @@ public static unsafe class ManagedExports
     private static ScriptAbiResult DestroyInstance(ulong token)
     {
         lock (Gate)
-            return Instances.Remove(token) ? Ok() : Error(2, "Managed instance token is invalid.");
+        {
+            if (!Instances.Remove(token, out var instance)) return Error(2, "Managed instance token is invalid.");
+            InputActionBindings.Dispatch(instance.Behaviour, 7); return Ok();
+        }
     }
 
     [UnmanagedCallersOnly]
     private static ScriptAbiResult Invoke(ulong token, ushort callback, ScriptFrameContext* frame, ulong owner)
     {
+        using var sessionScope=PlaySessionGuard.Enter();
         string? assetPath = null;
         try
         {
@@ -338,6 +351,7 @@ public static unsafe class ManagedExports
                 if (frame != null)
                     Time.ApplyFrame(*frame);
                 var deltaTime = frame == null ? 0.0f : frame->DeltaTime;
+                InputActionBindings.Dispatch(instance.Behaviour, callback);
                 if (!instance.Registration.Invoke(instance.Behaviour, callback, deltaTime))
                     return Error(9, $"Generated Behaviour does not implement callback {callback}.");
             }
@@ -357,6 +371,7 @@ public static unsafe class ManagedExports
         uint count,
         ScriptFrameContext* frame)
     {
+        using var sessionScope=PlaySessionGuard.Enter();
         try
         {
             if (count != 0 && tokens == null)
@@ -383,6 +398,7 @@ public static unsafe class ManagedExports
 
                     try
                     {
+                        InputActionBindings.Dispatch(instance.Behaviour, callback);
                         if (!instance.Registration.Invoke(instance.Behaviour, callback, deltaTime) && !failed)
                         {
                             firstError = Error(9, $"Generated Behaviour does not implement callback {callback}.");
@@ -418,6 +434,7 @@ public static unsafe class ManagedExports
     [UnmanagedCallersOnly]
     private static ScriptAbiResult ReloadAssembly(ulong assetId, byte* assemblyPath, byte* schemaHashHex)
     {
+        using var sessionScope=PlaySessionGuard.Enter();
         try
         {
             if (!_initialized)
@@ -431,7 +448,7 @@ public static unsafe class ManagedExports
             if (!TryParseHash(ScriptApiManifest.SchemaHash, out var managedHash)
                 || !TryParseHash(schema, out var nativeHash)
                 || managedHash != nativeHash)
-                return Error(10, "Managed and Native Script API schema hashes do not match during hot reload.");
+                return Error(10, $"Managed and Native Script API schema hashes do not match during hot reload (managed='{ScriptApiManifest.SchemaHash}', native='{schema}').");
 
             lock (Gate)
             {
@@ -468,6 +485,7 @@ public static unsafe class ManagedExports
                     foreach (var replacement in replacements)
                         Instances.Add(replacement.Key, replacement.Value);
                     _projectLoadContext = replacementContext;
+                    ProjectLoadContexts.RemoveAll(reference => !reference.TryGetTarget(out _));
                     ProjectLoadContexts.Add(new WeakReference<ScriptAssemblyLoadContext>(replacementContext));
                     previousContext?.Unload();
                     GC.KeepAlive(previousRegistration);
@@ -499,19 +517,28 @@ public static unsafe class ManagedExports
     {
         lock (Gate)
         {
-            GC.Collect();
-            GC.WaitForPendingFinalizers();
-            GC.Collect();
-            var live = 0;
-            for (var index = ProjectLoadContexts.Count - 1; index >= 0; --index)
+            // Unload is cooperative and may take multiple collections. Keep
+            // weak-reference targets out of the collecting stack frame.
+            var live=ProjectLoadContexts.Count;
+            for(var attempt=0;attempt<10;++attempt)
             {
-                if (ProjectLoadContexts[index].TryGetTarget(out _))
-                    ++live;
-                else
-                    ProjectLoadContexts.RemoveAt(index);
+                GC.Collect();
+                GC.WaitForPendingFinalizers();
+                live=CountLiveProjectContexts();
+                if(live<=(_projectLoadContext is null?0:1))break;
             }
             return live;
         }
+    }
+
+    [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining)]
+    private static int CountLiveProjectContexts()
+    {
+        var live=0;
+        for(var index=ProjectLoadContexts.Count-1;index>=0;--index)
+            if(ProjectLoadContexts[index].TryGetTarget(out _))++live;
+            else ProjectLoadContexts.RemoveAt(index);
+        return live;
     }
 
     private static void MigrateFields(

@@ -62,7 +62,6 @@ namespace NLS::Editor::Panels
         void DrawDiagnostics();
         void DrawPendingDialog();
         void DrawExternalChangeBanner();
-        void HandleShortcuts();
         void PollExternalChanges();
         void UpdateDiagnosticNodes();
         void SaveDocument();

@@ -1,6 +1,7 @@
 ﻿#pragma once
 
 #include <memory>
+#include <chrono>
 #include <string>
 #include <functional>
 #include <unordered_map>
@@ -26,6 +27,8 @@ class Window;
 
 namespace NLS::UI
 {
+class FontGlyphFallback;
+class ImGuiInputBridge;
 enum class NLS_UI_API ImGuiGlfwInitBackend : uint8_t
 {
     OpenGL,
@@ -80,6 +83,11 @@ public:
      * @param p_fontSize
      */
     bool LoadFont(const std::string& p_id, const std::string& p_path, float p_fontSize);
+
+    // Merge a system CJK font into the editor fonts and queue any additional
+    // glyphs found in log text. Atlas rebuilds happen between UI frames.
+    bool EnableSystemFontFallback();
+    void RequestFontGlyphs(const std::string& text);
 
     // Sets the FontAwesome codepoints the application wants merged into every
     // UI font. Runtime/UI does not include editor headers; the editor registers
@@ -163,6 +171,9 @@ public:
      * @note Should be called once per frame
      */
     void Render();
+    // Idempotent between PrepareFrame and Render: platform/renderer/ImGui
+    // NewFrame run once even when input routing precedes canvas drawing.
+    bool PrepareFrame();
 
     /**
      * Invoked after the current canvas has produced all ImGui widgets and
@@ -277,6 +288,7 @@ private:
     };
 
     GLFWwindow* m_glfwWindow = nullptr;
+    ImGuiContext* m_imguiContext = nullptr;
     bool m_dockingState;
     bool m_isRenderingFrame = false;
     bool m_inFrame = false;
@@ -284,7 +296,10 @@ private:
     NLS::Render::Settings::EGraphicsBackend m_backend = NLS::Render::Settings::EGraphicsBackend::OPENGL;
     ImGuiPlatformBackend m_platformBackend = ImGuiPlatformBackend::GLFW;
     std::unique_ptr<NLS::Render::RHI::RHIUIBridge> m_uiBridge;
+    std::unique_ptr<ImGuiInputBridge> m_inputBridge;
     std::unordered_map<std::string, FontEntry> m_fonts;
+    std::unique_ptr<FontGlyphFallback> m_fontFallback;
+    std::chrono::steady_clock::time_point m_nextFallbackRebuild;
     std::vector<ImWchar> m_fontIconCodepoints;
     std::string m_currentFontId;
     std::string m_layoutSaveFilename = "imgui.ini";

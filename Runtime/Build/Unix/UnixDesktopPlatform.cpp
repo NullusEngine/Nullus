@@ -11,6 +11,7 @@
 #include <algorithm>
 #include <cstdlib>
 #include <fstream>
+#include <set>
 #include <iterator>
 #include <sstream>
 #include <system_error>
@@ -539,12 +540,20 @@ std::optional<PlayerTemplateInfo> UnixDesktopPlatform::ResolvePlayerTemplate(
             info.targetId = descriptor->targetId;
         }
 
+        std::set<std::string> runtimeNames;
+        const auto gameManifest = candidate / (".nullus-runtime-Game-" + expectedConfiguration + ".manifest");
+        std::istringstream runtimeInput(ReadTextFileOrEmpty(gameManifest)); std::string runtimeLine;
+        while (std::getline(runtimeInput,runtimeLine))
+        { if (!runtimeLine.empty() && runtimeLine.back() == '\r') runtimeLine.pop_back(); if (!runtimeLine.empty()) runtimeNames.insert(runtimeLine); }
         for (const auto& file : EnumerateFiles(candidate, true))
         {
             std::error_code relativeError;
             const auto relative = std::filesystem::relative(file, candidate, relativeError);
             if (relativeError || relative.empty() || !IsRuntimeTemplateFile(relative))
                 continue;
+            const auto filename = relative.filename().string();
+            if (!runtimeNames.empty() && (relative.extension() == ".so" || relative.extension() == ".dylib" || filename.find(".so.") != std::string::npos) &&
+                !runtimeNames.count(filename) && !runtimeNames.count(relative.generic_string())) continue;
             info.runtimeFiles.push_back(relative);
             const auto text = NormalizeSlashes(relative.generic_string());
             if (text.rfind("Scripts/", 0u) == 0u)
@@ -592,6 +601,12 @@ bool UnixDesktopPlatform::IsRuntimeTemplateFile(const std::filesystem::path& rel
     const auto name = relativePath.filename().string();
     const auto extension = relativePath.extension().string();
 
+    if (name.find("NLS_Packages") != std::string::npos || name.rfind("NullusPlugins",0) == 0)
+        return false;
+    if (name.find("NLS_Build") != std::string::npos || name.find("NLS_Cook") != std::string::npos ||
+        name.rfind("Nullus.Editor",0) == 0 || name.rfind("GameScriptsEditor",0) == 0 || name.rfind("Nullus.GameScriptsEditor",0) == 0 ||
+        name.rfind("Nullus.ScriptGenerator",0) == 0 || name.rfind("Nullus.ScriptAnalysis",0) == 0 || text.find("/Editor/") != std::string::npos)
+        return false;
     if (name == "NullusBuild" || name == "NullusBuild.exe" || name == "Player.info" ||
         name == "NullusPlayer.json" || name == "imgui.ini" ||
         name.rfind("Editor", 0u) == 0u || name.rfind("Launcher", 0u) == 0u ||

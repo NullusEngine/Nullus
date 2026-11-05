@@ -98,6 +98,37 @@ TEST(SceneViewCameraInteractionStateMachineTests, NavigationStateTransitionsToBl
     EXPECT_FALSE(transition.cursorShape.has_value());
 }
 
+TEST(SceneViewCameraInteractionStateMachineTests, FreshRightPressOnUnblockingEntersFlyImmediately)
+{
+    SceneViewCameraInteractionInputSnapshot input;
+    input.sceneInputAllowed = true;
+    input.rightPressed = input.rightDown = true;
+    const auto transition = SceneViewCameraInteractionStateMachine::EvaluateTransition(
+        SceneViewCameraInteractionStateId::Blocked, input);
+    EXPECT_EQ(transition.previousState, SceneViewCameraInteractionStateId::Blocked);
+    EXPECT_EQ(transition.nextState, SceneViewCameraInteractionStateId::Fly);
+    EXPECT_TRUE(transition.shouldAcquireCursorControl);
+    EXPECT_TRUE(transition.shouldEnableInfiniteWrap);
+    EXPECT_TRUE(transition.shouldSuppressInitialMouseDelta);
+}
+
+TEST(SceneViewCameraInteractionStateMachineTests, HeldRightButtonCannotAcquireNavigationAfterUnblocking)
+{
+    SceneViewCameraInteractionInputSnapshot input;
+    input.sceneInputAllowed = true;
+    input.rightDown = true;
+    const auto transition = SceneViewCameraInteractionStateMachine::EvaluateTransition(
+        SceneViewCameraInteractionStateId::Blocked, input);
+    EXPECT_EQ(transition.nextState, SceneViewCameraInteractionStateId::Neutral);
+    EXPECT_FALSE(transition.shouldAcquireCursorControl);
+    input.rightPressed = true; input.sceneInputAllowed = false;
+    EXPECT_EQ(SceneViewCameraInteractionStateMachine::EvaluateTransition(
+        SceneViewCameraInteractionStateId::Blocked, input).nextState, SceneViewCameraInteractionStateId::Neutral);
+    input.sceneInputAllowed = true; input.wantTextInput = true;
+    EXPECT_EQ(SceneViewCameraInteractionStateMachine::EvaluateTransition(
+        SceneViewCameraInteractionStateId::Blocked, input).nextState, SceneViewCameraInteractionStateId::Blocked);
+}
+
 TEST(SceneViewCameraInteractionStateMachineTests, MiddleMouseNavigationSwitchesBetweenPanAndOrbitWithoutReacquire)
 {
     SceneViewCameraInteractionInputSnapshot orbitInput;

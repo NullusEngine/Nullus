@@ -172,8 +172,13 @@ public:
             const auto texture=raw("Texture");
             if(texture.type!=Type::Texture2D && texture.type!=Type::TextureCube)throw std::runtime_error("Texture input is not a texture resource");
             const auto sampler=node->inputs.contains("Sampler")?Convert(raw("Sampler"),Type::Sampler):"GraphLinearSampler";
+            const bool colorTexture = trackMainTexture;
+            trackMainTexture = false;
             const auto uv=input("UV",texture.type==Type::TextureCube?Type::Float3:Type::Float2,texture.type==Type::TextureCube?"0,0,1":"ctx.uv");
+            trackMainTexture = colorTexture;
             const auto lod=node->inputs.contains("LOD") || vertex;
+            if (colorTexture && texture.type == Type::Texture2D)
+                code += "{uint mainWidth,mainHeight;" + texture.code + ".GetDimensions(mainWidth,mainHeight);float2 mainDx=ddx(" + uv + ")*float2(mainWidth,mainHeight),mainDy=ddy(" + uv + ")*float2(mainWidth,mainHeight);if(sceneMainLod < -1e10)sceneMainLod=0.5*log2(max(max(dot(mainDx,mainDx),dot(mainDy,mainDy)),1e-12));}\n";
             result={texture.code+(lod?".SampleLevel(":".Sample(")+sampler+","+uv+(lod?","+input("LOD",Type::Float):std::string{})+")",Type::Float4};
         }
         else if(op=="Swizzle")
@@ -224,6 +229,7 @@ public:
         return link==root.outputs.end() || !link->second.node?fallback:Convert(Emit(root,link->second),type,name=="BaseColor");
     }
     std::string code,helpers,currentGraph;
+    bool trackMainTexture = false;
     std::set<std::string> includes;
     uint64_t currentNode=0;
 private:
@@ -242,7 +248,7 @@ std::string ContextDefinition()
 struct GraphContext {float2 uv;float3 positionWS,normalWS,viewDirection,velocity;
 float4 particleColor,baseColor,dynamicParameter0,dynamicParameter1,dynamicParameter2,dynamicParameter3;
 float age,normalizedAge;};
-struct GraphSurface {float3 baseColor,normalTS,emissive;float metallic,roughness,ao,opacity,cutoff;};
+struct GraphSurface {float3 baseColor,normalTS,emissive;float metallic,roughness,ao,opacity,cutoff,mainTextureLod;};
 )";
 }
 std::string ContextFromVaryings()
@@ -299,7 +305,9 @@ MaterialGraphSource GenerateMaterialGraphShader(const MaterialGraphAsset& graph,
         }
         if(!constants.empty())declarations+="cbuffer GraphMaterialProperties : register(b0,space2) {\n"+constants+"};\n";
         declarations+="SamplerState GraphLinearSampler : register(s0,space2);\n";
+        pixel.trackMainTexture = true;
         const auto base=pixel.Output("BaseColor",Type::Float3,graph.domain==MaterialGraphDomain::ParticleSprite?"ctx.baseColor.rgb":"float3(1,1,1)");
+        pixel.trackMainTexture = false;
         const auto metallic=pixel.Output("Metallic",Type::Float,"0");
         const auto roughness=pixel.Output("Roughness",Type::Float,"1");
         const auto ao=pixel.Output("AmbientOcclusion",Type::Float,"1");
@@ -312,8 +320,8 @@ MaterialGraphSource GenerateMaterialGraphShader(const MaterialGraphAsset& graph,
         for(const auto& include:pixel.includes)includes+="#include \""+include+"\"\n";
         for(const auto& include:vertex.includes)if(!pixel.includes.contains(include))includes+="#include \""+include+"\"\n";
         std::string evaluation=ContextDefinition()+pixel.helpers+vertex.helpers+
-            "GraphSurface EvaluateGraphSurface(GraphContext ctx){\n"+pixel.code+"GraphSurface s;s.baseColor="+base+";s.metallic="+metallic+
-            ";s.roughness="+roughness+";s.ao="+ao+";s.normalTS="+normal+";s.emissive="+emissive+";s.opacity="+opacity+";s.cutoff="+cutoff+";return s;}\n"+
+            "GraphSurface EvaluateGraphSurface(GraphContext ctx){\nfloat sceneMainLod=-1e20;\n"+pixel.code+"GraphSurface s;s.baseColor="+base+";s.metallic="+metallic+
+            ";s.roughness="+roughness+";s.ao="+ao+";s.normalTS="+normal+";s.emissive="+emissive+";s.opacity="+opacity+";s.cutoff="+cutoff+";s.mainTextureLod=sceneMainLod;return s;}\n"+
             "float3 EvaluateGraphVertex(GraphContext ctx){\n"+vertex.code+"return "+wpo+";}\n";
         result.shader.shaderName=graph.name;
         Render::ShaderLab::ShaderLabSubShaderDesc sub;
@@ -381,6 +389,10 @@ input.positionWS,geometry,normal,s.baseColor,saturate(s.metallic),saturate(s.rou
 return float4(NLSToneMapACES(lighting+s.emissive),saturate(s.opacity));})";
             else forward+="return float4(NLSToneMapACES(s.baseColor+s.emissive),saturate(s.opacity));}";
             pass("Forward",forward);
+            std::string debug = common + "#include \"NullusShaderLibrary/SceneDebug.hlsl\"\nfloat4 PSMain(Varyings input):SV_Target0 {" + ContextFromVaryings() +
+                "GraphSurface s=EvaluateGraphSurface(ctx);" + clip;
+            debug += "return NLSSceneDebug(s.baseColor,s.metallic,s.opacity,s.mainTextureLod);}";
+            pass("SceneDebug", debug);
             if(graph.shading==MaterialGraphShading::PBR && (!graph.outputs.contains("Emissive") || !graph.outputs.at("Emissive").node) && graph.blend<=MaterialGraphBlend::Masked)
                 pass("GBuffer",common+R"(
 struct GBufferOutput{float4 Albedo:SV_Target0;float4 Normal:SV_Target1;float4 Material:SV_Target2;};

@@ -13,10 +13,13 @@
 #include <thread>
 #include "Assets/ArtifactManifest.h"
 #include "Rendering/Assets/DistanceFieldArtifact.h"
+#include "Rendering/Assets/DistanceFieldBuildService.h"
 #include "Rendering/Assets/SceneImportPipeline.h"
 
 namespace NLS::Render::DistanceField
 {
+    // Preserve the previous scalar algorithm as an independent numerical oracle.
+#if defined(NLS_ENABLE_TEST_HOOKS)
     namespace
     {
         using V = Maths::Vector3;
@@ -154,6 +157,7 @@ namespace NLS::Render::DistanceField
         }
     }
 
+#endif
     DistanceFieldBuildSettings ReadDistanceFieldBuildSettings(
         const std::map<std::string,std::string>& settings,const std::filesystem::path& projectRoot)
     {
@@ -215,30 +219,26 @@ namespace NLS::Render::DistanceField
     bool AppendDistanceFieldModelPayloads(const Assets::ImportedScene& scene,
         const std::map<std::string,Assets::MeshArtifactData>& meshes,const DistanceFieldBuildSettings& settings,
         std::vector<NLS::Core::Assets::ArtifactPayload>& payloads,std::vector<std::string>& diagnostics,
-        const std::atomic_bool* cancellation,const NLS::Core::Assets::IArtifactWriteCancellation* importCancellation)
+        const std::atomic_bool* cancellation,const NLS::Core::Assets::IArtifactWriteCancellation* importCancellation,
+        const DistanceFieldModelBuildOptions* options)
     {
-        if(!settings.Enabled()) return true;
-        std::map<std::string,std::vector<Assets::MeshArtifactData>> groups;
-        for(const auto& [key,mesh]:meshes)
-        {
-            const std::string source=key.starts_with("mesh:")?key.substr(5):key;
-            const auto primitive=Assets::ParsePrimitiveMeshSourceKey(source);
-            const std::string logical=primitive?primitive->first:source;
-            const bool deformed=std::any_of(scene.meshes.begin(),scene.meshes.end(),[&](const auto& m)
-                { return m.sourceKey==logical && m.morphTargetCount!=0; }) ||
-                std::any_of(scene.nodes.begin(),scene.nodes.end(),[&](const auto& n)
-                { return n.meshKey==logical && !n.skinKey.empty(); });
-            if(deformed) { diagnostics.push_back("Distance field skipped deformed mesh "+key); continue; }
-            if(mesh.materialIndex<scene.materials.size() && scene.materials[mesh.materialIndex].alphaMode=="BLEND") continue;
-            if(!AppendDistanceFieldPayloads(key,{&mesh,1},settings,payloads,diagnostics,cancellation,importCancellation)) return false;
-            if(primitive) groups["mesh:"+logical].push_back(mesh);
-        }
-        for(const auto& [key,sections]:groups)
-            if(!AppendDistanceFieldPayloads(key,sections,settings,payloads,diagnostics,cancellation,importCancellation)) return false;
+        const auto source=DescribeDistanceFieldSource(scene,meshes);
+        payloads.push_back(DistanceFieldSourcePayload(source));
+        if(!settings.Enabled())return true;
+        if(std::any_of(source.meshes.begin(),source.meshes.end(),[](const auto& m){return m.participates && m.geometryIdentity.empty();}))
+        {diagnostics.push_back("Distance field source geometry is invalid");return false;}
+        auto request=options?*options:DistanceFieldModelBuildOptions{};
+        request.loadMesh=[&](const std::string& key)->std::optional<Assets::MeshArtifactData>
+        {const auto it=meshes.find(key);return it==meshes.end()?std::nullopt:std::optional(it->second);};
+        auto built=DistanceFieldBuildService::Build(source,settings,request,cancellation,importCancellation);
+        diagnostics.insert(diagnostics.end(),built.diagnostics.begin(),built.diagnostics.end());
+        if(!built.success)return false;
+        payloads.insert(payloads.end(),std::make_move_iterator(built.payloads.begin()),std::make_move_iterator(built.payloads.end()));
         return true;
     }
 
-    DistanceFieldBuildResult BuildMeshDistanceField(std::span<const Assets::MeshArtifactData> sections,
+#if defined(NLS_ENABLE_TEST_HOOKS)
+    DistanceFieldBuildResult BuildReferenceMeshDistanceField(std::span<const Assets::MeshArtifactData> sections,
         const DistanceFieldBuildSettings& settings,const std::atomic_bool* cancellation,
         const NLS::Core::Assets::IArtifactWriteCancellation* importCancellation)
     {
@@ -366,4 +366,5 @@ namespace NLS::Render::DistanceField
         result.asset=std::move(asset); result.success=true;
         return result;
     }
+#endif
 }

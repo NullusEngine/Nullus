@@ -1,6 +1,8 @@
 #include "UI/Icons/FontAwesomeIconFont.h"
 
 #include <algorithm>
+#include <map>
+#include <mutex>
 
 #include "ImGui/imgui.h"
 #include "UI/ImGuiExtensions/TimelineProfiler/IconsFontAwesome4_data.h"
@@ -74,12 +76,17 @@ bool EnsureFontAwesomeIconFontLoaded(
         p_targetFont = io.Fonts->Fonts[0];
 
     static const ImWchar fullRanges[] = { ICON_MIN_FA, ICON_MAX_FA, 0 };
-    std::vector<ImWchar> subsetRanges;
     const ImWchar* ranges = fullRanges;
     if (!p_codepoints.empty())
     {
-        subsetRanges = BuildRanges(p_codepoints);
-        ranges = subsetRanges.data();
+        // ImFontAtlas keeps GlyphRanges pointers for subsequent builds. A local
+        // vector would dangle when another font is loaded or the atlas rebuilt.
+        static std::mutex rangeMutex;
+        static std::map<std::vector<ImWchar>, std::vector<ImWchar>> rangeCache;
+        std::lock_guard lock(rangeMutex);
+        auto [entry, inserted] = rangeCache.try_emplace(p_codepoints);
+        if (inserted) entry->second = BuildRanges(p_codepoints);
+        ranges = entry->second.data();
     }
 
     ImFontConfig iconConfig;

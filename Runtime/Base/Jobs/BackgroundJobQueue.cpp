@@ -130,7 +130,7 @@ namespace
             Shutdown(JobSystemShutdownMode::Immediate);
         }
 
-        bool Start(uint32_t workerCount)
+        bool Start(uint32_t workerCount, const size_t maxPendingJobCount)
         {
             Shutdown(JobSystemShutdownMode::Immediate);
 
@@ -139,6 +139,8 @@ namespace
                 m_acceptingWork = true;
                 m_shutdownRequested = false;
                 m_queueGeneration = AllocateBackgroundQueueGeneration();
+                m_continuationOwner = std::this_thread::get_id();
+                m_maxPendingJobCount = std::max(size_t{1u}, maxPendingJobCount);
             }
 
             workerCount = std::clamp(workerCount, 1u, kMaxBackgroundWorkerCount);
@@ -161,6 +163,37 @@ namespace
         {
             std::lock_guard lock(m_mutex);
             return static_cast<uint32_t>(m_workers.size());
+        }
+
+        void SetContinuationOwner(const std::thread::id owner)
+        {
+            std::lock_guard lock(m_mutex);
+            m_continuationOwner = owner;
+        }
+
+        bool IsContinuationOwner()
+        {
+            std::lock_guard lock(m_mutex);
+            return m_continuationOwner == std::this_thread::get_id();
+        }
+
+        uint64_t GetAcceptedWorkBoundary()
+        {
+            std::lock_guard lock(m_mutex);
+            return m_nextJobId - 1u;
+        }
+
+        bool IsAcceptedWorkComplete(const uint64_t boundary)
+        {
+            std::lock_guard lock(m_mutex);
+            return std::none_of(m_jobs.begin(), m_jobs.end(),
+                [boundary](const auto& entry) { return entry.first <= boundary; });
+        }
+
+        void PollDependencies()
+        {
+            WakeDependencyReadyJobs();
+            HelpDependencies();
         }
 
         void Shutdown(const JobSystemShutdownMode mode)
@@ -339,14 +372,14 @@ namespace
             bool notifyForegroundDependency = false;
             {
                 std::lock_guard lock(m_mutex);
-                if (!m_acceptingWork || m_shutdownRequested)
+                if (!m_acceptingWork || m_shutdownRequested || !HasAdmissionCapacityLocked())
                 {
                     if (retainedExternalDependency)
                         Internal::ReleaseJobCompletionStatus(desc.dependency);
                     Internal::RecordJobViolation(
-                        JobViolationKind::ShutdownSchedulingRejected,
+                        m_acceptingWork && !m_shutdownRequested ? JobViolationKind::QueueCapacityExceeded : JobViolationKind::ShutdownSchedulingRejected,
                         0u,
-                        "Background job scheduling was rejected while the JobSystem is shutting down or not accepting work.");
+                        "Background job scheduling was rejected: the scheduler is stopping or its accepted callback capacity is exhausted.");
                     return {};
                 }
 
@@ -462,14 +495,14 @@ namespace
             }
 
             std::lock_guard lock(m_mutex);
-            if (!m_acceptingWork || m_shutdownRequested)
+            if (!m_acceptingWork || m_shutdownRequested || !HasAdmissionCapacityLocked())
             {
                 if (retainedExternalDependency)
                     Internal::ReleaseJobCompletionStatus(desc.dependency);
                 Internal::RecordJobViolation(
-                    JobViolationKind::ShutdownSchedulingRejected,
+                    m_acceptingWork && !m_shutdownRequested ? JobViolationKind::QueueCapacityExceeded : JobViolationKind::ShutdownSchedulingRejected,
                     0u,
-                    "Main-thread continuation scheduling was rejected while the JobSystem is shutting down or not accepting work.");
+                    "Main-thread continuation scheduling was rejected: the scheduler is stopping or its accepted callback capacity is exhausted.");
                 return false;
             }
 
@@ -498,6 +531,12 @@ namespace
 
         uint32_t DrainContinuations(const uint32_t maxContinuations)
         {
+            if (!IsContinuationOwner() || Internal::IsExecutingJobWorkerThread())
+            {
+                Internal::RecordJobViolation(JobViolationKind::SyncWaitDisallowed, 0u,
+                    "Main-thread continuations can only be drained by their registered owner outside job callbacks.");
+                return 0u;
+            }
             std::vector<std::pair<JobHandle, JobCompletionStatus>> resolvedExternalDependencies;
             std::vector<JobHandle> externalDependenciesToCheck;
             {
@@ -548,6 +587,7 @@ namespace
 
                     continuation = m_readyContinuations.front();
                     m_readyContinuations.pop_front();
+                    ++m_runningContinuationCount;
                 }
 
                 RunUserCallback(
@@ -555,6 +595,10 @@ namespace
                     continuation.desc.userData,
                     0u,
                     "Main-thread continuation callback threw an exception.");
+                {
+                    std::lock_guard lock(m_mutex);
+                    --m_runningContinuationCount;
+                }
                 ++drained;
             }
 
@@ -1510,6 +1554,12 @@ namespace
         std::unordered_map<uint64_t, uint32_t> m_retiredGenerations;
         std::unordered_map<uint64_t, JobCompletionStatus> m_retiredStatuses;
         std::deque<uint64_t> m_retiredOrder;
+        bool HasAdmissionCapacityLocked() const
+        {
+            return m_jobs.size() + m_continuations.size() +
+                m_readyContinuations.size() + m_runningContinuationCount < m_maxPendingJobCount;
+        }
+
         bool HasReadyJobLocked() const
         {
             return !m_highPriorityReadyJobs.empty() || !m_normalPriorityReadyJobs.empty();
@@ -1523,6 +1573,9 @@ namespace
         std::vector<std::thread> m_workers;
         uint64_t m_nextJobId = 1u;
         uint64_t m_nextContinuationSequence = 1u;
+        std::thread::id m_continuationOwner;
+        size_t m_maxPendingJobCount = 65536u;
+        size_t m_runningContinuationCount = 0u;
         uint32_t m_queueGeneration = 1u;
         bool m_acceptingWork = false;
         bool m_shutdownRequested = false;
@@ -1583,7 +1636,7 @@ uint32_t DrainMainThreadContinuations(const uint32_t maxContinuations)
 
 namespace Internal
 {
-    bool StartBackgroundJobQueue(const uint32_t workerCount)
+    bool StartBackgroundJobQueue(const uint32_t workerCount, const size_t maxPendingJobCount)
     {
         {
             std::lock_guard lock(g_backgroundMutex);
@@ -1591,7 +1644,7 @@ namespace Internal
         }
 
         auto queue = std::make_shared<BackgroundQueue>();
-        if (!queue->Start(workerCount))
+        if (!queue->Start(workerCount, maxPendingJobCount))
         {
             std::lock_guard lock(g_backgroundMutex);
             g_backgroundQueue.reset();
@@ -1621,6 +1674,38 @@ namespace Internal
 
         if (queue != nullptr)
             queue->Shutdown(mode);
+    }
+
+    void SetMainThreadContinuationOwner(const std::thread::id owner)
+    {
+        auto queue = GetBackgroundQueue();
+        if (queue != nullptr)
+            queue->SetContinuationOwner(owner);
+    }
+
+    bool IsMainThreadContinuationOwner()
+    {
+        auto queue = GetBackgroundQueue();
+        return queue == nullptr || queue->IsContinuationOwner();
+    }
+
+    uint64_t GetBackgroundAcceptedWorkBoundary()
+    {
+        auto queue = GetBackgroundQueue();
+        return queue != nullptr ? queue->GetAcceptedWorkBoundary() : 0u;
+    }
+
+    bool IsBackgroundAcceptedWorkComplete(const uint64_t boundary)
+    {
+        auto queue = GetBackgroundQueue();
+        return queue == nullptr || queue->IsAcceptedWorkComplete(boundary);
+    }
+
+    void PollBackgroundDependencies()
+    {
+        auto queue = GetBackgroundQueue();
+        if (queue != nullptr)
+            queue->PollDependencies();
     }
 
     void StopAcceptingBackgroundJobQueue()

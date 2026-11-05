@@ -28,7 +28,8 @@ namespace NLS::Base::Jobs
         ShutdownSchedulingRejected,
         StaleHandle,
         ClearedWithoutSync,
-        CallbackException
+        CallbackException,
+        QueueCapacityExceeded
     };
 
     struct NLS_BASE_API JobDiagnosticRecord

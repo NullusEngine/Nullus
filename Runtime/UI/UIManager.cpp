@@ -1,9 +1,13 @@
+#include <Platform/Windowing/Inputs/PlatformInputBackend.h>
 
 #include "UI/UIManager.h"
+#include "UI/Input/ImGuiInputBridge.h"
+#include "Windowing/Inputs/PlatformInputBackend.h"
 
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <filesystem>
 #include <stdexcept>
 #include <vector>
 
@@ -17,6 +21,7 @@
 #include "Rendering/Settings/GraphicsBackendUtils.h"
 #include "Rendering/UI/UiDrawDataSnapshot.h"
 #include "UI/Icons/FontAwesomeIconFont.h"
+#include "UI/Fonts/FontGlyphFallback.h"
 #include "Windowing/Window.h"
 #include "ImGui/backends/imgui_impl_glfw.h"
 #include "ImGui/imgui_internal.h"
@@ -223,7 +228,13 @@ UIManager::UIManager(
     : m_glfwWindow(p_glfwWindow),
       m_backend(p_backend)
 {
-    ImGui::CreateContext();
+    if (auto* window = NLS::Windowing::Window::FindInstance(p_glfwWindow))
+        if (auto* input = window->GetInputBackend(); input && input->GetWindowContext(reinterpret_cast<uintptr_t>(p_glfwWindow)).context)
+            throw std::logic_error("The window already owns an ImGui input context");
+    m_imguiContext = ImGui::CreateContext();
+    ImGui::SetCurrentContext(m_imguiContext);
+    if (auto* window = NLS::Windowing::Window::FindInstance(p_glfwWindow))
+        if (auto* input = window->GetInputBackend()) input->DetachWindowContext(input->FindWindowId(reinterpret_cast<uintptr_t>(p_glfwWindow)), nullptr);
     m_uiScale = ResolveWindowContentScale();
 
     ImGui::GetIO().ConfigDragClickToInputText = true;
@@ -298,6 +309,10 @@ UIManager::UIManager(
     }
 #endif
 
+    if (auto* window = NLS::Windowing::Window::FindInstance(p_glfwWindow))
+        if (auto* input = window->GetInputBackend())
+            m_inputBridge = std::make_unique<ImGuiInputBridge>(*input, m_imguiContext, m_platformBackend == ImGuiPlatformBackend::Win32, input->FindWindowId(reinterpret_cast<uintptr_t>(p_glfwWindow)));
+
     // GLFW init still depends on the requested UI backend, but the renderer bridge
     // is now selected from resolved native backend identity.
     m_uiBridge = NLS::Render::RHI::CreateRHIUIBridge(
@@ -330,12 +345,15 @@ UIManager::UIManager(
 
 UIManager::~UIManager()
 {
+    auto* previousContext = ImGui::GetCurrentContext();
+    ImGui::SetCurrentContext(m_imguiContext);
+    m_inputBridge.reset();
 #ifdef _WIN32
     if (auto* window = NLS::Windowing::Window::FindInstance(m_glfwWindow))
     {
         if (m_platformBackend == ImGuiPlatformBackend::Win32)
             window->SetNativeMessageHandler(nullptr);
-        window->RestoreNativeWindowProc();
+        if (!window->GetInputBackend()) window->RestoreNativeWindowProc();
     }
 #endif
 
@@ -350,12 +368,16 @@ UIManager::~UIManager()
     {
         ImGui_ImplGlfw_Shutdown();
     }
-    ImGui::DestroyContext();
+    ImGui::DestroyContext(m_imguiContext);
+    ImGui::SetCurrentContext(previousContext == m_imguiContext ? nullptr : previousContext);
 }
 
 void UIManager::BeginFrame()
 {
     RefreshScale();
+    if (m_fontFallback && m_fontFallback->IsDirty() &&
+        std::chrono::steady_clock::now() >= m_nextFallbackRebuild)
+        RebuildFonts();
 
     if (NLS::Core::ServiceLocator::Contains<NLS::Windowing::Window>())
     {
@@ -594,6 +616,8 @@ bool UIManager::LoadFont(const std::string& p_id, const std::string& p_path, flo
             else
                 Icons::EnsureFontAwesomeIconFontLoaded(
                     p_fontSize * m_uiScale, fontInstance, m_fontIconCodepoints);
+            if (m_fontFallback)
+                m_fontFallback->Merge(*io.Fonts, fontInstance, p_fontSize * m_uiScale);
             m_fonts.emplace(p_id, FontEntry{ p_path, p_fontSize, fontInstance });
             ImGui::GetIO().Fonts->Build();
             NotifyFontAtlasChanged();
@@ -602,6 +626,42 @@ bool UIManager::LoadFont(const std::string& p_id, const std::string& p_path, flo
     }
 
     return false;
+}
+
+bool UIManager::EnableSystemFontFallback()
+{
+    if (m_fontFallback) return true;
+    std::vector<std::filesystem::path> candidates;
+#ifdef _WIN32
+    wchar_t windowsDirectory[MAX_PATH]{};
+    const auto length = GetWindowsDirectoryW(windowsDirectory, MAX_PATH);
+    if (length > 0 && length < MAX_PATH)
+    {
+        const auto fonts = std::filesystem::path(windowsDirectory) / L"Fonts";
+        candidates = {fonts / L"msyh.ttc", fonts / L"simhei.ttf", fonts / L"simsun.ttc"};
+    }
+#elif defined(__APPLE__)
+    candidates = {"/System/Library/Fonts/PingFang.ttc",
+        "/System/Library/Fonts/Supplemental/Arial Unicode.ttf", "/Library/Fonts/Arial Unicode.ttf"};
+#else
+    candidates = {"/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+        "/usr/share/fonts/truetype/wqy/wqy-zenhei.ttc", "/usr/share/fonts/truetype/arphic/uming.ttc"};
+#endif
+    for (const auto& path : candidates)
+    {
+        std::error_code error;
+        if (!std::filesystem::is_regular_file(path, error)) continue;
+        m_fontFallback = std::make_unique<FontGlyphFallback>(*ImGui::GetIO().Fonts, path.string());
+        if (!m_fonts.empty()) RebuildFonts();
+        return true;
+    }
+    return false;
+}
+
+void UIManager::RequestFontGlyphs(const std::string& text)
+{
+    if (m_fontFallback && !text.empty())
+        m_fontFallback->RequestText(text, ImGui::GetIO().FontDefault);
 }
 
 void UIManager::SetFontIconCodepoints(std::vector<ImWchar> p_codepoints)
@@ -726,6 +786,13 @@ void UIManager::SetPostCanvasDrawCallback(std::function<void()> p_callback)
     m_postCanvasDrawCallback = std::move(p_callback);
 }
 
+bool UIManager::PrepareFrame()
+{
+    ImGui::SetCurrentContext(m_imguiContext);
+    if (!m_inFrame) BeginFrame();
+    return m_inFrame;
+}
+
 void UIManager::Render()
 {
     NLS_PROFILE_SCOPE();
@@ -770,7 +837,7 @@ void UIManager::Render()
     {
         NLS_PROFILE_NAMED_SCOPE("UIManager::BeginFrame");
         const auto stageBegin = std::chrono::steady_clock::now();
-        BeginFrame();
+        PrepareFrame();
         accumulateStageNs(m_renderStageTotals.beginFrameNs, m_renderStageTotals.maxBeginFrameNs, stageBegin);
     }
     logStartupRenderStage("BeginFrame");
@@ -797,6 +864,7 @@ void UIManager::Render()
         NLS_PROFILE_NAMED_SCOPE("ImGui::Render");
         const auto stageBegin = std::chrono::steady_clock::now();
         ImGui::Render();
+        m_inFrame = false;
         accumulateStageNs(m_renderStageTotals.imguiRenderNs, m_renderStageTotals.maxImguiRenderNs, stageBegin);
     }
     logStartupRenderStage("ImGuiRender");
@@ -1020,6 +1088,7 @@ void UIManager::RebuildFonts()
 {
     auto& io = ImGui::GetIO();
     io.Fonts->Clear();
+    if (m_fontFallback) m_fontFallback->PrepareRanges();
 
     for (auto& [id, font] : m_fonts)
     {
@@ -1031,6 +1100,8 @@ void UIManager::RebuildFonts()
             else
                 Icons::EnsureFontAwesomeIconFontLoaded(
                     font.baseSize * m_uiScale, font.instance, m_fontIconCodepoints);
+            if (m_fontFallback)
+                m_fontFallback->Merge(*io.Fonts, font.instance, font.baseSize * m_uiScale);
         }
     }
 
@@ -1046,6 +1117,7 @@ void UIManager::RebuildFonts()
 
     io.Fonts->Build();
     NotifyFontAtlasChanged();
+    m_nextFallbackRebuild = std::chrono::steady_clock::now() + std::chrono::milliseconds(500);
 }
 
 void UIManager::NotifyFontAtlasChanged()

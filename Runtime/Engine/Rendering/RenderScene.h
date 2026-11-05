@@ -235,6 +235,7 @@ namespace NLS::Engine::Rendering
 			uint64_t sceneGameObjectCount = 0u;
 		uint64_t sceneRenderContentRevision = 0u;
 		uint64_t meshMutationEpoch = 0u;
+        uint64_t physicsRevision3D = 0u, physicsRevision2D = 0u;
 		uint64_t frameSerial = 0u;
 		// Identifies the capture this request came from, so the resolve can mark
 		// exactly that capture complete.
@@ -248,6 +249,7 @@ namespace NLS::Engine::Rendering
 		// Captured so the consuming half does not have to re-derive mutation
 		// observations from state that may have advanced since.
 		bool meshMutationObserved = false;
+        bool physicsMutationObserved = false;
 		bool trackedMaterialMutationObserved = false;
 
 		[[nodiscard]] bool IsValid() const noexcept { return sceneIdentity != nullptr; }
@@ -258,6 +260,8 @@ namespace NLS::Engine::Rendering
 		const NLS::Render::Data::Frustum* frustum = nullptr;
 		Maths::Vector3 cameraPosition{};
 		uint32_t visibleLayerMask = 0xFFFF'FFFFu;
+            std::vector<NLS::InstanceID> hiddenObjectIds;
+            std::vector<NLS::InstanceID> selectionWireIds;
 		const LargeSceneSettings* largeSceneSettings = nullptr;
 		float lodBias = 1.0f;
 		float verticalFovRadians = 0.0f;
@@ -609,6 +613,7 @@ namespace NLS::Engine::Rendering
 		{
 			uint64_t sceneRenderContentRevision = 0u;
 			uint64_t meshMutationEpoch = 0u;
+            uint64_t physicsRevision3D = 0u, physicsRevision2D = 0u;
 			uint64_t storeChangeSerial = 0u;
 			bool hasPendingDeclaredTextures = false;
 			bool hasSynchronizationStamp = false;

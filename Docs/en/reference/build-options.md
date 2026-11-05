@@ -40,6 +40,8 @@ This page lists the CMake configuration options and build script arguments. Defa
 | Option | Default | Effect |
 | --- | --- | --- |
 | `NLS_ENABLE_PCH` | `ON` | Narrow precompiled headers for the main targets |
+| `NLS_ENABLE_EDITOR_ASSET_PCH` | `OFF` | Experimentally cache the asset header chain in the private EditorProject PCH |
+| `NLS_ENABLE_PARALLEL_REFLECTION_GENERATION` | `OFF` | Experimentally schedule reflection generation separately from library compilation; auxiliary projects appear under `CMakePredefinedTargets/Reflection` |
 | `NLS_ENABLE_MSVC_MULTIPROCESSOR_COMPILATION` | `ON` | Enable target-internal MSVC `/MP` |
 | `NLS_MSVC_MP_JOBS` | empty | Limit target-internal `/MP` worker count |
 | `NLS_ENABLE_CXX_MODULES` | `OFF` | Experimental C++20 modules pilot targets |

@@ -1,0 +1,22 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <AssemblyName>GameScripts</AssemblyName>
+    <GenerateRuntimeConfigurationFiles>true</GenerateRuntimeConfigurationFiles>
+    <RuntimeFrameworkVersion>8.0.0</RuntimeFrameworkVersion>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+    <DefineConstants>$(DefineConstants);NLS_GAME_SCRIPTS_PROJECT</DefineConstants>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="Assets/PlaySessionProbe.cs" />
+    <Compile Include="Assets/InputActionProbe.cs" />
+    <Compile Include="../../../Managed/Nullus.GameScripts/GameScriptsMarker.cs" Link="GameScriptsMarker.cs" />
+    <Reference Include="Nullus.Managed" HintPath="$(NullusManagedOutput)/Nullus.Managed.dll" Private="true" />
+    <Reference Include="EngineScripts" HintPath="$(NullusFixtureOutput)/EngineScripts.dll" Private="true" />
+    <Analyzer Include="$(NullusManagedOutput)/Nullus.ScriptGenerator.dll" />
+    <AdditionalFiles Include="../../../Library/ScriptApi/ScriptApi.json" />
+  </ItemGroup>
+</Project>

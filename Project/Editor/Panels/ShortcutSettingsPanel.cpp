@@ -24,14 +24,14 @@ namespace NLS::Editor::Panels
         constexpr float kKeyboardVirtualHeight = 228.0f;
 
         bool IsCommandAssignedToKey(
-            const std::vector<const Shortcuts::ShortcutCommand*>& p_commands,
+            const std::vector<const Shortcuts::ShortcutDescriptor*>& p_commands,
             const EKey p_key)
         {
             const auto& shortcutService = NLS::Core::ServiceLocator::Get<Shortcuts::EditorShortcutService>();
             return std::any_of(
                 p_commands.begin(),
                 p_commands.end(),
-                [&shortcutService, p_key](const Shortcuts::ShortcutCommand* p_command)
+                [&shortcutService, p_key](const Shortcuts::ShortcutDescriptor* p_command)
                 {
                     const auto binding = shortcutService.GetBinding(p_command->id);
                     return binding.assigned && binding.primaryKey == p_key;
@@ -39,14 +39,14 @@ namespace NLS::Editor::Panels
         }
 
         bool IsGlobalKey(
-            const std::vector<const Shortcuts::ShortcutCommand*>& p_commands,
+            const std::vector<const Shortcuts::ShortcutDescriptor*>& p_commands,
             const EKey p_key)
         {
             const auto& shortcutService = NLS::Core::ServiceLocator::Get<Shortcuts::EditorShortcutService>();
             return std::any_of(
                 p_commands.begin(),
                 p_commands.end(),
-                [&shortcutService, p_key](const Shortcuts::ShortcutCommand* p_command)
+                [&shortcutService, p_key](const Shortcuts::ShortcutDescriptor* p_command)
                 {
                     const auto binding = shortcutService.GetBinding(p_command->id);
                     return binding.assigned &&
@@ -77,7 +77,7 @@ namespace NLS::Editor::Panels
             const char* p_id,
             const float p_width,
             const float p_height,
-            const std::vector<const Shortcuts::ShortcutCommand*>& p_commands)
+            const std::vector<const Shortcuts::ShortcutDescriptor*>& p_commands)
         {
             const EKey key = KeyFromLabel(p_label);
             const bool assigned = key != EKey::KEY_UNKNOWN && IsCommandAssignedToKey(p_commands, key);
@@ -103,14 +103,14 @@ namespace NLS::Editor::Panels
             const char* p_label,
             const char* p_id,
             const float p_width,
-            const std::vector<const Shortcuts::ShortcutCommand*>& p_commands)
+            const std::vector<const Shortcuts::ShortcutDescriptor*>& p_commands)
         {
             ImGui::SetCursorScreenPos(ImVec2(p_origin.x + p_x * p_scale, p_origin.y + p_y * p_scale));
             DrawKey(p_label, p_id, p_width * p_scale, kKeyHeight * p_scale, p_commands);
         }
 
         bool CommandMatchesCategory(
-            const Shortcuts::ShortcutCommand& p_command,
+            const Shortcuts::ShortcutDescriptor& p_command,
             const std::string& p_selectedCategory)
         {
             return p_selectedCategory.empty() || p_selectedCategory == "All" || p_command.category == p_selectedCategory;
@@ -150,8 +150,7 @@ namespace NLS::Editor::Panels
     void ShortcutSettingsPanel::Draw()
     {
         NLS::Editor::Core::SetShortcutSettingsWindowBlocksSceneInput(m_opened);
-        if (!m_opened)
-            return;
+        if (!m_opened) { m_rebinding.reset(); return; }
 
         ImGui::SetNextWindowSize(ImVec2(780.0f, 620.0f), ImGuiCond_FirstUseEver);
         ImGui::SetNextWindowSizeConstraints(ImVec2(760.0f, 560.0f), ImVec2(1100.0f, 800.0f));
@@ -191,23 +190,16 @@ namespace NLS::Editor::Panels
         DrawCommandList(commands);
         ImGui::EndChild();
 
-        if (!m_recordingCommandId.empty())
+        if (m_rebinding)
         {
-            const auto binding = CapturePressedBinding();
-            if (binding.assigned)
+            const auto status = m_rebinding->Update();
+            ImGui::TextUnformatted("Release the starting controls, then press a key, mouse button, or gamepad control. Escape cancels.");
+            if (status == Input::RebindingStatus::Completed)
             {
-                const auto conflicts = shortcutService.ValidateBinding(m_recordingCommandId, binding);
-                if (conflicts.empty() && shortcutService.SetBinding(m_recordingCommandId, binding))
-                {
-                    m_selectedCommandId = m_recordingCommandId;
-                    m_recordingCommandId.clear();
-                    m_conflictText.clear();
-                }
-                else if (!conflicts.empty())
-                {
-                    m_conflictText = conflicts.front().message;
-                }
+                (void)Properties::ApplyShortcutSlot(m_recordingCommandId, m_recordingSlot, m_rebinding->GetResult(), m_conflictText);
+                m_rebinding.reset();
             }
+            else if (status == Input::RebindingStatus::Canceled || status == Input::RebindingStatus::TimedOut) m_rebinding.reset();
         }
 
         ImGui::End();
@@ -244,7 +236,7 @@ namespace NLS::Editor::Panels
         legend(ImVec4(0.70f, 0.61f, 0.57f, 1.0f), "Global Key");
     }
 
-    void ShortcutSettingsPanel::DrawKeyboardPreview(const std::vector<const Shortcuts::ShortcutCommand*>& p_commands)
+    void ShortcutSettingsPanel::DrawKeyboardPreview(const std::vector<const Shortcuts::ShortcutDescriptor*>& p_commands)
     {
         constexpr float key = 32.0f;
         constexpr float gap = 4.0f;
@@ -322,7 +314,7 @@ namespace NLS::Editor::Panels
         ImGui::EndChild();
     }
 
-    void ShortcutSettingsPanel::DrawCategoryList(const std::vector<const Shortcuts::ShortcutCommand*>& p_commands)
+    void ShortcutSettingsPanel::DrawCategoryList(const std::vector<const Shortcuts::ShortcutDescriptor*>& p_commands)
     {
         ImGui::TextUnformatted("Category");
         ImGui::Separator();
@@ -343,7 +335,7 @@ namespace NLS::Editor::Panels
         }
     }
 
-    void ShortcutSettingsPanel::DrawCommandList(const std::vector<const Shortcuts::ShortcutCommand*>& p_commands)
+    void ShortcutSettingsPanel::DrawCommandList(const std::vector<const Shortcuts::ShortcutDescriptor*>& p_commands)
     {
         auto& shortcutService = NLS::Core::ServiceLocator::Get<Shortcuts::EditorShortcutService>();
         const auto queryMatches = shortcutService.SearchCommands(m_searchText);
@@ -378,11 +370,24 @@ namespace NLS::Editor::Panels
                 }
             }
             ImGui::NextColumn();
-            auto binding=shortcutService.GetBinding(command->id);
-            Inspector::ReflectedPropertyOptions options;options.layout=Inspector::PropertyEditorLayout::ValueOnly;
-            const auto edit=m_properties.DrawValue(command->id,"Shortcut",binding,options);
-            if(edit.changed && !Properties::ApplyShortcutBinding(command->id,binding,m_conflictText))
-                m_properties.CancelEdits();
+            ImGui::PushID(command->id.c_str());
+            for (size_t slot = 0; slot < shortcutService.GetBindingSlots(command->id).size(); ++slot)
+            {
+                ImGui::PushID(static_cast<int>(slot));
+                const auto label = shortcutService.GetBindingSlotDisplayText(command->id, slot);
+                if (ImGui::Button((label.empty() ? "Unbound" : label).c_str()))
+                {
+                    m_recordingCommandId = command->id; m_recordingSlot = slot; m_conflictText.clear();
+                    m_rebinding.reset();
+                    m_rebinding = shortcutService.BeginRebinding(command->id, slot);
+                }
+                ImGui::SameLine();
+                if (ImGui::SmallButton("Clear")) { Input::BindingOverride value; value.state = Input::OverrideState::ExplicitlyUnbound; Properties::ApplyShortcutSlot(command->id, slot, value, m_conflictText); }
+                ImGui::SameLine();
+                if (ImGui::SmallButton("Default")) { Input::BindingOverride value; Properties::ApplyShortcutSlot(command->id, slot, value, m_conflictText); }
+                ImGui::PopID();
+            }
+            ImGui::PopID();
             ImGui::NextColumn();
         }
 
@@ -393,13 +398,13 @@ namespace NLS::Editor::Panels
     }
 
     std::string ShortcutSettingsPanel::GetCommandListDisplayName(
-        const Shortcuts::ShortcutCommand& p_command,
-        const std::vector<const Shortcuts::ShortcutCommand*>& p_visibleCommands)
+        const Shortcuts::ShortcutDescriptor& p_command,
+        const std::vector<const Shortcuts::ShortcutDescriptor*>& p_visibleCommands)
     {
         const bool hasDuplicateDisplayName = std::any_of(
             p_visibleCommands.begin(),
             p_visibleCommands.end(),
-            [&p_command](const Shortcuts::ShortcutCommand* p_other)
+            [&p_command](const Shortcuts::ShortcutDescriptor* p_other)
             {
                 return p_other != nullptr &&
                     p_other->id != p_command.id &&
@@ -412,50 +417,4 @@ namespace NLS::Editor::Panels
         return p_command.displayName + " (" + ContextDisplayName(p_command.context) + ")";
     }
 
-    Shortcuts::ShortcutBinding ShortcutSettingsPanel::CapturePressedBinding() const
-    {
-        using namespace Shortcuts;
-        using Windowing::Inputs::EKey;
-
-        const auto& io = ImGui::GetIO();
-        ShortcutModifiers modifiers = 0;
-        if (io.KeyCtrl)
-            modifiers = modifiers | EShortcutModifier::Ctrl;
-        if (io.KeyShift)
-            modifiers = modifiers | EShortcutModifier::Shift;
-        if (io.KeyAlt)
-            modifiers = modifiers | EShortcutModifier::Alt;
-        if (io.KeySuper)
-            modifiers = modifiers | EShortcutModifier::Super;
-
-        const auto makeBinding = [modifiers](const EKey p_key)
-        {
-            return ShortcutBinding::FromKey(p_key, modifiers);
-        };
-
-        for (int offset = 0; offset < 26; ++offset)
-        {
-            const auto imguiKey = static_cast<ImGuiKey>(ImGuiKey_A + offset);
-            if (ImGui::IsKeyPressed(imguiKey))
-                return makeBinding(static_cast<EKey>(static_cast<int>(EKey::KEY_A) + offset));
-        }
-
-        for (int offset = 0; offset < 10; ++offset)
-        {
-            const auto imguiKey = static_cast<ImGuiKey>(ImGuiKey_0 + offset);
-            if (ImGui::IsKeyPressed(imguiKey))
-                return makeBinding(static_cast<EKey>(static_cast<int>(EKey::KEY_0) + offset));
-        }
-
-        if (ImGui::IsKeyPressed(ImGuiKey_Escape))
-            return makeBinding(EKey::KEY_ESCAPE);
-        if (ImGui::IsKeyPressed(ImGuiKey_F5))
-            return makeBinding(EKey::KEY_F5);
-        if (ImGui::IsKeyPressed(ImGuiKey_F11))
-            return makeBinding(EKey::KEY_F11);
-        if (ImGui::IsKeyPressed(ImGuiKey_Delete))
-            return makeBinding(EKey::KEY_DELETE);
-
-        return ShortcutBinding::Unassigned();
-    }
 }

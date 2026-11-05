@@ -7,9 +7,11 @@
 #include "Rendering/Assets/AnimationArtifacts.h"
 #include "Rendering/Assets/SceneModelReader.h"
 #include "Rendering/Assets/DistanceFieldBuilder.h"
+#include "Rendering/Assets/DistanceFieldBuildService.h"
 #include "Rendering/Assets/TextureArtifact.h"
 #include "Rendering/Assets/TextureMipGenerator.h"
 #include "Rendering/Assets/SceneImportPipeline.h"
+#include "Rendering/Assets/ArtifactFileReader.h"
 #include "Rendering/Resources/Parsers/AssimpParser.h"
 #include "Rendering/Resources/Parsers/EModelParserFlags.h"
 #include "Rendering/Resources/Parsers/IModelParser.h"
@@ -646,12 +648,14 @@ bool CookModelAsset(
         payload.relativePath = std::filesystem::path("meshes") / subAsset.sourceKey;
         payload.payload = std::move(bytes);
         output.payloads.push_back(std::move(payload));
-        if(fieldSettings.Enabled()) distanceFieldMeshes.emplace(subAsset.key,std::move(mesh));
+        distanceFieldMeshes.emplace(subAsset.key,std::move(mesh));
     }
 
     std::vector<std::string> distanceFieldDiagnostics;
+    NLS::Render::DistanceField::DistanceFieldModelBuildOptions fieldOptions;
+    fieldOptions.kernel.cacheRoot=options.projectRoot/"Library/DistanceFieldCache";
     if(!NLS::Render::DistanceField::AppendDistanceFieldModelPayloads(scene,distanceFieldMeshes,
-        fieldSettings,output.payloads,distanceFieldDiagnostics,options.cancel))
+        fieldSettings,output.payloads,distanceFieldDiagnostics,options.cancel,nullptr,&fieldOptions))
     {
         error=distanceFieldDiagnostics.empty()?"Distance field build failed":distanceFieldDiagnostics.back();
         return false;
@@ -716,6 +720,44 @@ bool CookModelAsset(
     prefabPayload.dependencies = output.dependencies;
     output.payloads.push_back(std::move(prefabPayload));
 
+    return true;
+}
+bool CookModelDistanceFields(const CookOptions& options,const AssetMeta& meta,
+    const ArtifactManifest& previous,ModelCookOutput& output,std::string& error)
+{
+    namespace df=NLS::Render::DistanceField;
+    output={};output.incremental=true;output.primarySubAssetKey=previous.primarySubAssetKey;
+    const auto resolve=[&](const NLS::Core::Assets::ImportedArtifact& artifact)
+    {
+        auto path=std::filesystem::path(artifact.artifactPath);if(path.is_absolute())return path;
+        if(path.generic_string().starts_with("Library/Artifacts/"))return options.artifactRoot/path.lexically_relative("Library/Artifacts");
+        return options.projectRoot/path;
+    };
+    const auto read=[&](const NLS::Core::Assets::ImportedArtifact& artifact)
+    {std::vector<uint8_t> bytes;NLS::Render::Assets::Detail::ReadArtifactFileBytes(resolve(artifact),bytes,nullptr);return bytes;};
+    const auto* entry=previous.FindSubAsset(df::DistanceFieldSourceKey);
+    const auto source=entry?df::DeserializeDistanceFieldSource(read(*entry)):std::nullopt;
+    if(!source){error="The cooked model has no reusable distance field build input";return false;}
+    const auto settings=df::ReadDistanceFieldBuildSettings(meta.settings,options.projectRoot);
+    if(!settings.Enabled())
+    {
+        for(const auto& artifact:previous.subAssets)if(artifact.artifactType==ArtifactType::MeshDistanceField)output.removedSubAssets.push_back(artifact.subAssetKey);
+        return true;
+    }
+    df::DistanceFieldModelBuildOptions request;request.previousManifest=&previous;
+    request.kernel.cacheRoot=options.projectRoot/"Library/DistanceFieldCache";
+    request.readArtifact=read;
+    request.artifactExists=[&](const auto& artifact){std::error_code ec;return std::filesystem::is_regular_file(resolve(artifact),ec);};
+    request.loadMesh=[&](const std::string& key)->std::optional<NLS::Render::Assets::MeshArtifactData>
+    {
+        const auto* mesh=previous.FindSubAsset(key);if(!mesh)return {};
+        auto bundle=NLS::Render::Assets::LoadMeshArtifactBundle(resolve(*mesh));
+        if(!bundle || bundle->lodResources.empty())return {};return std::move(bundle->lodResources.front().mesh);
+    };
+    auto built=df::DistanceFieldBuildService::Build(*source,settings,request,options.cancel);
+    if(!built.success){error=built.diagnostics.empty()?"Distance field cook failed":built.diagnostics.back();return false;}
+    output.payloads=std::move(built.payloads);
+    for(auto& diagnostic:built.diagnostics)output.diagnostics.push_back({CookSeverity::Warning,"mesh-distance-field-quality",std::move(diagnostic),{}});
     return true;
 }
 } // namespace NLS::Cook::Detail

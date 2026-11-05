@@ -12,6 +12,7 @@ namespace NLS::Render::RHI
 	class RHITexture;
 	class RHITextureView;
 }
+namespace NLS::Render::UI { struct UiDrawDataSnapshot; }
 
 namespace NLS::Render::Data
 {
@@ -24,6 +25,13 @@ namespace NLS::Render::Data
 		uint16_t renderHeight = 0;
 			NLS::Render::Entities::Camera* camera = nullptr;
 			std::optional<NLS::Maths::Vector4> clearColorOverride;
+            bool applyToneMapping = true;
+            // Camera projection uses renderWidth/Height; attachments can be a larger shared output.
+            std::optional<NLS::Maths::Vector4> outputViewport;
+            std::shared_ptr<const UI::UiDrawDataSnapshot> gameUiSnapshot;
+            std::optional<double> gameTime;
+            uint64_t playSessionId = 0;
+            uint64_t simulationFrame = 0;
 	        Buffers::Framebuffer* outputBuffer = nullptr;
 		std::shared_ptr<NLS::Render::RHI::RHITexture> outputColorTexture;
 		std::shared_ptr<NLS::Render::RHI::RHITexture> outputDepthStencilTexture;

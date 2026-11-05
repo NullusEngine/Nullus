@@ -16,6 +16,7 @@ namespace NLS::Game::Launch
 		std::printf("  --no-renderdoc               Disable RenderDoc debugging\n");
 		std::printf("  --capture-after-frames <N>  Automatically capture frame after N presents\n");
 		std::printf("  --material-validation-output <path>   Write a renderer readback PNG for material validation\n");
+            std::printf("  --sprite-template-validation-output <path> Validate the TwoD template's presented Sprite\n");
             std::printf("  --animation-validation-output <path>  Read back a cooked animation scene and verify its silhouette\n");
             std::printf("  --animation-validation-time <seconds> Seek animation before capture (default 0.25)\n");
             std::printf("  --animation-validation-forward        Validate the Forward renderer instead of the default renderer\n");
@@ -83,6 +84,12 @@ namespace NLS::Game::Launch
 					return parsed;
 				}
 			}
+                else if (arg == "--sprite-template-validation-output" && i + 1 < argc)
+                {
+                    if(!parsed.materialValidation)parsed.materialValidation=MaterialValidationLaunchSettings{};
+                    parsed.materialValidation->spriteTemplateValidation=true;
+                    parsed.materialValidation->outputPath=argv[++i];
+                }
                 else if (arg == "--animation-validation-output" && i + 1 < argc)
                 {
                     if(!parsed.materialValidation)parsed.materialValidation=MaterialValidationLaunchSettings{};

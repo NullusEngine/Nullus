@@ -219,260 +219,428 @@ const std::vector<IconAtlasEntry>& GeneratedIconAtlasEntries()
             { "editor.icon.atlas.page2", 512, 0.76562500f, 0.63281250f, 0.85937500f, 0.72656250f },
         },
         {
-            "editor.icon.toolbar.center", 48,
+            "editor.icon.toolbar.2d", 48,
             { "editor.icon.atlas.page2", 512, 0.86132812f, 0.63281250f, 0.95507812f, 0.72656250f },
         },
         {
-            "editor.icon.toolbar.global", 48,
+            "editor.icon.toolbar.buffer", 48,
             { "editor.icon.atlas.page2", 512, 0.00000000f, 0.72851562f, 0.09375000f, 0.82226562f },
         },
         {
-            "editor.icon.toolbar.local", 48,
+            "editor.icon.toolbar.camera", 48,
             { "editor.icon.atlas.page2", 512, 0.09570312f, 0.72851562f, 0.18945312f, 0.82226562f },
         },
         {
-            "editor.icon.toolbar.move", 48,
+            "editor.icon.toolbar.center", 48,
             { "editor.icon.atlas.page2", 512, 0.19140625f, 0.72851562f, 0.28515625f, 0.82226562f },
         },
         {
-            "editor.icon.toolbar.pivot", 48,
+            "editor.icon.toolbar.effects", 48,
             { "editor.icon.atlas.page2", 512, 0.28710938f, 0.72851562f, 0.38085938f, 0.82226562f },
         },
         {
-            "editor.icon.toolbar.rotate", 48,
+            "editor.icon.toolbar.gizmos", 48,
             { "editor.icon.atlas.page2", 512, 0.38281250f, 0.72851562f, 0.47656250f, 0.82226562f },
         },
         {
-            "editor.icon.toolbar.scale", 48,
+            "editor.icon.toolbar.global", 48,
             { "editor.icon.atlas.page2", 512, 0.47851562f, 0.72851562f, 0.57226562f, 0.82226562f },
         },
         {
+            "editor.icon.toolbar.grid", 48,
+            { "editor.icon.atlas.page2", 512, 0.57421875f, 0.72851562f, 0.66796875f, 0.82226562f },
+        },
+        {
+            "editor.icon.toolbar.local", 48,
+            { "editor.icon.atlas.page2", 512, 0.66992188f, 0.72851562f, 0.76367188f, 0.82226562f },
+        },
+        {
+            "editor.icon.toolbar.move", 48,
+            { "editor.icon.atlas.page2", 512, 0.76562500f, 0.72851562f, 0.85937500f, 0.82226562f },
+        },
+        {
+            "editor.icon.toolbar.overdraw", 48,
+            { "editor.icon.atlas.page2", 512, 0.86132812f, 0.72851562f, 0.95507812f, 0.82226562f },
+        },
+        {
+            "editor.icon.toolbar.pivot", 48,
+            { "editor.icon.atlas.page2", 512, 0.00000000f, 0.82421875f, 0.09375000f, 0.91796875f },
+        },
+        {
+            "editor.icon.toolbar.rect", 48,
+            { "editor.icon.atlas.page2", 512, 0.09570312f, 0.82421875f, 0.18945312f, 0.91796875f },
+        },
+        {
+            "editor.icon.toolbar.rotate", 48,
+            { "editor.icon.atlas.page2", 512, 0.19140625f, 0.82421875f, 0.28515625f, 0.91796875f },
+        },
+        {
+            "editor.icon.toolbar.scale", 48,
+            { "editor.icon.atlas.page2", 512, 0.28710938f, 0.82421875f, 0.38085938f, 0.91796875f },
+        },
+        {
+            "editor.icon.toolbar.shaded", 48,
+            { "editor.icon.atlas.page2", 512, 0.38281250f, 0.82421875f, 0.47656250f, 0.91796875f },
+        },
+        {
+            "editor.icon.toolbar.shaded.wireframe", 48,
+            { "editor.icon.atlas.page2", 512, 0.47851562f, 0.82421875f, 0.57226562f, 0.91796875f },
+        },
+        {
+            "editor.icon.toolbar.snap", 48,
+            { "editor.icon.atlas.page2", 512, 0.57421875f, 0.82421875f, 0.66796875f, 0.91796875f },
+        },
+        {
+            "editor.icon.toolbar.visibility", 48,
+            { "editor.icon.atlas.page2", 512, 0.66992188f, 0.82421875f, 0.76367188f, 0.91796875f },
+        },
+        {
+            "editor.icon.toolbar.visibility.off", 48,
+            { "editor.icon.atlas.page2", 512, 0.76562500f, 0.82421875f, 0.85937500f, 0.91796875f },
+        },
+        {
+            "editor.icon.toolbar.wireframe", 48,
+            { "editor.icon.atlas.page2", 512, 0.86132812f, 0.82421875f, 0.95507812f, 0.91796875f },
+        },
+        {
             "editor.icon.asset.audio", 32,
-            { "editor.icon.atlas.page2", 512, 0.57421875f, 0.72851562f, 0.63671875f, 0.79101562f },
+            { "editor.icon.atlas.page2", 512, 0.00000000f, 0.91992188f, 0.06250000f, 0.98242188f },
         },
         {
             "editor.icon.asset.default", 32,
-            { "editor.icon.atlas.page2", 512, 0.63867188f, 0.72851562f, 0.70117188f, 0.79101562f },
+            { "editor.icon.atlas.page2", 512, 0.06445312f, 0.91992188f, 0.12695312f, 0.98242188f },
         },
         {
             "editor.icon.asset.folder", 32,
-            { "editor.icon.atlas.page2", 512, 0.70312500f, 0.72851562f, 0.76562500f, 0.79101562f },
+            { "editor.icon.atlas.page2", 512, 0.12890625f, 0.91992188f, 0.19140625f, 0.98242188f },
         },
         {
             "editor.icon.asset.font", 32,
-            { "editor.icon.atlas.page2", 512, 0.76757812f, 0.72851562f, 0.83007812f, 0.79101562f },
+            { "editor.icon.atlas.page2", 512, 0.19335938f, 0.91992188f, 0.25585938f, 0.98242188f },
         },
         {
             "editor.icon.asset.localization", 32,
-            { "editor.icon.atlas.page2", 512, 0.83203125f, 0.72851562f, 0.89453125f, 0.79101562f },
+            { "editor.icon.atlas.page2", 512, 0.25781250f, 0.91992188f, 0.32031250f, 0.98242188f },
         },
         {
             "editor.icon.asset.material", 32,
-            { "editor.icon.atlas.page2", 512, 0.89648438f, 0.72851562f, 0.95898438f, 0.79101562f },
+            { "editor.icon.atlas.page2", 512, 0.32226562f, 0.91992188f, 0.38476562f, 0.98242188f },
         },
         {
             "editor.icon.asset.mesh", 32,
-            { "editor.icon.atlas.page2", 512, 0.00000000f, 0.82421875f, 0.06250000f, 0.88671875f },
+            { "editor.icon.atlas.page2", 512, 0.38671875f, 0.91992188f, 0.44921875f, 0.98242188f },
         },
         {
             "editor.icon.asset.prefab", 32,
-            { "editor.icon.atlas.page2", 512, 0.06445312f, 0.82421875f, 0.12695312f, 0.88671875f },
+            { "editor.icon.atlas.page2", 512, 0.45117188f, 0.91992188f, 0.51367188f, 0.98242188f },
         },
         {
             "editor.icon.asset.scene", 32,
-            { "editor.icon.atlas.page2", 512, 0.12890625f, 0.82421875f, 0.19140625f, 0.88671875f },
+            { "editor.icon.atlas.page2", 512, 0.51562500f, 0.91992188f, 0.57812500f, 0.98242188f },
         },
         {
             "editor.icon.asset.script", 32,
-            { "editor.icon.atlas.page2", 512, 0.19335938f, 0.82421875f, 0.25585938f, 0.88671875f },
+            { "editor.icon.atlas.page2", 512, 0.58007812f, 0.91992188f, 0.64257812f, 0.98242188f },
         },
         {
             "editor.icon.asset.script.csharp", 32,
-            { "editor.icon.atlas.page2", 512, 0.25781250f, 0.82421875f, 0.32031250f, 0.88671875f },
+            { "editor.icon.atlas.page2", 512, 0.64453125f, 0.91992188f, 0.70703125f, 0.98242188f },
         },
         {
             "editor.icon.asset.script.lua", 32,
-            { "editor.icon.atlas.page2", 512, 0.32226562f, 0.82421875f, 0.38476562f, 0.88671875f },
+            { "editor.icon.atlas.page2", 512, 0.70898438f, 0.91992188f, 0.77148438f, 0.98242188f },
         },
         {
             "editor.icon.asset.shader", 32,
-            { "editor.icon.atlas.page2", 512, 0.38671875f, 0.82421875f, 0.44921875f, 0.88671875f },
+            { "editor.icon.atlas.page2", 512, 0.77343750f, 0.91992188f, 0.83593750f, 0.98242188f },
         },
         {
             "editor.icon.asset.shader-function", 32,
-            { "editor.icon.atlas.page2", 512, 0.45117188f, 0.82421875f, 0.51367188f, 0.88671875f },
+            { "editor.icon.atlas.page2", 512, 0.83789062f, 0.91992188f, 0.90039062f, 0.98242188f },
         },
         {
             "editor.icon.asset.shader-graph", 32,
-            { "editor.icon.atlas.page2", 512, 0.51562500f, 0.82421875f, 0.57812500f, 0.88671875f },
+            { "editor.icon.atlas.page2", 512, 0.90234375f, 0.91992188f, 0.96484375f, 0.98242188f },
         },
         {
             "editor.icon.asset.texture", 32,
-            { "editor.icon.atlas.page2", 512, 0.58007812f, 0.82421875f, 0.64257812f, 0.88671875f },
-        },
-        {
-            "editor.icon.asset.ui-document", 32,
-            { "editor.icon.atlas.page2", 512, 0.64453125f, 0.82421875f, 0.70703125f, 0.88671875f },
-        },
-        {
-            "editor.icon.asset.ui-style", 32,
-            { "editor.icon.atlas.page2", 512, 0.70898438f, 0.82421875f, 0.77148438f, 0.88671875f },
-        },
-        {
-            "editor.icon.asset.vfx-emitter", 32,
-            { "editor.icon.atlas.page2", 512, 0.77343750f, 0.82421875f, 0.83593750f, 0.88671875f },
-        },
-        {
-            "editor.icon.asset.vfx-script", 32,
-            { "editor.icon.atlas.page2", 512, 0.83789062f, 0.82421875f, 0.90039062f, 0.88671875f },
-        },
-        {
-            "editor.icon.asset.vfx-system", 32,
-            { "editor.icon.atlas.page2", 512, 0.90234375f, 0.82421875f, 0.96484375f, 0.88671875f },
-        },
-        {
-            "editor.icon.generated.missing", 32,
-            { "editor.icon.atlas.page2", 512, 0.00000000f, 0.88867188f, 0.06250000f, 0.95117188f },
-        },
-        {
-            "editor.icon.glyph.caret-down", 32,
-            { "editor.icon.atlas.page2", 512, 0.06445312f, 0.88867188f, 0.12695312f, 0.95117188f },
-        },
-        {
-            "editor.icon.glyph.caret-right", 32,
-            { "editor.icon.atlas.page2", 512, 0.12890625f, 0.88867188f, 0.19140625f, 0.95117188f },
-        },
-        {
-            "editor.icon.glyph.close", 32,
-            { "editor.icon.atlas.page2", 512, 0.19335938f, 0.88867188f, 0.25585938f, 0.95117188f },
-        },
-        {
-            "editor.icon.glyph.more", 32,
-            { "editor.icon.atlas.page2", 512, 0.25781250f, 0.88867188f, 0.32031250f, 0.95117188f },
-        },
-        {
-            "editor.icon.glyph.search", 32,
-            { "editor.icon.atlas.page2", 512, 0.32226562f, 0.88867188f, 0.38476562f, 0.95117188f },
-        },
-        {
-            "editor.icon.tool.pause", 32,
-            { "editor.icon.atlas.page2", 512, 0.38671875f, 0.88867188f, 0.44921875f, 0.95117188f },
-        },
-        {
-            "editor.icon.tool.play", 32,
-            { "editor.icon.atlas.page2", 512, 0.45117188f, 0.88867188f, 0.51367188f, 0.95117188f },
-        },
-        {
-            "editor.icon.tool.refresh", 32,
-            { "editor.icon.atlas.page2", 512, 0.51562500f, 0.88867188f, 0.57812500f, 0.95117188f },
-        },
-        {
-            "editor.icon.tool.step.forward", 32,
-            { "editor.icon.atlas.page2", 512, 0.58007812f, 0.88867188f, 0.64257812f, 0.95117188f },
-        },
-        {
-            "editor.icon.tool.stop", 32,
-            { "editor.icon.atlas.page2", 512, 0.64453125f, 0.88867188f, 0.70703125f, 0.95117188f },
-        },
-        {
-            "editor.icon.toolbar.center", 32,
-            { "editor.icon.atlas.page2", 512, 0.70898438f, 0.88867188f, 0.77148438f, 0.95117188f },
-        },
-        {
-            "editor.icon.toolbar.global", 32,
-            { "editor.icon.atlas.page2", 512, 0.77343750f, 0.88867188f, 0.83593750f, 0.95117188f },
-        },
-        {
-            "editor.icon.toolbar.local", 32,
-            { "editor.icon.atlas.page2", 512, 0.83789062f, 0.88867188f, 0.90039062f, 0.95117188f },
-        },
-        {
-            "editor.icon.toolbar.move", 32,
-            { "editor.icon.atlas.page2", 512, 0.90234375f, 0.88867188f, 0.96484375f, 0.95117188f },
-        },
-        {
-            "editor.icon.toolbar.pivot", 32,
             { "editor.icon.atlas.page3", 512, 0.00000000f, 0.00000000f, 0.06250000f, 0.06250000f },
         },
         {
-            "editor.icon.toolbar.rotate", 32,
+            "editor.icon.asset.ui-document", 32,
             { "editor.icon.atlas.page3", 512, 0.06445312f, 0.00000000f, 0.12695312f, 0.06250000f },
         },
         {
-            "editor.icon.toolbar.scale", 32,
+            "editor.icon.asset.ui-style", 32,
             { "editor.icon.atlas.page3", 512, 0.12890625f, 0.00000000f, 0.19140625f, 0.06250000f },
         },
         {
+            "editor.icon.asset.vfx-emitter", 32,
+            { "editor.icon.atlas.page3", 512, 0.19335938f, 0.00000000f, 0.25585938f, 0.06250000f },
+        },
+        {
+            "editor.icon.asset.vfx-script", 32,
+            { "editor.icon.atlas.page3", 512, 0.25781250f, 0.00000000f, 0.32031250f, 0.06250000f },
+        },
+        {
+            "editor.icon.asset.vfx-system", 32,
+            { "editor.icon.atlas.page3", 512, 0.32226562f, 0.00000000f, 0.38476562f, 0.06250000f },
+        },
+        {
+            "editor.icon.generated.missing", 32,
+            { "editor.icon.atlas.page3", 512, 0.38671875f, 0.00000000f, 0.44921875f, 0.06250000f },
+        },
+        {
+            "editor.icon.glyph.caret-down", 32,
+            { "editor.icon.atlas.page3", 512, 0.45117188f, 0.00000000f, 0.51367188f, 0.06250000f },
+        },
+        {
+            "editor.icon.glyph.caret-right", 32,
+            { "editor.icon.atlas.page3", 512, 0.51562500f, 0.00000000f, 0.57812500f, 0.06250000f },
+        },
+        {
+            "editor.icon.glyph.close", 32,
+            { "editor.icon.atlas.page3", 512, 0.58007812f, 0.00000000f, 0.64257812f, 0.06250000f },
+        },
+        {
+            "editor.icon.glyph.more", 32,
+            { "editor.icon.atlas.page3", 512, 0.64453125f, 0.00000000f, 0.70703125f, 0.06250000f },
+        },
+        {
+            "editor.icon.glyph.search", 32,
+            { "editor.icon.atlas.page3", 512, 0.70898438f, 0.00000000f, 0.77148438f, 0.06250000f },
+        },
+        {
+            "editor.icon.tool.pause", 32,
+            { "editor.icon.atlas.page3", 512, 0.77343750f, 0.00000000f, 0.83593750f, 0.06250000f },
+        },
+        {
+            "editor.icon.tool.play", 32,
+            { "editor.icon.atlas.page3", 512, 0.83789062f, 0.00000000f, 0.90039062f, 0.06250000f },
+        },
+        {
+            "editor.icon.tool.refresh", 32,
+            { "editor.icon.atlas.page3", 512, 0.90234375f, 0.00000000f, 0.96484375f, 0.06250000f },
+        },
+        {
+            "editor.icon.tool.step.forward", 32,
+            { "editor.icon.atlas.page3", 512, 0.00000000f, 0.06445312f, 0.06250000f, 0.12695312f },
+        },
+        {
+            "editor.icon.tool.stop", 32,
+            { "editor.icon.atlas.page3", 512, 0.06445312f, 0.06445312f, 0.12695312f, 0.12695312f },
+        },
+        {
+            "editor.icon.toolbar.2d", 32,
+            { "editor.icon.atlas.page3", 512, 0.12890625f, 0.06445312f, 0.19140625f, 0.12695312f },
+        },
+        {
+            "editor.icon.toolbar.buffer", 32,
+            { "editor.icon.atlas.page3", 512, 0.19335938f, 0.06445312f, 0.25585938f, 0.12695312f },
+        },
+        {
+            "editor.icon.toolbar.camera", 32,
+            { "editor.icon.atlas.page3", 512, 0.25781250f, 0.06445312f, 0.32031250f, 0.12695312f },
+        },
+        {
+            "editor.icon.toolbar.center", 32,
+            { "editor.icon.atlas.page3", 512, 0.32226562f, 0.06445312f, 0.38476562f, 0.12695312f },
+        },
+        {
+            "editor.icon.toolbar.effects", 32,
+            { "editor.icon.atlas.page3", 512, 0.38671875f, 0.06445312f, 0.44921875f, 0.12695312f },
+        },
+        {
+            "editor.icon.toolbar.gizmos", 32,
+            { "editor.icon.atlas.page3", 512, 0.45117188f, 0.06445312f, 0.51367188f, 0.12695312f },
+        },
+        {
+            "editor.icon.toolbar.global", 32,
+            { "editor.icon.atlas.page3", 512, 0.51562500f, 0.06445312f, 0.57812500f, 0.12695312f },
+        },
+        {
+            "editor.icon.toolbar.grid", 32,
+            { "editor.icon.atlas.page3", 512, 0.58007812f, 0.06445312f, 0.64257812f, 0.12695312f },
+        },
+        {
+            "editor.icon.toolbar.local", 32,
+            { "editor.icon.atlas.page3", 512, 0.64453125f, 0.06445312f, 0.70703125f, 0.12695312f },
+        },
+        {
+            "editor.icon.toolbar.move", 32,
+            { "editor.icon.atlas.page3", 512, 0.70898438f, 0.06445312f, 0.77148438f, 0.12695312f },
+        },
+        {
+            "editor.icon.toolbar.overdraw", 32,
+            { "editor.icon.atlas.page3", 512, 0.77343750f, 0.06445312f, 0.83593750f, 0.12695312f },
+        },
+        {
+            "editor.icon.toolbar.pivot", 32,
+            { "editor.icon.atlas.page3", 512, 0.83789062f, 0.06445312f, 0.90039062f, 0.12695312f },
+        },
+        {
+            "editor.icon.toolbar.rect", 32,
+            { "editor.icon.atlas.page3", 512, 0.90234375f, 0.06445312f, 0.96484375f, 0.12695312f },
+        },
+        {
+            "editor.icon.toolbar.rotate", 32,
+            { "editor.icon.atlas.page3", 512, 0.00000000f, 0.12890625f, 0.06250000f, 0.19140625f },
+        },
+        {
+            "editor.icon.toolbar.scale", 32,
+            { "editor.icon.atlas.page3", 512, 0.06445312f, 0.12890625f, 0.12695312f, 0.19140625f },
+        },
+        {
+            "editor.icon.toolbar.shaded", 32,
+            { "editor.icon.atlas.page3", 512, 0.12890625f, 0.12890625f, 0.19140625f, 0.19140625f },
+        },
+        {
+            "editor.icon.toolbar.shaded.wireframe", 32,
+            { "editor.icon.atlas.page3", 512, 0.19335938f, 0.12890625f, 0.25585938f, 0.19140625f },
+        },
+        {
+            "editor.icon.toolbar.snap", 32,
+            { "editor.icon.atlas.page3", 512, 0.25781250f, 0.12890625f, 0.32031250f, 0.19140625f },
+        },
+        {
+            "editor.icon.toolbar.visibility", 32,
+            { "editor.icon.atlas.page3", 512, 0.32226562f, 0.12890625f, 0.38476562f, 0.19140625f },
+        },
+        {
+            "editor.icon.toolbar.visibility.off", 32,
+            { "editor.icon.atlas.page3", 512, 0.38671875f, 0.12890625f, 0.44921875f, 0.19140625f },
+        },
+        {
+            "editor.icon.toolbar.wireframe", 32,
+            { "editor.icon.atlas.page3", 512, 0.45117188f, 0.12890625f, 0.51367188f, 0.19140625f },
+        },
+        {
             "editor.icon.generated.missing", 16,
-            { "editor.icon.atlas.page3", 512, 0.19335938f, 0.00000000f, 0.22460938f, 0.03125000f },
+            { "editor.icon.atlas.page3", 512, 0.51562500f, 0.12890625f, 0.54687500f, 0.16015625f },
         },
         {
             "editor.icon.glyph.caret-down", 16,
-            { "editor.icon.atlas.page3", 512, 0.22656250f, 0.00000000f, 0.25781250f, 0.03125000f },
+            { "editor.icon.atlas.page3", 512, 0.54882812f, 0.12890625f, 0.58007812f, 0.16015625f },
         },
         {
             "editor.icon.glyph.caret-right", 16,
-            { "editor.icon.atlas.page3", 512, 0.25976562f, 0.00000000f, 0.29101562f, 0.03125000f },
+            { "editor.icon.atlas.page3", 512, 0.58203125f, 0.12890625f, 0.61328125f, 0.16015625f },
         },
         {
             "editor.icon.glyph.close", 16,
-            { "editor.icon.atlas.page3", 512, 0.29296875f, 0.00000000f, 0.32421875f, 0.03125000f },
+            { "editor.icon.atlas.page3", 512, 0.61523438f, 0.12890625f, 0.64648438f, 0.16015625f },
         },
         {
             "editor.icon.glyph.more", 16,
-            { "editor.icon.atlas.page3", 512, 0.32617188f, 0.00000000f, 0.35742188f, 0.03125000f },
+            { "editor.icon.atlas.page3", 512, 0.64843750f, 0.12890625f, 0.67968750f, 0.16015625f },
         },
         {
             "editor.icon.glyph.search", 16,
-            { "editor.icon.atlas.page3", 512, 0.35937500f, 0.00000000f, 0.39062500f, 0.03125000f },
+            { "editor.icon.atlas.page3", 512, 0.68164062f, 0.12890625f, 0.71289062f, 0.16015625f },
         },
         {
             "editor.icon.tool.pause", 16,
-            { "editor.icon.atlas.page3", 512, 0.39257812f, 0.00000000f, 0.42382812f, 0.03125000f },
+            { "editor.icon.atlas.page3", 512, 0.71484375f, 0.12890625f, 0.74609375f, 0.16015625f },
         },
         {
             "editor.icon.tool.play", 16,
-            { "editor.icon.atlas.page3", 512, 0.42578125f, 0.00000000f, 0.45703125f, 0.03125000f },
+            { "editor.icon.atlas.page3", 512, 0.74804688f, 0.12890625f, 0.77929688f, 0.16015625f },
         },
         {
             "editor.icon.tool.refresh", 16,
-            { "editor.icon.atlas.page3", 512, 0.45898438f, 0.00000000f, 0.49023438f, 0.03125000f },
+            { "editor.icon.atlas.page3", 512, 0.78125000f, 0.12890625f, 0.81250000f, 0.16015625f },
         },
         {
             "editor.icon.tool.step.forward", 16,
-            { "editor.icon.atlas.page3", 512, 0.49218750f, 0.00000000f, 0.52343750f, 0.03125000f },
+            { "editor.icon.atlas.page3", 512, 0.81445312f, 0.12890625f, 0.84570312f, 0.16015625f },
         },
         {
             "editor.icon.tool.stop", 16,
-            { "editor.icon.atlas.page3", 512, 0.52539062f, 0.00000000f, 0.55664062f, 0.03125000f },
+            { "editor.icon.atlas.page3", 512, 0.84765625f, 0.12890625f, 0.87890625f, 0.16015625f },
+        },
+        {
+            "editor.icon.toolbar.2d", 16,
+            { "editor.icon.atlas.page3", 512, 0.88085938f, 0.12890625f, 0.91210938f, 0.16015625f },
+        },
+        {
+            "editor.icon.toolbar.buffer", 16,
+            { "editor.icon.atlas.page3", 512, 0.91406250f, 0.12890625f, 0.94531250f, 0.16015625f },
+        },
+        {
+            "editor.icon.toolbar.camera", 16,
+            { "editor.icon.atlas.page3", 512, 0.94726562f, 0.12890625f, 0.97851562f, 0.16015625f },
         },
         {
             "editor.icon.toolbar.center", 16,
-            { "editor.icon.atlas.page3", 512, 0.55859375f, 0.00000000f, 0.58984375f, 0.03125000f },
+            { "editor.icon.atlas.page3", 512, 0.00000000f, 0.19335938f, 0.03125000f, 0.22460938f },
+        },
+        {
+            "editor.icon.toolbar.effects", 16,
+            { "editor.icon.atlas.page3", 512, 0.03320312f, 0.19335938f, 0.06445312f, 0.22460938f },
+        },
+        {
+            "editor.icon.toolbar.gizmos", 16,
+            { "editor.icon.atlas.page3", 512, 0.06640625f, 0.19335938f, 0.09765625f, 0.22460938f },
         },
         {
             "editor.icon.toolbar.global", 16,
-            { "editor.icon.atlas.page3", 512, 0.59179688f, 0.00000000f, 0.62304688f, 0.03125000f },
+            { "editor.icon.atlas.page3", 512, 0.09960938f, 0.19335938f, 0.13085938f, 0.22460938f },
+        },
+        {
+            "editor.icon.toolbar.grid", 16,
+            { "editor.icon.atlas.page3", 512, 0.13281250f, 0.19335938f, 0.16406250f, 0.22460938f },
         },
         {
             "editor.icon.toolbar.local", 16,
-            { "editor.icon.atlas.page3", 512, 0.62500000f, 0.00000000f, 0.65625000f, 0.03125000f },
+            { "editor.icon.atlas.page3", 512, 0.16601562f, 0.19335938f, 0.19726562f, 0.22460938f },
         },
         {
             "editor.icon.toolbar.move", 16,
-            { "editor.icon.atlas.page3", 512, 0.65820312f, 0.00000000f, 0.68945312f, 0.03125000f },
+            { "editor.icon.atlas.page3", 512, 0.19921875f, 0.19335938f, 0.23046875f, 0.22460938f },
+        },
+        {
+            "editor.icon.toolbar.overdraw", 16,
+            { "editor.icon.atlas.page3", 512, 0.23242188f, 0.19335938f, 0.26367188f, 0.22460938f },
         },
         {
             "editor.icon.toolbar.pivot", 16,
-            { "editor.icon.atlas.page3", 512, 0.69140625f, 0.00000000f, 0.72265625f, 0.03125000f },
+            { "editor.icon.atlas.page3", 512, 0.26562500f, 0.19335938f, 0.29687500f, 0.22460938f },
+        },
+        {
+            "editor.icon.toolbar.rect", 16,
+            { "editor.icon.atlas.page3", 512, 0.29882812f, 0.19335938f, 0.33007812f, 0.22460938f },
         },
         {
             "editor.icon.toolbar.rotate", 16,
-            { "editor.icon.atlas.page3", 512, 0.72460938f, 0.00000000f, 0.75585938f, 0.03125000f },
+            { "editor.icon.atlas.page3", 512, 0.33203125f, 0.19335938f, 0.36328125f, 0.22460938f },
         },
         {
             "editor.icon.toolbar.scale", 16,
-            { "editor.icon.atlas.page3", 512, 0.75781250f, 0.00000000f, 0.78906250f, 0.03125000f },
+            { "editor.icon.atlas.page3", 512, 0.36523438f, 0.19335938f, 0.39648438f, 0.22460938f },
+        },
+        {
+            "editor.icon.toolbar.shaded", 16,
+            { "editor.icon.atlas.page3", 512, 0.39843750f, 0.19335938f, 0.42968750f, 0.22460938f },
+        },
+        {
+            "editor.icon.toolbar.shaded.wireframe", 16,
+            { "editor.icon.atlas.page3", 512, 0.43164062f, 0.19335938f, 0.46289062f, 0.22460938f },
+        },
+        {
+            "editor.icon.toolbar.snap", 16,
+            { "editor.icon.atlas.page3", 512, 0.46484375f, 0.19335938f, 0.49609375f, 0.22460938f },
+        },
+        {
+            "editor.icon.toolbar.visibility", 16,
+            { "editor.icon.atlas.page3", 512, 0.49804688f, 0.19335938f, 0.52929688f, 0.22460938f },
+        },
+        {
+            "editor.icon.toolbar.visibility.off", 16,
+            { "editor.icon.atlas.page3", 512, 0.53125000f, 0.19335938f, 0.56250000f, 0.22460938f },
+        },
+        {
+            "editor.icon.toolbar.wireframe", 16,
+            { "editor.icon.atlas.page3", 512, 0.56445312f, 0.19335938f, 0.59570312f, 0.22460938f },
         },
     };
     return entries;

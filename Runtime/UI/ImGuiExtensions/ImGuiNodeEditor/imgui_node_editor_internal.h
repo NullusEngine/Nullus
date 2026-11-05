@@ -1497,7 +1497,19 @@ struct EditorContext
     void SetUserContext(bool globalSpace = false);
 
     void EnableShortcuts(bool enable);
+    void EnableKeyboardShortcuts(bool enable) { m_KeyboardShortcutsEnabled = enable; }
+    bool AreKeyboardShortcutsEnabled() const { return m_ShortcutsEnabled && m_KeyboardShortcutsEnabled && !IsKeyboardInputManaged(); }
     bool AreShortcutsEnabled();
+    void RequestKeyboardShortcut(KeyboardShortcut value) { if (m_ShortcutsEnabled) m_KeyboardRequests.push_back(value); }
+    bool TakeKeyboardShortcut(KeyboardShortcut value)
+    {
+        if (m_KeyboardRequests.empty() || m_KeyboardRequests.front() != value) return false;
+        m_KeyboardRequests.erase(m_KeyboardRequests.begin());
+        return true;
+    }
+    void ClearKeyboardShortcutRequests() { m_KeyboardRequests.clear(); }
+    void NoteClipboardShortcutQuery() { m_UsesClipboardShortcuts = true; }
+    bool UsesClipboardShortcuts() const { return m_UsesClipboardShortcuts; }
 
     NodeId GetHoveredNode()            const { return m_HoveredNode;             }
     PinId  GetHoveredPin()             const { return m_HoveredPin;              }
@@ -1548,6 +1560,9 @@ private:
     bool                m_IsHoveredWithoutOverlapp;
 
     bool                m_ShortcutsEnabled;
+    bool                m_KeyboardShortcutsEnabled = true;
+    vector<KeyboardShortcut> m_KeyboardRequests;
+    bool m_UsesClipboardShortcuts = false;
 
     Style               m_Style;
     int                 m_BeginColorStackSize;

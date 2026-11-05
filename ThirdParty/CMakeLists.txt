@@ -1,4 +1,5 @@
 set(third_party_folder "ThirdParty")
+add_subdirectory(miniaudio)
 
 # Lua is part of the scripting ABI rather than an optional system package.
 # Keep the exact upstream 5.4.8 sources in-tree so configure/build never needs
@@ -237,6 +238,12 @@ endfunction()
 
 nls_find_fbx_sdk()
 
+if(WIN32 AND NOT TARGET NLS_DbgHelpLock)
+    add_library(NLS_DbgHelpLock STATIC "${CMAKE_CURRENT_SOURCE_DIR}/NullusDbgHelpLock.cpp")
+    target_compile_options(NLS_DbgHelpLock PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/Z7>)
+    set_target_properties(NLS_DbgHelpLock PROPERTIES FOLDER ${third_party_folder})
+endif()
+
 if(NLS_ENABLE_TRACY)
     if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/Tracy/CMakeLists.txt")
         set(TRACY_ENABLE ON CACHE BOOL "Enable Tracy profiling" FORCE)
@@ -244,6 +251,10 @@ if(NLS_ENABLE_TRACY)
         add_subdirectory(Tracy)
         if(TARGET TracyClient)
             set_target_properties(TracyClient PROPERTIES FOLDER ${third_party_folder}/Tracy)
+            if(WIN32)
+                target_compile_definitions(TracyClient PRIVATE TRACY_DBGHELP_LOCK=NlsDbgHelp)
+                target_sources(TracyClient PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/NullusDbgHelpLock.cpp")
+            endif()
         endif()
     elseif(NOT TARGET TracyClient)
         add_library(TracyClient INTERFACE)
@@ -372,6 +383,7 @@ if(NOT TARGET ImGui)
 endif()
 
 include("${CMAKE_CURRENT_LIST_DIR}/physx.cmake")
+include("${CMAKE_CURRENT_LIST_DIR}/box2d.cmake")
 
 if(NOT TARGET FrameGraph)
     set(FG_BUILD_TEST OFF CACHE BOOL "" FORCE)

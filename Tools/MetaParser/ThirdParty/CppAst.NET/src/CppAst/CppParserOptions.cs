@@ -101,6 +101,9 @@ namespace CppAst
         /// </summary>
         public bool ParseCommentAttribute { get; set; }
 
+        /// <summary>Collect fingerprints of the actual source buffers consumed by libclang.</summary>
+        public bool CollectSourceFiles { get; set; }
+
         /// <summary>
         /// Sets <see cref="ParseMacros"/> to <c>true</c> and return this instance.
         /// </summary>

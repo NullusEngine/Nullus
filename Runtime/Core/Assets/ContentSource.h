@@ -17,7 +17,7 @@ class NpakArchive;
 
 // Read-only content interface shared by directory installs and package
 // installs. Paths are package-relative logical paths ("Artifacts/ab/<hash>").
-// Implementations must be safe for concurrent readers.
+// Logical path strings are UTF-8. Implementations must be safe for concurrent readers.
 class NLS_CORE_API IContentSource
 {
 public:
@@ -109,6 +109,7 @@ public:
     };
 
     void Mount(std::string hostRoot, std::shared_ptr<const IContentSource> source);
+    bool Unmount(const std::filesystem::path& hostRoot, const IContentSource* expectedSource);
     void Clear();
     bool IsEmpty() const;
     size_t GetMountCount() const;

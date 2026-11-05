@@ -64,10 +64,19 @@ const char* ToMetadataString(const ArtifactType type)
     case ArtifactType::VfxScript: return "vfx-script";
     case ArtifactType::VfxEmitter: return "vfx-emitter";
     case ArtifactType::MeshDistanceField: return "mesh-distance-field";
+    case ArtifactType::MeshDistanceFieldSource: return "mesh-distance-field-source";
     case ArtifactType::SkeletalMesh: return "skinned-mesh";
     case ArtifactType::AnimationGraph: return "animation-graph";
     case ArtifactType::BlendSpace: return "blend-space";
     case ArtifactType::BoneMask: return "bone-mask";
+    case ArtifactType::InputActions: return "input-actions";
+    case ArtifactType::InputProfile: return "input-profile";
+    case ArtifactType::ECSScene: return "ecs-scene";
+    case ArtifactType::ECSPrefab: return "ecs-prefab";
+    case ArtifactType::PhysicsMaterial: return "physics-material";
+    case ArtifactType::CollisionMesh: return "collision-mesh";
+    case ArtifactType::PhysicsShape: return "physics-shape";
+    case ArtifactType::Sprite: return "sprite";
     case ArtifactType::Unknown:
     case ArtifactType::Count:
         break;
@@ -97,10 +106,19 @@ ArtifactType ArtifactTypeFromMetadataString(const std::string& value)
     if (value == "vfx-script") return ArtifactType::VfxScript;
     if (value == "vfx-emitter") return ArtifactType::VfxEmitter;
     if (value == "mesh-distance-field") return ArtifactType::MeshDistanceField;
+    if (value == "mesh-distance-field-source") return ArtifactType::MeshDistanceFieldSource;
     if (value == "skinned-mesh") return ArtifactType::SkeletalMesh;
     if (value == "animation-graph") return ArtifactType::AnimationGraph;
     if (value == "blend-space") return ArtifactType::BlendSpace;
     if (value == "bone-mask") return ArtifactType::BoneMask;
+    if (value == "input-actions") return ArtifactType::InputActions;
+    if (value == "input-profile") return ArtifactType::InputProfile;
+    if (value == "ecs-scene") return ArtifactType::ECSScene;
+    if (value == "ecs-prefab") return ArtifactType::ECSPrefab;
+    if (value == "physics-material") return ArtifactType::PhysicsMaterial;
+    if (value == "collision-mesh") return ArtifactType::CollisionMesh;
+    if (value == "physics-shape") return ArtifactType::PhysicsShape;
+    if (value == "sprite") return ArtifactType::Sprite;
     return ArtifactType::Unknown;
 }
 

@@ -5,6 +5,7 @@
 #include "EngineDef.h"
 #include "Engine/LayerMask.h"
 #include "Math/Vector3.h"
+#include "Math/Vector4.h"
 #include "Reflection/Macros.h"
 #include "Rendering/Settings/EProjectionMode.h"
 #include "Components/CameraComponent.generated.h"
@@ -34,6 +35,15 @@ namespace NLS::Engine::Components
 		~CameraComponent() = default;
 
 		void OnCreate() override;
+        ENUM(ECameraClearMode) { SKYBOX = 0, SOLID_COLOR = 1, DEPTH_ONLY = 2, NOTHING = 3 };
+        FUNCTION(Scriptable) int GetTargetDisplay() const { return targetDisplay; }
+        FUNCTION(Scriptable) void SetTargetDisplay(int value);
+        FUNCTION(Scriptable) float GetDepth() const { return depth; }
+        FUNCTION(Scriptable) void SetDepth(float value);
+        FUNCTION() Maths::Vector4 GetViewportRect() const { return viewportRect; }
+        FUNCTION() void SetViewportRect(Maths::Vector4 value);
+        FUNCTION() ECameraClearMode GetClearMode() const { return clearMode; }
+        FUNCTION() void SetClearMode(ECameraClearMode value);
 		/**
 		* Sets the fov of the camera to the given value
 		* @param p_value
@@ -157,8 +167,16 @@ namespace NLS::Engine::Components
         FUNCTION()
 		Render::Entities::Camera* GetCamera();
 
+        // Captured on the game thread for rendering. GetCamera retains its
+        // authoring Transform and existing scripting/C++ mutation semantics.
+        Render::Entities::Camera* GetRenderCamera();
+
 
 		private:
+                PROPERTY(DisplayName("Target Display"), Getter(GetTargetDisplay), Setter(SetTargetDisplay), Range(0, 7)) int targetDisplay = 0;
+                PROPERTY(DisplayName("Depth"), Getter(GetDepth), Setter(SetDepth)) float depth = 0;
+                PROPERTY(DisplayName("Viewport Rect"), Getter(GetViewportRect), Setter(SetViewportRect)) Maths::Vector4 viewportRect = {0,0,1,1};
+                PROPERTY(DisplayName("Clear Mode"), Getter(GetClearMode), Setter(SetClearMode)) ECameraClearMode clearMode = ECameraClearMode::SKYBOX;
 			PROPERTY(DisplayName("Field Of View"), Getter(GetFov), Setter(SetFov))
 			float fov = 45.0f;
 			PROPERTY(DisplayName("Orthographic Size"), Getter(GetSize), Setter(SetSize))
@@ -180,5 +198,7 @@ namespace NLS::Engine::Components
 			PROPERTY(DisplayName("Visible Layers"), Getter(GetVisibleLayers), Setter(SetVisibleLayers))
 			NLS::Engine::LayerMask visibleLayers = NLS::Engine::LayerMask{0xFFFFFFFFu};
 			Render::Entities::Camera* m_camera = nullptr;
+                struct PresentationCamera;
+                std::shared_ptr<PresentationCamera> m_presentationCamera;
 	};
 }

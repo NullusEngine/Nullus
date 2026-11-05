@@ -125,6 +125,14 @@ const Maths::Matrix4& Camera::GetProjectionMatrix() const
 	return m_projectionMatrix;
 }
 
+Maths::Matrix4 Camera::GetGpuProjectionMatrix() const
+{
+    auto result = GetProjectionMatrix();
+    for (uint8_t column = 0; column < 4; ++column)
+        result(2,column) = (result(2,column) + result(3,column)) * 0.5f;
+    return result;
+}
+
 const Maths::Matrix4& Camera::GetViewMatrix() const
 {
 	return m_viewMatrix;

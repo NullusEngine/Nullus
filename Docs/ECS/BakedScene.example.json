@@ -1,0 +1,95 @@
+{
+  "checksum": "b5f5538c431bd70b",
+  "checksum_algorithm": "fnv1a64",
+  "data": {
+    "archetypes": [
+      [
+        "eadbfe275ec2e07f",
+        "fdcf1e302d77c266"
+      ],
+      [
+        "fdcf1e302d77c266"
+      ]
+    ],
+    "entities": [
+      {
+        "archetype": 0,
+        "authoring_id": "8b604f2c-1e47-4bdf-9972-a2634428eed9",
+        "components": [
+          {
+            "enabled": true,
+            "kind": "data",
+            "name": "Nullus.ECS.Parent",
+            "type": "eadbfe275ec2e07f",
+            "value": {
+              "entity": "9f890a83-bc95-4093-b216-52468c7b0ab1"
+            },
+            "version": 1
+          },
+          {
+            "enabled": true,
+            "kind": "data",
+            "name": "Nullus.ECS.LocalTransform",
+            "type": "fdcf1e302d77c266",
+            "value": {
+              "position": [
+                4.0,
+                0.0,
+                0.0
+              ],
+              "rotation": [
+                0.0,
+                0.0,
+                0.0,
+                1.0
+              ],
+              "scale": [
+                1.0,
+                1.0,
+                1.0
+              ]
+            },
+            "version": 1
+          }
+        ],
+        "id": "8b604f2c-1e47-4bdf-9972-a2634428eed9"
+      },
+      {
+        "archetype": 1,
+        "authoring_id": "9f890a83-bc95-4093-b216-52468c7b0ab1",
+        "components": [
+          {
+            "enabled": true,
+            "kind": "data",
+            "name": "Nullus.ECS.LocalTransform",
+            "type": "fdcf1e302d77c266",
+            "value": {
+              "position": [
+                9.0,
+                0.0,
+                0.0
+              ],
+              "rotation": [
+                0.0,
+                0.0,
+                0.0,
+                1.0
+              ],
+              "scale": [
+                1.0,
+                1.0,
+                1.0
+              ]
+            },
+            "version": 1
+          }
+        ],
+        "id": "9f890a83-bc95-4093-b216-52468c7b0ab1"
+      }
+    ],
+    "kind": "scene",
+    "resources": []
+  },
+  "format": "Nullus.ECS",
+  "version": 1
+}

@@ -1,4 +1,5 @@
 #include "Assets/AssetMeta.h"
+#include "Assets/ArtifactManifest.h"
 
 #include "Utils/PathParser.h"
 
@@ -43,6 +44,13 @@ std::string ToLower(std::string value)
 
 namespace NLS::Core::Assets
 {
+std::string ComputeModelImportSettingsFingerprint(const AssetMeta& meta)
+{
+    std::string value=meta.id.ToString()+"\n"+meta.importerId+"\n"+std::to_string(meta.importerVersion)+"\n"+std::to_string(static_cast<int>(meta.assetType));
+    for(const auto& [key,setting]:meta.settings)
+        if(!key.starts_with("DISTANCE_FIELD_") && key!="NULLUS_IMPORTER_DIRTY")value+="\n"+std::to_string(key.size())+":"+key+"="+std::to_string(setting.size())+":"+setting;
+    return "model-import:"+ToHexString(ComputeSha256(reinterpret_cast<const uint8_t*>(value.data()),value.size()));
+}
 const char* ToString(const AssetType type)
 {
     switch (type)
@@ -68,6 +76,13 @@ const char* ToString(const AssetType type)
     case AssetType::AnimationGraph: return "animation-graph";
     case AssetType::BlendSpace: return "blend-space";
     case AssetType::BoneMask: return "bone-mask";
+    case AssetType::InputActions: return "input-actions";
+    case AssetType::InputProfile: return "input-profile";
+    case AssetType::ECSScene: return "ecs-scene";
+    case AssetType::ECSPrefab: return "ecs-prefab";
+    case AssetType::PhysicsMaterial: return "physics-material";
+    case AssetType::CollisionMesh: return "collision-mesh";
+    case AssetType::PhysicsShape: return "physics-shape";
     case AssetType::Unknown:
     case AssetType::Count:
         break;
@@ -111,6 +126,13 @@ AssetType AssetTypeFromString(const std::string& text)
     if (lowered == "animation-graph") return AssetType::AnimationGraph;
     if (lowered == "blend-space") return AssetType::BlendSpace;
     if (lowered == "bone-mask") return AssetType::BoneMask;
+    if (lowered == "input-actions") return AssetType::InputActions;
+    if (lowered == "input-profile") return AssetType::InputProfile;
+    if (lowered == "ecs-scene") return AssetType::ECSScene;
+    if (lowered == "ecs-prefab") return AssetType::ECSPrefab;
+    if (lowered == "physics-material") return AssetType::PhysicsMaterial;
+    if (lowered == "collision-mesh") return AssetType::CollisionMesh;
+    if (lowered == "physics-shape") return AssetType::PhysicsShape;
     return AssetType::Unknown;
 }
 
@@ -124,6 +146,13 @@ std::filesystem::path GetAssetMetaPath(const std::filesystem::path& assetPath)
 AssetType InferAssetType(const std::filesystem::path& assetPath)
 {
     const auto extension=ToLower(assetPath.extension().generic_string());
+    if (extension == ".physmat") return AssetType::PhysicsMaterial;
+    if (extension == ".collisionmesh") return AssetType::CollisionMesh;
+    if (extension == ".physshape") return AssetType::PhysicsShape;
+    if (extension == ".inputactions") return AssetType::InputActions;
+    if (extension == ".inputprofile") return AssetType::InputProfile;
+    if (extension == ".ecsscene") return AssetType::ECSScene;
+    if (extension == ".ecsprefab") return AssetType::ECSPrefab;
     if(extension==".vfxscript")return AssetType::VfxScript;
     if(extension==".vfxemitter")return AssetType::VfxEmitter;
     if(extension==".shadergraph")return AssetType::ShaderGraph;
@@ -169,6 +198,9 @@ AssetType InferAssetType(const std::filesystem::path& assetPath)
 
 std::string InferImporterId(const AssetType type)
 {
+    if (type == AssetType::PhysicsMaterial || type == AssetType::CollisionMesh || type == AssetType::PhysicsShape) return ToString(type);
+    if (type == AssetType::InputActions || type == AssetType::InputProfile) return ToString(type);
+    if (type == AssetType::ECSScene || type == AssetType::ECSPrefab) return ToString(type);
     if(type==AssetType::AnimationClip||type==AssetType::AnimationGraph||type==AssetType::BlendSpace||type==AssetType::BoneMask)return ToString(type);
     switch (type)
     {
@@ -203,12 +235,14 @@ uint32_t GetCurrentImporterVersion(const AssetType type)
     case AssetType::ModelScene:
         return 22u;
     case AssetType::Shader:
-        return 5u;
+        // SceneDebug passes and ParticleSprite material ABI 8.
+        return 6u;
     case AssetType::ShaderGraph:
+        return 2u;
     case AssetType::ShaderFunction:
         return 1u;
     case AssetType::VfxSystem:
-        return 17u;
+        return 18u;
     case AssetType::VfxScript:
     case AssetType::VfxEmitter:
         return 1u;
@@ -223,6 +257,8 @@ uint32_t GetCurrentImporterVersion(const AssetType type)
     case AssetType::UIStyleSheet:
     case AssetType::Font:
     case AssetType::LocalizationTable:
+    case AssetType::ECSScene:
+    case AssetType::ECSPrefab:
     case AssetType::Unknown:
     case AssetType::Count:
         return 1u;
@@ -289,6 +325,37 @@ AssetMeta AssetMeta::CreateForAsset(const std::filesystem::path& assetPath)
     meta.assetType = InferAssetType(assetPath);
     meta.importerId = InferImporterId(meta.assetType);
     meta.importerVersion = GetCurrentImporterVersion(meta.assetType);
+    // Folder-independent project defaults apply only when creating metadata.
+    // Existing assets retain their authored settings on every reimport.
+    if (meta.assetType == AssetType::Texture)
+    {
+        std::error_code error;
+        auto directory = std::filesystem::absolute(assetPath, error).parent_path();
+        for (size_t depth = 0; !error && !directory.empty() && depth < 64; ++depth)
+        {
+            if (directory.filename() == "Assets")
+            {
+                std::ifstream defaults(directory / "ImportDefaults.ini");
+                std::string line;
+                while (std::getline(defaults, line))
+                {
+                    if (!line.empty() && line.back() == '\r') line.pop_back();
+                    const auto separator = line.find('=');
+                    if (separator == std::string::npos) continue;
+                    const auto key = line.substr(0, separator);
+                    if (key == "TEXTURE_TYPE" || key == "SPRITE_PIXELS_PER_UNIT" ||
+                        key == "TEXTURE_FILTER_MODE" || key == "TEXTURE_MIPMAP_ENABLED")
+                        meta.settings[key] = line.substr(separator + 1);
+                }
+                if (const auto type = meta.settings.find("TEXTURE_TYPE"); type != meta.settings.end() && type->second == "sprite")
+                    meta.settings["SPRITE_ID"] = NLS::Guid::New().ToString();
+                break;
+            }
+            const auto parent = directory.parent_path();
+            if (parent == directory) break;
+            directory = parent;
+        }
+    }
     return meta;
 }
 

@@ -8,6 +8,12 @@ set(NLS_SCRIPTING_SOURCES
     ${CMAKE_CURRENT_SOURCE_DIR}/IScriptBackend.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/ScriptRuntime.h
     ${CMAKE_CURRENT_SOURCE_DIR}/ScriptRuntime.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/RuntimePlaySession.h
+    ${CMAKE_CURRENT_SOURCE_DIR}/RuntimePlaySession.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/PlayScriptBindings.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/PlayScriptBindings.h
+    ${CMAKE_CURRENT_SOURCE_DIR}/GameInputFrame.h
+    ${CMAKE_CURRENT_SOURCE_DIR}/GameInputFrame.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/ScriptEngineApi.h
     ${CMAKE_CURRENT_SOURCE_DIR}/ScriptEngineApi.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/ScriptRuntimeSetup.h
@@ -20,6 +26,9 @@ set(NLS_SCRIPTING_SOURCES
     ${CMAKE_CURRENT_SOURCE_DIR}/UIScriptEventBinding.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/LuaScriptBackend.h
     ${CMAKE_CURRENT_SOURCE_DIR}/LuaScriptBackend.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/LuaPluginModule.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/CoreClrPluginModule.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/PluginScriptAbi.h
     ${CMAKE_CURRENT_SOURCE_DIR}/CoreClrScriptBackend.h
     ${CMAKE_CURRENT_SOURCE_DIR}/CoreClrScriptBackend.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/ScriptErrorConsole.h

@@ -431,6 +431,90 @@ struct EditorUndoService::TransactionFrame
     std::vector<HistoryEntry> entries;
 };
 
+struct EditorUndoService::SuspendedHistory
+{
+    std::vector<HistoryEntry> entries;
+    size_t cursor = 0, memory = 0, blobs = 0;
+    std::unordered_map<UndoScopeId, UndoScopeState, UndoScopeIdHash> scopes;
+};
+
+UndoRequestResult EditorUndoService::BeginPlayDomain(uint64_t sessionId)
+{
+    if (!sessionId || m_editHistory || m_activeEdit || m_pending || !m_transactions.empty() || IsFrozen() || IsPoisoned())
+        return {UndoRequestState::Busy, "Editor history cannot enter a Play domain now."};
+    m_editHistory = std::make_unique<SuspendedHistory>();
+    m_editHistory->entries = std::move(m_history);
+    m_editHistory->cursor = m_cursor;
+    m_editHistory->memory = m_retainedMemoryBytes;
+    m_editHistory->blobs = m_retainedBlobBytes;
+    m_editHistory->scopes = m_scopeStates;
+    m_history.clear();
+    m_cursor = m_retainedMemoryBytes = m_retainedBlobBytes = 0;
+    m_playDomainId = sessionId;
+    Emit(UndoHistoryEventKind::HistoryChanged);
+    return {};
+}
+
+UndoRequestResult EditorUndoService::EndPlayDomain()
+{
+    if (!m_editHistory) return {};
+    if (m_pending || m_activeEdit || !m_transactions.empty())
+        return {UndoRequestState::Busy, "Play edits must finish before restoring Edit history."};
+    auto play = std::move(m_history);
+    const auto playCursor = m_cursor;
+    auto playScopes = std::move(m_scopeStates);
+    m_history = std::move(m_editHistory->entries);
+    m_cursor = m_editHistory->cursor;
+    m_retainedMemoryBytes = m_editHistory->memory;
+    m_retainedBlobBytes = m_editHistory->blobs;
+    m_scopeStates = std::move(m_editHistory->scopes);
+    m_editHistory.reset();
+    m_playDomainId = 0;
+    bool discardedRedo = false;
+    for (size_t i = 0; i < playCursor; ++i)
+    {
+        auto& entry = play[i];
+        const bool transient = std::any_of(entry.info.scopes.begin(), entry.info.scopes.end(), [](const UndoScopeId& scope)
+        { return scope.kind == UndoScopeKind::Scene || scope.kind == UndoScopeKind::PrefabStage; });
+        if (transient) continue;
+        if (!discardedRedo) { DiscardRedo(); discardedRedo = true; }
+        m_retainedMemoryBytes += entry.info.estimatedBytes;
+        m_retainedBlobBytes += entry.info.estimatedBlobBytes;
+        m_history.push_back(std::move(entry));
+        ++m_cursor;
+    }
+    for (const auto& [scope, state] : playScopes)
+        if (scope.kind != UndoScopeKind::Scene && scope.kind != UndoScopeKind::PrefabStage) m_scopeStates[scope] = state;
+    EnforceBudget();
+    Emit(UndoHistoryEventKind::HistoryChanged);
+    return {};
+}
+
+bool EditorUndoService::IsCommandAllowedInPlay(const UndoCommandInfo& info) const
+{
+    if (!m_playDomainId) return true;
+    bool runtime = false, persistent = false;
+    for (const auto& scope : info.scopes)
+    {
+        if (scope.kind == UndoScopeKind::PrefabStage) return false;
+        if (scope.kind == UndoScopeKind::Scene)
+        {
+            if (scope.stableKey != "play-scene:" + std::to_string(m_playDomainId)) return false;
+            runtime = true;
+        }
+        else persistent = true;
+    }
+    if (runtime && persistent) return false;
+    for (const auto& transaction : m_transactions)
+        for (const auto& entry : transaction.entries)
+        {
+            const bool previousRuntime = std::any_of(entry.info.scopes.begin(), entry.info.scopes.end(),
+                [](const UndoScopeId& scope) { return scope.kind == UndoScopeKind::Scene; });
+            if ((runtime || persistent) && previousRuntime != runtime) return false;
+        }
+    return true;
+}
+
 struct EditorUndoService::PendingOperation
 {
     enum class Kind : uint8_t
@@ -652,6 +736,7 @@ ExecuteResult EditorUndoService::Execute(UndoCommandPtr command)
         return {UndoRequestState::Failed, "Cannot execute a null undo command."};
 
     auto info = NormalizeInfo(command->GetInfo());
+    if (!IsCommandAllowedInPlay(info)) return {UndoRequestState::Conflict, "Play commands cannot modify suspended Edit state or mix runtime and persistent scopes."};
     if (!m_transactions.empty() && command->MayCompleteAsynchronously())
     {
         return {
@@ -681,6 +766,7 @@ RecordResult EditorUndoService::RecordAppliedInternal(
         return {UndoRequestState::Failed, "Cannot record a null undo command."};
 
     auto info = NormalizeInfo(command->GetInfo());
+    if (!IsCommandAllowedInPlay(info)) return {UndoRequestState::Conflict, "Play commands cannot mix runtime and persistent scopes."};
     if (!m_transactions.empty() && command->MayCompleteAsynchronously())
     {
         return {
@@ -719,6 +805,7 @@ UndoEditBeginResult EditorUndoService::BeginEditSession(UndoEditDesc description
         return {{}, {UndoRequestState::Failed, "Cannot begin an edit session without an edit implementation."}};
 
     auto info = NormalizeInfo(std::move(description.info));
+    if (!IsCommandAllowedInPlay(info)) return {{}, {UndoRequestState::Conflict, "This edit belongs to another Play history domain."}};
     AssignCommandId(info);
     const UndoExecutionContext context {info.id, UndoDirection::Redo, 0u, info.scopes};
     const auto validation = description.edit->Validate(context);
@@ -1355,6 +1442,11 @@ bool EditorUndoService::IsPending() const
 bool EditorUndoService::HasActiveEditSession() const
 {
     return static_cast<bool>(m_activeEdit);
+}
+
+bool EditorUndoService::HasActiveTransaction() const
+{
+    return !m_transactions.empty();
 }
 
 bool EditorUndoService::IsEditSessionActive(const UndoEditSession& session) const noexcept

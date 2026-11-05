@@ -34,6 +34,13 @@ enum class AssetType
     AnimationGraph,
     BlendSpace,
     BoneMask,
+    InputActions,
+    InputProfile,
+    ECSScene,
+    ECSPrefab,
+    PhysicsMaterial,
+    CollisionMesh,
+    PhysicsShape,
     Count
 };
 
@@ -57,6 +64,10 @@ struct NLS_CORE_API AssetMeta
 
     bool Save(const std::filesystem::path& metaPath) const;
 };
+
+// Distance fields are a derived producer. Their settings do not invalidate
+// imported mesh/material/texture artifacts.
+NLS_CORE_API std::string ComputeModelImportSettingsFingerprint(const AssetMeta& meta);
 
 inline bool operator==(const AssetMeta& lhs, const AssetMeta& rhs)
 {

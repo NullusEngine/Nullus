@@ -268,11 +268,10 @@ namespace NLS::Render::FrameGraph
     NLS::Render::Data::FrameDescriptor CaptureExternalSceneOutputSnapshot(
         const NLS::Render::Data::FrameDescriptor& frame)
     {
-        NLS::Render::Data::FrameDescriptor snapshot;
-        snapshot.renderWidth = frame.renderWidth;
-        snapshot.renderHeight = frame.renderHeight;
-        snapshot.camera = frame.camera;
-        snapshot.clearColorOverride = frame.clearColorOverride;
+        // Preserve every per-view option when freezing the frame. Resolve the
+        // mutable framebuffer owner into retained attachment handles below.
+        auto snapshot = frame;
+        snapshot.outputBuffer = nullptr;
         auto* outputBuffer = ResolveExternalSceneOutputFramebuffer(frame);
         if (outputBuffer == nullptr)
         {

@@ -1,0 +1,228 @@
+{
+  "recordedUtc": "2026-10-29T08:45:05.2917245Z",
+  "platform": "Windows x64",
+  "configuration": "Debug",
+  "scope": "Phase 1 structural commands and safe scene lifecycle commits",
+  "tests": [
+    {
+      "target": "NullusPhysicsTests",
+      "tests": 56,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0,
+      "exitCode": 0,
+      "xml": "D:/Code/Nullus/build/physics-validation/commands/Debug/NullusPhysicsTests.xml",
+      "log": "D:/Code/Nullus/build/physics-validation/commands/Debug/NullusPhysicsTests.log",
+      "executable": "D:/Code/Nullus/build/physics-validation/commands/Debug/run/NullusPhysicsTests.exe",
+      "executableSha256": "32A5D1424411830342016C12ADD35E4583DE83C021ECD1DBD4BE2D8EF0E3994E",
+      "xmlUtc": "2026-10-29T08:44:10.5220605Z"
+    },
+    {
+      "target": "NullusPhysicsSceneTests",
+      "tests": 50,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0,
+      "exitCode": 0,
+      "xml": "D:/Code/Nullus/build/physics-validation/commands/Debug/NullusPhysicsSceneTests.xml",
+      "log": "D:/Code/Nullus/build/physics-validation/commands/Debug/NullusPhysicsSceneTests.log",
+      "executable": "D:/Code/Nullus/build/physics-validation/commands/Debug/run/NullusPhysicsSceneTests.exe",
+      "executableSha256": "B6D50DB318DE52DBDECD88E5AECAB01D278DF472447BA8790E8E52F53EF5989E",
+      "xmlUtc": "2026-10-29T08:32:08.7201737Z"
+    },
+    {
+      "target": "NullusPlayModeTests",
+      "tests": 38,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0,
+      "exitCode": 0,
+      "xml": "D:/Code/Nullus/build/physics-validation/commands/Debug/NullusPlayModeTests.xml",
+      "log": "D:/Code/Nullus/build/physics-validation/commands/Debug/NullusPlayModeTests.log",
+      "executable": "D:/Code/Nullus/build/physics-validation/commands/Debug/run/NullusPlayModeTests.exe",
+      "executableSha256": "48D725E53A05D9B919966F4065C4B6DCD488D3816A0DFFB6A67C44BD45BC4E0E",
+      "xmlUtc": "2026-10-29T08:35:14.0348529Z"
+    },
+    {
+      "target": "NullusPlayLoopNoUiTests",
+      "tests": 1,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0,
+      "exitCode": 0,
+      "xml": "D:/Code/Nullus/build/physics-validation/commands/Debug/NullusPlayLoopNoUiTests.xml",
+      "log": "D:/Code/Nullus/build/physics-validation/commands/Debug/NullusPlayLoopNoUiTests.log",
+      "executable": "D:/Code/Nullus/build/physics-validation/commands/Debug/run/NullusPlayLoopNoUiTests.exe",
+      "executableSha256": "07587B079C482D23E49E7999C9FF92F25CB80E46B6048171C815039107E79A54",
+      "xmlUtc": "2026-10-29T08:36:02.7781328Z"
+    }
+  ],
+  "totalTests": 145,
+  "failures": 0,
+  "skipped": 0,
+  "modules": [
+    {
+      "name": "NLS_Physicsd.dll",
+      "built": "D:/Code/Nullus/build/physics-validation/commands/Debug/lib/NLS_Physicsd.dll",
+      "loaded": "D:/Code/Nullus/build/physics-validation/commands/Debug/run/NLS_Physicsd.dll",
+      "sha256": "2DFA6669E4C8ED24ABDE0DAAFA23BB10BC9FD152A72F2A35DDFC1A79147F5673",
+      "matchesBuilt": true,
+      "builtUtc": "2026-10-29T08:29:10.1709677Z"
+    },
+    {
+      "name": "NLS_Engined.dll",
+      "built": "D:/Code/Nullus/build/physics-validation/commands/Debug/lib/NLS_Engined.dll",
+      "loaded": "D:/Code/Nullus/build/physics-validation/commands/Debug/run/NLS_Engined.dll",
+      "sha256": "9EF5B577EB217DB1AE5D205ABD95A8E88593166E67A61B66C2FA6D5965FFC3F2",
+      "matchesBuilt": true,
+      "builtUtc": "2026-10-29T08:13:30.9419179Z"
+    },
+    {
+      "name": "NLS_Scriptingd.dll",
+      "built": "D:/Code/Nullus/build/physics-validation/commands/Debug/lib/NLS_Scriptingd.dll",
+      "loaded": "D:/Code/Nullus/build/physics-validation/commands/Debug/run/NLS_Scriptingd.dll",
+      "sha256": "22356890CAD2460300CA9124DFC35E90A22D7F9863EFED92427039C1F2D208B1",
+      "matchesBuilt": true,
+      "builtUtc": "2026-10-29T08:14:00.4834752Z"
+    },
+    {
+      "name": "NLS_ECSd.dll",
+      "built": "D:/Code/Nullus/build/physics-validation/commands/Debug/lib/NLS_ECSd.dll",
+      "loaded": "D:/Code/Nullus/build/physics-validation/commands/Debug/run/NLS_ECSd.dll",
+      "sha256": "A589175FACC62AE246BEAE84F6D65D985FFDEAD745F0B7B473A7789AB73FBD58",
+      "matchesBuilt": true,
+      "builtUtc": "2026-10-29T08:09:19.3478111Z"
+    },
+    {
+      "name": "NLS_Based.dll",
+      "built": "D:/Code/Nullus/build/physics-validation/commands/Debug/lib/NLS_Based.dll",
+      "loaded": "D:/Code/Nullus/build/physics-validation/commands/Debug/run/NLS_Based.dll",
+      "sha256": "59CCDAF5E0E034FD0D6AA63198F913DB14848BD2CA92E454D4F765EBDB38AF8A",
+      "matchesBuilt": true,
+      "builtUtc": "2026-10-29T08:29:06.3420015Z"
+    }
+  ],
+  "sourceSnapshot": [
+    {
+      "path": "Runtime/Physics/PhysicsCommandBuffer.h",
+      "module": "NLS_Physicsd.dll",
+      "sha256": "0FB8DEE9258EE2E0489543DD0A8FC6C2B81B2C72B5A378E43225F5E5257E2297"
+    },
+    {
+      "path": "Runtime/Physics/PhysicsCommandBuffer.cpp",
+      "module": "NLS_Physicsd.dll",
+      "sha256": "E86202B4B62844858A71A4E859E8B5C3586441964B8626469CF38C451D5D6F92"
+    },
+    {
+      "path": "Runtime/Physics/PhysicsWorld2D.h",
+      "module": "NLS_Physicsd.dll",
+      "sha256": "3E808C243A9556B8D8C1BC2B4D3F90AD5D632DAD5CE4DA1C039498169FE76D5A"
+    },
+    {
+      "path": "Runtime/Physics/PhysicsWorld2D.cpp",
+      "module": "NLS_Physicsd.dll",
+      "sha256": "2694828EC71FA04A2F2FF13D89C9A5F18DC7CC28A0E0DDAE4045C3949B159A4B"
+    },
+    {
+      "path": "Runtime/Engine/SceneSystem/Scene.h",
+      "module": "NLS_Engined.dll",
+      "sha256": "F13E581C46EC0BFCA5FF15AA96760402F4CD42D963BA2A03951565D73C7BE61D"
+    },
+    {
+      "path": "Runtime/Engine/SceneSystem/Scene.cpp",
+      "module": "NLS_Engined.dll",
+      "sha256": "497102B0376500611B1DEDC09237F49781266BDF7FC55BC05FACD17C56502DC1"
+    },
+    {
+      "path": "Runtime/Engine/Components/RigidbodyComponent.h",
+      "module": "NLS_Engined.dll",
+      "sha256": "A81E127492D4FC8D5B05A7FD6FBA76323A336D931BEFF49C44817C6EDA98BCE2"
+    },
+    {
+      "path": "Runtime/Engine/Components/RigidbodyComponent.cpp",
+      "module": "NLS_Engined.dll",
+      "sha256": "AAA050B422CD5E12C6A3F37339309432EA062B723BEB5CDF48283DE24981B2A3"
+    },
+    {
+      "path": "Runtime/Engine/Components/Rigidbody2DComponent.h",
+      "module": "NLS_Engined.dll",
+      "sha256": "29522E7EFB73CB2C9BC20BBACE3DD41F43E1A0A7F8115A7968E91945FFE51D6C"
+    },
+    {
+      "path": "Runtime/Engine/Components/Rigidbody2DComponent.cpp",
+      "module": "NLS_Engined.dll",
+      "sha256": "6E56468D5880E06EF73B3829B87B55CBEADDB0340EB7F6452E83083878773CA6"
+    },
+    {
+      "path": "Runtime/Engine/Components/PhysicsColliderComponent.h",
+      "module": "NLS_Engined.dll",
+      "sha256": "FA388F602F08245486AD02DC9B729E90E64B11B001756763DB336AE905A5AE58"
+    },
+    {
+      "path": "Runtime/Engine/Components/PhysicsColliderComponent.cpp",
+      "module": "NLS_Engined.dll",
+      "sha256": "6CF52A3BAD1E96C5F5A346742E256651955203C9F754678F7D41DDEC4874EA52"
+    },
+    {
+      "path": "Runtime/Engine/Components/PhysicsCollider2DComponent.h",
+      "module": "NLS_Engined.dll",
+      "sha256": "9CEB32100864744039D27BCC41A599D6FD582752B49C095BE4FE9C2C236C0C46"
+    },
+    {
+      "path": "Runtime/Engine/Components/PhysicsCollider2DComponent.cpp",
+      "module": "NLS_Engined.dll",
+      "sha256": "F2188ABB092BE5AE537218D8DFE0959AA1E42B311867026D4732639EB858F593"
+    },
+    {
+      "path": "Runtime/Scripting/RuntimePlaySession.h",
+      "module": "NLS_Scriptingd.dll",
+      "sha256": "8BAF63EFC709DD4F9DFEF58A332D54CF7E362B174A92C52B5045411CF2FFE77D"
+    },
+    {
+      "path": "Runtime/Scripting/RuntimePlaySession.cpp",
+      "module": "NLS_Scriptingd.dll",
+      "sha256": "7855FBCEB5CE6C1917C26B7B41EF59823E30A26E08346BB88166246F00824848"
+    }
+  ],
+  "validated": [
+    "Owned geometry/settings command snapshots and FIFO ticket dependencies",
+    "Single-consumer commits and concurrent producers including recording during a blocked commit",
+    "Invalid references, dimensions, generations, cancellation and expired worlds",
+    "Replacement failure retains valid geometry; native geometry callback lifetime",
+    "Scene authoring/runtime safe synchronization in both dimensions",
+    "Contact-time component deletion/creation under retained native query views",
+    "Real collision script dispatch defers structural and motion commits",
+    "Rigidbody removal/readd, collider disable/reenable and stale native shape recovery",
+    "Scene clone isolation, destruction and eight repeated Play/Stop cycles",
+    "Existing scene settings, interpolation, particles, scripting and fixed-step regressions"
+  ],
+  "build": {
+    "native": "NLS_Physics compiled and linked; Base/Physics refreshed to a consistent TaskGraph ABI",
+    "engineAndScripting": "Scoped ClCompile/_Link builds passed with isolated DLL output; current physics source is older than these tested modules",
+    "tests": "All four test targets compiled/linked; native TaskGraph callers recompiled after the dependency ABI refresh; post-build deployment disabled to preserve shared running binaries",
+    "playerLibrary": "GameProject static library built; no packaged Player acceptance",
+    "refresh": "A later dependency refresh hit MSB6003 on a foreign-owned CL.read.1.tlog; it did not replace the tested DLL snapshot",
+    "logs": [
+      "build/physics-validation/commands-runtime-final-build.log",
+      "build/physics-validation/commands-scene-clean-build.log",
+      "build/physics-validation/commands-play-tests-build.log",
+      "build/physics-validation/commands-base-physics-refresh.log",
+      "build/physics-validation/commands-native-abi-build.log",
+      "build/physics-validation/commands-runtime-refresh.log"
+    ]
+  },
+  "correctedFailures": [
+    "Initial force-preservation oracle corrected to compare the same sequence with a direct native adapter",
+    "Native breakpoint 0x80000003 on worker-world recreation: CDB TaskGraph path; refreshed Base/Physics dependencies and recompiled native test callers to resolve the mixed build snapshot"
+  ],
+  "unverified": [
+    "Visible Editor/Physics Debugger interaction",
+    "Full Editor/Player build and Player Cook",
+    "GPU pixels",
+    "Linux/macOS CI",
+    "CUDA hardware",
+    "Broader Prefab/reparent/scene-switch stress",
+    "Completion of phases 2-10"
+  ],
+  "workspace": "Unrelated dirty work and running processes were preserved. Validation DLLs used isolated output; no shared runtime DLL was replaced by this validation."
+}

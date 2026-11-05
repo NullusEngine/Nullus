@@ -1,6 +1,8 @@
 #pragma once
 
 #include "Assets/AssetPath.h"
+#include "Core/Assets/PluginAssetPath.h"
+#include "Core/ServiceLocator.h"
 #include "Platform/Process/Process.h"
 
 #include <algorithm>
@@ -18,6 +20,7 @@ struct EditorAssetRoot
     bool readOnly = false;
     std::filesystem::path mountPath;
     std::filesystem::path libraryPath;
+    std::string identityNamespace;
 };
 
 inline std::string NormalizeEditorAssetPath(std::filesystem::path path)
@@ -176,6 +179,9 @@ inline std::vector<EditorAssetRoot> MakeProjectEditorAssetRoots(const std::files
     }};
 
     AppendBuiltInShaderAssetRoot(roots, normalized);
+    if (NLS::Core::ServiceLocator::Contains<NLS::Core::Assets::PluginContentRoots>())
+        for (const auto& plugin : NLS::Core::ServiceLocator::Get<NLS::Core::Assets::PluginContentRoots>().roots)
+            roots.push_back({plugin.physicalPath, true, plugin.logicalPath.lexically_relative(normalized), plugin.libraryPath, plugin.identityNamespace});
 
     return roots;
 }

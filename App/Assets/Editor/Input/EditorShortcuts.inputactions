@@ -1,0 +1,5661 @@
+{
+  "version": 1,
+  "id": "ac4ba698-9ed1-4f29-bef2-24fd4cc83e57",
+  "defaultContext": "b2264332-7e5d-42de-be9d-07c7eb674d7c",
+  "actions": [
+    {
+      "id": "a9844647-023e-46f1-826a-abdbd40938b3",
+      "name": "file.new-scene",
+      "type": 0,
+      "nature": 0,
+      "aggregation": 0
+    },
+    {
+      "id": "36bd60e7-fcae-4306-9b0a-29da626297c4",
+      "name": "file.save-scene",
+      "type": 0,
+      "nature": 0,
+      "aggregation": 0
+    },
+    {
+      "id": "5b28f7a7-77ff-4779-816c-cfd440bad417",
+      "name": "file.save-scene-as",
+      "type": 0,
+      "nature": 0,
+      "aggregation": 0
+    },
+    {
+      "id": "d63510af-d06f-4332-b118-12594fe64ce0",
+      "name": "edit.undo",
+      "type": 0,
+      "nature": 0,
+      "aggregation": 0
+    },
+    {
+      "id": "c83f11d9-64ca-47d4-9b8d-4f1db344c64a",
+      "name": "edit.redo",
+      "type": 0,
+      "nature": 0,
+      "aggregation": 0
+    },
+    {
+      "id": "55498972-45ce-4819-868d-eefea8f5f977",
+      "name": "editor.play",
+      "type": 0,
+      "nature": 0,
+      "aggregation": 0
+    },
+    {
+      "id": "5c04845a-5747-4bab-a62e-ea05277f8c21",
+      "name": "editor.stop",
+      "type": 0,
+      "nature": 0,
+      "aggregation": 0
+    },
+    {
+      "id": "c44b1149-1e5c-44eb-b4b4-fc4cffa2e411",
+      "name": "editor.pause",
+      "type": 0,
+      "nature": 0,
+      "aggregation": 0
+    },
+    {
+      "id": "5c19885a-5759-4e81-a619-e605276d294b",
+      "name": "editor.step",
+      "type": 0,
+      "nature": 0,
+      "aggregation": 0
+    },
+    {
+      "id": "e6f813e6-dbdd-4884-8dc1-1d4a336f1e9a",
+      "name": "editor.release-game-input",
+      "type": 0,
+      "nature": 0,
+      "aggregation": 0
+    },
+    {
+      "id": "b4c70dbe-314d-41c6-aaef-aba4faf2f238",
+      "name": "edit.cancel-active-edit",
+      "type": 0,
+      "nature": 0,
+      "aggregation": 0
+    },
+    {
+      "id": "1091a6d1-e264-4859-a399-606daa228baf",
+      "name": "debug.renderdoc.capture-next-frame",
+      "type": 0,
+      "nature": 0,
+      "aggregation": 0
+    },
+    {
+      "id": "db01585e-3161-4b28-9ba0-94eb2b38267a",
+      "name": "debug.renderdoc.open-latest-capture",
+      "type": 0,
+      "nature": 0,
+      "aggregation": 0
+    },
+    {
+      "id": "32e90b8d-e7db-4470-b8aa-00d9c62d49aa",
+      "name": "scene-view.fly-down",
+      "type": 3,
+      "nature": 2,
+      "aggregation": 1
+    },
+    {
+      "id": "a15f8636-a1ae-4e6b-865d-a58a3bc96a85",
+      "name": "edit.delete-selected-gameobject",
+      "type": 0,
+      "nature": 0,
+      "aggregation": 0
+    },
+    {
+      "id": "c76610b0-2edb-4bb5-b0df-0634385f886b",
+      "name": "edit.delete-selected-gameobject-hierarchy",
+      "type": 0,
+      "nature": 0,
+      "aggregation": 0
+    },
+    {
+      "id": "6319a367-dabf-4750-a9cc-a6861a9ebe6e",
+      "name": "scene-view.view-tool",
+      "type": 0,
+      "nature": 0,
+      "aggregation": 0
+    },
+    {
+      "id": "60c868d4-59b0-420c-a4f7-9b705a546cda",
+      "name": "scene-view.move-tool",
+      "type": 0,
+      "nature": 0,
+      "aggregation": 0
+    },
+    {
+      "id": "5ca83abe-b739-4cda-9dfa-1a82143d5820",
+      "name": "scene-view.rotate-tool",
+      "type": 0,
+      "nature": 0,
+      "aggregation": 0
+    },
+    {
+      "id": "2f5c669f-c12a-441d-8444-b67da30b364f",
+      "name": "scene-view.scale-tool",
+      "type": 0,
+      "nature": 0,
+      "aggregation": 0
+    },
+    {
+      "id": "319c52ed-422f-402d-a934-d724879ccbdb",
+      "name": "scene-view.rect-tool",
+      "type": 0,
+      "nature": 0,
+      "aggregation": 0
+    },
+    {
+      "id": "c38dc7ab-cd61-4273-8837-8f93905919dd",
+      "name": "scene-view.transform-tool",
+      "type": 0,
+      "nature": 0,
+      "aggregation": 0
+    },
+    {
+      "id": "4aecee9f-ce50-4325-ba01-8b66010ae52f",
+      "name": "scene-view.toggle-pivot-position",
+      "type": 0,
+      "nature": 0,
+      "aggregation": 0
+    },
+    {
+      "id": "ccb8501c-11e0-400c-b8c7-4a922f0ac9a6",
+      "name": "scene-view.toggle-pivot-orientation",
+      "type": 0,
+      "nature": 0,
+      "aggregation": 0
+    },
+    {
+      "id": "95fc13e6-7a4c-4a83-b083-d50274cfa8dd",
+      "name": "scene-view.toggle-selected-visibility",
+      "type": 0,
+      "nature": 0,
+      "aggregation": 0
+    },
+    {
+      "id": "aa6c70fe-5b42-4c4f-a583-9118ff8c5dd1",
+      "name": "edit.duplicate-selection-scene",
+      "type": 0,
+      "nature": 0,
+      "aggregation": 0
+    },
+    {
+      "id": "6131f8c8-c0e2-460f-811d-cdf428a36249",
+      "name": "edit.select-all-scene",
+      "type": 0,
+      "nature": 0,
+      "aggregation": 0
+    },
+    {
+      "id": "933873a0-4ec9-46b3-b315-9efbfd6bdfd1",
+      "name": "edit.frame-selection-scene",
+      "type": 0,
+      "nature": 0,
+      "aggregation": 0
+    },
+    {
+      "id": "3f29dbf6-a9b4-4b04-b75a-e8f810096ba6",
+      "name": "edit.duplicate-selection-hierarchy",
+      "type": 0,
+      "nature": 0,
+      "aggregation": 0
+    },
+    {
+      "id": "b7ab2106-d837-4ac4-b1eb-bf86b4e1696e",
+      "name": "edit.select-all-hierarchy",
+      "type": 0,
+      "nature": 0,
+      "aggregation": 0
+    },
+    {
+      "id": "8a3b9574-69c6-46e8-98e3-2debe91a0da6",
+      "name": "edit.frame-selection-hierarchy",
+      "type": 0,
+      "nature": 0,
+      "aggregation": 0
+    },
+    {
+      "id": "5f3e21fa-aa0d-4b19-a1c8-150509959d2b",
+      "name": "asset-browser.rename",
+      "type": 0,
+      "nature": 0,
+      "aggregation": 0
+    },
+    {
+      "id": "2f42c882-56f2-4fea-8f08-3a7bc5befffc",
+      "name": "asset-browser.copy",
+      "type": 0,
+      "nature": 0,
+      "aggregation": 0
+    },
+    {
+      "id": "74521948-0bc9-474e-92b8-0ae1e9d30970",
+      "name": "asset-browser.paste",
+      "type": 0,
+      "nature": 0,
+      "aggregation": 0
+    },
+    {
+      "id": "940dda9b-4434-4d04-8f51-94579fb1b8de",
+      "name": "asset-browser.duplicate",
+      "type": 0,
+      "nature": 0,
+      "aggregation": 0
+    },
+    {
+      "id": "2a2ee876-f214-43c0-8a41-f62c6b79beb2",
+      "name": "asset-browser.delete",
+      "type": 0,
+      "nature": 0,
+      "aggregation": 0
+    },
+    {
+      "id": "ed721947-b641-4f6d-9660-e2fa54f25e9f",
+      "name": "ui-designer.save",
+      "type": 0,
+      "nature": 0,
+      "aggregation": 0
+    },
+    {
+      "id": "e6edc659-5cb0-4bbe-a8d2-902ef18fd0a0",
+      "name": "ui-designer.undo",
+      "type": 0,
+      "nature": 0,
+      "aggregation": 0
+    },
+    {
+      "id": "656c8740-8f4e-4658-96ad-ccf357d1730a",
+      "name": "ui-designer.redo",
+      "type": 0,
+      "nature": 0,
+      "aggregation": 0
+    },
+    {
+      "id": "e54110a0-7c69-4af1-b7b7-88e6ed49b743",
+      "name": "ui-designer.duplicate",
+      "type": 0,
+      "nature": 0,
+      "aggregation": 0
+    },
+    {
+      "id": "2f2c93cf-82a6-438d-8475-79825ff5571f",
+      "name": "ui-designer.copy",
+      "type": 0,
+      "nature": 0,
+      "aggregation": 0
+    },
+    {
+      "id": "9bf6346c-5738-423b-941b-e9c909f2bb85",
+      "name": "ui-designer.paste",
+      "type": 0,
+      "nature": 0,
+      "aggregation": 0
+    },
+    {
+      "id": "cfce376d-f6d6-4a4b-990c-ddd0102dd90d",
+      "name": "ui-designer.delete",
+      "type": 0,
+      "nature": 0,
+      "aggregation": 0
+    },
+    {
+      "id": "844399d3-324b-4db2-acda-34270d42367c",
+      "name": "ui-designer.rename",
+      "type": 0,
+      "nature": 0,
+      "aggregation": 0
+    },
+    {
+      "id": "c2eef141-4f6a-4a4a-936b-e6c442b4c920",
+      "name": "ui-designer.cancel",
+      "type": 0,
+      "nature": 0,
+      "aggregation": 0
+    },
+    {
+      "id": "524cbfee-f874-41c3-b2af-c28af4cc5ad1",
+      "name": "ui-designer.frame-all",
+      "type": 0,
+      "nature": 0,
+      "aggregation": 0
+    },
+    {
+      "id": "b1c7ea37-072f-44be-ba96-f38adf6e442c",
+      "name": "ui-designer.frame-selection",
+      "type": 0,
+      "nature": 0,
+      "aggregation": 0
+    },
+    {
+      "id": "96fa5406-23ba-471d-bb0d-80c53faa3af3",
+      "name": "ui-designer.zoom-in",
+      "type": 0,
+      "nature": 0,
+      "aggregation": 0
+    },
+    {
+      "id": "5480736e-bd5a-4c86-b06f-fe2b2417e680",
+      "name": "ui-designer.zoom-out",
+      "type": 0,
+      "nature": 0,
+      "aggregation": 0
+    },
+    {
+      "id": "4968d76d-0435-49c1-a739-0e2c40fc6b8f",
+      "name": "ui-designer.zoom-100",
+      "type": 0,
+      "nature": 0,
+      "aggregation": 0
+    },
+    {
+      "id": "9db58a48-e846-4807-acfe-bbf123e05a5d",
+      "name": "ui-designer.nudge-left",
+      "type": 0,
+      "nature": 0,
+      "aggregation": 0,
+      "interaction": {
+        "kind": 5,
+        "duration": 0.5,
+        "interval": 0.2,
+        "count": 2
+      }
+    },
+    {
+      "id": "c3e9c8c6-49b8-4a14-9bee-400702f717fe",
+      "name": "ui-designer.nudge-left-fast",
+      "type": 0,
+      "nature": 0,
+      "aggregation": 0,
+      "interaction": {
+        "kind": 5,
+        "duration": 0.5,
+        "interval": 0.2,
+        "count": 2
+      }
+    },
+    {
+      "id": "17477c68-6aeb-4838-83d6-d56ed1bbcb96",
+      "name": "ui-designer.nudge-right",
+      "type": 0,
+      "nature": 0,
+      "aggregation": 0,
+      "interaction": {
+        "kind": 5,
+        "duration": 0.5,
+        "interval": 0.2,
+        "count": 2
+      }
+    },
+    {
+      "id": "d3f485e7-71e5-4859-b8fe-bff5a8e5eefb",
+      "name": "ui-designer.nudge-right-fast",
+      "type": 0,
+      "nature": 0,
+      "aggregation": 0,
+      "interaction": {
+        "kind": 5,
+        "duration": 0.5,
+        "interval": 0.2,
+        "count": 2
+      }
+    },
+    {
+      "id": "fb6bc9f2-1648-4c87-964b-e9b4801f2171",
+      "name": "ui-designer.nudge-up",
+      "type": 0,
+      "nature": 0,
+      "aggregation": 0,
+      "interaction": {
+        "kind": 5,
+        "duration": 0.5,
+        "interval": 0.2,
+        "count": 2
+      }
+    },
+    {
+      "id": "1dbee011-cddd-4794-b67e-83ba62ed0712",
+      "name": "ui-designer.nudge-up-fast",
+      "type": 0,
+      "nature": 0,
+      "aggregation": 0,
+      "interaction": {
+        "kind": 5,
+        "duration": 0.5,
+        "interval": 0.2,
+        "count": 2
+      }
+    },
+    {
+      "id": "1c45688a-2ea7-4de2-b7d5-5a33b73f9e98",
+      "name": "ui-designer.nudge-down",
+      "type": 0,
+      "nature": 0,
+      "aggregation": 0,
+      "interaction": {
+        "kind": 5,
+        "duration": 0.5,
+        "interval": 0.2,
+        "count": 2
+      }
+    },
+    {
+      "id": "b99cc826-0fb0-4c07-8ee4-979f01e35a39",
+      "name": "ui-designer.nudge-down-fast",
+      "type": 0,
+      "nature": 0,
+      "aggregation": 0,
+      "interaction": {
+        "kind": 5,
+        "duration": 0.5,
+        "interval": 0.2,
+        "count": 2
+      }
+    },
+    {
+      "id": "985734c1-8efc-4f6f-aac8-d4e244c2f9a9",
+      "name": "vfx-editor.File.Save",
+      "type": 0,
+      "nature": 0,
+      "aggregation": 0
+    },
+    {
+      "id": "bda9b35a-d459-4b32-bc59-4e0e27261c20",
+      "name": "vfx-editor.Edit.Undo",
+      "type": 0,
+      "nature": 0,
+      "aggregation": 0
+    },
+    {
+      "id": "afb3b484-68b4-4fd4-aa34-8ad28d67be8a",
+      "name": "vfx-editor.Edit.Redo",
+      "type": 0,
+      "nature": 0,
+      "aggregation": 0
+    },
+    {
+      "id": "4fda9807-5b6b-40a9-97fc-3761958ba29f",
+      "name": "vfx-editor.Edit.Copy",
+      "type": 0,
+      "nature": 0,
+      "aggregation": 0
+    },
+    {
+      "id": "8bf7116d-7ab0-418c-affc-844f15a49382",
+      "name": "vfx-editor.Edit.Cut",
+      "type": 0,
+      "nature": 0,
+      "aggregation": 0
+    },
+    {
+      "id": "66369c89-2406-41c7-985c-0c1118550605",
+      "name": "vfx-editor.Edit.Paste",
+      "type": 0,
+      "nature": 0,
+      "aggregation": 0
+    },
+    {
+      "id": "62400280-9882-4328-a222-0742b486ffc2",
+      "name": "vfx-editor.Stack.CollapseToHeaders",
+      "type": 0,
+      "nature": 0,
+      "aggregation": 0
+    },
+    {
+      "id": "ae4298a1-0158-46f7-8c8f-20164813f8b1",
+      "name": "vfx-editor.Stack.CollapseDisabled",
+      "type": 0,
+      "nature": 0,
+      "aggregation": 0
+    },
+    {
+      "id": "9673b715-6472-43b9-9fcd-46344f50d7ef",
+      "name": "vfx-editor.Find",
+      "type": 0,
+      "nature": 0,
+      "aggregation": 0
+    },
+    {
+      "id": "fd3e150b-493c-4db8-9267-d6457439d7fe",
+      "name": "vfx-editor.Simulation.Reset",
+      "type": 0,
+      "nature": 0,
+      "aggregation": 0
+    },
+    {
+      "id": "4be8dc60-2ec2-4dd4-81de-00521bec8c5e",
+      "name": "vfx-editor.Cancel",
+      "type": 0,
+      "nature": 0,
+      "aggregation": 0
+    },
+    {
+      "id": "3e562f11-6792-48f9-8ed0-30a0be334f8b",
+      "name": "vfx-editor.Select.Isolate",
+      "type": 0,
+      "nature": 0,
+      "aggregation": 0
+    },
+    {
+      "id": "316c48b2-0676-4ae3-acf3-e515ab4aa565",
+      "name": "vfx-editor.Select.DisableEmitters",
+      "type": 0,
+      "nature": 0,
+      "aggregation": 0
+    },
+    {
+      "id": "411d0201-ef0b-4d9c-9ce2-376709686d72",
+      "name": "vfx-editor.Select.EnableEmitters",
+      "type": 0,
+      "nature": 0,
+      "aggregation": 0
+    },
+    {
+      "id": "35cfee89-13a2-4822-9fa7-f1b3075639e4",
+      "name": "vfx-editor.Focus",
+      "type": 0,
+      "nature": 0,
+      "aggregation": 0
+    },
+    {
+      "id": "7810089d-ba85-4379-b6ed-a2ca6bfaaa37",
+      "name": "vfx-editor.Overview.ZoomToFitAll",
+      "type": 0,
+      "nature": 0,
+      "aggregation": 0
+    },
+    {
+      "id": "5f3fa4ff-3fdc-4075-9d1e-34587ad783b7",
+      "name": "vfx-editor.Emitter.Add",
+      "type": 0,
+      "nature": 0,
+      "aggregation": 0
+    },
+    {
+      "id": "980669cd-73ea-4b97-b6a9-f2ce68579f59",
+      "name": "vfx-editor.Module.Delete",
+      "type": 0,
+      "nature": 0,
+      "aggregation": 0
+    },
+    {
+      "id": "8836b2c8-b402-4153-87e7-806ecaecd109",
+      "name": "vfx-library.save",
+      "type": 0,
+      "nature": 0,
+      "aggregation": 0
+    },
+    {
+      "id": "13a7a7b6-c75a-44c4-87bd-353a38eecc5a",
+      "name": "vfx-library.undo",
+      "type": 0,
+      "nature": 0,
+      "aggregation": 0
+    },
+    {
+      "id": "565674bc-a4bf-4476-86ea-86641df2ddcc",
+      "name": "vfx-library.redo",
+      "type": 0,
+      "nature": 0,
+      "aggregation": 0
+    },
+    {
+      "id": "85c8dfe6-146c-4f4c-8e5e-989747f21b2e",
+      "name": "vfx-library.cancel",
+      "type": 0,
+      "nature": 0,
+      "aggregation": 0
+    },
+    {
+      "id": "38ece5f0-7840-46ae-9952-2a18d66a1434",
+      "name": "console.previous",
+      "type": 0,
+      "nature": 0,
+      "aggregation": 0,
+      "interaction": {
+        "kind": 5,
+        "duration": 0.5,
+        "interval": 0.2,
+        "count": 2
+      }
+    },
+    {
+      "id": "11f361b8-05cb-4982-95c2-844287bc14fc",
+      "name": "console.next",
+      "type": 0,
+      "nature": 0,
+      "aggregation": 0,
+      "interaction": {
+        "kind": 5,
+        "duration": 0.5,
+        "interval": 0.2,
+        "count": 2
+      }
+    },
+    {
+      "id": "03d2e68b-7c53-41b8-983e-74afe645c736",
+      "name": "console.end",
+      "type": 0,
+      "nature": 0,
+      "aggregation": 0
+    },
+    {
+      "id": "5065a0b1-4f0b-49f7-812f-e7378712df7d",
+      "name": "console.open",
+      "type": 0,
+      "nature": 0,
+      "aggregation": 0
+    },
+    {
+      "id": "e9d8d4cf-e1c7-46d2-a780-b2d789ca0af8",
+      "name": "console.copy",
+      "type": 0,
+      "nature": 0,
+      "aggregation": 0
+    },
+    {
+      "id": "7b23ee32-6fd3-4e07-88ea-5d7876c96899",
+      "name": "input-editor.save",
+      "type": 0,
+      "nature": 0,
+      "aggregation": 0
+    },
+    {
+      "id": "d0739dd6-de93-4b30-b534-343a61b7fc5a",
+      "name": "node-graph.frame",
+      "type": 0,
+      "nature": 0,
+      "aggregation": 0
+    },
+    {
+      "id": "bfd8d7e4-1294-4b88-9d45-3454cca1e0b6",
+      "name": "node-graph.frame-and-zoom",
+      "type": 0,
+      "nature": 0,
+      "aggregation": 0
+    },
+    {
+      "id": "458d915a-9ffc-4ab8-b386-e3ace9b7bbae",
+      "name": "node-graph.delete",
+      "type": 0,
+      "nature": 0,
+      "aggregation": 0
+    },
+    {
+      "id": "b818dd76-8968-4e0f-b1cb-712e380428ed",
+      "name": "camera-preview.frame",
+      "type": 0,
+      "nature": 0,
+      "aggregation": 0
+    },
+    {
+      "id": "cb4f9e8b-a951-4786-9c76-d8ebaf37d194",
+      "name": "camera-angle.top",
+      "type": 0,
+      "nature": 0,
+      "aggregation": 0
+    },
+    {
+      "id": "6bfc8cb4-8578-4b98-b927-64a477e540b2",
+      "name": "camera-angle.bottom",
+      "type": 0,
+      "nature": 0,
+      "aggregation": 0
+    },
+    {
+      "id": "53d14f59-1ff8-4123-a4f3-c26808fc5d4d",
+      "name": "camera-angle.right",
+      "type": 0,
+      "nature": 0,
+      "aggregation": 0
+    },
+    {
+      "id": "2779ef0f-5a68-4a2e-81a9-92bc646e1998",
+      "name": "camera-angle.left",
+      "type": 0,
+      "nature": 0,
+      "aggregation": 0
+    },
+    {
+      "id": "eb5939bc-6c31-420e-b4ce-bb482fdb5c80",
+      "name": "camera-angle.front",
+      "type": 0,
+      "nature": 0,
+      "aggregation": 0
+    },
+    {
+      "id": "ee86c9da-cc17-4630-89ff-122e93c22dca",
+      "name": "camera-angle.back",
+      "type": 0,
+      "nature": 0,
+      "aggregation": 0
+    },
+    {
+      "id": "8e3ca491-a8c2-48ae-b875-66e5a7dce8f4",
+      "name": "ui-designer.revert",
+      "type": 0,
+      "nature": 0,
+      "aggregation": 0
+    },
+    {
+      "id": "a5d017ad-5ea7-448c-8736-6b3164a45f6a",
+      "name": "vfx-editor.File.New",
+      "type": 0,
+      "nature": 0,
+      "aggregation": 0
+    },
+    {
+      "id": "17f41ea3-9c8c-400a-91f6-29f9c5b8bc2c",
+      "name": "vfx-editor.File.Open",
+      "type": 0,
+      "nature": 0,
+      "aggregation": 0
+    },
+    {
+      "id": "799d3abc-4101-419f-8a14-4d0ab954a559",
+      "name": "vfx-editor.Compile",
+      "type": 0,
+      "nature": 0,
+      "aggregation": 0
+    },
+    {
+      "id": "b74865ae-7ae1-4e0d-80d1-9141e1b86977",
+      "name": "vfx-editor.Compile.AutoCompile",
+      "type": 0,
+      "nature": 0,
+      "aggregation": 0
+    },
+    {
+      "id": "0b6f1de6-78c6-4583-9a51-c2190b207475",
+      "name": "vfx-editor.Simulation.PlayPause",
+      "type": 0,
+      "nature": 0,
+      "aggregation": 0
+    },
+    {
+      "id": "0ba21898-1e68-4577-b8d9-39879f65bd9d",
+      "name": "vfx-editor.Simulation.Step",
+      "type": 0,
+      "nature": 0,
+      "aggregation": 0
+    },
+    {
+      "id": "3638c6df-54b4-44e0-abfb-1faf5c46b6ca",
+      "name": "vfx-editor.Simulation.StepBack",
+      "type": 0,
+      "nature": 0,
+      "aggregation": 0
+    },
+    {
+      "id": "5a18eacf-6e9c-4494-9b6e-23ecbff6ecda",
+      "name": "vfx-editor.Preview.Grid",
+      "type": 0,
+      "nature": 0,
+      "aggregation": 0
+    },
+    {
+      "id": "6a52339b-2b61-49c5-882c-8801f394aff3",
+      "name": "vfx-editor.Preview.Bounds",
+      "type": 0,
+      "nature": 0,
+      "aggregation": 0
+    },
+    {
+      "id": "ba965453-4b0b-42d3-b889-493c11da4995",
+      "name": "vfx-editor.Preview.OriginAxis",
+      "type": 0,
+      "nature": 0,
+      "aggregation": 0
+    },
+    {
+      "id": "9642435f-1a8f-4532-95ae-b7260e378d10",
+      "name": "vfx-editor.Preview.ParticleCounts",
+      "type": 0,
+      "nature": 0,
+      "aggregation": 0
+    },
+    {
+      "id": "2cce6518-7301-438d-b545-f95a5bf5dc7f",
+      "name": "vfx-editor.Preview.ToggleProjection",
+      "type": 0,
+      "nature": 0,
+      "aggregation": 0
+    },
+    {
+      "id": "3368497f-2286-4872-a42d-8c7754106050",
+      "name": "vfx-editor.Preview.FocusSelection",
+      "type": 0,
+      "nature": 0,
+      "aggregation": 0
+    },
+    {
+      "id": "75d38f6d-cb66-4367-b85a-f7d2411e8675",
+      "name": "vfx-editor.Preview.FocusAll",
+      "type": 0,
+      "nature": 0,
+      "aggregation": 0
+    },
+    {
+      "id": "9e6882cf-2ac5-4ec2-b350-958d9093d84c",
+      "name": "vfx-editor.Overview.ZoomToFit",
+      "type": 0,
+      "nature": 0,
+      "aggregation": 0
+    },
+    {
+      "id": "7373fe3d-6336-4dbc-9e22-b8ad3b46ddf2",
+      "name": "vfx-editor.View.ResetLayout",
+      "type": 0,
+      "nature": 0,
+      "aggregation": 0
+    },
+    {
+      "id": "8bb7d529-786c-44d0-a72a-34a1012b3fa2",
+      "name": "inspector.component-copy",
+      "type": 0,
+      "nature": 0,
+      "aggregation": 0
+    },
+    {
+      "id": "b4ba8b56-8811-42a4-9569-22854c63e976",
+      "name": "inspector.component-paste",
+      "type": 0,
+      "nature": 0,
+      "aggregation": 0
+    },
+    {
+      "id": "b69a1880-dcb0-4d99-be82-164cefb6db47",
+      "name": "inspector.component-remove",
+      "type": 0,
+      "nature": 0,
+      "aggregation": 0
+    },
+    {
+      "id": "ef8ad8d0-9cf3-4be4-9a70-713a31ffe12a",
+      "name": "inspector.component-reset",
+      "type": 0,
+      "nature": 0,
+      "aggregation": 0
+    },
+    {
+      "id": "255c8d14-77ac-4aac-a374-c3b2fe7d20ae",
+      "name": "inspector.component-up",
+      "type": 0,
+      "nature": 0,
+      "aggregation": 0
+    },
+    {
+      "id": "baa4cc41-85d0-4019-9b8d-1fdc663d1277",
+      "name": "inspector.component-down",
+      "type": 0,
+      "nature": 0,
+      "aggregation": 0
+    },
+    {
+      "id": "9df792e1-2317-4f32-b17f-08a763cfe3d0",
+      "name": "node-graph.copy",
+      "type": 0,
+      "nature": 0,
+      "aggregation": 0
+    },
+    {
+      "id": "76b0b91d-5a99-4119-b4ca-07b50e48287f",
+      "name": "node-graph.cut",
+      "type": 0,
+      "nature": 0,
+      "aggregation": 0
+    },
+    {
+      "id": "ceba7ecd-6307-4506-89b6-0a4d8221efa4",
+      "name": "node-graph.paste",
+      "type": 0,
+      "nature": 0,
+      "aggregation": 0
+    },
+    {
+      "id": "17ff31b5-d428-407c-8d5f-a63a16502d4a",
+      "name": "node-graph.duplicate",
+      "type": 0,
+      "nature": 0,
+      "aggregation": 0
+    },
+    {
+      "id": "7d0e2cb6-e128-47fb-811d-d0796dfff239",
+      "name": "node-graph.create",
+      "type": 0,
+      "nature": 0,
+      "aggregation": 0
+    },
+    {
+      "id": "1cca7ba4-7820-4345-98ef-5256b175cc5b",
+      "name": "camera-navigation.fly",
+      "type": 0,
+      "nature": 0,
+      "aggregation": 0
+    },
+    {
+      "id": "b8ab48a4-d068-490b-90ad-a756f4da6781",
+      "name": "camera-navigation.pan",
+      "type": 0,
+      "nature": 0,
+      "aggregation": 0
+    },
+    {
+      "id": "3d821b32-9c83-42c4-8dde-294901b317ba",
+      "name": "camera-navigation.orbit",
+      "type": 0,
+      "nature": 0,
+      "aggregation": 0
+    },
+    {
+      "id": "40c1052c-1ccd-4fdf-bbb9-0233969c7cd1",
+      "name": "camera-navigation.boost",
+      "type": 0,
+      "nature": 0,
+      "aggregation": 0
+    },
+    {
+      "id": "78f73da8-d3f2-4cdf-9133-94a30be04e61",
+      "name": "camera-navigation.look",
+      "type": 2,
+      "nature": 1,
+      "aggregation": 0
+    },
+    {
+      "id": "3ff73861-62b7-4457-b3e8-9af67dd41a09",
+      "name": "camera-navigation.zoom",
+      "type": 2,
+      "nature": 1,
+      "aggregation": 0
+    },
+    {
+      "id": "19179163-3859-49ea-8093-f87a545752f4",
+      "name": "scene-view.snap",
+      "type": 0,
+      "nature": 0,
+      "aggregation": 0
+    },
+    {
+      "id": "29a1c7c2-c751-4dfa-9a94-a6e958e0a044",
+      "name": "scene-view.cancel-gesture",
+      "type": 0,
+      "nature": 0,
+      "aggregation": 0
+    },
+    {
+      "id": "111ba49d-3d0d-4ce7-aac6-0c5685b0d051",
+      "name": "ui-designer.pan",
+      "type": 0,
+      "nature": 0,
+      "aggregation": 0
+    },
+    {
+      "id": "fcb5d116-9d12-4b15-ac1a-79cc16221b8f",
+      "name": "ui-designer.wheel-zoom",
+      "type": 2,
+      "nature": 1,
+      "aggregation": 0
+    },
+    {
+      "id": "8f6864c5-b6e5-41b4-a85c-ee37f23c415e",
+      "name": "ui-designer.scroll-x",
+      "type": 2,
+      "nature": 1,
+      "aggregation": 0
+    },
+    {
+      "id": "8f6865c5-b6e5-4367-a85c-ef37f23c4311",
+      "name": "ui-designer.scroll-y",
+      "type": 2,
+      "nature": 1,
+      "aggregation": 0
+    },
+    {
+      "id": "ed4e91d7-1b33-46c7-b450-5d8327147469",
+      "name": "ui-designer.snap-bypass",
+      "type": 0,
+      "nature": 0,
+      "aggregation": 0
+    },
+    {
+      "id": "b1180669-14da-4c49-8172-c0c74ccee28f",
+      "name": "ui-designer.constrain",
+      "type": 0,
+      "nature": 0,
+      "aggregation": 0
+    },
+    {
+      "id": "24a64d4b-6470-469d-9114-dbea13eee647",
+      "name": "scene-view.suspend-selection",
+      "type": 0,
+      "nature": 0,
+      "aggregation": 0
+    },
+    {
+      "id": "2e975535-b7a1-4679-a7ea-c521699266f7",
+      "name": "scene-view.toggle-selection",
+      "type": 0,
+      "nature": 0,
+      "aggregation": 0
+    },
+    {
+      "id": "a6c6aa9d-366b-442e-9eb2-1a13444d774c",
+      "name": "scene-view.add-selection",
+      "type": 0,
+      "nature": 0,
+      "aggregation": 0
+    },
+    {
+      "id": "bb23db74-adb0-4407-812a-52be60462d55",
+      "name": "ui-designer.toggle-selection",
+      "type": 0,
+      "nature": 0,
+      "aggregation": 0
+    },
+    {
+      "id": "e20584f6-1f6b-499c-a185-81f0f05684e2",
+      "name": "ui-designer.add-selection",
+      "type": 0,
+      "nature": 0,
+      "aggregation": 0
+    },
+    {
+      "id": "5e88f041-956a-4853-abc1-09294b2d0045",
+      "name": "vfx-editor.timeline-zoom",
+      "type": 2,
+      "nature": 1,
+      "aggregation": 0
+    },
+    {
+      "id": "6a7a2aa3-194c-547d-9668-6f4208553558",
+      "name": "sprite-editor.save",
+      "type": 0,
+      "nature": 0,
+      "aggregation": 0
+    },
+    {
+      "id": "8b175267-abe5-50ed-bb87-1884789b3be2",
+      "name": "sprite-editor.undo",
+      "type": 0,
+      "nature": 0,
+      "aggregation": 0
+    },
+    {
+      "id": "718567aa-f68c-5db0-9324-7c237c0bb551",
+      "name": "sprite-editor.redo",
+      "type": 0,
+      "nature": 0,
+      "aggregation": 0
+    },
+    {
+      "id": "f22360e1-e962-53cf-826b-d981e940ba5b",
+      "name": "sprite-editor.delete",
+      "type": 0,
+      "nature": 0,
+      "aggregation": 0
+    },
+    {
+      "id": "eba50346-176f-51c5-8cd2-852ac76e9461",
+      "name": "sprite-editor.revert",
+      "type": 0,
+      "nature": 0,
+      "aggregation": 0
+    },
+    {
+      "id": "15a17ce5-27e6-58a9-9ef9-72a12d3d20c3",
+      "name": "sprite-editor.cancel",
+      "type": 0,
+      "nature": 0,
+      "aggregation": 0
+    },
+    {
+      "id": "4e0cbc51-9822-54da-9e66-393388518dad",
+      "name": "sprite-editor.frame-all",
+      "type": 0,
+      "nature": 0,
+      "aggregation": 0
+    }
+  ],
+  "contexts": [
+    {
+      "id": "b2264332-7e5d-42de-be9d-07c7eb674d7c",
+      "name": "global",
+      "priority": 0,
+      "consumption": 1,
+      "reacquire": 0,
+      "bindings": [
+        {
+          "id": "a0d3a42f-4545-4128-9b05-d46362ef3046",
+          "action": "a9844647-023e-46f1-826a-abdbd40938b3",
+          "nature": 0,
+          "composite": 0,
+          "parts": [
+            {
+              "path": {
+                "device": 0,
+                "kind": 0,
+                "control": 78
+              },
+              "contribution": [
+                1,
+                0,
+                0
+              ]
+            }
+          ],
+          "chord": {
+            "modifiers": 2,
+            "forbiddenModifiers": 0,
+            "match": 0,
+            "matchModifiers": true
+          }
+        },
+        {
+          "id": "4fec499c-8684-4afd-8333-9c8f52c09557",
+          "action": "36bd60e7-fcae-4306-9b0a-29da626297c4",
+          "nature": 0,
+          "composite": 0,
+          "parts": [
+            {
+              "path": {
+                "device": 0,
+                "kind": 0,
+                "control": 83
+              },
+              "contribution": [
+                1,
+                0,
+                0
+              ]
+            }
+          ],
+          "chord": {
+            "modifiers": 2,
+            "forbiddenModifiers": 0,
+            "match": 0,
+            "matchModifiers": true
+          }
+        },
+        {
+          "id": "0782f2a5-7bfc-4efc-a6e1-f9f4f4ece6e6",
+          "action": "5b28f7a7-77ff-4779-816c-cfd440bad417",
+          "nature": 0,
+          "composite": 0,
+          "parts": [
+            {
+              "path": {
+                "device": 0,
+                "kind": 0,
+                "control": 83
+              },
+              "contribution": [
+                1,
+                0,
+                0
+              ]
+            }
+          ],
+          "chord": {
+            "modifiers": 3,
+            "forbiddenModifiers": 0,
+            "match": 0,
+            "matchModifiers": true
+          }
+        },
+        {
+          "id": "171cc796-0048-4019-821a-94fffcd934c3",
+          "action": "d63510af-d06f-4332-b118-12594fe64ce0",
+          "nature": 0,
+          "composite": 0,
+          "parts": [
+            {
+              "path": {
+                "device": 0,
+                "kind": 0,
+                "control": 90
+              },
+              "contribution": [
+                1,
+                0,
+                0
+              ]
+            }
+          ],
+          "chord": {
+            "modifiers": 16,
+            "forbiddenModifiers": 0,
+            "match": 0,
+            "matchModifiers": true
+          }
+        },
+        {
+          "id": "6409f2b8-b8de-4def-a3b8-f52e453ff1a9",
+          "action": "c83f11d9-64ca-47d4-9b8d-4f1db344c64a",
+          "nature": 0,
+          "composite": 0,
+          "parts": [
+            {
+              "path": {
+                "device": 0,
+                "kind": 0,
+                "control": 89
+              },
+              "contribution": [
+                1,
+                0,
+                0
+              ]
+            }
+          ],
+          "chord": {
+            "modifiers": 16,
+            "forbiddenModifiers": 0,
+            "match": 0,
+            "matchModifiers": true
+          }
+        },
+        {
+          "id": "3b816570-1fd0-44b9-ac5c-a7b129d346a3",
+          "action": "c83f11d9-64ca-47d4-9b8d-4f1db344c64a",
+          "nature": 0,
+          "composite": 0,
+          "parts": [
+            {
+              "path": {
+                "device": 0,
+                "kind": 0,
+                "control": 90
+              },
+              "contribution": [
+                1,
+                0,
+                0
+              ]
+            }
+          ],
+          "chord": {
+            "modifiers": 17,
+            "forbiddenModifiers": 0,
+            "match": 0,
+            "matchModifiers": true
+          }
+        }
+      ]
+    },
+    {
+      "id": "238a3fa8-e63a-4106-8f77-ac84cebb9580",
+      "name": "editor-session-controls",
+      "priority": 200,
+      "consumption": 1,
+      "reacquire": 0,
+      "bindings": [
+        {
+          "id": "29bfb9c8-7566-4886-8be4-7cc3e97c8570",
+          "action": "55498972-45ce-4819-868d-eefea8f5f977",
+          "nature": 0,
+          "composite": 0,
+          "parts": [
+            {
+              "path": {
+                "device": 0,
+                "kind": 0,
+                "control": 80
+              },
+              "contribution": [
+                1,
+                0,
+                0
+              ]
+            }
+          ],
+          "chord": {
+            "modifiers": 2,
+            "forbiddenModifiers": 0,
+            "match": 0,
+            "matchModifiers": true
+          }
+        },
+        {
+          "id": "39d41fa3-5315-4b28-9900-a49defd1ab7a",
+          "action": "55498972-45ce-4819-868d-eefea8f5f977",
+          "nature": 0,
+          "composite": 0,
+          "parts": [
+            {
+              "path": {
+                "device": 0,
+                "kind": 0,
+                "control": 294
+              },
+              "contribution": [
+                1,
+                0,
+                0
+              ]
+            }
+          ],
+          "chord": {
+            "modifiers": 0,
+            "forbiddenModifiers": 0,
+            "match": 0,
+            "matchModifiers": true
+          }
+        },
+        {
+          "id": "5fa1a299-4f68-4d60-90c3-5bb9640f9442",
+          "action": "5c04845a-5747-4bab-a62e-ea05277f8c21",
+          "nature": 0,
+          "composite": 0,
+          "parts": [
+            {
+              "path": {
+                "device": 0,
+                "kind": 0,
+                "control": 294
+              },
+              "contribution": [
+                1,
+                0,
+                0
+              ]
+            }
+          ],
+          "chord": {
+            "modifiers": 1,
+            "forbiddenModifiers": 0,
+            "match": 0,
+            "matchModifiers": true
+          }
+        },
+        {
+          "id": "fcf477ab-dacc-4236-a0fa-d679a1ae8358",
+          "action": "c44b1149-1e5c-44eb-b4b4-fc4cffa2e411",
+          "nature": 0,
+          "composite": 0,
+          "parts": [
+            {
+              "path": {
+                "device": 0,
+                "kind": 0,
+                "control": 80
+              },
+              "contribution": [
+                1,
+                0,
+                0
+              ]
+            }
+          ],
+          "chord": {
+            "modifiers": 3,
+            "forbiddenModifiers": 0,
+            "match": 0,
+            "matchModifiers": true
+          }
+        },
+        {
+          "id": "067129b7-dfd7-4bae-8628-825b212e54d4",
+          "action": "5c19885a-5759-4e81-a619-e605276d294b",
+          "nature": 0,
+          "composite": 0,
+          "parts": [
+            {
+              "path": {
+                "device": 0,
+                "kind": 0,
+                "control": 80
+              },
+              "contribution": [
+                1,
+                0,
+                0
+              ]
+            }
+          ],
+          "chord": {
+            "modifiers": 6,
+            "forbiddenModifiers": 0,
+            "match": 0,
+            "matchModifiers": true
+          }
+        },
+        {
+          "id": "8f360300-d126-44c0-9e81-7ab0a9ad4aaa",
+          "action": "1091a6d1-e264-4859-a399-606daa228baf",
+          "nature": 0,
+          "composite": 0,
+          "parts": [
+            {
+              "path": {
+                "device": 0,
+                "kind": 0,
+                "control": 300
+              },
+              "contribution": [
+                1,
+                0,
+                0
+              ]
+            }
+          ],
+          "chord": {
+            "modifiers": 0,
+            "forbiddenModifiers": 0,
+            "match": 0,
+            "matchModifiers": true
+          }
+        },
+        {
+          "id": "44d0ca37-af3b-40b7-af7a-d03b03151a75",
+          "action": "db01585e-3161-4b28-9ba0-94eb2b38267a",
+          "nature": 0,
+          "composite": 0,
+          "parts": [
+            {
+              "path": {
+                "device": 0,
+                "kind": 0,
+                "control": 300
+              },
+              "contribution": [
+                1,
+                0,
+                0
+              ]
+            }
+          ],
+          "chord": {
+            "modifiers": 2,
+            "forbiddenModifiers": 0,
+            "match": 0,
+            "matchModifiers": true
+          }
+        }
+      ]
+    },
+    {
+      "id": "654186ae-9f6a-429f-a0ac-ffe2d85a4cbd",
+      "name": "game-input-controls",
+      "priority": 210,
+      "consumption": 1,
+      "reacquire": 0,
+      "bindings": [
+        {
+          "id": "459edf0a-28b9-4bf3-b00f-c0b45549fb75",
+          "action": "e6f813e6-dbdd-4884-8dc1-1d4a336f1e9a",
+          "nature": 0,
+          "composite": 0,
+          "parts": [
+            {
+              "path": {
+                "device": 0,
+                "kind": 0,
+                "control": 256
+              },
+              "contribution": [
+                1,
+                0,
+                0
+              ]
+            }
+          ],
+          "chord": {
+            "modifiers": 0,
+            "forbiddenModifiers": 0,
+            "match": 0,
+            "matchModifiers": true
+          }
+        }
+      ]
+    },
+    {
+      "id": "fbb81cdb-4aaa-41af-a005-2b696b646d65",
+      "name": "edit-gesture",
+      "priority": 150,
+      "consumption": 1,
+      "reacquire": 0,
+      "bindings": [
+        {
+          "id": "b01fb5bb-8cae-414d-a99c-8625983dc76b",
+          "action": "b4c70dbe-314d-41c6-aaef-aba4faf2f238",
+          "nature": 0,
+          "composite": 0,
+          "parts": [
+            {
+              "path": {
+                "device": 0,
+                "kind": 0,
+                "control": 256
+              },
+              "contribution": [
+                1,
+                0,
+                0
+              ]
+            }
+          ],
+          "chord": {
+            "modifiers": 0,
+            "forbiddenModifiers": 0,
+            "match": 0,
+            "matchModifiers": true
+          }
+        }
+      ]
+    },
+    {
+      "id": "6e217596-81bc-4081-a13c-7e7ea022ebf3",
+      "name": "scene-view-fly-mode",
+      "priority": 40,
+      "consumption": 1,
+      "reacquire": 1,
+      "bindings": [
+        {
+          "id": "7f5993b3-8d8b-4da2-906d-ccdf54ef60dc",
+          "action": "32e90b8d-e7db-4470-b8aa-00d9c62d49aa",
+          "nature": 2,
+          "composite": 3,
+          "parts": [
+            {
+              "path": {
+                "device": 0,
+                "kind": 0,
+                "control": 87
+              },
+              "contribution": [
+                0,
+                0,
+                1
+              ]
+            }
+          ],
+          "chord": {
+            "modifiers": 0,
+            "forbiddenModifiers": 14,
+            "match": 1,
+            "matchModifiers": true
+          }
+        },
+        {
+          "id": "eee806cd-c4a0-4e48-a2f1-29292473b05e",
+          "action": "32e90b8d-e7db-4470-b8aa-00d9c62d49aa",
+          "nature": 2,
+          "composite": 3,
+          "parts": [
+            {
+              "path": {
+                "device": 0,
+                "kind": 0,
+                "control": 83
+              },
+              "contribution": [
+                0,
+                0,
+                -1
+              ]
+            }
+          ],
+          "chord": {
+            "modifiers": 0,
+            "forbiddenModifiers": 14,
+            "match": 1,
+            "matchModifiers": true
+          }
+        },
+        {
+          "id": "5177567a-d627-4be4-acd6-5270ab7f7c22",
+          "action": "32e90b8d-e7db-4470-b8aa-00d9c62d49aa",
+          "nature": 2,
+          "composite": 3,
+          "parts": [
+            {
+              "path": {
+                "device": 0,
+                "kind": 0,
+                "control": 65
+              },
+              "contribution": [
+                -1,
+                0,
+                0
+              ]
+            }
+          ],
+          "chord": {
+            "modifiers": 0,
+            "forbiddenModifiers": 14,
+            "match": 1,
+            "matchModifiers": true
+          }
+        },
+        {
+          "id": "be4f2c15-2b1a-4bad-976d-0d5bf6985d73",
+          "action": "32e90b8d-e7db-4470-b8aa-00d9c62d49aa",
+          "nature": 2,
+          "composite": 3,
+          "parts": [
+            {
+              "path": {
+                "device": 0,
+                "kind": 0,
+                "control": 68
+              },
+              "contribution": [
+                1,
+                0,
+                0
+              ]
+            }
+          ],
+          "chord": {
+            "modifiers": 0,
+            "forbiddenModifiers": 14,
+            "match": 1,
+            "matchModifiers": true
+          }
+        },
+        {
+          "id": "9c925bd1-a86e-4a24-9a68-fc679c4bcc2e",
+          "action": "32e90b8d-e7db-4470-b8aa-00d9c62d49aa",
+          "nature": 2,
+          "composite": 3,
+          "parts": [
+            {
+              "path": {
+                "device": 0,
+                "kind": 0,
+                "control": 69
+              },
+              "contribution": [
+                0,
+                1,
+                0
+              ]
+            }
+          ],
+          "chord": {
+            "modifiers": 0,
+            "forbiddenModifiers": 14,
+            "match": 1,
+            "matchModifiers": true
+          }
+        },
+        {
+          "id": "3572f000-ebc7-490d-aa8a-766c2119857b",
+          "action": "32e90b8d-e7db-4470-b8aa-00d9c62d49aa",
+          "nature": 2,
+          "composite": 3,
+          "parts": [
+            {
+              "path": {
+                "device": 0,
+                "kind": 0,
+                "control": 81
+              },
+              "contribution": [
+                0,
+                -1,
+                0
+              ]
+            }
+          ],
+          "chord": {
+            "modifiers": 0,
+            "forbiddenModifiers": 14,
+            "match": 1,
+            "matchModifiers": true
+          }
+        }
+      ]
+    },
+    {
+      "id": "54e20d4d-455f-40e3-b4fc-63d0bc0c3d99",
+      "name": "scene-view",
+      "priority": 20,
+      "consumption": 1,
+      "reacquire": 0,
+      "bindings": [
+        {
+          "id": "39645699-dc56-4328-86fc-e51a5926b9e6",
+          "action": "a15f8636-a1ae-4e6b-865d-a58a3bc96a85",
+          "nature": 0,
+          "composite": 0,
+          "parts": [
+            {
+              "path": {
+                "device": 0,
+                "kind": 0,
+                "control": 261
+              },
+              "contribution": [
+                1,
+                0,
+                0
+              ]
+            }
+          ],
+          "chord": {
+            "modifiers": 0,
+            "forbiddenModifiers": 0,
+            "match": 0,
+            "matchModifiers": true
+          }
+        },
+        {
+          "id": "08e146dc-914b-4129-bc57-58ef054f603b",
+          "action": "6319a367-dabf-4750-a9cc-a6861a9ebe6e",
+          "nature": 0,
+          "composite": 0,
+          "parts": [
+            {
+              "path": {
+                "device": 0,
+                "kind": 0,
+                "control": 81
+              },
+              "contribution": [
+                1,
+                0,
+                0
+              ]
+            }
+          ],
+          "chord": {
+            "modifiers": 0,
+            "forbiddenModifiers": 0,
+            "match": 0,
+            "matchModifiers": true
+          }
+        },
+        {
+          "id": "76ffcdc8-021b-4c95-98b5-74e3f6f2e227",
+          "action": "60c868d4-59b0-420c-a4f7-9b705a546cda",
+          "nature": 0,
+          "composite": 0,
+          "parts": [
+            {
+              "path": {
+                "device": 0,
+                "kind": 0,
+                "control": 87
+              },
+              "contribution": [
+                1,
+                0,
+                0
+              ]
+            }
+          ],
+          "chord": {
+            "modifiers": 0,
+            "forbiddenModifiers": 0,
+            "match": 0,
+            "matchModifiers": true
+          }
+        },
+        {
+          "id": "49b27a09-5b79-42bb-8749-08df018db03d",
+          "action": "5ca83abe-b739-4cda-9dfa-1a82143d5820",
+          "nature": 0,
+          "composite": 0,
+          "parts": [
+            {
+              "path": {
+                "device": 0,
+                "kind": 0,
+                "control": 69
+              },
+              "contribution": [
+                1,
+                0,
+                0
+              ]
+            }
+          ],
+          "chord": {
+            "modifiers": 0,
+            "forbiddenModifiers": 0,
+            "match": 0,
+            "matchModifiers": true
+          }
+        },
+        {
+          "id": "4b2d3549-f8c0-489e-b031-bfa336d96b8c",
+          "action": "2f5c669f-c12a-441d-8444-b67da30b364f",
+          "nature": 0,
+          "composite": 0,
+          "parts": [
+            {
+              "path": {
+                "device": 0,
+                "kind": 0,
+                "control": 82
+              },
+              "contribution": [
+                1,
+                0,
+                0
+              ]
+            }
+          ],
+          "chord": {
+            "modifiers": 0,
+            "forbiddenModifiers": 0,
+            "match": 0,
+            "matchModifiers": true
+          }
+        },
+        {
+          "id": "7d4fd60d-401f-4f24-8469-9e0c5296994e",
+          "action": "319c52ed-422f-402d-a934-d724879ccbdb",
+          "nature": 0,
+          "composite": 0,
+          "parts": [
+            {
+              "path": {
+                "device": 0,
+                "kind": 0,
+                "control": 84
+              },
+              "contribution": [
+                1,
+                0,
+                0
+              ]
+            }
+          ],
+          "chord": {
+            "modifiers": 0,
+            "forbiddenModifiers": 0,
+            "match": 0,
+            "matchModifiers": true
+          }
+        },
+        {
+          "id": "8ee4e4d8-8e5f-4528-a0a1-86a30fa70f2e",
+          "action": "c38dc7ab-cd61-4273-8837-8f93905919dd",
+          "nature": 0,
+          "composite": 0,
+          "parts": [
+            {
+              "path": {
+                "device": 0,
+                "kind": 0,
+                "control": 89
+              },
+              "contribution": [
+                1,
+                0,
+                0
+              ]
+            }
+          ],
+          "chord": {
+            "modifiers": 0,
+            "forbiddenModifiers": 0,
+            "match": 0,
+            "matchModifiers": true
+          }
+        },
+        {
+          "id": "c625874a-82bb-41dc-95c1-9c99fbb67c62",
+          "action": "4aecee9f-ce50-4325-ba01-8b66010ae52f",
+          "nature": 0,
+          "composite": 0,
+          "parts": [
+            {
+              "path": {
+                "device": 0,
+                "kind": 0,
+                "control": 90
+              },
+              "contribution": [
+                1,
+                0,
+                0
+              ]
+            }
+          ],
+          "chord": {
+            "modifiers": 0,
+            "forbiddenModifiers": 0,
+            "match": 0,
+            "matchModifiers": true
+          }
+        },
+        {
+          "id": "4b0e736e-cf29-434b-876b-a5f09e6e1d69",
+          "action": "ccb8501c-11e0-400c-b8c7-4a922f0ac9a6",
+          "nature": 0,
+          "composite": 0,
+          "parts": [
+            {
+              "path": {
+                "device": 0,
+                "kind": 0,
+                "control": 88
+              },
+              "contribution": [
+                1,
+                0,
+                0
+              ]
+            }
+          ],
+          "chord": {
+            "modifiers": 0,
+            "forbiddenModifiers": 0,
+            "match": 0,
+            "matchModifiers": true
+          }
+        },
+        {
+          "id": "ab8d63cf-812c-4554-9217-29bb6b99be32",
+          "action": "95fc13e6-7a4c-4a83-b083-d50274cfa8dd",
+          "nature": 0,
+          "composite": 0,
+          "parts": [
+            {
+              "path": {
+                "device": 0,
+                "kind": 0,
+                "control": 72
+              },
+              "contribution": [
+                1,
+                0,
+                0
+              ]
+            }
+          ],
+          "chord": {
+            "modifiers": 0,
+            "forbiddenModifiers": 0,
+            "match": 0,
+            "matchModifiers": true
+          }
+        },
+        {
+          "id": "fa43e1e3-2c10-492a-8e50-a7556a1c96b0",
+          "action": "aa6c70fe-5b42-4c4f-a583-9118ff8c5dd1",
+          "nature": 0,
+          "composite": 0,
+          "parts": [
+            {
+              "path": {
+                "device": 0,
+                "kind": 0,
+                "control": 68
+              },
+              "contribution": [
+                1,
+                0,
+                0
+              ]
+            }
+          ],
+          "chord": {
+            "modifiers": 16,
+            "forbiddenModifiers": 0,
+            "match": 0,
+            "matchModifiers": true
+          }
+        },
+        {
+          "id": "8416a5c1-0d2e-445c-904b-c6e76e5cb3fa",
+          "action": "6131f8c8-c0e2-460f-811d-cdf428a36249",
+          "nature": 0,
+          "composite": 0,
+          "parts": [
+            {
+              "path": {
+                "device": 0,
+                "kind": 0,
+                "control": 65
+              },
+              "contribution": [
+                1,
+                0,
+                0
+              ]
+            }
+          ],
+          "chord": {
+            "modifiers": 16,
+            "forbiddenModifiers": 0,
+            "match": 0,
+            "matchModifiers": true
+          }
+        },
+        {
+          "id": "bd7d0b21-495f-4cd6-bf9c-d5174db1f400",
+          "action": "933873a0-4ec9-46b3-b315-9efbfd6bdfd1",
+          "nature": 0,
+          "composite": 0,
+          "parts": [
+            {
+              "path": {
+                "device": 0,
+                "kind": 0,
+                "control": 70
+              },
+              "contribution": [
+                1,
+                0,
+                0
+              ]
+            }
+          ],
+          "chord": {
+            "modifiers": 0,
+            "forbiddenModifiers": 0,
+            "match": 0,
+            "matchModifiers": true
+          }
+        }
+      ]
+    },
+    {
+      "id": "3c55fed7-8c8c-47b8-8867-5ed7701b61ea",
+      "name": "hierarchy",
+      "priority": 20,
+      "consumption": 1,
+      "reacquire": 0,
+      "bindings": [
+        {
+          "id": "e15359c4-f1be-4696-a22e-f21ba6f6fe20",
+          "action": "c76610b0-2edb-4bb5-b0df-0634385f886b",
+          "nature": 0,
+          "composite": 0,
+          "parts": [
+            {
+              "path": {
+                "device": 0,
+                "kind": 0,
+                "control": 261
+              },
+              "contribution": [
+                1,
+                0,
+                0
+              ]
+            }
+          ],
+          "chord": {
+            "modifiers": 0,
+            "forbiddenModifiers": 0,
+            "match": 0,
+            "matchModifiers": true
+          }
+        },
+        {
+          "id": "e7cd7d7c-0b8b-4f5d-a661-354afe659153",
+          "action": "3f29dbf6-a9b4-4b04-b75a-e8f810096ba6",
+          "nature": 0,
+          "composite": 0,
+          "parts": [
+            {
+              "path": {
+                "device": 0,
+                "kind": 0,
+                "control": 68
+              },
+              "contribution": [
+                1,
+                0,
+                0
+              ]
+            }
+          ],
+          "chord": {
+            "modifiers": 16,
+            "forbiddenModifiers": 0,
+            "match": 0,
+            "matchModifiers": true
+          }
+        },
+        {
+          "id": "c18c2bb6-b3bf-49df-a202-50cfa4d3f82d",
+          "action": "b7ab2106-d837-4ac4-b1eb-bf86b4e1696e",
+          "nature": 0,
+          "composite": 0,
+          "parts": [
+            {
+              "path": {
+                "device": 0,
+                "kind": 0,
+                "control": 65
+              },
+              "contribution": [
+                1,
+                0,
+                0
+              ]
+            }
+          ],
+          "chord": {
+            "modifiers": 16,
+            "forbiddenModifiers": 0,
+            "match": 0,
+            "matchModifiers": true
+          }
+        },
+        {
+          "id": "9fb809a1-c093-4e69-a41f-69fd0f7a23a3",
+          "action": "8a3b9574-69c6-46e8-98e3-2debe91a0da6",
+          "nature": 0,
+          "composite": 0,
+          "parts": [
+            {
+              "path": {
+                "device": 0,
+                "kind": 0,
+                "control": 70
+              },
+              "contribution": [
+                1,
+                0,
+                0
+              ]
+            }
+          ],
+          "chord": {
+            "modifiers": 0,
+            "forbiddenModifiers": 0,
+            "match": 0,
+            "matchModifiers": true
+          }
+        }
+      ]
+    },
+    {
+      "id": "1db2ad9e-2907-4e76-a6f7-da2360259dfc",
+      "name": "asset-browser",
+      "priority": 50,
+      "consumption": 1,
+      "reacquire": 0,
+      "bindings": [
+        {
+          "id": "d993a9df-a1bc-44ec-8796-84b048cf9d82",
+          "action": "5f3e21fa-aa0d-4b19-a1c8-150509959d2b",
+          "nature": 0,
+          "composite": 0,
+          "parts": [
+            {
+              "path": {
+                "device": 0,
+                "kind": 0,
+                "control": 291
+              },
+              "contribution": [
+                1,
+                0,
+                0
+              ]
+            }
+          ],
+          "chord": {
+            "modifiers": 0,
+            "forbiddenModifiers": 0,
+            "match": 0,
+            "matchModifiers": true
+          }
+        },
+        {
+          "id": "634498d1-9bc7-401f-ad22-95b68387b48d",
+          "action": "2f42c882-56f2-4fea-8f08-3a7bc5befffc",
+          "nature": 0,
+          "composite": 0,
+          "parts": [
+            {
+              "path": {
+                "device": 0,
+                "kind": 0,
+                "control": 67
+              },
+              "contribution": [
+                1,
+                0,
+                0
+              ]
+            }
+          ],
+          "chord": {
+            "modifiers": 16,
+            "forbiddenModifiers": 0,
+            "match": 0,
+            "matchModifiers": true
+          }
+        },
+        {
+          "id": "c42efe87-e7e1-4dc1-bc0e-d3ea45fdfe9f",
+          "action": "74521948-0bc9-474e-92b8-0ae1e9d30970",
+          "nature": 0,
+          "composite": 0,
+          "parts": [
+            {
+              "path": {
+                "device": 0,
+                "kind": 0,
+                "control": 86
+              },
+              "contribution": [
+                1,
+                0,
+                0
+              ]
+            }
+          ],
+          "chord": {
+            "modifiers": 16,
+            "forbiddenModifiers": 0,
+            "match": 0,
+            "matchModifiers": true
+          }
+        },
+        {
+          "id": "17b3b2a0-6e48-4afb-b710-661730378051",
+          "action": "940dda9b-4434-4d04-8f51-94579fb1b8de",
+          "nature": 0,
+          "composite": 0,
+          "parts": [
+            {
+              "path": {
+                "device": 0,
+                "kind": 0,
+                "control": 68
+              },
+              "contribution": [
+                1,
+                0,
+                0
+              ]
+            }
+          ],
+          "chord": {
+            "modifiers": 16,
+            "forbiddenModifiers": 0,
+            "match": 0,
+            "matchModifiers": true
+          }
+        },
+        {
+          "id": "02262a0c-1c76-4da1-b767-d575079b4ecf",
+          "action": "2a2ee876-f214-43c0-8a41-f62c6b79beb2",
+          "nature": 0,
+          "composite": 0,
+          "parts": [
+            {
+              "path": {
+                "device": 0,
+                "kind": 0,
+                "control": 261
+              },
+              "contribution": [
+                1,
+                0,
+                0
+              ]
+            }
+          ],
+          "chord": {
+            "modifiers": 0,
+            "forbiddenModifiers": 0,
+            "match": 0,
+            "matchModifiers": true
+          }
+        }
+      ]
+    },
+    {
+      "id": "b1ba6839-6e58-4573-9830-a9ee4f617aa1",
+      "name": "ui-designer",
+      "priority": 50,
+      "consumption": 1,
+      "reacquire": 0,
+      "bindings": [
+        {
+          "id": "db164bdb-6200-4b9c-9a7e-17efe1f648aa",
+          "action": "ed721947-b641-4f6d-9660-e2fa54f25e9f",
+          "nature": 0,
+          "composite": 0,
+          "parts": [
+            {
+              "path": {
+                "device": 0,
+                "kind": 0,
+                "control": 83
+              },
+              "contribution": [
+                1,
+                0,
+                0
+              ]
+            }
+          ],
+          "chord": {
+            "modifiers": 16,
+            "forbiddenModifiers": 0,
+            "match": 0,
+            "matchModifiers": true
+          }
+        },
+        {
+          "id": "40c0c391-9422-428b-bb7d-8e50a1c9c259",
+          "action": "e6edc659-5cb0-4bbe-a8d2-902ef18fd0a0",
+          "nature": 0,
+          "composite": 0,
+          "parts": [
+            {
+              "path": {
+                "device": 0,
+                "kind": 0,
+                "control": 90
+              },
+              "contribution": [
+                1,
+                0,
+                0
+              ]
+            }
+          ],
+          "chord": {
+            "modifiers": 16,
+            "forbiddenModifiers": 0,
+            "match": 0,
+            "matchModifiers": true
+          }
+        },
+        {
+          "id": "d3bb59f8-aee0-4521-9222-5c561f66e62f",
+          "action": "656c8740-8f4e-4658-96ad-ccf357d1730a",
+          "nature": 0,
+          "composite": 0,
+          "parts": [
+            {
+              "path": {
+                "device": 0,
+                "kind": 0,
+                "control": 89
+              },
+              "contribution": [
+                1,
+                0,
+                0
+              ]
+            }
+          ],
+          "chord": {
+            "modifiers": 16,
+            "forbiddenModifiers": 0,
+            "match": 0,
+            "matchModifiers": true
+          }
+        },
+        {
+          "id": "c1dc5d81-c962-401b-b09f-7bffbc83d7f9",
+          "action": "656c8740-8f4e-4658-96ad-ccf357d1730a",
+          "nature": 0,
+          "composite": 0,
+          "parts": [
+            {
+              "path": {
+                "device": 0,
+                "kind": 0,
+                "control": 90
+              },
+              "contribution": [
+                1,
+                0,
+                0
+              ]
+            }
+          ],
+          "chord": {
+            "modifiers": 17,
+            "forbiddenModifiers": 0,
+            "match": 0,
+            "matchModifiers": true
+          }
+        },
+        {
+          "id": "cf032ae9-c7e5-49fe-837c-e82af5d49f7c",
+          "action": "e54110a0-7c69-4af1-b7b7-88e6ed49b743",
+          "nature": 0,
+          "composite": 0,
+          "parts": [
+            {
+              "path": {
+                "device": 0,
+                "kind": 0,
+                "control": 68
+              },
+              "contribution": [
+                1,
+                0,
+                0
+              ]
+            }
+          ],
+          "chord": {
+            "modifiers": 16,
+            "forbiddenModifiers": 0,
+            "match": 0,
+            "matchModifiers": true
+          }
+        },
+        {
+          "id": "14fe9eef-de65-4488-838c-ed7e1b2ac76e",
+          "action": "2f2c93cf-82a6-438d-8475-79825ff5571f",
+          "nature": 0,
+          "composite": 0,
+          "parts": [
+            {
+              "path": {
+                "device": 0,
+                "kind": 0,
+                "control": 67
+              },
+              "contribution": [
+                1,
+                0,
+                0
+              ]
+            }
+          ],
+          "chord": {
+            "modifiers": 16,
+            "forbiddenModifiers": 0,
+            "match": 0,
+            "matchModifiers": true
+          }
+        },
+        {
+          "id": "b0ed5a4c-2f49-49ec-a36c-b47e1d1114b2",
+          "action": "9bf6346c-5738-423b-941b-e9c909f2bb85",
+          "nature": 0,
+          "composite": 0,
+          "parts": [
+            {
+              "path": {
+                "device": 0,
+                "kind": 0,
+                "control": 86
+              },
+              "contribution": [
+                1,
+                0,
+                0
+              ]
+            }
+          ],
+          "chord": {
+            "modifiers": 16,
+            "forbiddenModifiers": 0,
+            "match": 0,
+            "matchModifiers": true
+          }
+        },
+        {
+          "id": "8743f5a2-d51f-4392-a337-0a13e74f64c8",
+          "action": "cfce376d-f6d6-4a4b-990c-ddd0102dd90d",
+          "nature": 0,
+          "composite": 0,
+          "parts": [
+            {
+              "path": {
+                "device": 0,
+                "kind": 0,
+                "control": 261
+              },
+              "contribution": [
+                1,
+                0,
+                0
+              ]
+            }
+          ],
+          "chord": {
+            "modifiers": 0,
+            "forbiddenModifiers": 0,
+            "match": 0,
+            "matchModifiers": true
+          }
+        },
+        {
+          "id": "013a3dee-da75-47ff-af52-a31197e7ce85",
+          "action": "844399d3-324b-4db2-acda-34270d42367c",
+          "nature": 0,
+          "composite": 0,
+          "parts": [
+            {
+              "path": {
+                "device": 0,
+                "kind": 0,
+                "control": 291
+              },
+              "contribution": [
+                1,
+                0,
+                0
+              ]
+            }
+          ],
+          "chord": {
+            "modifiers": 0,
+            "forbiddenModifiers": 0,
+            "match": 0,
+            "matchModifiers": true
+          }
+        },
+        {
+          "id": "14ca81b8-6b1a-4767-b75d-1cae6a0c9c09",
+          "action": "c2eef141-4f6a-4a4a-936b-e6c442b4c920",
+          "nature": 0,
+          "composite": 0,
+          "parts": [
+            {
+              "path": {
+                "device": 0,
+                "kind": 0,
+                "control": 256
+              },
+              "contribution": [
+                1,
+                0,
+                0
+              ]
+            }
+          ],
+          "chord": {
+            "modifiers": 0,
+            "forbiddenModifiers": 0,
+            "match": 0,
+            "matchModifiers": true
+          }
+        },
+        {
+          "id": "3b100570-5dc7-4e2c-8a54-23188c36e94e",
+          "action": "524cbfee-f874-41c3-b2af-c28af4cc5ad1",
+          "nature": 0,
+          "composite": 0,
+          "parts": [
+            {
+              "path": {
+                "device": 0,
+                "kind": 0,
+                "control": 70
+              },
+              "contribution": [
+                1,
+                0,
+                0
+              ]
+            }
+          ],
+          "chord": {
+            "modifiers": 0,
+            "forbiddenModifiers": 0,
+            "match": 0,
+            "matchModifiers": true
+          }
+        },
+        {
+          "id": "40d58795-808d-4221-a189-a20df453ca23",
+          "action": "b1c7ea37-072f-44be-ba96-f38adf6e442c",
+          "nature": 0,
+          "composite": 0,
+          "parts": [
+            {
+              "path": {
+                "device": 0,
+                "kind": 0,
+                "control": 70
+              },
+              "contribution": [
+                1,
+                0,
+                0
+              ]
+            }
+          ],
+          "chord": {
+            "modifiers": 1,
+            "forbiddenModifiers": 0,
+            "match": 0,
+            "matchModifiers": true
+          }
+        },
+        {
+          "id": "ed73dbb6-6c09-463e-a031-0d49c518cb88",
+          "action": "96fa5406-23ba-471d-bb0d-80c53faa3af3",
+          "nature": 0,
+          "composite": 0,
+          "parts": [
+            {
+              "path": {
+                "device": 0,
+                "kind": 0,
+                "control": 61
+              },
+              "contribution": [
+                1,
+                0,
+                0
+              ]
+            }
+          ],
+          "chord": {
+            "modifiers": 16,
+            "forbiddenModifiers": 0,
+            "match": 0,
+            "matchModifiers": true
+          }
+        },
+        {
+          "id": "ed1278a5-9c3e-4c80-9a45-088e155f2bf2",
+          "action": "96fa5406-23ba-471d-bb0d-80c53faa3af3",
+          "nature": 0,
+          "composite": 0,
+          "parts": [
+            {
+              "path": {
+                "device": 0,
+                "kind": 0,
+                "control": 334
+              },
+              "contribution": [
+                1,
+                0,
+                0
+              ]
+            }
+          ],
+          "chord": {
+            "modifiers": 16,
+            "forbiddenModifiers": 0,
+            "match": 0,
+            "matchModifiers": true
+          }
+        },
+        {
+          "id": "a41d4acf-1eb3-4303-a6fa-43e71b070b59",
+          "action": "5480736e-bd5a-4c86-b06f-fe2b2417e680",
+          "nature": 0,
+          "composite": 0,
+          "parts": [
+            {
+              "path": {
+                "device": 0,
+                "kind": 0,
+                "control": 45
+              },
+              "contribution": [
+                1,
+                0,
+                0
+              ]
+            }
+          ],
+          "chord": {
+            "modifiers": 16,
+            "forbiddenModifiers": 0,
+            "match": 0,
+            "matchModifiers": true
+          }
+        },
+        {
+          "id": "75f87a3c-c16d-4dcd-a913-6295c26a1913",
+          "action": "5480736e-bd5a-4c86-b06f-fe2b2417e680",
+          "nature": 0,
+          "composite": 0,
+          "parts": [
+            {
+              "path": {
+                "device": 0,
+                "kind": 0,
+                "control": 333
+              },
+              "contribution": [
+                1,
+                0,
+                0
+              ]
+            }
+          ],
+          "chord": {
+            "modifiers": 16,
+            "forbiddenModifiers": 0,
+            "match": 0,
+            "matchModifiers": true
+          }
+        },
+        {
+          "id": "8ce1c542-29b9-4e68-9bef-a30e41e703c2",
+          "action": "4968d76d-0435-49c1-a739-0e2c40fc6b8f",
+          "nature": 0,
+          "composite": 0,
+          "parts": [
+            {
+              "path": {
+                "device": 0,
+                "kind": 0,
+                "control": 48
+              },
+              "contribution": [
+                1,
+                0,
+                0
+              ]
+            }
+          ],
+          "chord": {
+            "modifiers": 16,
+            "forbiddenModifiers": 0,
+            "match": 0,
+            "matchModifiers": true
+          }
+        },
+        {
+          "id": "abd82e79-8b9b-4c8e-ae43-e219a87168d0",
+          "action": "9db58a48-e846-4807-acfe-bbf123e05a5d",
+          "nature": 0,
+          "composite": 0,
+          "parts": [
+            {
+              "path": {
+                "device": 0,
+                "kind": 0,
+                "control": 263
+              },
+              "contribution": [
+                1,
+                0,
+                0
+              ]
+            }
+          ],
+          "chord": {
+            "modifiers": 0,
+            "forbiddenModifiers": 0,
+            "match": 0,
+            "matchModifiers": true
+          }
+        },
+        {
+          "id": "3cec2079-7f54-4267-b161-638e72d8f205",
+          "action": "c3e9c8c6-49b8-4a14-9bee-400702f717fe",
+          "nature": 0,
+          "composite": 0,
+          "parts": [
+            {
+              "path": {
+                "device": 0,
+                "kind": 0,
+                "control": 263
+              },
+              "contribution": [
+                1,
+                0,
+                0
+              ]
+            }
+          ],
+          "chord": {
+            "modifiers": 1,
+            "forbiddenModifiers": 0,
+            "match": 0,
+            "matchModifiers": true
+          }
+        },
+        {
+          "id": "3deb6f6a-3767-4d17-89ff-f29d6a6f95c1",
+          "action": "17477c68-6aeb-4838-83d6-d56ed1bbcb96",
+          "nature": 0,
+          "composite": 0,
+          "parts": [
+            {
+              "path": {
+                "device": 0,
+                "kind": 0,
+                "control": 262
+              },
+              "contribution": [
+                1,
+                0,
+                0
+              ]
+            }
+          ],
+          "chord": {
+            "modifiers": 0,
+            "forbiddenModifiers": 0,
+            "match": 0,
+            "matchModifiers": true
+          }
+        },
+        {
+          "id": "48e5521b-6d85-45cc-85a2-841ae2093b32",
+          "action": "d3f485e7-71e5-4859-b8fe-bff5a8e5eefb",
+          "nature": 0,
+          "composite": 0,
+          "parts": [
+            {
+              "path": {
+                "device": 0,
+                "kind": 0,
+                "control": 262
+              },
+              "contribution": [
+                1,
+                0,
+                0
+              ]
+            }
+          ],
+          "chord": {
+            "modifiers": 1,
+            "forbiddenModifiers": 0,
+            "match": 0,
+            "matchModifiers": true
+          }
+        },
+        {
+          "id": "005143a9-6812-4d72-8dc6-7a3a90bf9698",
+          "action": "fb6bc9f2-1648-4c87-964b-e9b4801f2171",
+          "nature": 0,
+          "composite": 0,
+          "parts": [
+            {
+              "path": {
+                "device": 0,
+                "kind": 0,
+                "control": 265
+              },
+              "contribution": [
+                1,
+                0,
+                0
+              ]
+            }
+          ],
+          "chord": {
+            "modifiers": 0,
+            "forbiddenModifiers": 0,
+            "match": 0,
+            "matchModifiers": true
+          }
+        },
+        {
+          "id": "180ad4dd-e84a-4b7b-9de8-b37e673f346d",
+          "action": "1dbee011-cddd-4794-b67e-83ba62ed0712",
+          "nature": 0,
+          "composite": 0,
+          "parts": [
+            {
+              "path": {
+                "device": 0,
+                "kind": 0,
+                "control": 265
+              },
+              "contribution": [
+                1,
+                0,
+                0
+              ]
+            }
+          ],
+          "chord": {
+            "modifiers": 1,
+            "forbiddenModifiers": 0,
+            "match": 0,
+            "matchModifiers": true
+          }
+        },
+        {
+          "id": "57388c83-fee8-47c7-9098-1f2f88f1ccc9",
+          "action": "1c45688a-2ea7-4de2-b7d5-5a33b73f9e98",
+          "nature": 0,
+          "composite": 0,
+          "parts": [
+            {
+              "path": {
+                "device": 0,
+                "kind": 0,
+                "control": 264
+              },
+              "contribution": [
+                1,
+                0,
+                0
+              ]
+            }
+          ],
+          "chord": {
+            "modifiers": 0,
+            "forbiddenModifiers": 0,
+            "match": 0,
+            "matchModifiers": true
+          }
+        },
+        {
+          "id": "4a5fa0df-4c09-489c-9afc-2a30528a0c9a",
+          "action": "b99cc826-0fb0-4c07-8ee4-979f01e35a39",
+          "nature": 0,
+          "composite": 0,
+          "parts": [
+            {
+              "path": {
+                "device": 0,
+                "kind": 0,
+                "control": 264
+              },
+              "contribution": [
+                1,
+                0,
+                0
+              ]
+            }
+          ],
+          "chord": {
+            "modifiers": 1,
+            "forbiddenModifiers": 0,
+            "match": 0,
+            "matchModifiers": true
+          }
+        },
+        {
+          "id": "a8134cb2-5a09-4f2f-95aa-e9035d08a769",
+          "action": "8e3ca491-a8c2-48ae-b875-66e5a7dce8f4",
+          "nature": 0,
+          "composite": 0,
+          "parts": [],
+          "chord": {
+            "modifiers": 0,
+            "forbiddenModifiers": 0,
+            "match": 0,
+            "matchModifiers": true
+          }
+        }
+      ]
+    },
+    {
+      "id": "f8d478ee-0a34-4907-ab06-60e80cd27ff1",
+      "name": "vfx-editor",
+      "priority": 50,
+      "consumption": 1,
+      "reacquire": 0,
+      "bindings": [
+        {
+          "id": "7c4f142e-6fff-468a-945c-db0bbb4f68d8",
+          "action": "985734c1-8efc-4f6f-aac8-d4e244c2f9a9",
+          "nature": 0,
+          "composite": 0,
+          "parts": [
+            {
+              "path": {
+                "device": 0,
+                "kind": 0,
+                "control": 83
+              },
+              "contribution": [
+                1,
+                0,
+                0
+              ]
+            }
+          ],
+          "chord": {
+            "modifiers": 16,
+            "forbiddenModifiers": 0,
+            "match": 0,
+            "matchModifiers": true
+          }
+        },
+        {
+          "id": "6705fb2b-467d-4753-890b-4a443677495d",
+          "action": "bda9b35a-d459-4b32-bc59-4e0e27261c20",
+          "nature": 0,
+          "composite": 0,
+          "parts": [
+            {
+              "path": {
+                "device": 0,
+                "kind": 0,
+                "control": 90
+              },
+              "contribution": [
+                1,
+                0,
+                0
+              ]
+            }
+          ],
+          "chord": {
+            "modifiers": 16,
+            "forbiddenModifiers": 0,
+            "match": 0,
+            "matchModifiers": true
+          }
+        },
+        {
+          "id": "80f7b603-65e1-4eb9-8adf-4cace22dd80b",
+          "action": "afb3b484-68b4-4fd4-aa34-8ad28d67be8a",
+          "nature": 0,
+          "composite": 0,
+          "parts": [
+            {
+              "path": {
+                "device": 0,
+                "kind": 0,
+                "control": 89
+              },
+              "contribution": [
+                1,
+                0,
+                0
+              ]
+            }
+          ],
+          "chord": {
+            "modifiers": 16,
+            "forbiddenModifiers": 0,
+            "match": 0,
+            "matchModifiers": true
+          }
+        },
+        {
+          "id": "0b5e50c3-55e5-4dd0-b8b3-45c62b722afa",
+          "action": "4fda9807-5b6b-40a9-97fc-3761958ba29f",
+          "nature": 0,
+          "composite": 0,
+          "parts": [
+            {
+              "path": {
+                "device": 0,
+                "kind": 0,
+                "control": 67
+              },
+              "contribution": [
+                1,
+                0,
+                0
+              ]
+            }
+          ],
+          "chord": {
+            "modifiers": 16,
+            "forbiddenModifiers": 0,
+            "match": 0,
+            "matchModifiers": true
+          }
+        },
+        {
+          "id": "0c98f09b-424f-4897-8b9e-38a1a496cb61",
+          "action": "8bf7116d-7ab0-418c-affc-844f15a49382",
+          "nature": 0,
+          "composite": 0,
+          "parts": [
+            {
+              "path": {
+                "device": 0,
+                "kind": 0,
+                "control": 88
+              },
+              "contribution": [
+                1,
+                0,
+                0
+              ]
+            }
+          ],
+          "chord": {
+            "modifiers": 16,
+            "forbiddenModifiers": 0,
+            "match": 0,
+            "matchModifiers": true
+          }
+        },
+        {
+          "id": "d6303be0-d7f3-4c04-89f9-43591180093e",
+          "action": "66369c89-2406-41c7-985c-0c1118550605",
+          "nature": 0,
+          "composite": 0,
+          "parts": [
+            {
+              "path": {
+                "device": 0,
+                "kind": 0,
+                "control": 86
+              },
+              "contribution": [
+                1,
+                0,
+                0
+              ]
+            }
+          ],
+          "chord": {
+            "modifiers": 16,
+            "forbiddenModifiers": 0,
+            "match": 0,
+            "matchModifiers": true
+          }
+        },
+        {
+          "id": "885342ba-91c2-469d-99a4-8562ad4d8913",
+          "action": "62400280-9882-4328-a222-0742b486ffc2",
+          "nature": 0,
+          "composite": 0,
+          "parts": [
+            {
+              "path": {
+                "device": 0,
+                "kind": 0,
+                "control": 79
+              },
+              "contribution": [
+                1,
+                0,
+                0
+              ]
+            }
+          ],
+          "chord": {
+            "modifiers": 16,
+            "forbiddenModifiers": 0,
+            "match": 0,
+            "matchModifiers": true
+          }
+        },
+        {
+          "id": "40347502-341d-4e34-b9f4-d338653c32e2",
+          "action": "ae4298a1-0158-46f7-8c8f-20164813f8b1",
+          "nature": 0,
+          "composite": 0,
+          "parts": [
+            {
+              "path": {
+                "device": 0,
+                "kind": 0,
+                "control": 77
+              },
+              "contribution": [
+                1,
+                0,
+                0
+              ]
+            }
+          ],
+          "chord": {
+            "modifiers": 16,
+            "forbiddenModifiers": 0,
+            "match": 0,
+            "matchModifiers": true
+          }
+        },
+        {
+          "id": "d309bc0f-bfe5-4382-995b-5a6ce139cacc",
+          "action": "9673b715-6472-43b9-9fcd-46344f50d7ef",
+          "nature": 0,
+          "composite": 0,
+          "parts": [
+            {
+              "path": {
+                "device": 0,
+                "kind": 0,
+                "control": 70
+              },
+              "contribution": [
+                1,
+                0,
+                0
+              ]
+            }
+          ],
+          "chord": {
+            "modifiers": 16,
+            "forbiddenModifiers": 0,
+            "match": 0,
+            "matchModifiers": true
+          }
+        },
+        {
+          "id": "fe665474-ebfe-46f3-9498-edf9686cadbd",
+          "action": "fd3e150b-493c-4db8-9267-d6457439d7fe",
+          "nature": 0,
+          "composite": 0,
+          "parts": [
+            {
+              "path": {
+                "device": 0,
+                "kind": 0,
+                "control": 32
+              },
+              "contribution": [
+                1,
+                0,
+                0
+              ]
+            }
+          ],
+          "chord": {
+            "modifiers": 0,
+            "forbiddenModifiers": 0,
+            "match": 0,
+            "matchModifiers": true
+          }
+        },
+        {
+          "id": "e795785f-a24d-42b7-a7b3-0a2021084fa5",
+          "action": "4be8dc60-2ec2-4dd4-81de-00521bec8c5e",
+          "nature": 0,
+          "composite": 0,
+          "parts": [
+            {
+              "path": {
+                "device": 0,
+                "kind": 0,
+                "control": 256
+              },
+              "contribution": [
+                1,
+                0,
+                0
+              ]
+            }
+          ],
+          "chord": {
+            "modifiers": 0,
+            "forbiddenModifiers": 0,
+            "match": 0,
+            "matchModifiers": true
+          }
+        },
+        {
+          "id": "230d491d-765f-46c6-b270-70af091bcc9c",
+          "action": "3e562f11-6792-48f9-8ed0-30a0be334f8b",
+          "nature": 0,
+          "composite": 0,
+          "parts": [
+            {
+              "path": {
+                "device": 0,
+                "kind": 0,
+                "control": 83
+              },
+              "contribution": [
+                1,
+                0,
+                0
+              ]
+            }
+          ],
+          "chord": {
+            "modifiers": 0,
+            "forbiddenModifiers": 0,
+            "match": 0,
+            "matchModifiers": true
+          }
+        },
+        {
+          "id": "4e435950-b912-4e00-885f-5a0e91daaeb6",
+          "action": "316c48b2-0676-4ae3-acf3-e515ab4aa565",
+          "nature": 0,
+          "composite": 0,
+          "parts": [
+            {
+              "path": {
+                "device": 0,
+                "kind": 0,
+                "control": 68
+              },
+              "contribution": [
+                1,
+                0,
+                0
+              ]
+            }
+          ],
+          "chord": {
+            "modifiers": 0,
+            "forbiddenModifiers": 0,
+            "match": 0,
+            "matchModifiers": true
+          }
+        },
+        {
+          "id": "49395b36-870d-4e21-b011-f5bb310b7c2b",
+          "action": "411d0201-ef0b-4d9c-9ce2-376709686d72",
+          "nature": 0,
+          "composite": 0,
+          "parts": [
+            {
+              "path": {
+                "device": 0,
+                "kind": 0,
+                "control": 68
+              },
+              "contribution": [
+                1,
+                0,
+                0
+              ]
+            }
+          ],
+          "chord": {
+            "modifiers": 1,
+            "forbiddenModifiers": 0,
+            "match": 0,
+            "matchModifiers": true
+          }
+        },
+        {
+          "id": "8a4e0019-e337-48cf-828e-32c82520d145",
+          "action": "35cfee89-13a2-4822-9fa7-f1b3075639e4",
+          "nature": 0,
+          "composite": 0,
+          "parts": [
+            {
+              "path": {
+                "device": 0,
+                "kind": 0,
+                "control": 70
+              },
+              "contribution": [
+                1,
+                0,
+                0
+              ]
+            }
+          ],
+          "chord": {
+            "modifiers": 0,
+            "forbiddenModifiers": 0,
+            "match": 0,
+            "matchModifiers": true
+          }
+        },
+        {
+          "id": "b961178b-730b-4684-a6f1-aaf76fa4f9ee",
+          "action": "7810089d-ba85-4379-b6ed-a2ca6bfaaa37",
+          "nature": 0,
+          "composite": 0,
+          "parts": [
+            {
+              "path": {
+                "device": 0,
+                "kind": 0,
+                "control": 65
+              },
+              "contribution": [
+                1,
+                0,
+                0
+              ]
+            }
+          ],
+          "chord": {
+            "modifiers": 0,
+            "forbiddenModifiers": 0,
+            "match": 0,
+            "matchModifiers": true
+          }
+        },
+        {
+          "id": "7cf8c199-76aa-46a4-ba9f-f6922145c9f2",
+          "action": "5f3fa4ff-3fdc-4075-9d1e-34587ad783b7",
+          "nature": 0,
+          "composite": 0,
+          "parts": [
+            {
+              "path": {
+                "device": 0,
+                "kind": 0,
+                "control": 69
+              },
+              "contribution": [
+                1,
+                0,
+                0
+              ]
+            }
+          ],
+          "chord": {
+            "modifiers": 0,
+            "forbiddenModifiers": 0,
+            "match": 0,
+            "matchModifiers": true
+          }
+        },
+        {
+          "id": "ae3895dc-474d-4bd6-9166-8f476eb77cfc",
+          "action": "980669cd-73ea-4b97-b6a9-f2ce68579f59",
+          "nature": 0,
+          "composite": 0,
+          "parts": [
+            {
+              "path": {
+                "device": 0,
+                "kind": 0,
+                "control": 261
+              },
+              "contribution": [
+                1,
+                0,
+                0
+              ]
+            }
+          ],
+          "chord": {
+            "modifiers": 0,
+            "forbiddenModifiers": 0,
+            "match": 0,
+            "matchModifiers": true
+          }
+        },
+        {
+          "id": "80325482-856d-4fc3-b32e-5960c02af835",
+          "action": "a5d017ad-5ea7-448c-8736-6b3164a45f6a",
+          "nature": 0,
+          "composite": 0,
+          "parts": [],
+          "chord": {
+            "modifiers": 0,
+            "forbiddenModifiers": 0,
+            "match": 0,
+            "matchModifiers": true
+          }
+        },
+        {
+          "id": "bbba1c68-0468-41d7-8ee7-db99b1da1c55",
+          "action": "17f41ea3-9c8c-400a-91f6-29f9c5b8bc2c",
+          "nature": 0,
+          "composite": 0,
+          "parts": [],
+          "chord": {
+            "modifiers": 0,
+            "forbiddenModifiers": 0,
+            "match": 0,
+            "matchModifiers": true
+          }
+        },
+        {
+          "id": "abbb4685-a684-4a36-ba36-6b2e134db72c",
+          "action": "799d3abc-4101-419f-8a14-4d0ab954a559",
+          "nature": 0,
+          "composite": 0,
+          "parts": [],
+          "chord": {
+            "modifiers": 0,
+            "forbiddenModifiers": 0,
+            "match": 0,
+            "matchModifiers": true
+          }
+        },
+        {
+          "id": "71ac28de-47d4-45c0-bd40-6d003eacefce",
+          "action": "b74865ae-7ae1-4e0d-80d1-9141e1b86977",
+          "nature": 0,
+          "composite": 0,
+          "parts": [],
+          "chord": {
+            "modifiers": 0,
+            "forbiddenModifiers": 0,
+            "match": 0,
+            "matchModifiers": true
+          }
+        },
+        {
+          "id": "a8538849-70cf-4a60-a755-edc108a7383e",
+          "action": "0b6f1de6-78c6-4583-9a51-c2190b207475",
+          "nature": 0,
+          "composite": 0,
+          "parts": [],
+          "chord": {
+            "modifiers": 0,
+            "forbiddenModifiers": 0,
+            "match": 0,
+            "matchModifiers": true
+          }
+        },
+        {
+          "id": "c13144fd-37f4-4ff2-aa10-465ab1e888a4",
+          "action": "0ba21898-1e68-4577-b8d9-39879f65bd9d",
+          "nature": 0,
+          "composite": 0,
+          "parts": [],
+          "chord": {
+            "modifiers": 0,
+            "forbiddenModifiers": 0,
+            "match": 0,
+            "matchModifiers": true
+          }
+        },
+        {
+          "id": "3e2d0a20-be6a-4661-9b6a-e6e0bc325bc7",
+          "action": "3638c6df-54b4-44e0-abfb-1faf5c46b6ca",
+          "nature": 0,
+          "composite": 0,
+          "parts": [],
+          "chord": {
+            "modifiers": 0,
+            "forbiddenModifiers": 0,
+            "match": 0,
+            "matchModifiers": true
+          }
+        },
+        {
+          "id": "4a3e6dec-b4fb-413b-a471-20bd7017923d",
+          "action": "5a18eacf-6e9c-4494-9b6e-23ecbff6ecda",
+          "nature": 0,
+          "composite": 0,
+          "parts": [],
+          "chord": {
+            "modifiers": 0,
+            "forbiddenModifiers": 0,
+            "match": 0,
+            "matchModifiers": true
+          }
+        },
+        {
+          "id": "ccdfebc3-f597-4f7e-b45e-f3285c0f3840",
+          "action": "6a52339b-2b61-49c5-882c-8801f394aff3",
+          "nature": 0,
+          "composite": 0,
+          "parts": [],
+          "chord": {
+            "modifiers": 0,
+            "forbiddenModifiers": 0,
+            "match": 0,
+            "matchModifiers": true
+          }
+        },
+        {
+          "id": "7b32a308-73b9-4e68-b0b6-f2f9f31d4dee",
+          "action": "ba965453-4b0b-42d3-b889-493c11da4995",
+          "nature": 0,
+          "composite": 0,
+          "parts": [],
+          "chord": {
+            "modifiers": 0,
+            "forbiddenModifiers": 0,
+            "match": 0,
+            "matchModifiers": true
+          }
+        },
+        {
+          "id": "121c5c4e-dfd7-426d-b5be-c09e5ec6ce57",
+          "action": "9642435f-1a8f-4532-95ae-b7260e378d10",
+          "nature": 0,
+          "composite": 0,
+          "parts": [],
+          "chord": {
+            "modifiers": 0,
+            "forbiddenModifiers": 0,
+            "match": 0,
+            "matchModifiers": true
+          }
+        },
+        {
+          "id": "41fd8462-4ccd-4042-8366-0b0120341c20",
+          "action": "2cce6518-7301-438d-b545-f95a5bf5dc7f",
+          "nature": 0,
+          "composite": 0,
+          "parts": [],
+          "chord": {
+            "modifiers": 0,
+            "forbiddenModifiers": 0,
+            "match": 0,
+            "matchModifiers": true
+          }
+        },
+        {
+          "id": "be73fdc9-388e-4605-a043-7198ceed042f",
+          "action": "3368497f-2286-4872-a42d-8c7754106050",
+          "nature": 0,
+          "composite": 0,
+          "parts": [],
+          "chord": {
+            "modifiers": 0,
+            "forbiddenModifiers": 0,
+            "match": 0,
+            "matchModifiers": true
+          }
+        },
+        {
+          "id": "26d77ba9-9806-4eb0-9436-16bceb79ec5a",
+          "action": "75d38f6d-cb66-4367-b85a-f7d2411e8675",
+          "nature": 0,
+          "composite": 0,
+          "parts": [],
+          "chord": {
+            "modifiers": 0,
+            "forbiddenModifiers": 0,
+            "match": 0,
+            "matchModifiers": true
+          }
+        },
+        {
+          "id": "b800c0c8-9829-41e1-947f-c7266b87c81f",
+          "action": "9e6882cf-2ac5-4ec2-b350-958d9093d84c",
+          "nature": 0,
+          "composite": 0,
+          "parts": [],
+          "chord": {
+            "modifiers": 0,
+            "forbiddenModifiers": 0,
+            "match": 0,
+            "matchModifiers": true
+          }
+        },
+        {
+          "id": "4f1ef5b5-43f0-42ab-bb88-93fe8b64b25d",
+          "action": "7373fe3d-6336-4dbc-9e22-b8ad3b46ddf2",
+          "nature": 0,
+          "composite": 0,
+          "parts": [],
+          "chord": {
+            "modifiers": 0,
+            "forbiddenModifiers": 0,
+            "match": 0,
+            "matchModifiers": true
+          }
+        }
+      ]
+    },
+    {
+      "id": "b705de56-7840-4259-a469-943ad7a12533",
+      "name": "vfx-library",
+      "priority": 50,
+      "consumption": 1,
+      "reacquire": 0,
+      "bindings": [
+        {
+          "id": "4bee05c8-0536-4cd2-8a52-64dba88a0d1c",
+          "action": "8836b2c8-b402-4153-87e7-806ecaecd109",
+          "nature": 0,
+          "composite": 0,
+          "parts": [
+            {
+              "path": {
+                "device": 0,
+                "kind": 0,
+                "control": 83
+              },
+              "contribution": [
+                1,
+                0,
+                0
+              ]
+            }
+          ],
+          "chord": {
+            "modifiers": 16,
+            "forbiddenModifiers": 0,
+            "match": 0,
+            "matchModifiers": true
+          }
+        },
+        {
+          "id": "579fe42c-9bfb-4b21-affc-dc91daab740b",
+          "action": "13a7a7b6-c75a-44c4-87bd-353a38eecc5a",
+          "nature": 0,
+          "composite": 0,
+          "parts": [
+            {
+              "path": {
+                "device": 0,
+                "kind": 0,
+                "control": 90
+              },
+              "contribution": [
+                1,
+                0,
+                0
+              ]
+            }
+          ],
+          "chord": {
+            "modifiers": 16,
+            "forbiddenModifiers": 0,
+            "match": 0,
+            "matchModifiers": true
+          }
+        },
+        {
+          "id": "48a7d3ff-c728-4407-82f7-72f8f56a06a1",
+          "action": "565674bc-a4bf-4476-86ea-86641df2ddcc",
+          "nature": 0,
+          "composite": 0,
+          "parts": [
+            {
+              "path": {
+                "device": 0,
+                "kind": 0,
+                "control": 89
+              },
+              "contribution": [
+                1,
+                0,
+                0
+              ]
+            }
+          ],
+          "chord": {
+            "modifiers": 16,
+            "forbiddenModifiers": 0,
+            "match": 0,
+            "matchModifiers": true
+          }
+        },
+        {
+          "id": "b795aa9b-92b9-49d1-8c8f-4e621d5ce4e7",
+          "action": "85c8dfe6-146c-4f4c-8e5e-989747f21b2e",
+          "nature": 0,
+          "composite": 0,
+          "parts": [
+            {
+              "path": {
+                "device": 0,
+                "kind": 0,
+                "control": 256
+              },
+              "contribution": [
+                1,
+                0,
+                0
+              ]
+            }
+          ],
+          "chord": {
+            "modifiers": 0,
+            "forbiddenModifiers": 0,
+            "match": 0,
+            "matchModifiers": true
+          }
+        }
+      ]
+    },
+    {
+      "id": "f663b5c5-bcb8-4b1a-93ae-cdf7192d051c",
+      "name": "console",
+      "priority": 50,
+      "consumption": 1,
+      "reacquire": 0,
+      "bindings": [
+        {
+          "id": "37595f33-d141-453f-a731-2ec6fd031a99",
+          "action": "38ece5f0-7840-46ae-9952-2a18d66a1434",
+          "nature": 0,
+          "composite": 0,
+          "parts": [
+            {
+              "path": {
+                "device": 0,
+                "kind": 0,
+                "control": 265
+              },
+              "contribution": [
+                1,
+                0,
+                0
+              ]
+            }
+          ],
+          "chord": {
+            "modifiers": 0,
+            "forbiddenModifiers": 0,
+            "match": 0,
+            "matchModifiers": true
+          }
+        },
+        {
+          "id": "f3a7c9fb-c6cf-411f-9e94-f9c7a28cf7bd",
+          "action": "11f361b8-05cb-4982-95c2-844287bc14fc",
+          "nature": 0,
+          "composite": 0,
+          "parts": [
+            {
+              "path": {
+                "device": 0,
+                "kind": 0,
+                "control": 264
+              },
+              "contribution": [
+                1,
+                0,
+                0
+              ]
+            }
+          ],
+          "chord": {
+            "modifiers": 0,
+            "forbiddenModifiers": 0,
+            "match": 0,
+            "matchModifiers": true
+          }
+        },
+        {
+          "id": "744a39be-5ef6-4487-8779-a648c770f5b9",
+          "action": "03d2e68b-7c53-41b8-983e-74afe645c736",
+          "nature": 0,
+          "composite": 0,
+          "parts": [
+            {
+              "path": {
+                "device": 0,
+                "kind": 0,
+                "control": 269
+              },
+              "contribution": [
+                1,
+                0,
+                0
+              ]
+            }
+          ],
+          "chord": {
+            "modifiers": 0,
+            "forbiddenModifiers": 0,
+            "match": 0,
+            "matchModifiers": true
+          }
+        },
+        {
+          "id": "3efd6917-ff57-4db6-8108-59a06b232bc0",
+          "action": "5065a0b1-4f0b-49f7-812f-e7378712df7d",
+          "nature": 0,
+          "composite": 0,
+          "parts": [
+            {
+              "path": {
+                "device": 0,
+                "kind": 0,
+                "control": 257
+              },
+              "contribution": [
+                1,
+                0,
+                0
+              ]
+            }
+          ],
+          "chord": {
+            "modifiers": 0,
+            "forbiddenModifiers": 0,
+            "match": 0,
+            "matchModifiers": true
+          }
+        },
+        {
+          "id": "6a1dcc9c-c40f-4b3f-81da-e932e2fd12c9",
+          "action": "e9d8d4cf-e1c7-46d2-a780-b2d789ca0af8",
+          "nature": 0,
+          "composite": 0,
+          "parts": [
+            {
+              "path": {
+                "device": 0,
+                "kind": 0,
+                "control": 67
+              },
+              "contribution": [
+                1,
+                0,
+                0
+              ]
+            }
+          ],
+          "chord": {
+            "modifiers": 16,
+            "forbiddenModifiers": 0,
+            "match": 0,
+            "matchModifiers": true
+          }
+        }
+      ]
+    },
+    {
+      "id": "f3cfe85d-fc53-4d83-ad29-fa2c0b36ee91",
+      "name": "input-editor",
+      "priority": 50,
+      "consumption": 1,
+      "reacquire": 0,
+      "bindings": [
+        {
+          "id": "7c3a9619-1e74-466c-a15f-18868ab0605a",
+          "action": "7b23ee32-6fd3-4e07-88ea-5d7876c96899",
+          "nature": 0,
+          "composite": 0,
+          "parts": [
+            {
+              "path": {
+                "device": 0,
+                "kind": 0,
+                "control": 83
+              },
+              "contribution": [
+                1,
+                0,
+                0
+              ]
+            }
+          ],
+          "chord": {
+            "modifiers": 16,
+            "forbiddenModifiers": 0,
+            "match": 0,
+            "matchModifiers": true
+          }
+        }
+      ]
+    },
+    {
+      "id": "74e6c1c3-fc9f-48b4-b7da-ce8608f9f246",
+      "name": "node-graph",
+      "priority": 80,
+      "consumption": 1,
+      "reacquire": 0,
+      "bindings": [
+        {
+          "id": "9fdb8647-6df2-4df5-af28-adf4ad149a2b",
+          "action": "d0739dd6-de93-4b30-b534-343a61b7fc5a",
+          "nature": 0,
+          "composite": 0,
+          "parts": [
+            {
+              "path": {
+                "device": 0,
+                "kind": 0,
+                "control": 70
+              },
+              "contribution": [
+                1,
+                0,
+                0
+              ]
+            }
+          ],
+          "chord": {
+            "modifiers": 0,
+            "forbiddenModifiers": 0,
+            "match": 0,
+            "matchModifiers": true
+          }
+        },
+        {
+          "id": "9b06108d-9a7f-466b-933f-3d13275c4dcd",
+          "action": "bfd8d7e4-1294-4b88-9d45-3454cca1e0b6",
+          "nature": 0,
+          "composite": 0,
+          "parts": [
+            {
+              "path": {
+                "device": 0,
+                "kind": 0,
+                "control": 70
+              },
+              "contribution": [
+                1,
+                0,
+                0
+              ]
+            }
+          ],
+          "chord": {
+            "modifiers": 1,
+            "forbiddenModifiers": 0,
+            "match": 0,
+            "matchModifiers": true
+          }
+        },
+        {
+          "id": "06b513fc-5202-4677-8bed-ce12833d3761",
+          "action": "458d915a-9ffc-4ab8-b386-e3ace9b7bbae",
+          "nature": 0,
+          "composite": 0,
+          "parts": [
+            {
+              "path": {
+                "device": 0,
+                "kind": 0,
+                "control": 261
+              },
+              "contribution": [
+                1,
+                0,
+                0
+              ]
+            }
+          ],
+          "chord": {
+            "modifiers": 0,
+            "forbiddenModifiers": 0,
+            "match": 0,
+            "matchModifiers": true
+          }
+        }
+      ]
+    },
+    {
+      "id": "f893bc5b-37df-4f83-898a-4447f068d9e9",
+      "name": "camera-preview",
+      "priority": 50,
+      "consumption": 1,
+      "reacquire": 0,
+      "bindings": [
+        {
+          "id": "a23f50aa-67a6-4886-91ba-7578ad32c4c0",
+          "action": "b818dd76-8968-4e0f-b1cb-712e380428ed",
+          "nature": 0,
+          "composite": 0,
+          "parts": [
+            {
+              "path": {
+                "device": 0,
+                "kind": 0,
+                "control": 70
+              },
+              "contribution": [
+                1,
+                0,
+                0
+              ]
+            }
+          ],
+          "chord": {
+            "modifiers": 0,
+            "forbiddenModifiers": 0,
+            "match": 0,
+            "matchModifiers": true
+          }
+        }
+      ]
+    },
+    {
+      "id": "fc0bf96b-427f-4e44-99db-63d9a55da316",
+      "name": "camera-angle",
+      "priority": 60,
+      "consumption": 1,
+      "reacquire": 0,
+      "bindings": [
+        {
+          "id": "0fc2d16e-abd7-4877-b576-e13a54af1541",
+          "action": "cb4f9e8b-a951-4786-9c76-d8ebaf37d194",
+          "nature": 0,
+          "composite": 0,
+          "parts": [
+            {
+              "path": {
+                "device": 0,
+                "kind": 0,
+                "control": 265
+              },
+              "contribution": [
+                1,
+                0,
+                0
+              ]
+            }
+          ],
+          "chord": {
+            "modifiers": 0,
+            "forbiddenModifiers": 0,
+            "match": 0,
+            "matchModifiers": true
+          }
+        },
+        {
+          "id": "4d08e196-fa36-458f-a05b-031b3c4330cd",
+          "action": "6bfc8cb4-8578-4b98-b927-64a477e540b2",
+          "nature": 0,
+          "composite": 0,
+          "parts": [
+            {
+              "path": {
+                "device": 0,
+                "kind": 0,
+                "control": 264
+              },
+              "contribution": [
+                1,
+                0,
+                0
+              ]
+            }
+          ],
+          "chord": {
+            "modifiers": 0,
+            "forbiddenModifiers": 0,
+            "match": 0,
+            "matchModifiers": true
+          }
+        },
+        {
+          "id": "502d1d81-a14b-469a-850e-199e84316258",
+          "action": "53d14f59-1ff8-4123-a4f3-c26808fc5d4d",
+          "nature": 0,
+          "composite": 0,
+          "parts": [
+            {
+              "path": {
+                "device": 0,
+                "kind": 0,
+                "control": 262
+              },
+              "contribution": [
+                1,
+                0,
+                0
+              ]
+            }
+          ],
+          "chord": {
+            "modifiers": 0,
+            "forbiddenModifiers": 0,
+            "match": 0,
+            "matchModifiers": true
+          }
+        },
+        {
+          "id": "7cfdcb5c-3c2b-4989-9355-43bd1788fef7",
+          "action": "2779ef0f-5a68-4a2e-81a9-92bc646e1998",
+          "nature": 0,
+          "composite": 0,
+          "parts": [
+            {
+              "path": {
+                "device": 0,
+                "kind": 0,
+                "control": 263
+              },
+              "contribution": [
+                1,
+                0,
+                0
+              ]
+            }
+          ],
+          "chord": {
+            "modifiers": 0,
+            "forbiddenModifiers": 0,
+            "match": 0,
+            "matchModifiers": true
+          }
+        },
+        {
+          "id": "ff48bd3c-bc97-45e3-bbb2-c62bd5bad051",
+          "action": "eb5939bc-6c31-420e-b4ce-bb482fdb5c80",
+          "nature": 0,
+          "composite": 0,
+          "parts": [
+            {
+              "path": {
+                "device": 0,
+                "kind": 0,
+                "control": 266
+              },
+              "contribution": [
+                1,
+                0,
+                0
+              ]
+            }
+          ],
+          "chord": {
+            "modifiers": 0,
+            "forbiddenModifiers": 0,
+            "match": 0,
+            "matchModifiers": true
+          }
+        },
+        {
+          "id": "08c92e76-f77b-4807-829a-b7ed9e00cd25",
+          "action": "ee86c9da-cc17-4630-89ff-122e93c22dca",
+          "nature": 0,
+          "composite": 0,
+          "parts": [
+            {
+              "path": {
+                "device": 0,
+                "kind": 0,
+                "control": 267
+              },
+              "contribution": [
+                1,
+                0,
+                0
+              ]
+            }
+          ],
+          "chord": {
+            "modifiers": 0,
+            "forbiddenModifiers": 0,
+            "match": 0,
+            "matchModifiers": true
+          }
+        }
+      ]
+    },
+    {
+      "id": "6de19aa0-3040-483e-951d-c72dd6393958",
+      "name": "inspector",
+      "priority": 50,
+      "consumption": 1,
+      "reacquire": 0,
+      "bindings": [
+        {
+          "id": "6c9eda7f-c429-4b39-a984-c6c3ff52a307",
+          "action": "8bb7d529-786c-44d0-a72a-34a1012b3fa2",
+          "nature": 0,
+          "composite": 0,
+          "parts": [
+            {
+              "path": {
+                "device": 0,
+                "kind": 0,
+                "control": 67
+              },
+              "contribution": [
+                1,
+                0,
+                0
+              ]
+            }
+          ],
+          "chord": {
+            "modifiers": 16,
+            "forbiddenModifiers": 0,
+            "match": 0,
+            "matchModifiers": true
+          }
+        },
+        {
+          "id": "c7971b3e-1e99-45eb-8283-bedb49486499",
+          "action": "b4ba8b56-8811-42a4-9569-22854c63e976",
+          "nature": 0,
+          "composite": 0,
+          "parts": [
+            {
+              "path": {
+                "device": 0,
+                "kind": 0,
+                "control": 86
+              },
+              "contribution": [
+                1,
+                0,
+                0
+              ]
+            }
+          ],
+          "chord": {
+            "modifiers": 16,
+            "forbiddenModifiers": 0,
+            "match": 0,
+            "matchModifiers": true
+          }
+        },
+        {
+          "id": "e9c00403-085a-44a0-b4eb-4506e085a87a",
+          "action": "b69a1880-dcb0-4d99-be82-164cefb6db47",
+          "nature": 0,
+          "composite": 0,
+          "parts": [
+            {
+              "path": {
+                "device": 0,
+                "kind": 0,
+                "control": 261
+              },
+              "contribution": [
+                1,
+                0,
+                0
+              ]
+            }
+          ],
+          "chord": {
+            "modifiers": 0,
+            "forbiddenModifiers": 0,
+            "match": 0,
+            "matchModifiers": true
+          }
+        },
+        {
+          "id": "4349f04e-01cb-47d7-82bc-a1b056006de1",
+          "action": "ef8ad8d0-9cf3-4be4-9a70-713a31ffe12a",
+          "nature": 0,
+          "composite": 0,
+          "parts": [],
+          "chord": {
+            "modifiers": 0,
+            "forbiddenModifiers": 0,
+            "match": 0,
+            "matchModifiers": true
+          }
+        },
+        {
+          "id": "73d983d6-1af9-4e59-9503-29dd5154ed27",
+          "action": "255c8d14-77ac-4aac-a374-c3b2fe7d20ae",
+          "nature": 0,
+          "composite": 0,
+          "parts": [],
+          "chord": {
+            "modifiers": 0,
+            "forbiddenModifiers": 0,
+            "match": 0,
+            "matchModifiers": true
+          }
+        },
+        {
+          "id": "37ec3c56-ab89-468c-bd93-cd7409afd6e6",
+          "action": "baa4cc41-85d0-4019-9b8d-1fdc663d1277",
+          "nature": 0,
+          "composite": 0,
+          "parts": [],
+          "chord": {
+            "modifiers": 0,
+            "forbiddenModifiers": 0,
+            "match": 0,
+            "matchModifiers": true
+          }
+        }
+      ]
+    },
+    {
+      "id": "a10e8366-e37f-4f83-a899-512fd1d4b78d",
+      "name": "node-graph-clipboard",
+      "priority": 85,
+      "consumption": 1,
+      "reacquire": 0,
+      "bindings": [
+        {
+          "id": "93b1431d-49f5-42a5-b21a-a4ff53e03cdf",
+          "action": "9df792e1-2317-4f32-b17f-08a763cfe3d0",
+          "nature": 0,
+          "composite": 0,
+          "parts": [
+            {
+              "path": {
+                "device": 0,
+                "kind": 0,
+                "control": 67
+              },
+              "contribution": [
+                1,
+                0,
+                0
+              ]
+            }
+          ],
+          "chord": {
+            "modifiers": 16,
+            "forbiddenModifiers": 0,
+            "match": 0,
+            "matchModifiers": true
+          }
+        },
+        {
+          "id": "8b1b5231-d4b0-47f4-9cdb-4bbdd04661ee",
+          "action": "76b0b91d-5a99-4119-b4ca-07b50e48287f",
+          "nature": 0,
+          "composite": 0,
+          "parts": [
+            {
+              "path": {
+                "device": 0,
+                "kind": 0,
+                "control": 88
+              },
+              "contribution": [
+                1,
+                0,
+                0
+              ]
+            }
+          ],
+          "chord": {
+            "modifiers": 16,
+            "forbiddenModifiers": 0,
+            "match": 0,
+            "matchModifiers": true
+          }
+        },
+        {
+          "id": "1e8be850-30a5-4527-b576-42a793e39481",
+          "action": "ceba7ecd-6307-4506-89b6-0a4d8221efa4",
+          "nature": 0,
+          "composite": 0,
+          "parts": [
+            {
+              "path": {
+                "device": 0,
+                "kind": 0,
+                "control": 86
+              },
+              "contribution": [
+                1,
+                0,
+                0
+              ]
+            }
+          ],
+          "chord": {
+            "modifiers": 16,
+            "forbiddenModifiers": 0,
+            "match": 0,
+            "matchModifiers": true
+          }
+        },
+        {
+          "id": "1fd6a2ff-f684-4ef9-a4df-fae5ce6edbbb",
+          "action": "17ff31b5-d428-407c-8d5f-a63a16502d4a",
+          "nature": 0,
+          "composite": 0,
+          "parts": [
+            {
+              "path": {
+                "device": 0,
+                "kind": 0,
+                "control": 68
+              },
+              "contribution": [
+                1,
+                0,
+                0
+              ]
+            }
+          ],
+          "chord": {
+            "modifiers": 16,
+            "forbiddenModifiers": 0,
+            "match": 0,
+            "matchModifiers": true
+          }
+        },
+        {
+          "id": "f3d83fa6-aefd-42e8-a6ac-31fa5e0b84d2",
+          "action": "7d0e2cb6-e128-47fb-811d-d0796dfff239",
+          "nature": 0,
+          "composite": 0,
+          "parts": [
+            {
+              "path": {
+                "device": 0,
+                "kind": 0,
+                "control": 32
+              },
+              "contribution": [
+                1,
+                0,
+                0
+              ]
+            }
+          ],
+          "chord": {
+            "modifiers": 0,
+            "forbiddenModifiers": 0,
+            "match": 0,
+            "matchModifiers": true
+          }
+        }
+      ]
+    },
+    {
+      "id": "efd9a16a-b82a-4117-84b7-2f7aa6378d21",
+      "name": "camera-navigation",
+      "priority": 30,
+      "consumption": 0,
+      "reacquire": 1,
+      "bindings": [
+        {
+          "id": "9a894961-404a-4f6a-b6f0-63435256308c",
+          "action": "1cca7ba4-7820-4345-98ef-5256b175cc5b",
+          "nature": 0,
+          "composite": 0,
+          "parts": [
+            {
+              "path": {
+                "device": 1,
+                "kind": 0,
+                "control": 1
+              },
+              "contribution": [
+                1,
+                0,
+                0
+              ]
+            }
+          ],
+          "chord": {
+            "controls": [],
+            "modifiers": 0,
+            "forbiddenModifiers": 0,
+            "match": 1,
+            "matchModifiers": false
+          }
+        },
+        {
+          "id": "feb2c651-58c3-43f0-b7a2-b4ab74001142",
+          "action": "b8ab48a4-d068-490b-90ad-a756f4da6781",
+          "nature": 0,
+          "composite": 0,
+          "parts": [
+            {
+              "path": {
+                "device": 1,
+                "kind": 0,
+                "control": 2
+              },
+              "contribution": [
+                1,
+                0,
+                0
+              ]
+            }
+          ],
+          "chord": {
+            "controls": [],
+            "modifiers": 0,
+            "forbiddenModifiers": 4,
+            "match": 1,
+            "matchModifiers": true
+          }
+        },
+        {
+          "id": "24fee3e9-d458-45bb-9481-da58da8123dd",
+          "action": "3d821b32-9c83-42c4-8dde-294901b317ba",
+          "nature": 0,
+          "composite": 0,
+          "parts": [
+            {
+              "path": {
+                "device": 1,
+                "kind": 0,
+                "control": 2
+              },
+              "contribution": [
+                1,
+                0,
+                0
+              ]
+            }
+          ],
+          "chord": {
+            "controls": [],
+            "modifiers": 4,
+            "forbiddenModifiers": 0,
+            "match": 1,
+            "matchModifiers": true
+          }
+        },
+        {
+          "id": "aaabdd6c-2fa5-4980-8b25-da10b32e6ac6",
+          "action": "40c1052c-1ccd-4fdf-bbb9-0233969c7cd1",
+          "nature": 0,
+          "composite": 0,
+          "parts": [
+            {
+              "path": {
+                "device": 0,
+                "kind": 0,
+                "control": 340
+              },
+              "contribution": [
+                1,
+                0,
+                0
+              ]
+            }
+          ],
+          "chord": {
+            "controls": [],
+            "modifiers": 0,
+            "forbiddenModifiers": 0,
+            "match": 1,
+            "matchModifiers": false
+          }
+        },
+        {
+          "id": "885bda1d-e5b3-4a4a-997d-03dcfb70f968",
+          "action": "40c1052c-1ccd-4fdf-bbb9-0233969c7cd1",
+          "nature": 0,
+          "composite": 0,
+          "parts": [
+            {
+              "path": {
+                "device": 0,
+                "kind": 0,
+                "control": 344
+              },
+              "contribution": [
+                1,
+                0,
+                0
+              ]
+            }
+          ],
+          "chord": {
+            "controls": [],
+            "modifiers": 0,
+            "forbiddenModifiers": 0,
+            "match": 1,
+            "matchModifiers": false
+          }
+        },
+        {
+          "id": "0624948c-e25c-448e-b15d-bf28b20847cc",
+          "action": "78f73da8-d3f2-4cdf-9133-94a30be04e61",
+          "nature": 1,
+          "composite": 0,
+          "parts": [
+            {
+              "path": {
+                "device": 1,
+                "kind": 3,
+                "control": 0
+              },
+              "contribution": [
+                1,
+                0,
+                0
+              ]
+            }
+          ],
+          "chord": {
+            "controls": [],
+            "modifiers": 0,
+            "forbiddenModifiers": 0,
+            "match": 1,
+            "matchModifiers": false
+          },
+          "processors": [
+            {
+              "kind": 0,
+              "scale": [
+                1,
+                -1,
+                1
+              ],
+              "minimum": 0.125,
+              "maximum": 1
+            }
+          ]
+        },
+        {
+          "id": "3f93cf68-5b8e-484a-b6ec-d1a41e7acbb8",
+          "action": "3ff73861-62b7-4457-b3e8-9af67dd41a09",
+          "nature": 1,
+          "composite": 0,
+          "parts": [
+            {
+              "path": {
+                "device": 1,
+                "kind": 4,
+                "control": 0
+              },
+              "contribution": [
+                1,
+                0,
+                0
+              ]
+            }
+          ],
+          "chord": {
+            "controls": [],
+            "modifiers": 0,
+            "forbiddenModifiers": 0,
+            "match": 1,
+            "matchModifiers": false
+          }
+        }
+      ]
+    },
+    {
+      "id": "e9d46d0c-275e-42dc-acb1-fcdf5835a376",
+      "name": "scene-pointer-controls",
+      "priority": 30,
+      "consumption": 0,
+      "reacquire": 1,
+      "bindings": [
+        {
+          "id": "b90b6d00-21e2-447d-bdde-4b41e39302db",
+          "action": "19179163-3859-49ea-8093-f87a545752f4",
+          "nature": 0,
+          "composite": 0,
+          "parts": [
+            {
+              "path": {
+                "device": 0,
+                "kind": 0,
+                "control": 341
+              },
+              "contribution": [
+                1,
+                0,
+                0
+              ]
+            }
+          ],
+          "chord": {
+            "controls": [],
+            "modifiers": 0,
+            "forbiddenModifiers": 0,
+            "match": 1,
+            "matchModifiers": false
+          }
+        },
+        {
+          "id": "1eac90ac-bc81-4327-b367-c8a241699705",
+          "action": "19179163-3859-49ea-8093-f87a545752f4",
+          "nature": 0,
+          "composite": 0,
+          "parts": [
+            {
+              "path": {
+                "device": 0,
+                "kind": 0,
+                "control": 345
+              },
+              "contribution": [
+                1,
+                0,
+                0
+              ]
+            }
+          ],
+          "chord": {
+            "controls": [],
+            "modifiers": 0,
+            "forbiddenModifiers": 0,
+            "match": 1,
+            "matchModifiers": false
+          }
+        },
+        {
+          "id": "730ed9b6-81a7-4628-8124-622829341406",
+          "action": "24a64d4b-6470-469d-9114-dbea13eee647",
+          "nature": 0,
+          "composite": 0,
+          "parts": [
+            {
+              "path": {
+                "device": 0,
+                "kind": 0,
+                "control": 342
+              },
+              "contribution": [
+                1,
+                0,
+                0
+              ]
+            }
+          ],
+          "chord": {
+            "controls": [],
+            "modifiers": 0,
+            "forbiddenModifiers": 0,
+            "match": 1,
+            "matchModifiers": false
+          }
+        },
+        {
+          "id": "f47b6e43-465a-4d12-859b-edb15a3ceea8",
+          "action": "24a64d4b-6470-469d-9114-dbea13eee647",
+          "nature": 0,
+          "composite": 0,
+          "parts": [
+            {
+              "path": {
+                "device": 0,
+                "kind": 0,
+                "control": 346
+              },
+              "contribution": [
+                1,
+                0,
+                0
+              ]
+            }
+          ],
+          "chord": {
+            "controls": [],
+            "modifiers": 0,
+            "forbiddenModifiers": 0,
+            "match": 1,
+            "matchModifiers": false
+          }
+        }
+      ]
+    },
+    {
+      "id": "d3400c6f-3884-406c-8a14-ccfb4c073762",
+      "name": "ui-designer-pointer-controls",
+      "priority": 30,
+      "consumption": 0,
+      "reacquire": 1,
+      "bindings": [
+        {
+          "id": "400ea839-aa6f-4d70-96b0-148ab3126c6e",
+          "action": "111ba49d-3d0d-4ce7-aac6-0c5685b0d051",
+          "nature": 0,
+          "composite": 0,
+          "parts": [
+            {
+              "path": {
+                "device": 1,
+                "kind": 0,
+                "control": 2
+              },
+              "contribution": [
+                1,
+                0,
+                0
+              ]
+            }
+          ],
+          "chord": {
+            "controls": [],
+            "modifiers": 0,
+            "forbiddenModifiers": 0,
+            "match": 1,
+            "matchModifiers": false
+          }
+        },
+        {
+          "id": "21bb2df4-2646-437a-b22f-d491caeeff70",
+          "action": "111ba49d-3d0d-4ce7-aac6-0c5685b0d051",
+          "nature": 0,
+          "composite": 0,
+          "parts": [
+            {
+              "path": {
+                "device": 1,
+                "kind": 0,
+                "control": 0
+              },
+              "contribution": [
+                1,
+                0,
+                0
+              ]
+            }
+          ],
+          "chord": {
+            "controls": [
+              {
+                "device": 0,
+                "kind": 0,
+                "control": 32
+              }
+            ],
+            "modifiers": 0,
+            "forbiddenModifiers": 0,
+            "match": 1,
+            "matchModifiers": false
+          }
+        },
+        {
+          "id": "f7c219da-480d-4b80-af61-6dd07b377fd6",
+          "action": "fcb5d116-9d12-4b15-ac1a-79cc16221b8f",
+          "nature": 1,
+          "composite": 0,
+          "parts": [
+            {
+              "path": {
+                "device": 1,
+                "kind": 4,
+                "control": 0
+              },
+              "contribution": [
+                1,
+                0,
+                0
+              ]
+            }
+          ],
+          "chord": {
+            "controls": [],
+            "modifiers": 2,
+            "forbiddenModifiers": 0,
+            "match": 1,
+            "matchModifiers": true
+          }
+        },
+        {
+          "id": "7777bd11-4ba6-4f49-a260-38684fbf5d17",
+          "action": "8f6864c5-b6e5-41b4-a85c-ee37f23c415e",
+          "nature": 1,
+          "composite": 0,
+          "parts": [
+            {
+              "path": {
+                "device": 1,
+                "kind": 4,
+                "control": 0
+              },
+              "contribution": [
+                1,
+                0,
+                0
+              ]
+            }
+          ],
+          "chord": {
+            "controls": [],
+            "modifiers": 1,
+            "forbiddenModifiers": 2,
+            "match": 1,
+            "matchModifiers": true
+          }
+        },
+        {
+          "id": "dbc69bf6-df85-4226-a121-e2f7632ee3ac",
+          "action": "8f6865c5-b6e5-4367-a85c-ef37f23c4311",
+          "nature": 1,
+          "composite": 0,
+          "parts": [
+            {
+              "path": {
+                "device": 1,
+                "kind": 4,
+                "control": 0
+              },
+              "contribution": [
+                1,
+                0,
+                0
+              ]
+            }
+          ],
+          "chord": {
+            "controls": [],
+            "modifiers": 0,
+            "forbiddenModifiers": 3,
+            "match": 1,
+            "matchModifiers": true
+          }
+        },
+        {
+          "id": "9ef58538-d600-4b24-89bc-341958419f7a",
+          "action": "ed4e91d7-1b33-46c7-b450-5d8327147469",
+          "nature": 0,
+          "composite": 0,
+          "parts": [
+            {
+              "path": {
+                "device": 0,
+                "kind": 0,
+                "control": 342
+              },
+              "contribution": [
+                1,
+                0,
+                0
+              ]
+            }
+          ],
+          "chord": {
+            "controls": [],
+            "modifiers": 0,
+            "forbiddenModifiers": 0,
+            "match": 1,
+            "matchModifiers": false
+          }
+        },
+        {
+          "id": "b2cf6730-1edb-4e1e-bfa4-5bbc6df852fc",
+          "action": "ed4e91d7-1b33-46c7-b450-5d8327147469",
+          "nature": 0,
+          "composite": 0,
+          "parts": [
+            {
+              "path": {
+                "device": 0,
+                "kind": 0,
+                "control": 346
+              },
+              "contribution": [
+                1,
+                0,
+                0
+              ]
+            }
+          ],
+          "chord": {
+            "controls": [],
+            "modifiers": 0,
+            "forbiddenModifiers": 0,
+            "match": 1,
+            "matchModifiers": false
+          }
+        },
+        {
+          "id": "8952c631-8347-4532-9d8a-4add2ba45fe4",
+          "action": "b1180669-14da-4c49-8172-c0c74ccee28f",
+          "nature": 0,
+          "composite": 0,
+          "parts": [
+            {
+              "path": {
+                "device": 0,
+                "kind": 0,
+                "control": 340
+              },
+              "contribution": [
+                1,
+                0,
+                0
+              ]
+            }
+          ],
+          "chord": {
+            "controls": [],
+            "modifiers": 0,
+            "forbiddenModifiers": 0,
+            "match": 1,
+            "matchModifiers": false
+          }
+        },
+        {
+          "id": "81fc2a89-8eea-4bd4-9ad8-717a4470e5de",
+          "action": "b1180669-14da-4c49-8172-c0c74ccee28f",
+          "nature": 0,
+          "composite": 0,
+          "parts": [
+            {
+              "path": {
+                "device": 0,
+                "kind": 0,
+                "control": 344
+              },
+              "contribution": [
+                1,
+                0,
+                0
+              ]
+            }
+          ],
+          "chord": {
+            "controls": [],
+            "modifiers": 0,
+            "forbiddenModifiers": 0,
+            "match": 1,
+            "matchModifiers": false
+          }
+        }
+      ]
+    },
+    {
+      "id": "e6908cae-01f2-4945-bdc7-d22c518d8bdb",
+      "name": "scene-selection-controls",
+      "priority": 30,
+      "consumption": 0,
+      "reacquire": 1,
+      "bindings": [
+        {
+          "id": "019926fe-5d88-4566-bf4c-921150d98ff8",
+          "action": "2e975535-b7a1-4679-a7ea-c521699266f7",
+          "nature": 0,
+          "composite": 0,
+          "parts": [
+            {
+              "path": {
+                "device": 0,
+                "kind": 0,
+                "control": 341
+              },
+              "contribution": [
+                1,
+                0,
+                0
+              ]
+            }
+          ],
+          "chord": {
+            "controls": [],
+            "modifiers": 0,
+            "forbiddenModifiers": 0,
+            "match": 1,
+            "matchModifiers": false
+          }
+        },
+        {
+          "id": "7ed35403-7369-4588-b3bf-20ccf5802a62",
+          "action": "2e975535-b7a1-4679-a7ea-c521699266f7",
+          "nature": 0,
+          "composite": 0,
+          "parts": [
+            {
+              "path": {
+                "device": 0,
+                "kind": 0,
+                "control": 345
+              },
+              "contribution": [
+                1,
+                0,
+                0
+              ]
+            }
+          ],
+          "chord": {
+            "controls": [],
+            "modifiers": 0,
+            "forbiddenModifiers": 0,
+            "match": 1,
+            "matchModifiers": false
+          }
+        },
+        {
+          "id": "7ed35703-7369-4aa1-b3bf-1fccf58028af",
+          "action": "2e975535-b7a1-4679-a7ea-c521699266f7",
+          "nature": 0,
+          "composite": 0,
+          "parts": [
+            {
+              "path": {
+                "device": 0,
+                "kind": 0,
+                "control": 343
+              },
+              "contribution": [
+                1,
+                0,
+                0
+              ]
+            }
+          ],
+          "chord": {
+            "controls": [],
+            "modifiers": 0,
+            "forbiddenModifiers": 0,
+            "match": 1,
+            "matchModifiers": false
+          }
+        },
+        {
+          "id": "7ed35603-7369-48ee-b3bf-1eccf58026fc",
+          "action": "2e975535-b7a1-4679-a7ea-c521699266f7",
+          "nature": 0,
+          "composite": 0,
+          "parts": [
+            {
+              "path": {
+                "device": 0,
+                "kind": 0,
+                "control": 347
+              },
+              "contribution": [
+                1,
+                0,
+                0
+              ]
+            }
+          ],
+          "chord": {
+            "controls": [],
+            "modifiers": 0,
+            "forbiddenModifiers": 0,
+            "match": 1,
+            "matchModifiers": false
+          }
+        },
+        {
+          "id": "3d8b1474-a3e7-42c3-9968-7c9d45645a45",
+          "action": "a6c6aa9d-366b-442e-9eb2-1a13444d774c",
+          "nature": 0,
+          "composite": 0,
+          "parts": [
+            {
+              "path": {
+                "device": 0,
+                "kind": 0,
+                "control": 340
+              },
+              "contribution": [
+                1,
+                0,
+                0
+              ]
+            }
+          ],
+          "chord": {
+            "controls": [],
+            "modifiers": 0,
+            "forbiddenModifiers": 0,
+            "match": 1,
+            "matchModifiers": false
+          }
+        },
+        {
+          "id": "fe65ced2-12f1-418d-a720-75f76cde09ef",
+          "action": "a6c6aa9d-366b-442e-9eb2-1a13444d774c",
+          "nature": 0,
+          "composite": 0,
+          "parts": [
+            {
+              "path": {
+                "device": 0,
+                "kind": 0,
+                "control": 344
+              },
+              "contribution": [
+                1,
+                0,
+                0
+              ]
+            }
+          ],
+          "chord": {
+            "controls": [],
+            "modifiers": 0,
+            "forbiddenModifiers": 0,
+            "match": 1,
+            "matchModifiers": false
+          }
+        }
+      ]
+    },
+    {
+      "id": "690ac749-6a95-42b5-9d71-154defd82e37",
+      "name": "ui-designer-selection-controls",
+      "priority": 30,
+      "consumption": 0,
+      "reacquire": 1,
+      "bindings": [
+        {
+          "id": "0c27e410-a56a-415e-a2ca-b4a457932528",
+          "action": "bb23db74-adb0-4407-812a-52be60462d55",
+          "nature": 0,
+          "composite": 0,
+          "parts": [
+            {
+              "path": {
+                "device": 0,
+                "kind": 0,
+                "control": 341
+              },
+              "contribution": [
+                1,
+                0,
+                0
+              ]
+            }
+          ],
+          "chord": {
+            "controls": [],
+            "modifiers": 0,
+            "forbiddenModifiers": 0,
+            "match": 1,
+            "matchModifiers": false
+          }
+        },
+        {
+          "id": "e2fbddc8-635d-4ca0-aff4-81446493fc12",
+          "action": "bb23db74-adb0-4407-812a-52be60462d55",
+          "nature": 0,
+          "composite": 0,
+          "parts": [
+            {
+              "path": {
+                "device": 0,
+                "kind": 0,
+                "control": 345
+              },
+              "contribution": [
+                1,
+                0,
+                0
+              ]
+            }
+          ],
+          "chord": {
+            "controls": [],
+            "modifiers": 0,
+            "forbiddenModifiers": 0,
+            "match": 1,
+            "matchModifiers": false
+          }
+        },
+        {
+          "id": "4e6a143e-0fc7-48eb-aec0-3eb876acadb5",
+          "action": "e20584f6-1f6b-499c-a185-81f0f05684e2",
+          "nature": 0,
+          "composite": 0,
+          "parts": [
+            {
+              "path": {
+                "device": 0,
+                "kind": 0,
+                "control": 340
+              },
+              "contribution": [
+                1,
+                0,
+                0
+              ]
+            }
+          ],
+          "chord": {
+            "controls": [],
+            "modifiers": 0,
+            "forbiddenModifiers": 0,
+            "match": 1,
+            "matchModifiers": false
+          }
+        },
+        {
+          "id": "bcaf6a1a-d306-4115-85e0-e776bf56651f",
+          "action": "e20584f6-1f6b-499c-a185-81f0f05684e2",
+          "nature": 0,
+          "composite": 0,
+          "parts": [
+            {
+              "path": {
+                "device": 0,
+                "kind": 0,
+                "control": 344
+              },
+              "contribution": [
+                1,
+                0,
+                0
+              ]
+            }
+          ],
+          "chord": {
+            "controls": [],
+            "modifiers": 0,
+            "forbiddenModifiers": 0,
+            "match": 1,
+            "matchModifiers": false
+          }
+        }
+      ]
+    },
+    {
+      "id": "48a01784-b3bd-46d2-92ec-eec21fcaeabc",
+      "name": "vfx-timeline-controls",
+      "priority": 30,
+      "consumption": 0,
+      "reacquire": 1,
+      "bindings": [
+        {
+          "id": "c936f34f-b68f-43ae-8962-463c0735567c",
+          "action": "5e88f041-956a-4853-abc1-09294b2d0045",
+          "nature": 1,
+          "composite": 0,
+          "parts": [
+            {
+              "path": {
+                "device": 1,
+                "kind": 4,
+                "control": 0
+              },
+              "contribution": [
+                1,
+                0,
+                0
+              ]
+            }
+          ],
+          "chord": {
+            "controls": [],
+            "modifiers": 0,
+            "forbiddenModifiers": 0,
+            "match": 1,
+            "matchModifiers": false
+          }
+        }
+      ]
+    },
+    {
+      "id": "8f962da8-26d4-43e8-86ed-2b144dcd4672",
+      "name": "scene-input-gesture",
+      "priority": 160,
+      "consumption": 1,
+      "reacquire": 0,
+      "bindings": [
+        {
+          "id": "396d5074-3865-4335-913d-b10c1e2ac3cb",
+          "action": "29a1c7c2-c751-4dfa-9a94-a6e958e0a044",
+          "nature": 0,
+          "composite": 0,
+          "parts": [
+            {
+              "path": {
+                "device": 0,
+                "kind": 0,
+                "control": 256
+              },
+              "contribution": [
+                1,
+                0,
+                0
+              ]
+            }
+          ],
+          "chord": {
+            "controls": [],
+            "modifiers": 0,
+            "forbiddenModifiers": 0,
+            "match": 1,
+            "matchModifiers": false
+          }
+        }
+      ]
+    },
+    {
+      "id": "08ca6c1b-3ccf-518e-850a-f2dbd123714b",
+      "name": "sprite-editor",
+      "priority": 50,
+      "consumption": 1,
+      "reacquire": 0,
+      "bindings": [
+        {
+          "id": "921cf13e-1fc9-5614-aa63-be4f43464d45",
+          "action": "6a7a2aa3-194c-547d-9668-6f4208553558",
+          "nature": 0,
+          "composite": 0,
+          "parts": [
+            {
+              "path": {
+                "device": 0,
+                "kind": 0,
+                "control": 83
+              },
+              "contribution": [
+                1,
+                0,
+                0
+              ]
+            }
+          ],
+          "chord": {
+            "modifiers": 16,
+            "forbiddenModifiers": 0,
+            "match": 0,
+            "matchModifiers": true
+          }
+        },
+        {
+          "id": "5fccaad4-2409-5807-aad0-b3b446c762c1",
+          "action": "8b175267-abe5-50ed-bb87-1884789b3be2",
+          "nature": 0,
+          "composite": 0,
+          "parts": [
+            {
+              "path": {
+                "device": 0,
+                "kind": 0,
+                "control": 90
+              },
+              "contribution": [
+                1,
+                0,
+                0
+              ]
+            }
+          ],
+          "chord": {
+            "modifiers": 16,
+            "forbiddenModifiers": 0,
+            "match": 0,
+            "matchModifiers": true
+          }
+        },
+        {
+          "id": "cdd117cb-be8e-5257-9210-415417007e1d",
+          "action": "718567aa-f68c-5db0-9324-7c237c0bb551",
+          "nature": 0,
+          "composite": 0,
+          "parts": [
+            {
+              "path": {
+                "device": 0,
+                "kind": 0,
+                "control": 89
+              },
+              "contribution": [
+                1,
+                0,
+                0
+              ]
+            }
+          ],
+          "chord": {
+            "modifiers": 16,
+            "forbiddenModifiers": 0,
+            "match": 0,
+            "matchModifiers": true
+          }
+        },
+        {
+          "id": "21b7eed2-4cef-51e5-9b73-3cc32393a6b4",
+          "action": "718567aa-f68c-5db0-9324-7c237c0bb551",
+          "nature": 0,
+          "composite": 0,
+          "parts": [
+            {
+              "path": {
+                "device": 0,
+                "kind": 0,
+                "control": 90
+              },
+              "contribution": [
+                1,
+                0,
+                0
+              ]
+            }
+          ],
+          "chord": {
+            "modifiers": 17,
+            "forbiddenModifiers": 0,
+            "match": 0,
+            "matchModifiers": true
+          }
+        },
+        {
+          "id": "c76d26ad-6200-5075-9be5-e2d4a72220e8",
+          "action": "f22360e1-e962-53cf-826b-d981e940ba5b",
+          "nature": 0,
+          "composite": 0,
+          "parts": [
+            {
+              "path": {
+                "device": 0,
+                "kind": 0,
+                "control": 261
+              },
+              "contribution": [
+                1,
+                0,
+                0
+              ]
+            }
+          ],
+          "chord": {
+            "modifiers": 0,
+            "forbiddenModifiers": 0,
+            "match": 0,
+            "matchModifiers": true
+          }
+        },
+        {
+          "id": "8475e98f-1b1f-5a9a-8a4d-67c5a4f35476",
+          "action": "eba50346-176f-51c5-8cd2-852ac76e9461",
+          "nature": 0,
+          "composite": 0,
+          "parts": [],
+          "chord": {
+            "modifiers": 0,
+            "forbiddenModifiers": 0,
+            "match": 0,
+            "matchModifiers": true
+          }
+        },
+        {
+          "id": "c891801f-6520-5e52-9b10-0c3a334510f4",
+          "action": "15a17ce5-27e6-58a9-9ef9-72a12d3d20c3",
+          "nature": 0,
+          "composite": 0,
+          "parts": [
+            {
+              "path": {
+                "device": 0,
+                "kind": 0,
+                "control": 256
+              },
+              "contribution": [
+                1,
+                0,
+                0
+              ]
+            }
+          ],
+          "chord": {
+            "modifiers": 0,
+            "forbiddenModifiers": 0,
+            "match": 0,
+            "matchModifiers": true
+          }
+        },
+        {
+          "id": "aff2b122-7861-5733-a643-287423d69dfd",
+          "action": "4e0cbc51-9822-54da-9e66-393388518dad",
+          "nature": 0,
+          "composite": 0,
+          "parts": [
+            {
+              "path": {
+                "device": 0,
+                "kind": 0,
+                "control": 70
+              },
+              "contribution": [
+                1,
+                0,
+                0
+              ]
+            }
+          ],
+          "chord": {
+            "modifiers": 0,
+            "forbiddenModifiers": 0,
+            "match": 0,
+            "matchModifiers": true
+          }
+        }
+      ]
+    }
+  ]
+}

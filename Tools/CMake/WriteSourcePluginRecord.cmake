@@ -1,0 +1,5 @@
+file(READ "${RECORD}" record)
+file(SHA256 "${BINARY}" binary_hash)
+string(JSON record SET "${record}" hostBinaryHash "\"${binary_hash}\"")
+file(WRITE "${DEST}.tmp" "${record}")
+file(RENAME "${DEST}.tmp" "${DEST}")

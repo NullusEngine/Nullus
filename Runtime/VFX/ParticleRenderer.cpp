@@ -11,7 +11,7 @@ namespace NLS::VFX
 bool ParticleRenderer::Initialize(std::shared_ptr<Render::RHI::RHIDevice> device, const std::vector<Attribute>& attributes,
     const Render::RHI::RHIShaderModuleDesc& vertex, const Render::RHI::RHIShaderModuleDesc& fragment,
     const Render::RHI::RHIRenderTargetLayoutDesc& targets, std::string& error, const GpuSortShaders* sorting,
-    const GpuVisibilityShaders* visibility, const GpuBoundsShaders* bounds, const SpriteSettings& settings, const MeshSettings* mesh)
+    const GpuVisibilityShaders* visibility, const GpuBoundsShaders* bounds, const SpriteSettings& settings, const MeshSettings* mesh, uint32_t debugMode)
 {
     using namespace Render::RHI;
     if (!device || !device->IsBackendReady() || !device->GetCapabilities().SupportsFeature(RHIDeviceFeature::DrawIndirect) ||
@@ -55,6 +55,21 @@ bool ParticleRenderer::Initialize(std::shared_ptr<Render::RHI::RHIDevice> device
     if (settings.blend == SpriteBlendMode::Additive) { blend.dstColor = RHIBlendFactor::One; blend.dstAlpha = RHIBlendFactor::One; }
     if (settings.blend == SpriteBlendMode::Premultiplied) blend.srcColor = RHIBlendFactor::One;
     pipeline.blendState.enabled = blend.blendEnable; pipeline.blendState.renderTargets = {blend};
+    if (debugMode != 0)
+    {
+        pipeline.depthStencilState.depthTest = targets.hasDepth && debugMode != 7;
+        pipeline.rasterState.wireframe = debugMode == 11;
+        pipeline.depthStencilState.depthWrite = targets.hasDepth && writesDepth && debugMode != 7;
+        if (debugMode == 7)
+        {
+            blend.blendEnable = true;
+            blend.srcColor = blend.dstColor = blend.srcAlpha = blend.dstAlpha = RHIBlendFactor::One;
+        }
+        else if (debugMode == 6) blend.srcAlpha = RHIBlendFactor::One;
+        else blend.blendEnable = false;
+        pipeline.blendState.enabled = blend.blendEnable;
+        pipeline.blendState.renderTargets = {blend};
+    }
     if (!pipeline.pipelineLayout || !pipeline.vertexShader || !pipeline.fragmentShader)
     { error = "Sprite shader or pipeline layout creation failed"; return false; }
     auto graphics = device->CreateGraphicsPipeline(pipeline);
@@ -98,7 +113,7 @@ bool ParticleRenderer::Initialize(std::shared_ptr<Render::RHI::RHIDevice> device
     m_device = std::move(device); m_layout = std::move(layout); m_pipeline = std::move(graphics); m_attributes = attributes;
     m_sorter = std::move(sorter); m_unsortedKey = std::move(unsorted);
     m_bounds = std::move(calculator); m_visibility = std::move(culler);
-    m_white = std::move(whiteView); m_farDepth = std::move(depthView); m_settings = settings;
+    m_white = std::move(whiteView); m_farDepth = std::move(depthView); m_settings = settings; m_debugMode = debugMode;
     m_meshRenderer = mesh != nullptr;
     m_meshSlotCount = mesh ? static_cast<uint32_t>(mesh->meshes.size()) : 0u;
     m_meshLodIndex = mesh ? mesh->lodIndex : -1;
@@ -261,6 +276,7 @@ std::shared_ptr<const SpriteDrawResources> ParticleRenderer::Prepare(const Parti
         uint32_t capacity, sorted, alignment, blend;
         uint32_t subImagesX, subImagesY, blendSubImages, circularMask;
         std::array<Value,4> dynamicDefaults;
+        Value sceneDebugOptions;
     };
     static_assert(sizeof(Constants) == Render::Resources::kParticleSpriteViewBytes);
     auto dynamicDefaults = material.dynamicDefaults;
@@ -274,10 +290,11 @@ std::shared_ptr<const SpriteDrawResources> ParticleRenderer::Prepare(const Parti
     const bool usesDepth = m_settings.softDistance > 0 && context.sceneDepth;
     const Constants constants{view.viewProjection,view.localToWorld,view.cameraRight,view.cameraUp,tint,material.uvTransform,context.depthProjection,
         // Mesh reuses the unused VfxShading.w lane as the per-draw slot so the
-        // public 320-byte material ABI stays unchanged.
+        // material ABI retains the mesh slot in VfxShading.w.
         {m_settings.emissive*material.emissive,m_settings.alphaCutoff,usesDepth ? m_settings.softDistance : 0,0},
         data.capacity,(m_sorter || m_visibility) ? 1u : 0u,static_cast<uint32_t>(m_settings.alignment),static_cast<uint32_t>(m_settings.blend),
-        m_settings.subImagesX,m_settings.subImagesY,m_settings.blendSubImages ? 1u : 0u,(!m_meshRenderer && m_settings.circularMask) ? 1u : 0u,dynamicDefaults};
+        m_settings.subImagesX,m_settings.subImagesY,m_settings.blendSubImages ? 1u : 0u,(!m_meshRenderer && m_settings.circularMask) ? 1u : 0u,dynamicDefaults,
+        {float(context.debugMode), material.texture ? 1.0f : 0.0f, 0, 0}};
     RHIBufferDesc desc;
     desc.size = sizeof(constants); desc.usage = BufferUsageFlags::Uniform; desc.memoryUsage = MemoryUsage::CPUToGPU; desc.debugName = "VfxSpriteView";
     RHIBufferUploadDesc upload; upload.data = &constants; upload.dataSize = sizeof(constants);

@@ -512,8 +512,8 @@ TEST(RhiThreadModePolicyTests, TasksModeReturnsTheDedicatedRhiLaneToThePool)
     EXPECT_EQ(
         tasks.taskGraphWorkerCount - dedicated.taskGraphWorkerCount,
         1u)
-        << "Tasks mode must hand the dedicated RHI lane to the rendering pool.";
+        << "Tasks mode must hand the dedicated RHI lane to the shared compute pool.";
     EXPECT_EQ(
-        tasks.jobsWorkerCount + tasks.taskGraphWorkerCount,
-        dedicated.jobsWorkerCount + dedicated.taskGraphWorkerCount + 1u);
+        tasks.jobsWorkerCount,
+        dedicated.jobsWorkerCount + 1u);
 }

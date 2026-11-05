@@ -7,6 +7,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <string>
+#include <optional>
 #include <type_traits>
 
 namespace NLS::Editor::Assets
@@ -71,4 +72,9 @@ NLS::Core::Assets::ArtifactType GetEditorAssetDragPayloadArtifactType(const Edit
 bool IsEditorAssetDragPayloadGeneratedBrowserSubAsset(const EditorAssetDragPayload& payload);
 bool IsEditorAssetDragPayloadScript(const EditorAssetDragPayload& payload);
 bool CanMoveEditorAssetDragPayloadAsPhysicalProjectFile(const EditorAssetDragPayload& payload);
+// A source texture with exactly one Sprite is usable directly by scene tools.
+// Multi-Sprite sheets keep their explicit child selection.
+std::optional<EditorAssetDragPayload> ResolveSpriteDragPayload(const EditorAssetDragPayload& payload);
+std::optional<EditorAssetDragPayload> ResolveSpriteDragPayload(
+    const std::string& resourcePath, const std::string& projectAssetsPath);
 }

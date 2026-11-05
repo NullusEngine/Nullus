@@ -63,6 +63,8 @@ public sealed class EditorMenuItemAttribute : Attribute
     }
 
     public string MenuPath { get; }
+    /// <summary>Persistent identity; defaults to the qualified method identity.</summary>
+    public string? CommandId { get; set; }
 }
 
 /// <summary>
@@ -270,6 +272,7 @@ internal unsafe struct EditorHostApiTable
 
     public delegate* unmanaged<byte*, void> OpenWindow;
     public delegate* unmanaged<byte*, void> CloseWindow;
+    public delegate* unmanaged<byte*, byte*, byte*, byte> RegisterMenuCommand;
 }
 
 /// <summary>Mirror of the managed table native reads back.</summary>

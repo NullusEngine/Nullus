@@ -112,6 +112,8 @@ namespace NLS::Render::Context
 
     struct NLS_RENDER_API DriverRendererAccess final
     {
+        static bool SetPreviewVsyncOverride(Driver& driver,std::optional<bool> value);
+        static std::optional<bool> GetEffectivePresentVsync(const Driver& driver);
         static bool HasExplicitRHI(const Driver& driver);
         static bool IsThreadedRenderingEnabled(const Driver& driver);
         static bool IsLightGridEnabled(const Driver& driver);

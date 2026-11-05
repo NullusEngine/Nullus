@@ -78,6 +78,9 @@ void PanelViewportBar::_Draw_Impl()
     ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 0.0f);
     ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0.0f);
     ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(ScaleValue(8.0f), ScaleValue(4.0f)));
+    // Viewport bars have an explicit logical height, including below ImGui's
+    // default 32-pixel minimum for ordinary floating windows.
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowMinSize, ImVec2(0.0f, 0.0f));
 
     int flags =
         ImGuiWindowFlags_NoTitleBar |
@@ -97,7 +100,7 @@ void PanelViewportBar::_Draw_Impl()
         DrawBarContent();
 
     ImGui::End();
-    ImGui::PopStyleVar(3);
+    ImGui::PopStyleVar(4);
 }
 
 float PanelViewportBar::GetContentWidth() const

@@ -1077,6 +1077,13 @@ std::vector<EditorAssetRoot> MakeStartupSourceRoots(const std::filesystem::path&
                 root.mountPath / "ShaderLab",
                 root.libraryPath
             });
+            if (std::filesystem::is_regular_file(root.path / "ShaderLab" / "SpriteUnlit.shader"))
+                startupRoots.push_back({
+                    root.path / "ShaderLab" / "SpriteUnlit.shader",
+                    true,
+                    root.mountPath / "ShaderLab",
+                    root.libraryPath
+                });
         }
     }
     return startupRoots;
@@ -3477,6 +3484,16 @@ StartupAssetPreimportResult RunBlockingStartupAssetPreimport(
             internalImportCount = database.GetCompletedImportCount() - beforeInternalImportCount;
             standardPbrDependencyReady = true;
         }
+    }
+
+    constexpr auto spriteShaderPath = "Assets/Engine/Shaders/ShaderLab/SpriteUnlit.shader";
+    if (!database.AssetPathToGUID(spriteShaderPath).empty() &&
+        !database.IsArtifactManifestCurrentForAssetPath(spriteShaderPath))
+    {
+        const auto beforeImportCount = database.GetCompletedImportCount();
+        if (!database.ImportAssetFromCurrentDatabase(spriteShaderPath, tracker, 1u))
+            NLS_LOG_WARNING("[StartupAssetPreimport] Built-in SpriteUnlit shader import failed; Sprite rendering will report the missing artifact.");
+        internalImportCount += database.GetCompletedImportCount() - beforeImportCount;
     }
 
     PublishStartupAssetPreimportProgress(

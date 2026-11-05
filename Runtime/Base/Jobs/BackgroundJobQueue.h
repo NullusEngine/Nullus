@@ -3,6 +3,7 @@
 #include "Jobs/JobTypes.h"
 
 #include <vector>
+#include <thread>
 
 namespace NLS::Base::Jobs
 {
@@ -33,8 +34,13 @@ namespace NLS::Base::Jobs
 
     namespace Internal
     {
-        NLS_BASE_API bool StartBackgroundJobQueue(uint32_t workerCount);
+        NLS_BASE_API bool StartBackgroundJobQueue(uint32_t workerCount, size_t maxPendingJobCount = 65536u);
         NLS_BASE_API uint32_t GetBackgroundJobWorkerCount();
+        NLS_BASE_API void SetMainThreadContinuationOwner(std::thread::id owner);
+        NLS_BASE_API bool IsMainThreadContinuationOwner();
+        NLS_BASE_API uint64_t GetBackgroundAcceptedWorkBoundary();
+        NLS_BASE_API bool IsBackgroundAcceptedWorkComplete(uint64_t boundary);
+        NLS_BASE_API void PollBackgroundDependencies();
         NLS_BASE_API void StopAcceptingBackgroundJobQueue();
         NLS_BASE_API void ShutdownBackgroundJobQueue(JobSystemShutdownMode mode);
         NLS_BASE_API bool IsBackgroundJobHandle(JobHandle handle);

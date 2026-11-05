@@ -1,6 +1,7 @@
 #pragma once
 
 #include <memory>
+#include <span>
 #include <mutex>
 #include <vector>
 
@@ -8,6 +9,8 @@
 #include <Rendering/Data/LightingDescriptor.h>
 
 #include "EngineDef.h"
+
+namespace NLS::Render::Entities { class Camera; }
 
 namespace NLS::Engine::SceneSystem
 {
@@ -41,8 +44,9 @@ public:
      * In both cases the published references stay valid until the next Collect
      * call, and the descriptor must not be read from another thread.
      */
-    void Collect(const SceneSystem::Scene& scene);
-    void CollectFromStore(const SceneRenderStore& store);
+    void Collect(const SceneSystem::Scene& scene, std::span<const int32_t> hiddenObjectIds = {});
+    void CollectFromStore(const SceneRenderStore& store, std::span<const int32_t> hiddenObjectIds = {});
+    void CollectPreview(const NLS::Render::Entities::Camera& camera);
     void PrepareRenderScenePackage(
         const NLS::Render::Context::RenderSceneBuildData& scene,
         NLS::Render::Context::RenderScenePackage& package) const;

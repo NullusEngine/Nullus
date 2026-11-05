@@ -1,130 +1,113 @@
-#include <GLFW/glfw3.h>
-
-#include "Windowing/Inputs/InputManager.h"
-
-NLS::Windowing::Inputs::InputManager::InputManager(Window& p_window) : m_window(p_window)
+#include "InputManager.h"
+namespace NLS::Windowing::Inputs
 {
-	m_keyPressedListener = m_window.KeyPressedEvent.AddListener(std::bind(&InputManager::OnKeyPressed, this, std::placeholders::_1));
-	m_keyReleasedListener = m_window.KeyReleasedEvent.AddListener(std::bind(&InputManager::OnKeyReleased, this, std::placeholders::_1));
-	m_mouseButtonPressedListener = m_window.MouseButtonPressedEvent.AddListener(std::bind(&InputManager::OnMouseButtonPressed, this, std::placeholders::_1));
-	m_mouseButtonReleasedListener = m_window.MouseButtonReleasedEvent.AddListener(std::bind(&InputManager::OnMouseButtonReleased, this, std::placeholders::_1));
-	m_mouseScrollListener = m_window.MouseScrollEvent.AddListener(std::bind(&InputManager::OnMouseScroll, this, std::placeholders::_1, std::placeholders::_2));
+InputManager::InputManager(Window& window) : m_window(window),
+    m_ownedInput(std::make_unique<Input::InputSystem>()), m_input(m_ownedInput.get()),
+    m_backend(std::make_unique<PlatformInputBackend>(*m_input, window)) { BindLegacyEvents(); }
+InputManager::InputManager(Window& window, Input::InputSystem& input) : m_window(window), m_input(&input),
+    m_backend(std::make_unique<PlatformInputBackend>(input, window)) { BindLegacyEvents(); }
+void InputManager::BindLegacyEvents()
+{
+    // Window emits rich input first. Direct legacy Event::Invoke is supported,
+    // while a native event is normalized exactly once.
+    m_keyPressedListener = m_window.KeyPressedEvent.AddListener([this](int key) { SubmitLegacy(WindowInputEventType::KeyDown, key); });
+    m_keyReleasedListener = m_window.KeyReleasedEvent.AddListener([this](int key) { SubmitLegacy(WindowInputEventType::KeyUp, key); });
+    m_mouseButtonPressedListener = m_window.MouseButtonPressedEvent.AddListener([this](int key) { SubmitLegacy(WindowInputEventType::MouseDown, key); });
+    m_mouseButtonReleasedListener = m_window.MouseButtonReleasedEvent.AddListener([this](int key) { SubmitLegacy(WindowInputEventType::MouseUp, key); });
+    m_mouseScrollListener = m_window.MouseScrollEvent.AddListener([this](double x, double y) { SubmitLegacy(WindowInputEventType::Wheel, 0, x, y); });
+    m_cursorListener = m_window.CursorMoveEvent.AddListener([this](int16_t x, int16_t y) { SubmitLegacy(WindowInputEventType::PointerMove, 0, x, y); });
+    m_focusGainedListener = m_window.GainFocusEvent.AddListener([this]() { SubmitLegacy(WindowInputEventType::FocusGained); });
+    m_focusLostListener = m_window.LostFocusEvent.AddListener([this]() { SubmitLegacy(WindowInputEventType::FocusLost); });
+    m_characterListener = m_window.CharacterEvent.AddListener([this](unsigned int value)
+    {
+        if (m_window.IsDispatchingInputEvent()) return;
+        WindowInputEvent event; event.type = WindowInputEventType::Character; event.character = value;
+        m_backend->SubmitLegacy(event);
+    });
 }
-
-NLS::Windowing::Inputs::InputManager::~InputManager()
+InputManager::~InputManager()
 {
-	m_window.KeyPressedEvent.RemoveListener(m_keyPressedListener);
-	m_window.KeyReleasedEvent.RemoveListener(m_keyReleasedListener);
-	m_window.MouseButtonPressedEvent.RemoveListener(m_mouseButtonPressedListener);
-	m_window.MouseButtonReleasedEvent.RemoveListener(m_mouseButtonReleasedListener);
-	m_window.MouseScrollEvent.RemoveListener(m_mouseScrollListener);
+    m_window.KeyPressedEvent.RemoveListener(m_keyPressedListener);
+    m_window.KeyReleasedEvent.RemoveListener(m_keyReleasedListener);
+    m_window.MouseButtonPressedEvent.RemoveListener(m_mouseButtonPressedListener);
+    m_window.MouseButtonReleasedEvent.RemoveListener(m_mouseButtonReleasedListener);
+    m_window.MouseScrollEvent.RemoveListener(m_mouseScrollListener);
+    m_window.CursorMoveEvent.RemoveListener(m_cursorListener);
+    m_window.GainFocusEvent.RemoveListener(m_focusGainedListener);
+    m_window.LostFocusEvent.RemoveListener(m_focusLostListener);
+    m_window.CharacterEvent.RemoveListener(m_characterListener);
 }
-
-NLS::Windowing::Inputs::EKeyState NLS::Windowing::Inputs::InputManager::GetKeyState(EKey p_key) const
+void InputManager::SubmitLegacy(WindowInputEventType type, int key, double x, double y)
 {
-	switch (glfwGetKey(m_window.GetGlfwWindow(), static_cast<int>(p_key)))
-	{
-		case GLFW_PRESS:	return EKeyState::KEY_DOWN;
-		case GLFW_RELEASE:	return EKeyState::KEY_UP;
-	}
-
-	return EKeyState::KEY_UP;
+    if (m_window.IsDispatchingInputEvent()) return;
+    WindowInputEvent event; event.type = type; event.key = key; event.x = x; event.y = y;
+    m_backend->SubmitLegacy(event);
 }
-
-NLS::Windowing::Inputs::EMouseButtonState NLS::Windowing::Inputs::InputManager::GetMouseButtonState(EMouseButton p_button) const
+void InputManager::Update() { m_backend->PollDevices(); }
+EKeyState InputManager::GetKeyState(EKey key) const
 {
-	switch (glfwGetMouseButton(m_window.GetGlfwWindow(), static_cast<int>(p_button)))
-	{
-		case GLFW_PRESS:	return EMouseButtonState::MOUSE_DOWN;
-		case GLFW_RELEASE:	return EMouseButtonState::MOUSE_UP;
-	}
-
-	return EMouseButtonState::MOUSE_UP;
+    const int code = static_cast<int>(key);
+    return code >= 0 && code < 512 && m_input->IsButtonDown(m_input->GetKeyboard(), static_cast<uint16_t>(code)) ? EKeyState::KEY_DOWN : EKeyState::KEY_UP;
 }
-
-bool NLS::Windowing::Inputs::InputManager::IsKeyPressed(EKey p_key) const
+EMouseButtonState InputManager::GetMouseButtonState(EMouseButton button) const
 {
-	return m_keyEvents.find(p_key) != m_keyEvents.end() && m_keyEvents.at(p_key) == EKeyState::KEY_DOWN;
+    const int code = static_cast<int>(button);
+    return code >= 0 && code < 8 && m_input->IsButtonDown(m_input->GetMouse(), static_cast<uint16_t>(code)) ? EMouseButtonState::MOUSE_DOWN : EMouseButtonState::MOUSE_UP;
 }
-
-bool NLS::Windowing::Inputs::InputManager::IsKeyReleased(EKey p_key) const
+bool InputManager::IsKeyPressed(EKey key) const
 {
-	return m_keyEvents.find(p_key) != m_keyEvents.end() && m_keyEvents.at(p_key) == EKeyState::KEY_UP;
+    const int code = static_cast<int>(key);
+    return code >= 0 && code < 512 && m_input->WasButtonPressed(m_input->GetKeyboard(), static_cast<uint16_t>(code));
 }
-
-bool NLS::Windowing::Inputs::InputManager::IsMouseButtonPressed(EMouseButton p_button) const
+bool InputManager::IsKeyReleased(EKey key) const
 {
-	return m_mouseButtonsPressedThisFrame.contains(p_button);
+    const int code = static_cast<int>(key);
+    return code >= 0 && code < 512 && m_input->WasButtonReleased(m_input->GetKeyboard(), static_cast<uint16_t>(code));
 }
-
-bool NLS::Windowing::Inputs::InputManager::IsMouseButtonReleased(EMouseButton p_button) const
+bool InputManager::IsMouseButtonPressed(EMouseButton button) const
 {
-	return m_mouseButtonsReleasedThisFrame.contains(p_button);
+    const int code = static_cast<int>(button);
+    return code >= 0 && code < 8 && m_input->WasButtonPressed(m_input->GetMouse(), static_cast<uint16_t>(code));
 }
-
-NLS::Maths::Vector2 NLS::Windowing::Inputs::InputManager::GetMousePosition() const
+bool InputManager::IsMouseButtonReleased(EMouseButton button) const
 {
-	std::pair<double, double> result;
-	glfwGetCursorPos(m_window.GetGlfwWindow(), &result.first, &result.second);
-	return NLS::Maths::Vector2(result.first, result.second);
+    const int code = static_cast<int>(button);
+    return code >= 0 && code < 8 && m_input->WasButtonReleased(m_input->GetMouse(), static_cast<uint16_t>(code));
 }
-
-NLS::Maths::Vector2 NLS::Windowing::Inputs::InputManager::PollInfiniteCursorWrap()
+Maths::Vector2 InputManager::GetMousePosition() const
 {
-    return m_window.PollInfiniteCursorWrap();
+    const auto* mouse = m_input->FindDevice(m_input->GetMouse());
+    return mouse && mouse->hasScreenPosition ? m_input->GetPointerScreenPosition() - m_window.GetPosition() : m_input->GetMousePosition();
 }
-
-bool NLS::Windowing::Inputs::InputManager::HasTransientInputEvents() const
+bool InputManager::HasFocusedWindow() const
 {
-    return !m_keyEvents.empty() ||
-        !m_mouseButtonsPressedThisFrame.empty() ||
-        !m_mouseButtonsReleasedThisFrame.empty() ||
-        lastWheel.x != 0.0f ||
-        lastWheel.y != 0.0f;
+    for (const auto& window : m_input->GetWindows()) if (window.registered && window.focused) return true;
+    return false;
 }
-
-void NLS::Windowing::Inputs::InputManager::ClearEvents()
+Maths::Vector2 InputManager::GetMouseDelta() const { return m_input->GetMouseDelta(); }
+Maths::Vector2 InputManager::GetMouseWheel() const { return m_input->GetMouseWheel(); }
+Maths::Vector2 InputManager::PollInfiniteCursorWrap() { return m_backend->PollPointerWrap(); }
+Input::GamepadState InputManager::GetGamepadState(size_t slot) const { return m_input->GetGamepadState(m_backend->GetGamepad(slot)); }
+const std::string& InputManager::GetTextInput() const { return m_backend->GetTextInput().GetCommittedText(); }
+const std::unordered_map<EKey, EKeyState>& InputManager::GetKeyEvents() const
 {
-	m_keyEvents.clear();
-	m_mouseButtonEvents.clear();
-    m_mouseButtonsPressedThisFrame.clear();
-    m_mouseButtonsReleasedThisFrame.clear();
-	lastWheel.x = 0.0f;
-	lastWheel.y = 0.0f;
+    if (m_legacySequence == m_input->GetLastSequence()) return m_legacyKeyEvents;
+    m_legacyKeyEvents.clear();
+    for (const auto& event : m_input->GetEvents())
+        if (event.device == m_input->GetKeyboard() && (static_cast<unsigned int>(event.flags) & 8u) == 0)
+        {
+            if (event.type == Input::InputEventType::ButtonDown) m_legacyKeyEvents[static_cast<EKey>(event.control)] = EKeyState::KEY_DOWN;
+            if (event.type == Input::InputEventType::ButtonUp) m_legacyKeyEvents[static_cast<EKey>(event.control)] = EKeyState::KEY_UP;
+        }
+    m_legacySequence = m_input->GetLastSequence();
+    return m_legacyKeyEvents;
 }
-
-void NLS::Windowing::Inputs::InputManager::OnKeyPressed(int p_key)
+bool InputManager::HasTransientInputEvents() const { return m_input->HasTransientEvents() || !GetTextInput().empty(); }
+void InputManager::ClearEvents()
 {
-	m_keyEvents[static_cast<EKey>(p_key)] = EKeyState::KEY_DOWN;
+    m_input->EndFrame();
+    m_backend->GetTextInput().EndFrame();
+    m_legacyKeyEvents.clear();
+    m_legacySequence = m_input->GetLastSequence();
 }
-
-void NLS::Windowing::Inputs::InputManager::OnKeyReleased(int p_key)
-{
-	m_keyEvents[static_cast<EKey>(p_key)] = EKeyState::KEY_UP;
-}
-
-void NLS::Windowing::Inputs::InputManager::OnMouseButtonPressed(int p_button)
-{
-    const auto button = static_cast<EMouseButton>(p_button);
-	m_mouseButtonEvents[button] = EMouseButtonState::MOUSE_DOWN;
-    m_mouseButtonsPressedThisFrame.insert(button);
-}
-
-void NLS::Windowing::Inputs::InputManager::OnMouseButtonReleased(int p_button)
-{
-    const auto button = static_cast<EMouseButton>(p_button);
-	m_mouseButtonEvents[button] = EMouseButtonState::MOUSE_UP;
-    m_mouseButtonsReleasedThisFrame.insert(button);
-}
-
-void NLS::Windowing::Inputs::InputManager::OnMouseScroll(double x, double y)
-{
-	lastWheel.x = x;
-	lastWheel.y = y;
-}
-
-void NLS::Windowing::Inputs::InputManager::Update()
-{
-	lastWheel.x = 0;
-	lastWheel.y = 0;
 }

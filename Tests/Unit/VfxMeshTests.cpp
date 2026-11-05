@@ -120,7 +120,8 @@ void ValidateMeshDevice(bool vulkan)
         std::shared_ptr<const ParticleRenderData> cpu;
     };
     const auto render = [&](const ParticleDataSet* cpu, const GpuDataSet* gpu, SpriteView view, std::shared_ptr<const MeshRenderGeometry> shape,
-        const ParticleRenderer* target = nullptr, std::vector<std::shared_ptr<const MeshRenderGeometry>> shapes = {}, std::vector<SpriteMaterial> materials = {})
+        const ParticleRenderer* target = nullptr, std::vector<std::shared_ptr<const MeshRenderGeometry>> shapes = {}, std::vector<SpriteMaterial> materials = {},
+        uint32_t debugMode = 0, float backgroundAlpha = 1.0f)
     {
         Output output;
         rhi::RHITextureDesc desc; desc.extent = {64,64,1}; desc.format = rhi::TextureFormat::RGBA8;
@@ -128,11 +129,11 @@ void ValidateMeshDevice(bool vulkan)
         auto color = device->CreateTexture(desc); rhi::RHITextureViewDesc viewDesc; viewDesc.format = desc.format;
         auto colorView = color ? device->CreateTextureView(color,viewDesc) : nullptr; auto commands = pool->CreateCommandBuffer("MeshDraw");
         EXPECT_TRUE(colorView && commands); if (!colorView || !commands) return output;
-        SpriteDrawContext context;
+        SpriteDrawContext context; context.debugMode = debugMode;
         if (shapes.empty()) context.meshes = {std::move(shape)}; else context.meshes = std::move(shapes);
         context.meshMaterials = std::move(materials);
         rhi::RHIRenderPassDesc pass; pass.renderArea = {0,0,64,64}; rhi::RHIRenderPassColorAttachmentDesc attachment;
-        attachment.view = colorView; attachment.clearValue = {0,0,0,1}; pass.colorAttachments = {attachment};
+        attachment.view = colorView; attachment.clearValue = {0,0,0,backgroundAlpha}; pass.colorAttachments = {attachment};
         commands->Begin();
         if (cpu)
         {
@@ -166,6 +167,27 @@ void ValidateMeshDevice(bool vulkan)
     auto fence = device->CreateFence("MeshSimComplete"); fence->Reset(); rhi::RHISubmitDesc submit; submit.commandBuffers = {commands}; submit.signalFence = fence;
     ASSERT_TRUE(device->GetQueue(rhi::QueueType::Graphics)->SubmitChecked(submit).Succeeded()); ASSERT_TRUE(gpu.CommitFrame(frame)); ASSERT_TRUE(fence->Wait(30000000000ull));
     const auto simulated = render(nullptr,&frame->Data(),view,geometry); EXPECT_EQ(simulated.pixels,horizontal.pixels);
+    if (!vulkan)
+    {
+        auto diagnosticData = cpu.Data();
+        diagnosticData.Write(diagnosticData.FindAttribute("Particles.Color"),0,{1,1,1,0.5f});
+        GpuDataSet diagnosticGpu; ASSERT_TRUE(diagnosticGpu.Initialize(device,diagnosticData,error)) << error;
+        for (const uint32_t mode : {5u,6u,7u})
+        {
+            SCOPED_TRACE(mode);
+            ParticleRenderer diagnostic;
+            ASSERT_TRUE(diagnostic.Initialize(device,emitterAsset.attributes,modules.spriteVertex,modules.spriteFragment,targets,error,
+                nullptr,&modules.visibility,&modules.simulation.bounds,emitterAsset.sprite,&emitterAsset.mesh,mode)) << error;
+            const auto cpuImage = render(&diagnosticData,nullptr,view,geometry,&diagnostic,{}, {},mode,0);
+            const auto gpuImage = render(nullptr,&diagnosticGpu,view,geometry,&diagnostic,{}, {},mode,0);
+            ASSERT_EQ(cpuImage.pixels.size(),64*64*4);
+            EXPECT_EQ(cpuImage.pixels,gpuImage.pixels);
+            const auto center = (32*64+32)*4;
+            if (mode == 5) { EXPECT_NEAR(cpuImage.pixels[center],255,2); EXPECT_NEAR(cpuImage.pixels[center+1],217,2); EXPECT_EQ(cpuImage.pixels[center+2],0); }
+            else if (mode == 6) EXPECT_NEAR(cpuImage.pixels[center+3],128,3);
+            else EXPECT_NEAR(cpuImage.pixels[center],255,2);
+        }
+    }
     auto rotated = cpu.Data(); rotated.Write(rotated.FindAttribute("Particles.MeshOrientation"),0,{0,0,8,8});
     const auto vertical = render(&rotated,nullptr,view,geometry); ASSERT_EQ(vertical.pixels.size(),horizontal.pixels.size());
     EXPECT_EQ(vertical.pixels[(32*64+48)*4+1],0); EXPECT_GT(vertical.pixels[(48*64+32)*4+1],190);

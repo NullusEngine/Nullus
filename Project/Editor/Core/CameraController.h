@@ -78,6 +78,8 @@ public:
      * @parma p_deltaTime
      */
     void HandleInputs(float p_deltaTime);
+    // Reconcile ownership after widgets draw, without moving or zooming twice.
+    void RefreshPointerCaptureAfterUi();
 
     /**
      * Asks the camera to move to the target GameObject
@@ -85,6 +87,10 @@ public:
      */
     void MoveToTarget(Engine::GameObject& p_target);
     void MoveToPoint(const Maths::Vector3& point, float distance);
+    bool FocusInputTarget(const Maths::Vector3& angle = Maths::Vector3::Zero);
+    static CameraController* GetKeyboardInputTarget();
+    static bool NavigationOwnsInput();
+    bool IsSceneViewCamera() const;
 
     /**
      * Defines the speed of the camera
@@ -131,6 +137,13 @@ public:
     void SetInputActive(bool p_inputActive);
     void SetInputBlocked(bool p_inputBlocked);
     bool IsInputBlocked() const;
+    void SetPlanarNavigation(bool enabled);
+    void SetNavigationOptions(bool easing, bool acceleration, float minSpeed, float maxSpeed)
+    {
+        m_cameraEasing = easing; m_cameraAcceleration = acceleration;
+        m_minCameraSpeed = std::clamp(minSpeed, 0.01f, 98.0f);
+        m_maxCameraSpeed = std::clamp(maxSpeed, m_minCameraSpeed + 0.01f, 99.0f);
+    }
 
     /**
      * Lock the target GameObject to the given actor.
@@ -145,6 +158,7 @@ public:
     void UnLockTargetGameObject();
 
 private:
+    bool UpdatePointerState(bool& viewportInputAvailable, bool& mouseOverView);
     void ApplyInteractionTransition(const SceneViewCameraInteractionTransition& p_transition);
     void ResetNavigationInteractionState();
     Engine::GameObject* GetTargetGameObject() const;
@@ -190,6 +204,12 @@ private:
     float m_viewportHeight = 1.0f;
     bool m_inputActive = true;
     bool m_inputBlocked = false;
+    bool m_planarNavigation = false;
+    bool m_cameraEasing = true;
+    bool m_cameraAcceleration = false;
+    float m_flyMovementDuration = 0.0f;
+    float m_minCameraSpeed = 1.0f;
+    float m_maxCameraSpeed = 50.0f;
     bool m_forcedNoMouseCursorChange = false;
     SceneViewCameraCursorShapeLease m_cursorShapeLease;
     SceneViewCameraInteractionStateId m_interactionState = SceneViewCameraInteractionStateId::Neutral;

@@ -751,9 +751,10 @@ namespace NLS::Render::Backend
 		{
 			NLS_LOG_INFO("NativeDX12Queue::Present: calling swapchain->Present");
 		}
-		const UINT syncInterval = ResolveDX12PresentSyncInterval(presentDesc.swapchain->GetDesc().vsync);
+			const bool vsync=presentDesc.vsyncOverride.value_or(presentDesc.swapchain->GetDesc().vsync);
+			const UINT syncInterval = ResolveDX12PresentSyncInterval(vsync);
 		const UINT presentFlags = ResolveDX12PresentFlags(
-			presentDesc.swapchain->GetDesc().vsync,
+				vsync,
 			presentDesc.swapchain->GetDesc().allowTearing);
 		HRESULT hr = S_OK;
 		{

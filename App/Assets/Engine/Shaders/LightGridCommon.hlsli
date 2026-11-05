@@ -193,6 +193,7 @@ float NLSClamp01(float value)
 
 float3 NLSToneMapACES(float3 hdrColor)
 {
+    if (u_LightGridPixelParams.z > 0.5f) return max(hdrColor, 0.0f.xxx);
     hdrColor = NLSIsFiniteLighting3(hdrColor) ? max(hdrColor, 0.0f.xxx) : 0.0f.xxx;
     const float peakChannel = max(hdrColor.r, max(hdrColor.g, hdrColor.b));
     if (peakChannel > 1.0f)

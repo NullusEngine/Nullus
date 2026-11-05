@@ -1,6 +1,7 @@
 #include <filesystem>
 #include <algorithm>
 #include "ImGui/imgui.h"
+#include "ImGui/imgui_internal.h"
 #include <any>
 #include <exception>
 #include <future>
@@ -47,6 +48,11 @@
 #include <Platform/Process/Process.h>
 
 #include "Core/EditorActions.h"
+#include "Project/Editor/Assets/DistanceFieldBuildService.h"
+#include <Scripting/ProjectPhysicsTiming.h>
+#include "Inspector/NativeReflectionAdapter.h"
+#include "Scripting/ManagedScriptDebugSession.h"
+#include <Rendering/Context/DriverAccess.h>
 #include "Undo/EditorUndoService.h"
 #include "Undo/EditorUndoMutationContext.h"
 #include "Core/PrefabInstanceResourceLifetime.h"
@@ -65,6 +71,8 @@
 #include "Assets/PrefabUtilityFacade.h"
 #include "Assets/SceneRestorePrefabArtifactLoader.h"
 #include "Engine/Assets/PrefabAsset.h"
+#include "Engine/Assets/SpriteAsset.h"
+#include "Engine/Components/SpriteRendererComponent.h"
 #include "Engine/PrimitiveFactory.h"
 #include "Components/TransformComponent.h"
 #include "Inspector/EditorSelectionService.h"
@@ -4789,6 +4797,27 @@ Editor::Core::EditorActions::EditorActions(Context& p_context, PanelsManager& p_
     , m_backgroundTasks(kEditorBackgroundTaskQueueCapacity)
 {
     NLS::Core::ServiceLocator::Provide<Editor::Core::EditorActions>(*this);
+    m_playController.SetCallbacks({
+        [this](uint64_t id, std::string& error) { return EnterPlaySession(id, error); },
+        [this](std::string& error) { return ExitPlaySession(error); },
+        [this](bool paused) { m_runtimePlaySession.SetPaused(paused); }
+    });
+    m_playController.StateChanged += [this](PlaySessionState state)
+    {
+        switch (state)
+        {
+        case PlaySessionState::Edit: SetEditorMode(EEditorMode::EDIT); break;
+        case PlaySessionState::Playing: SetEditorMode(EEditorMode::PLAY); break;
+        case PlaySessionState::Paused: SetEditorMode(EEditorMode::PAUSE); break;
+        case PlaySessionState::Faulted:
+            if(!m_playActivationFrozen)
+            {NLS::Core::ServiceLocator::Get<NLS::Editor::Undo::EditorUndoService>().Freeze(NLS::Editor::Undo::UndoFreezeReason::PlayMode);m_playActivationFrozen=true;}
+            SetEditorMode(EEditorMode::PAUSE);break;
+        case PlaySessionState::Stepping: SetEditorMode(EEditorMode::FRAME_BY_FRAME); break;
+        default: break;
+        }
+    };
+
 
     m_sceneSourcePathChangedListener = m_context.sceneManager.CurrentSceneSourcePathChangedEvent += [this](const std::string& p_newPath)
     {
@@ -4826,6 +4855,7 @@ Editor::Core::EditorActions::EditorActions(Context& p_context, PanelsManager& p_
     };
     m_gameObjectMarkedDestroyListener = Engine::GameObject::MarkedDestroyEvent += [this](Engine::GameObject& object)
     {
+        RemoveGameObjectFromSelection(object);
         CancelRendererResourceResolutionForMarkedObject(object);
         const auto cleanup = NLS::Editor::Core::CleanupPrefabInstanceMarkedDestroy(
             m_context.prefabInstanceRegistry,
@@ -4851,13 +4881,19 @@ Editor::Core::EditorActions::~EditorActions()
     if (m_gameObjectMarkedDestroyListener != InvalidListenerID)
         Engine::GameObject::MarkedDestroyEvent -= m_gameObjectMarkedDestroyListener;
 
-    m_backgroundTasks.StopAndComplete();
+    StopBackgroundTasks();
 
     {
         std::lock_guard lock(m_delayedActionsMutex);
         m_delayedActions.clear();
     }
     ReleaseTrackedGameObjectDestroyedListeners();
+}
+
+void Editor::Core::EditorActions::StopBackgroundTasks()
+{
+    Editor::Assets::DistanceFieldBuildService::CancelAll(m_context.projectPath);
+    m_backgroundTasks.StopAndComplete();
 }
 
 void Editor::Core::EditorActions::MarkOwningSceneDirty(Engine::GameObject& p_actor)
@@ -4882,6 +4918,7 @@ void Editor::Core::EditorActions::LoadEmptyScene()
 
 bool Editor::Core::EditorActions::SaveCurrentSceneTo(const std::string& p_path)
 {
+    if (m_playController.IsActive()) { NLS_LOG_WARNING("Scene saving is disabled during Play."); return false; }
     std::filesystem::path scenePath(p_path);
     if (scenePath.extension() != ".scene")
         scenePath += ".scene";
@@ -5334,11 +5371,27 @@ bool Editor::Core::EditorActions::RestorePrefabInstancesForCurrentSceneFromDisk(
 
 void Editor::Core::EditorActions::LoadSceneFromDisk(const std::string& p_path, bool p_absolute)
 {
-    if (GetCurrentEditorMode() != EEditorMode::EDIT)
+    if (m_playController.IsActive())
+    {
         StopPlaying();
+        PumpPlayRequests();
+        if (m_playController.IsActive()) return;
+    }
 
     if (!PromptSaveCurrentSceneIfDirty())
         return;
+
+    struct SceneLoadProgressGuard
+    {
+        Context& context;
+        ~SceneLoadProgressGuard()
+        {
+            // Explicit success/failure completion removes this key. On an
+            // exception, close only this operation, including nested imports.
+            try { context.CompleteTaskProgress(kSceneLoadProgressTaskKey, "Scene loading interrupted", EditorTaskState::Failed); }
+            catch (...) {}
+        }
+    } sceneLoadProgressGuard{m_context};
 
     if (!m_context.sceneManager.LoadScene(
         p_path,
@@ -5351,7 +5404,7 @@ void Editor::Core::EditorActions::LoadSceneFromDisk(const std::string& p_path, b
                 progress.normalizedProgress * 0.88f);
         }))
     {
-        m_context.CompleteTaskProgress(kSceneLoadProgressTaskKey, "Scene loading failed");
+        m_context.CompleteTaskProgress(kSceneLoadProgressTaskKey, "Scene loading failed", EditorTaskState::Failed);
         Dialogs::MessageBox message(
             "Scene loading failed",
             "The scene you are trying to load was not found or could not be read.",
@@ -5394,6 +5447,7 @@ void Editor::Core::EditorActions::SaveSceneChanges()
 
 bool Editor::Core::EditorActions::SaveActivePrefabStage()
 {
+    if(m_playController.IsActive())return false;
     if (!m_context.activePrefabStage.has_value())
         return false;
 
@@ -5504,6 +5558,7 @@ bool Editor::Core::EditorActions::CloseActivePrefabStage(bool saveBeforeClose)
 
 void Editor::Core::EditorActions::SaveAs()
 {
+    if (m_playController.IsActive()) { NLS_LOG_WARNING("Scene saving is disabled during Play."); return; }
     Dialogs::SaveFileDialog dialog("New Scene", m_context.projectAssetsPath + "New Scene", {"Nullus Scene", "*.scene"});
 
     if (!dialog.Result().empty())
@@ -5527,6 +5582,8 @@ void Editor::Core::EditorActions::SaveAs()
 
 bool Editor::Core::EditorActions::PromptSaveCurrentSceneIfDirty()
 {
+    if(m_playController.IsActive())
+    { StopPlaying();PumpPlayRequests();if(m_playController.IsActive())return false; }
     const auto& diagnostics = m_context.GetDiagnosticsSettings();
     if (!diagnostics.editorValidationSceneReadbackOutput.empty() ||
         !diagnostics.editorValidationSceneReadbackSummary.empty())
@@ -5534,6 +5591,18 @@ bool Editor::Core::EditorActions::PromptSaveCurrentSceneIfDirty()
         return true;
     }
 
+    if(m_context.activePrefabStage && m_context.activePrefabStage->dirty)
+    {
+        Dialogs::MessageBox stagePrompt("Unsaved Prefab Stage Changes",
+            "The Prefab Stage has unsaved changes.\n\nDo you want to save them before continuing?",
+            Dialogs::MessageBox::EMessageType::QUESTION,Dialogs::MessageBox::EButtonLayout::YES_NO_CANCEL);
+        switch(stagePrompt.GetUserAction())
+        {
+            case Dialogs::MessageBox::EUserAction::YES: if(!SaveActivePrefabStage())return false;break;
+            case Dialogs::MessageBox::EUserAction::NO: break;
+            default: return false;
+        }
+    }
     if (!m_context.sceneManager.HasUnsavedSceneChanges())
         return true;
 
@@ -5546,7 +5615,8 @@ bool Editor::Core::EditorActions::PromptSaveCurrentSceneIfDirty()
     switch (message.GetUserAction())
     {
         case Dialogs::MessageBox::EUserAction::YES:
-            SaveSceneChanges();
+            if(IsCurrentSceneLoadedFromDisk())SaveCurrentSceneTo(m_context.sceneManager.GetCurrentSceneSourcePath());
+            else SaveAs();
             return !m_context.sceneManager.HasUnsavedSceneChanges();
         case Dialogs::MessageBox::EUserAction::NO:
             return true;
@@ -5610,6 +5680,11 @@ void Editor::Core::EditorActions::BuildAtLocation(
     const std::string& p_profileId)
 {
     (void)p_configuration;
+    const auto logBuild = [](NLS::Debug::ELogLevel level, const std::string& message)
+    {
+        NLS::Debug::Logger::LogWithContext(message, level, NLS::Debug::ELogMode::CONSOLE_AND_FILE,
+            __FILE__, __LINE__, __func__, NLS::Debug::ELogSource::Build);
+    };
 
     // The packaging pipeline must see saved scenes and assets: a build that
     // silently mixed an unsaved editor state with cooked content would ship
@@ -5630,7 +5705,7 @@ void Editor::Core::EditorActions::BuildAtLocation(
     const auto nullusBuild = NLS::Platform::Process::FindExecutable("NullusBuild.exe");
     if (!nullusBuild.has_value())
     {
-        NLS_LOG_ERROR("NullusBuild.exe was not found next to the editor. Build the NullusBuild target first.");
+        logBuild(NLS::Debug::ELogLevel::LOG_ERROR, "NullusBuild.exe was not found next to the editor. Build the NullusBuild target first.");
         Dialogs::MessageBox message(
             "Build Failure",
             "NullusBuild.exe was not found next to the editor.\n\nBuild the NullusBuild target before packaging.",
@@ -5659,11 +5734,12 @@ void Editor::Core::EditorActions::BuildAtLocation(
     arguments.push_back("--player");
     arguments.push_back(editorDirectory.string());
 
-    NLS_LOG_INFO("Packaging with NullusBuild: " + nullusBuild->string());
+    BuildEvent.Invoke();
+    logBuild(NLS::Debug::ELogLevel::LOG_INFO, "Packaging with NullusBuild: " + nullusBuild->string());
     const auto launch = NLS::Platform::Process::Launch(*nullusBuild, arguments);
     if (!launch.success)
     {
-        NLS_LOG_ERROR("NullusBuild failed to start: " + launch.errorMessage);
+        logBuild(NLS::Debug::ELogLevel::LOG_ERROR, "NullusBuild failed to start: " + launch.errorMessage);
         Dialogs::MessageBox message(
             "Build Failure",
             "NullusBuild could not be started:\n" + launch.errorMessage,
@@ -5672,7 +5748,7 @@ void Editor::Core::EditorActions::BuildAtLocation(
         return;
     }
 
-    NLS_LOG_INFO("NullusBuild started; follow the build report under the output directory for results.");
+    logBuild(NLS::Debug::ELogLevel::LOG_INFO, "NullusBuild started; follow the build report under the output directory for results.");
 
     if (p_autoRun)
     {
@@ -5737,6 +5813,10 @@ NLS::Editor::Undo::UndoScopeId Editor::Core::EditorActions::GetUndoScopeForScene
 
     if (m_context.sceneManager.GetCurrentScene() != &scene)
         return {};
+
+    if (m_context.sceneManager.IsPlaySandboxActive())
+        return { NLS::Editor::Undo::UndoScopeKind::Scene,
+            "play-scene:" + std::to_string(m_playController.GetSessionId()), m_playController.GetSessionId() };
 
     return {
         NLS::Editor::Undo::UndoScopeKind::Scene,
@@ -5920,223 +6000,148 @@ void Editor::Core::EditorActions::SetEditorMode(EEditorMode p_newEditorMode)
     EditorModeChangedEvent.Invoke(m_editorMode);
 }
 
-void Editor::Core::EditorActions::StartPlaying()
+void Editor::Core::EditorActions::StartPlaying() { m_playController.RequestPlay(); }
+void Editor::Core::EditorActions::PauseGame() { m_playController.RequestPause(); }
+void Editor::Core::EditorActions::StopPlaying() { m_playController.RequestStop(); }
+void Editor::Core::EditorActions::NextFrame() { m_playController.RequestStep(); }
+
+bool Editor::Core::EditorActions::EnterPlaySession(uint64_t sessionId, std::string& error)
 {
-    if (m_editorMode == EEditorMode::EDIT)
+    if(HasBlockingSceneLoadRendererResourceResolution())
+    {error="Wait for the current scene's required resources before entering Play.";return false;}
+    if (m_context.managedScriptDebugSession)
     {
-        if (m_context.activePrefabStage.has_value())
+        const auto& build = *m_context.managedScriptDebugSession;
+        if (build.HasPendingBuild() || !build.GetLastStatus().Succeeded())
         {
-            NLS_LOG_WARNING("Cannot enter Play mode while a Prefab Stage is open.");
-            return;
+            error = build.HasPendingBuild() ? "Wait for script compilation before entering Play." : build.GetLastStatus().message;
+            return false;
         }
-
-        auto* undo = NLS::Core::ServiceLocator::Contains<NLS::Editor::Undo::EditorUndoService>()
-            ? &NLS::Core::ServiceLocator::Get<NLS::Editor::Undo::EditorUndoService>()
-            : nullptr;
-        if (undo && (undo->IsPending() || undo->IsPoisoned() || undo->IsFrozen()))
+    }
+    auto& undo = NLS::Core::ServiceLocator::Get<NLS::Editor::Undo::EditorUndoService>();
+    if (undo.IsPending() || undo.IsPoisoned() || undo.IsFrozen())
+    {
+        error = "Cannot enter Play while editor history is unavailable.";
+        NLS_LOG_WARNING(error);
+        return false;
+    }
+    if (undo.HasActiveEditSession())
+    {
+        const auto cancelled = undo.RequestUndo();
+        if (cancelled.state != NLS::Editor::Undo::UndoRequestState::Completed || undo.HasActiveEditSession())
         {
-            NLS_LOG_WARNING("Cannot enter Play mode while global Undo history is unavailable.");
-            return;
+            error = "The active editor edit could not be cancelled: " + cancelled.message;
+            return false;
         }
-
-        // A preview owns mutable edit-scene state. It must be restored before
-        // the scene starts running so Play never observes a half-committed edit.
-        if (undo)
+    }
+    if (!m_context.sceneManager.GetCurrentScene()) { error = "No scene is loaded."; return false; }
+    if (!m_context.scriptRuntime.IsInitialized())
+    {
+        const auto initialized = m_context.scriptRuntime.Initialize(m_context.scriptRuntime.GetApi());
+        if (!initialized.Succeeded())
         {
-            if (undo->HasActiveEditSession())
-            {
-                const auto result = undo->RequestUndo();
-                if (result.state != NLS::Editor::Undo::UndoRequestState::Completed ||
-                    undo->HasActiveEditSession())
-                {
-                    NLS_LOG_WARNING(
-                        "Cannot enter Play mode while the active editor edit could not be cancelled: " +
-                        (result.message.empty() ? std::string("Unknown error.") : result.message));
-                    return;
-                }
-            }
+            error = "Cannot enter Play: " + initialized.message;
+            NLS_LOG_ERROR(error);
+            return false;
         }
+    }
+    const auto domain = undo.BeginPlayDomain(sessionId);
+    if (domain.state != NLS::Editor::Undo::UndoRequestState::Completed) { error = domain.message; return false; }
+    m_playMementoValid = true;
+    m_inspectorSelectionBeforePlay=NLS::Editor::Inspector::EditorSelectionService::Get().GetSelection();
+    m_expandedBeforePlay = m_panelsManager.GetPanelAs<NLS::Editor::Panels::Hierarchy>("Hierarchy").CaptureExpandedObjects();
+    if (ImGui::GetCurrentContext() && ImGui::GetCurrentContext()->NavWindow)
+        m_focusedWindowBeforePlay = ImGui::GetCurrentContext()->NavWindow->Name;
+    if (auto* selected = GetSelectedGameObject()) m_selectionBeforePlay = selected->GetInstanceID();
+    else m_selectionBeforePlay = NLS::InstanceID_None;
+    if (ImGui::GetCurrentContext()) m_layoutBeforePlay = ImGui::SaveIniSettingsToMemory();
+    m_prefabStageBeforePlay = std::move(m_context.activePrefabStage);
+    m_context.activePrefabStage.reset();
+    undo.Freeze(NLS::Editor::Undo::UndoFreezeReason::PlayMode);
+    m_playActivationFrozen = true;
+    UnselectGameObject();
+    if (!NLS::Scripting::ConfigureProjectPhysicsTiming(m_runtimePlaySession,m_context.projectSettings,error)) return false;
+    if (!m_context.sceneManager.BeginPlaySandbox(&error)) return false;
+    m_runtimePlaySession.ConfigureInput(m_context.inputManager->GetInputSystem(), &m_context.inputManager->GetPlatformBackend());
+    const auto begun = m_runtimePlaySession.Begin(m_context.scriptRuntime, m_context.sceneManager, sessionId, m_context.audioDevice);
+    if (!begun.Succeeded()) { error = begun.message; return false; }
+    PlayEvent.Invoke();
+    const auto& presentation=m_panelsManager.GetPanelAs<NLS::Editor::Panels::GameView>("Game View").GetPresentation();
+    m_runtimePlaySession.ConfigureUI(m_context.projectAssetsPath,std::max(1u,presentation.width),std::max(1u,presentation.height),1,
+        Settings::EditorSettings::GetGameViewSettingsObject().display);
+    m_context.sceneManager.GetCurrentScene()->Play();
+    auto& view = m_panelsManager.GetPanelAs<NLS::Editor::Panels::GameView>("Game View");
+    view.BeginPlayPreview();
+    undo.Unfreeze(NLS::Editor::Undo::UndoFreezeReason::PlayMode);
+    m_playActivationFrozen = false;
+    NLS_LOG_INFO("Editor entered Play session " + std::to_string(sessionId));
+    return true;
+}
 
-        if (!m_context.sceneManager.GetCurrentScene())
-        {
-            NLS_LOG_ERROR("Cannot enter Play mode because no scene is loaded.");
-            return;
-        }
-
-        // Freeze before any Play listeners run. The Editor's mode listener
-        // acquires the lasting PlayMode freeze when the mode changes below;
-        // this temporary acquisition closes the activation window.
-        if (undo)
-            undo->Freeze(NLS::Editor::Undo::UndoFreezeReason::PlayMode);
-
-        // Edit-scene instance handles cannot address the ObjectGraph clone.
-        // Clear them before SceneLoadEvent rebuilds the Hierarchy for Play.
+bool Editor::Core::EditorActions::ExitPlaySession(std::string& error)
+{
+    auto& undo = NLS::Core::ServiceLocator::Get<NLS::Editor::Undo::EditorUndoService>();
+    if (!m_playMementoValid && !m_context.sceneManager.IsPlaySandboxActive() && !m_runtimePlaySession.IsActive() && !undo.GetPlayDomainId()) return true;
+    m_runtimePlaySession.PrepareToStop();
+    if (undo.IsPending()) { error="An asynchronous editor edit must finish before Play can stop."; return false; }
+    if (m_playActivationFrozen) { undo.Unfreeze(NLS::Editor::Undo::UndoFreezeReason::PlayMode); m_playActivationFrozen=false; }
+    if (undo.HasActiveEditSession())
+    {
+        const auto cancelled=undo.RequestUndo();
+        if (cancelled.state != NLS::Editor::Undo::UndoRequestState::Completed) { error=cancelled.message; return false; }
+    }
+    undo.Freeze(NLS::Editor::Undo::UndoFreezeReason::PlayMode);
+    m_playActivationFrozen=true;
+    if(m_context.driver && Render::Context::DriverRendererAccess::IsThreadedRenderingEnabled(*m_context.driver) &&
+        !Render::Context::DriverRendererAccess::TryDrainThreadedRendering(*m_context.driver))
+    {error="Rendering could not retire the Play session. The scene remains protected for Stop recovery.";return false;}
+    // Retire gameplay independently of the editor's optional script host.
+    // A missing assembly must not trap Stop/Close behind a frozen Undo domain.
+    const auto ended=m_runtimePlaySession.End(false);
+    if (!ended.Succeeded()) { error="Could not stop the Play session: "+ended.message; return false; }
+    if (!m_context.scriptRuntime.IsInitialized())
+    {
+        const auto restored=m_context.scriptRuntime.EndPlaySession();
+        if (!restored.Succeeded())
+            NLS_LOG_ERROR("Play stopped; editor scripting is unavailable: " + restored.message);
+    }
+    if (m_context.sceneManager.IsPlaySandboxActive())
+    {
         UnselectGameObject();
-
-        Engine::SceneSystem::Scene* scene = m_context.sceneManager.GetCurrentScene();
-        try
-        {
-            std::string sandboxError;
-            if (!m_context.sceneManager.BeginPlaySandbox(&sandboxError))
-            {
-                // BeginPlaySandbox builds the clone before publishing it. A
-                // false result therefore leaves the Edit scene authoritative,
-                // so release only this activation guard. If publication did
-                // happen and restoration later fails, the exception paths
-                // below deliberately keep the lasting PlayMode freeze.
-                if (undo && !m_context.sceneManager.IsPlaySandboxActive())
-                    undo->Unfreeze(NLS::Editor::Undo::UndoFreezeReason::PlayMode);
-                NLS_LOG_ERROR(
-                    "Editor failed to create the Play scene sandbox; Edit history remains available: " +
-                    (sandboxError.empty() ? std::string("Unknown error.") : sandboxError));
-                return;
-            }
-
-            scene = m_context.sceneManager.GetCurrentScene();
-            if (!scene)
-                throw std::runtime_error("Play scene sandbox was activated without a current scene.");
-
-            // The current scene is now an ObjectGraph clone. Unsaved Edit
-            // changes are visible to scripts, but runtime mutations are
-            // isolated and discarded when Play stops.
-            PlayEvent.Invoke();
-            scene->Play();
-            SetEditorMode(EEditorMode::PLAY);
-        }
-        catch (const std::exception& exception)
-        {
-            if (scene && scene->IsPlaying())
-                scene->Stop();
-
-            std::string restoreError;
-            bool restored = false;
-            try
-            {
-                restored = !m_context.sceneManager.IsPlaySandboxActive() ||
-                    m_context.sceneManager.DiscardPlaySandbox(&restoreError);
-            }
-            catch (const std::exception& restoreException)
-            {
-                restoreError = restoreException.what();
-            }
-
-            // If the clone cannot be discarded, the current scene may not be
-            // the suspended Edit scene. Do not switch back to Edit or release
-            // its Undo freeze in that unsafe state.
-            if (!restored)
-            {
-                NLS_LOG_ERROR(
-                    "Editor failed to restore the Edit scene after Play activation failed; Undo remains frozen: " +
-                    (restoreError.empty() ? std::string("Unknown error.") : restoreError));
-                return;
-            }
-
-            if (m_editorMode != EEditorMode::EDIT)
-                SetEditorMode(EEditorMode::EDIT);
-            if (undo)
-                undo->Unfreeze(NLS::Editor::Undo::UndoFreezeReason::PlayMode);
-            NLS_LOG_ERROR(std::string("Editor failed to enter Play mode: ") + exception.what());
-            return;
-        }
-        catch (...)
-        {
-            if (scene && scene->IsPlaying())
-                scene->Stop();
-
-            std::string restoreError;
-            bool restored = false;
-            try
-            {
-                restored = !m_context.sceneManager.IsPlaySandboxActive() ||
-                    m_context.sceneManager.DiscardPlaySandbox(&restoreError);
-            }
-            catch (...)
-            {
-                restoreError = "Unknown restore error.";
-            }
-
-            if (!restored)
-            {
-                NLS_LOG_ERROR(
-                    "Editor failed to restore the Edit scene after Play activation failed; Undo remains frozen: " +
-                    (restoreError.empty() ? std::string("Unknown error.") : restoreError));
-                return;
-            }
-
-            if (m_editorMode != EEditorMode::EDIT)
-                SetEditorMode(EEditorMode::EDIT);
-            if (undo)
-                undo->Unfreeze(NLS::Editor::Undo::UndoFreezeReason::PlayMode);
-            NLS_LOG_ERROR("Editor failed to enter Play mode with an unknown exception.");
-            return;
-        }
-
-        // Keep the mode listener's freeze, but release the activation guard.
-        if (undo)
-            undo->Unfreeze(NLS::Editor::Undo::UndoFreezeReason::PlayMode);
-        NLS_LOG_INFO("Editor entered Play mode.");
+        if (!m_context.sceneManager.DiscardPlaySandbox(&error)) return false;
     }
-    else
+    if (m_playMementoValid)
     {
-        SetEditorMode(EEditorMode::PLAY);
-    }
-}
-
-void Editor::Core::EditorActions::PauseGame()
-{
-    SetEditorMode(EEditorMode::PAUSE);
-    // m_context.audioEngine->Suspend();
-}
-
-void Editor::Core::EditorActions::StopPlaying()
-{
-    if (m_editorMode == EEditorMode::EDIT)
-        return;
-
-    auto* scene = m_context.sceneManager.GetCurrentScene();
-    try
-    {
-        if (scene)
-            scene->Stop();
-
-        if (m_context.sceneManager.IsPlaySandboxActive())
+        m_context.activePrefabStage = std::move(m_prefabStageBeforePlay);
+        m_prefabStageBeforePlay.reset();
+        m_context.sceneManager.SceneLoadEvent.Invoke();
+        m_panelsManager.GetPanelAs<NLS::Editor::Panels::GameView>("Game View").EndPlayPreview();
+        if (!m_layoutBeforePlay.empty() && ImGui::GetCurrentContext())
+            ImGui::LoadIniSettingsFromMemory(m_layoutBeforePlay.c_str(), m_layoutBeforePlay.size());
+        if (m_selectionBeforePlay != NLS::InstanceID_None)
         {
-            // Never invalidate a live sandbox selection after its objects have
-            // been destroyed; the restored Edit scene will publish a clean
-            // hierarchy activation below.
-            UnselectGameObject();
-
-            std::string restoreError;
-            if (!m_context.sceneManager.DiscardPlaySandbox(&restoreError))
-            {
-                NLS_LOG_ERROR(
-                    "Editor could not restore the Edit scene after Play; Undo remains frozen: " +
-                    (restoreError.empty() ? std::string("Unknown error.") : restoreError));
-                return;
-            }
+            auto* object = NLS::Object::IDToPointerNoThreadCheck(m_selectionBeforePlay);
+            if (auto* selected = dynamic_cast<Engine::GameObject*>(object)) SelectGameObject(*selected);
         }
+        NLS::Editor::Inspector::EditorSelectionService::Get().SetSelection(std::move(m_inspectorSelectionBeforePlay));
+        m_panelsManager.GetPanelAs<NLS::Editor::Panels::Hierarchy>("Hierarchy").RestoreExpandedObjects(m_expandedBeforePlay);
+        m_expandedBeforePlay.clear();
+        if (!m_focusedWindowBeforePlay.empty() && ImGui::GetCurrentContext())
+            ImGui::SetWindowFocus(m_focusedWindowBeforePlay.c_str());
+        m_focusedWindowBeforePlay.clear();
+        m_playMementoValid = false;
+        m_layoutBeforePlay.clear();
+        m_selectionBeforePlay = NLS::InstanceID_None;
     }
-    catch (const std::exception& exception)
+    const auto restored = undo.EndPlayDomain();
+    if (restored.state != NLS::Editor::Undo::UndoRequestState::Completed) { error=restored.message; return false; }
+    if (m_playActivationFrozen)
     {
-        NLS_LOG_ERROR(
-            std::string("Editor could not restore the Edit scene after Play; Undo remains frozen: ") +
-            exception.what());
-        return;
+        NLS::Core::ServiceLocator::Get<NLS::Editor::Undo::EditorUndoService>().Unfreeze(
+            NLS::Editor::Undo::UndoFreezeReason::PlayMode);
+        m_playActivationFrozen = false;
     }
-    catch (...)
-    {
-        NLS_LOG_ERROR("Editor could not restore the Edit scene after Play; Undo remains frozen.");
-        return;
-    }
-
-    SetEditorMode(EEditorMode::EDIT);
-    NLS_LOG_INFO("Editor exited Play mode.");
-}
-
-void Editor::Core::EditorActions::NextFrame()
-{
-    if (m_editorMode == EEditorMode::PLAY || m_editorMode == EEditorMode::PAUSE)
-        SetEditorMode(EEditorMode::FRAME_BY_FRAME);
+    return true;
 }
 
 Engine::GameObject* Editor::Core::EditorActions::CreateEmptyGameObject(bool p_focusOnCreation, Engine::GameObject* p_parent, const std::string& p_name)
@@ -6224,6 +6229,9 @@ Engine::GameObject* NLS::Editor::Core::EditorActions::CreateGameObjectFromAsset(
             return CreatePrimitive(*primitiveType, focusOnCreation, p_parent);
         return nullptr;
     }
+
+    if (const auto sprite = NLS::Editor::Assets::ResolveSpriteDragPayload(path, m_context.projectAssetsPath))
+        return CreateGameObjectFromAsset(*sprite, focusOnCreation, p_parent, placementOverride);
 
     NLS::Editor::Assets::EditorAssetDragDropBridge bridge(m_context.projectAssetsPath);
     const auto sceneToken = CaptureSceneMutationToken();
@@ -6314,6 +6322,40 @@ Engine::GameObject* NLS::Editor::Core::EditorActions::CreateGameObjectFromAsset(
         return nullptr;
     }
 
+    if (const auto sprite = NLS::Editor::Assets::ResolveSpriteDragPayload(payload))
+    {
+        const auto assetId = NLS::Editor::Assets::GetEditorAssetDragPayloadAssetId(*sprite);
+        const auto key = NLS::Editor::Assets::GetEditorAssetDragPayloadSubAssetKey(*sprite);
+        if (!assetId.IsValid() || !key.starts_with("sprite:")) return nullptr;
+        const auto identifier = Engine::Serialize::ObjectIdentifier::Asset(
+            Engine::Serialize::AssetId(assetId.GetGuid()),
+            Engine::Serialize::MakeLocalIdentifierInFile(assetId.GetGuid(), key), path);
+        std::string error;
+        auto asset = Engine::Assets::LoadSpriteAsset(identifier, error);
+        if (!asset)
+        {
+            NLS_LOG_ERROR("Failed to create Sprite GameObject: " + error);
+            return nullptr;
+        }
+        auto* created = CreateEmptyGameObject(false, p_parent, asset->Capture()->name);
+        if (!created) return nullptr;
+        auto* renderer = created->AddComponent<Engine::Components::SpriteRendererComponent>();
+        if (!renderer)
+        {
+            created->MarkAsDestroy();
+            creationScene->DestroyGameObject(*created);
+            return nullptr;
+        }
+        Engine::Serialize::PPtr<Engine::Assets::SpriteAsset> reference;
+        reference.SetInstanceID(Engine::Serialize::PersistentManager::Instance().ObjectIdentifierToInstanceID(identifier));
+        renderer->SetSpriteReference(reference);
+        (void)renderer->CaptureSprite();
+        if (placementOverride) created->GetTransform()->SetWorldPosition(*placementOverride);
+        if (focusOnCreation) SelectGameObject(*created);
+        MarkGameObjectCreationSceneDirty(m_context, *creationScene);
+        return created;
+    }
+
     NLS::Editor::Assets::EditorAssetDragDropBridge bridge(m_context.projectAssetsPath);
     auto result = bridge.DropImportedAssetHandleIntoHierarchy(
         payload,
@@ -6391,6 +6433,8 @@ Engine::GameObject* NLS::Editor::Core::EditorActions::CreateGameObjectFromAssetN
     Engine::GameObject* p_parent,
     std::optional<Maths::Vector3> placementOverride)
 {
+    if (const auto sprite = NLS::Editor::Assets::ResolveSpriteDragPayload(payload))
+        return CreateGameObjectFromAsset(*sprite, focusOnCreation, p_parent, placementOverride);
     const auto resourcePath = BuildPrefabResourcePathFromPayload(payload);
     if (resourcePath.empty())
     {
@@ -6415,6 +6459,9 @@ Engine::GameObject* NLS::Editor::Core::EditorActions::CreateGameObjectFromAssetB
 
     if (NLS::Editor::Assets::IsBuiltInResourcePath(path))
         return CreateGameObjectFromAsset(path, focusOnCreation, p_parent, placementOverride);
+
+    if (const auto sprite = NLS::Editor::Assets::ResolveSpriteDragPayload(path, m_context.projectAssetsPath))
+        return CreateGameObjectFromAsset(*sprite, focusOnCreation, p_parent, placementOverride);
 
     NLS::Editor::Assets::EditorAssetDragDropBridge bridge(m_context.projectAssetsPath);
     auto result = bridge.DropModelAssetIntoHierarchy(
@@ -6462,6 +6509,8 @@ Engine::GameObject* NLS::Editor::Core::EditorActions::CreateGameObjectFromAssetB
     Engine::GameObject* p_parent,
     std::optional<Maths::Vector3> placementOverride)
 {
+    if (const auto sprite = NLS::Editor::Assets::ResolveSpriteDragPayload(payload))
+        return CreateGameObjectFromAsset(*sprite, focusOnCreation, p_parent, placementOverride);
     auto* creationScene = ResolveGameObjectCreationScene(m_context, p_parent);
     const auto path = NLS::Editor::Assets::GetEditorAssetDragPayloadPath(payload);
     if (!creationScene)
@@ -7161,8 +7210,7 @@ void NLS::Editor::Core::EditorActions::QueuePrefabInstanceAssetResolution(
 bool Editor::Core::EditorActions::DestroyGameObject(Engine::GameObject& p_actor)
 {
     NLS_EDITOR_UNDO_REQUIRE_MUTATION_CONTEXT("destroying a GameObject through EditorActions");
-    if (GetSelectedGameObject() == &p_actor)
-        UnselectGameObject();
+    RemoveGameObjectFromSelection(p_actor);
 
     MarkOwningSceneDirty(p_actor);
     p_actor.MarkAsDestroy();
@@ -7245,7 +7293,68 @@ void Editor::Core::EditorActions::UnselectGameObject()
 
 bool Editor::Core::EditorActions::IsAnyGameObjectSelected() const
 {
-    return GetSelectedGameObject() != nullptr;
+    return !GetSelectedGameObjects().empty();
+}
+
+void Editor::Core::EditorActions::SelectGameObjects(
+    const std::vector<Engine::GameObject*>& targets, Engine::GameObject* active)
+{
+    Inspector::InspectorTargetSet selection;
+    auto* scene = m_context.activePrefabStage && m_context.activePrefabStage->stageScene
+        ? m_context.activePrefabStage->stageScene.get() : m_context.sceneManager.GetCurrentScene();
+    for (auto* object : targets)
+        if (object && object->GetScene() == scene && !object->IsEditorTransient())
+            selection.targets.push_back(Inspector::InspectorTargetHandle::FromObject(
+                *object, Inspector::InspectorTargetKind::GameObject));
+    if (active)
+        selection.activeTarget = Inspector::InspectorTargetHandle::FromObject(
+            *active, Inspector::InspectorTargetKind::GameObject);
+    Inspector::EditorSelectionService::Get().SetSelection(std::move(selection));
+}
+
+std::vector<Engine::GameObject*> Editor::Core::EditorActions::GetSelectedGameObjects() const
+{
+    std::vector<Engine::GameObject*> objects;
+    auto* scene = m_context.activePrefabStage && m_context.activePrefabStage->stageScene
+        ? m_context.activePrefabStage->stageScene.get() : m_context.sceneManager.GetCurrentScene();
+    for (const auto& target : Inspector::EditorSelectionService::Get().GetSelection().targets)
+        if (target.kind == Inspector::InspectorTargetKind::GameObject)
+            if (auto* object = dynamic_cast<Engine::GameObject*>(Inspector::NativeReflectionAdapter::ResolveObject(target));
+                object && object->GetScene() == scene && !object->IsEditorTransient())
+                objects.push_back(object);
+    return objects;
+}
+
+Engine::GameObject* Editor::Core::EditorActions::GetActiveGameObject() const
+{
+    const auto* active = Inspector::EditorSelectionService::Get().GetSelection().Active();
+    if (!active || active->kind != Inspector::InspectorTargetKind::GameObject) return nullptr;
+    const auto objects = GetSelectedGameObjects();
+    for (auto* object : objects)
+        if (Inspector::NativeReflectionAdapter::ResolveObject(*active) == object) return object;
+    return nullptr;
+}
+
+bool Editor::Core::EditorActions::IsGameObjectSelected(const Engine::GameObject& object) const
+{
+    const auto& selection = Inspector::EditorSelectionService::Get().GetSelection();
+    return std::any_of(selection.targets.begin(), selection.targets.end(), [&object](const auto& target)
+    {
+        return target.kind == Inspector::InspectorTargetKind::GameObject && Inspector::NativeReflectionAdapter::ResolveObject(target) == &object;
+    });
+}
+
+void Editor::Core::EditorActions::RemoveGameObjectFromSelection(const Engine::GameObject& object)
+{
+    auto& service = Inspector::EditorSelectionService::Get();
+    auto selection = service.GetSelection();
+    std::erase_if(selection.targets, [&object](const auto& target)
+    {
+        if (target.kind != Inspector::InspectorTargetKind::GameObject) return false;
+        auto* selected = dynamic_cast<Engine::GameObject*>(Inspector::NativeReflectionAdapter::ResolveObject(target));
+        return !selected || selected == &object || selected->IsDescendantOf(&object);
+    });
+    service.SetSelection(std::move(selection));
 }
 
 Engine::GameObject* Editor::Core::EditorActions::GetSelectedGameObject() const
@@ -7254,7 +7363,7 @@ Engine::GameObject* Editor::Core::EditorActions::GetSelectedGameObject() const
     if (target == nullptr || target->kind != Inspector::InspectorTargetKind::GameObject)
         return nullptr;
 
-    return NLS::Object::IDToPointer<Engine::GameObject>(target->instanceId);
+    return dynamic_cast<Engine::GameObject*>(Inspector::NativeReflectionAdapter::ResolveObject(*target));
 }
 
 void Editor::Core::EditorActions::MoveToTarget(Engine::GameObject& p_target)

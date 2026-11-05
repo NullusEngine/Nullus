@@ -1,6 +1,6 @@
 # CMake 最低版本号要求
 # ##############################################################################
-cmake_minimum_required(VERSION 3.18)
+cmake_minimum_required(VERSION 3.22)
 
 # 兼容第三方库
 set(CMAKE_POLICY_VERSION_MINIMUM 3.5)
@@ -12,7 +12,7 @@ set(CMAKE_INSTALL_PREFIX ${CMAKE_CURRENT_SOURCE_DIR}/Install CACHE PATH "set ins
 # 在生成的项目文件中使用文件夹。开启文件夹组织项
 # ##############################################################################
 set_property(GLOBAL PROPERTY USE_FOLDERS ON)
-set(CMAKE_SUPPRESS_REGENERATION ON)
+set(CMAKE_SUPPRESS_REGENERATION OFF)
 
 # 设置项目名称
 # ##############################################################################
@@ -212,7 +212,14 @@ set(NLS_ENABLE_TEST_HOOKS ${_nls_enable_test_hooks_resolved})
 message(STATUS "Nullus test hooks: ${NLS_ENABLE_TEST_HOOKS} (mode: ${_nls_enable_test_hooks_mode})")
 option(NLS_BUILD_TRACY_PROFILER "Build Tracy GUI profiler tool" ${NLS_ENABLE_TRACY})
 option(NLS_ENABLE_PCH "Enable precompiled headers for supported C++ targets" ON)
+option(NLS_ENABLE_EDITOR_ASSET_PCH "Cache measured asset headers in the private EditorProject PCH" OFF)
+option(NLS_ENABLE_PARALLEL_REFLECTION_GENERATION "Schedule reflection generation separately from runtime compilation" OFF)
 option(NLS_ENABLE_CXX_MODULES "Enable experimental C++20 modules pilot targets" OFF)
+
+if(NLS_ENABLE_PARALLEL_REFLECTION_GENERATION)
+    # Resolve module dependencies after runtime, editor and plugin targets exist.
+    cmake_language(DEFER CALL nls_finalize_reflection_generation)
+endif()
 
 set(NLS_RENDER_API_LIST "OpenGL" "Vulkan" "DX12" "Metal")
 if(WIN32)
@@ -254,13 +261,36 @@ function(nls_add_windows_app_icon target_name)
         return()
     endif()
 
-    set(NLS_APP_ICON_ICO "${NLS_ROOT_DIR}/App/Resources/NullusAppIcon.ico")
+    set(NLS_APP_ICON_ICO "${CMAKE_BINARY_DIR}/brand/NullusAppIcon.ico")
+    if(NOT TARGET NullusBrandIconBaker)
+        add_executable(NullusBrandIconBaker EXCLUDE_FROM_ALL
+            "${NLS_ROOT_DIR}/Tools/Brand/bake_app_icon.cpp"
+            "${NLS_ROOT_DIR}/Runtime/Base/Detail/SvgRasterizer.cpp")
+        target_compile_features(NullusBrandIconBaker PRIVATE cxx_std_20)
+        target_include_directories(NullusBrandIconBaker PRIVATE
+            "${NLS_ROOT_DIR}/Runtime/Base" "${NLS_ThirdParty_DIR}")
+        set_target_properties(NullusBrandIconBaker PROPERTIES
+            FOLDER "Tools/Brand" RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/brand")
+        add_custom_command(OUTPUT "${NLS_APP_ICON_ICO}"
+            COMMAND $<TARGET_FILE:NullusBrandIconBaker>
+                "${NLS_ROOT_DIR}/App/Assets/Engine/Brand/NullusLogoMark.svg"
+                "${NLS_APP_ICON_ICO}"
+            DEPENDS NullusBrandIconBaker
+                "${NLS_ROOT_DIR}/App/Assets/Engine/Brand/NullusLogoMark.svg"
+            VERBATIM
+            COMMENT "Generating Windows application icon from the Nullus SVG logo")
+        add_custom_target(NullusBrandAssets DEPENDS "${NLS_APP_ICON_ICO}")
+        set_target_properties(NullusBrandAssets PROPERTIES FOLDER "Tools/Brand")
+    endif()
     set(_nls_app_icon_rc "${CMAKE_CURRENT_BINARY_DIR}/${target_name}NullusAppIcon.rc")
     configure_file(
         "${NLS_ROOT_DIR}/App/Resources/NullusAppIcon.rc.in"
         "${_nls_app_icon_rc}"
         @ONLY)
     target_sources(${target_name} PRIVATE "${_nls_app_icon_rc}")
+    set_source_files_properties("${_nls_app_icon_rc}" PROPERTIES
+        OBJECT_DEPENDS "${NLS_APP_ICON_ICO}")
+    add_dependencies(${target_name} NullusBrandAssets)
 endfunction()
 
 # App Path
@@ -329,18 +359,13 @@ function(nls_copy_shared_runtime_to_target TARGET_NAME)
         COMMENT "Archiving linked binary for ${TARGET_NAME}"
     )
     if(NLS_USE_SHARED_LIBRARY)
-        get_property(_nls_runtime_targets GLOBAL PROPERTY NLS_SHARED_RUNTIME_TARGETS)
-        if(_nls_runtime_targets)
-            # The deployment manifest contains every shared runtime module, so
-            # the consumer must wait for all of them before its post-build copy.
-            add_dependencies(${TARGET_NAME} ${_nls_runtime_targets})
-        endif()
         set_property(GLOBAL APPEND PROPERTY NLS_SHARED_RUNTIME_CONSUMERS ${TARGET_NAME})
         add_custom_command(TARGET ${TARGET_NAME} POST_BUILD
             COMMAND ${CMAKE_COMMAND}
                 "-DSTAGE_DIR=${NLS_RUNTIME_OUTPUT_PATH}"
                 "-DDEST_DIR=$<TARGET_FILE_DIR:${TARGET_NAME}>"
                 "-DCONFIG=$<CONFIG>"
+                "-DCONSUMER=${TARGET_NAME}"
                 "-DPRESERVE_FILE=$<TARGET_FILE_NAME:${TARGET_NAME}>"
                 "-DEXPECTED_MANIFEST=${CMAKE_BINARY_DIR}/runtime-manifests/${TARGET_NAME}-$<CONFIG>.txt"
                 -P "${NLS_ROOT_DIR}/Tools/CMake/DeployRuntime.cmake"
@@ -348,6 +373,29 @@ function(nls_copy_shared_runtime_to_target TARGET_NAME)
             COMMENT "Deploying Nullus runtime libraries for ${TARGET_NAME}"
         )
     endif()
+endfunction()
+
+function(nls_collect_link_closure target output)
+    set(_pending "${target}")
+    set(_visited "")
+    while(_pending)
+        list(POP_FRONT _pending _current)
+        if(_current IN_LIST _visited OR NOT TARGET "${_current}")
+            continue()
+        endif()
+        list(APPEND _visited "${_current}")
+        get_target_property(_direct "${_current}" LINK_LIBRARIES)
+        get_target_property(_interface "${_current}" INTERFACE_LINK_LIBRARIES)
+        # Inspect target tokens inside LINK_ONLY/BUILD_INTERFACE/configuration
+        # expressions too. Conditional dependencies are conservatively retained.
+        string(REGEX MATCHALL "[A-Za-z_][-A-Za-z0-9_.]*(::[A-Za-z_][-A-Za-z0-9_.]*)*" _tokens "${_direct};${_interface}")
+        foreach(_token IN LISTS _tokens)
+            if(TARGET "${_token}" AND NOT _token IN_LIST _visited)
+                list(APPEND _pending "${_token}")
+            endif()
+        endforeach()
+    endwhile()
+    set(${output} "${_visited}" PARENT_SCOPE)
 endfunction()
 
 function(nls_generate_shared_runtime_manifests)
@@ -364,26 +412,30 @@ function(nls_generate_shared_runtime_manifests)
     list(REMOVE_DUPLICATES _nls_external_runtime_files)
     list(REMOVE_DUPLICATES _nls_external_runtime_producers)
 
-    set(_nls_expected_runtime_files "")
-    foreach(_nls_runtime_target IN LISTS _nls_runtime_targets)
-        string(APPEND _nls_expected_runtime_files "$<TARGET_FILE_NAME:${_nls_runtime_target}>\n")
-        get_target_property(_nls_runtime_target_type ${_nls_runtime_target} TYPE)
-        if(UNIX AND _nls_runtime_target_type STREQUAL "SHARED_LIBRARY")
-            string(APPEND _nls_expected_runtime_files "$<TARGET_SONAME_FILE_NAME:${_nls_runtime_target}>\n")
-            string(APPEND _nls_expected_runtime_files "$<TARGET_LINKER_FILE_NAME:${_nls_runtime_target}>\n")
-        endif()
-    endforeach()
-    foreach(_nls_external_runtime_file IN LISTS _nls_external_runtime_files)
-        string(APPEND _nls_expected_runtime_files "${_nls_external_runtime_file}\n")
-    endforeach()
-
     file(MAKE_DIRECTORY "${CMAKE_BINARY_DIR}/runtime-manifests")
     foreach(_nls_runtime_consumer IN LISTS _nls_runtime_consumers)
-        # Some consumers are declared before Runtime, so their copy helper
-        # cannot see the complete shared-runtime target list yet.
-        if(_nls_runtime_targets)
-            add_dependencies(${_nls_runtime_consumer} ${_nls_runtime_targets})
-        endif()
+        nls_collect_link_closure("${_nls_runtime_consumer}" _closure)
+        set(_nls_expected_runtime_files "")
+        foreach(_nls_runtime_target IN LISTS _nls_runtime_targets)
+            if(NOT _nls_runtime_target IN_LIST _closure)
+                continue()
+            endif()
+            string(APPEND _nls_expected_runtime_files "$<TARGET_FILE_NAME:${_nls_runtime_target}>\n")
+            get_target_property(_nls_runtime_companions ${_nls_runtime_target} NLS_RUNTIME_COMPANION_FILES)
+            if(_nls_runtime_companions)
+                foreach(_nls_runtime_companion IN LISTS _nls_runtime_companions)
+                    string(APPEND _nls_expected_runtime_files "${_nls_runtime_companion}\n")
+                endforeach()
+            endif()
+            get_target_property(_nls_runtime_target_type ${_nls_runtime_target} TYPE)
+            if(UNIX AND _nls_runtime_target_type STREQUAL "SHARED_LIBRARY")
+                string(APPEND _nls_expected_runtime_files "$<TARGET_SONAME_FILE_NAME:${_nls_runtime_target}>\n")
+                string(APPEND _nls_expected_runtime_files "$<TARGET_LINKER_FILE_NAME:${_nls_runtime_target}>\n")
+            endif()
+        endforeach()
+        foreach(_nls_external_runtime_file IN LISTS _nls_external_runtime_files)
+            string(APPEND _nls_expected_runtime_files "${_nls_external_runtime_file}\n")
+        endforeach()
         if(_nls_external_runtime_producers)
             add_dependencies(${_nls_runtime_consumer} ${_nls_external_runtime_producers})
         endif()
@@ -400,12 +452,30 @@ function(nls_copy_app_assets_to_target TARGET_NAME)
     endif()
 
     add_custom_command(TARGET ${TARGET_NAME} POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_directory
-            "${_nls_app_assets_source}"
-            "$<TARGET_FILE_DIR:${TARGET_NAME}>/Assets"
+        COMMAND ${CMAKE_COMMAND}
+            "-DSOURCE_DIR=${_nls_app_assets_source}"
+            "-DDEST_DIR=$<TARGET_FILE_DIR:${TARGET_NAME}>/Assets"
+            "-DLOCK_DIR=$<TARGET_FILE_DIR:${TARGET_NAME}>"
+            -DREMOVE_LEGACY_BRAND=ON
+            -P "${NLS_ROOT_DIR}/Tools/CMake/DeployResources.cmake"
         VERBATIM
         COMMENT "Copying Nullus app assets for ${TARGET_NAME}"
     )
+endfunction()
+
+function(nls_copy_script_api_to_target TARGET_NAME)
+    # The manifest is the ABI contract for the assemblies from this build.
+    # It is runtime data and must travel with the executable.
+    add_dependencies(${TARGET_NAME} NLS_Engine)
+    add_custom_command(TARGET ${TARGET_NAME} POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E make_directory
+            "$<TARGET_FILE_DIR:${TARGET_NAME}>/Scripts/Api"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "${NLS_ROOT_DIR}/Library/ScriptApi/ScriptApi.json"
+            "${NLS_ROOT_DIR}/Library/ScriptApi/ScriptApi.bin"
+            "$<TARGET_FILE_DIR:${TARGET_NAME}>/Scripts/Api"
+        VERBATIM
+        COMMENT "Deploying Script API contract for ${TARGET_NAME}")
 endfunction()
 
 function(nls_copy_editor_resources_to_target TARGET_NAME)
@@ -413,11 +483,11 @@ function(nls_copy_editor_resources_to_target TARGET_NAME)
     set(_nls_engine_scripts_source "${NLS_ROOT_DIR}/Managed/Nullus.EngineScripts/Scripts")
     if(EXISTS "${_nls_engine_scripts_source}")
         add_custom_command(TARGET ${TARGET_NAME} POST_BUILD
-            COMMAND ${CMAKE_COMMAND} -E make_directory
-                "$<TARGET_FILE_DIR:${TARGET_NAME}>/Assets/Engine/Scripts"
-            COMMAND ${CMAKE_COMMAND} -E copy_directory
-                "${_nls_engine_scripts_source}"
-                "$<TARGET_FILE_DIR:${TARGET_NAME}>/Assets/Engine/Scripts"
+            COMMAND ${CMAKE_COMMAND}
+                "-DSOURCE_DIR=${_nls_engine_scripts_source}"
+                "-DDEST_DIR=$<TARGET_FILE_DIR:${TARGET_NAME}>/Assets/Engine/Scripts"
+                "-DLOCK_DIR=$<TARGET_FILE_DIR:${TARGET_NAME}>"
+                -P "${NLS_ROOT_DIR}/Tools/CMake/DeployResources.cmake"
             VERBATIM
             COMMENT "Copying Nullus built-in scripts for ${TARGET_NAME}"
         )
@@ -506,10 +576,12 @@ function(nls_target_precompile_headers TARGET_NAME PCH_HEADER)
         message(FATAL_ERROR "PCH header does not exist: ${PCH_HEADER}")
     endif()
 
-    target_precompile_headers(${TARGET_NAME}
-        PRIVATE
-            "$<$<COMPILE_LANGUAGE:CXX>:${PCH_HEADER}>"
-    )
+    set(_nls_private_pch_headers "$<$<COMPILE_LANGUAGE:CXX>:${PCH_HEADER}>")
+    if(NLS_ENABLE_EDITOR_ASSET_PCH AND TARGET_NAME STREQUAL "EditorProject")
+        list(APPEND _nls_private_pch_headers
+            "$<$<COMPILE_LANGUAGE:CXX>:${NLS_ROOT_DIR}/Project/Editor/Assets/AssetDatabaseFacade.h>")
+    endif()
+    target_precompile_headers(${TARGET_NAME} PRIVATE ${_nls_private_pch_headers})
 endfunction()
 
 if(NLS_ENABLE_CXX_MODULES)
@@ -647,6 +719,9 @@ if(NLS_ENABLE_CSHARP_SCRIPTING)
     # the CMake graph when the command is declared.
     add_subdirectory("Managed")
 endif()
+include("${NLS_ROOT_DIR}/Tools/CMake/NullusPlugins.cmake")
+add_subdirectory("Tools/Plugins")
+nls_prepare_source_plugins()
 add_subdirectory("Project")
 if(NLS_BUILD_TESTS OR NLS_BUILD_PERFORMANCE_TESTS)
     add_subdirectory("Tests")

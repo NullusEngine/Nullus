@@ -26,6 +26,7 @@ if(NLS_ENABLE_DIRECTXTEX AND WIN32 AND EXISTS "${_nls_directxtex_source_dir}/Dir
     set(ENABLE_LIBJPEG_SUPPORT OFF CACHE BOOL "" FORCE)
     set(ENABLE_LIBPNG_SUPPORT OFF CACHE BOOL "" FORCE)
     add_subdirectory("${_nls_directxtex_source_dir}" "${CMAKE_BINARY_DIR}/ThirdParty/DirectXTex-src" EXCLUDE_FROM_ALL)
+    set_target_properties(DirectXTex PROPERTIES FOLDER "ThirdParty/DirectXTex")
     if(NOT TARGET DirectXTex::DirectXTex)
         add_library(DirectXTex::DirectXTex ALIAS DirectXTex)
     endif()

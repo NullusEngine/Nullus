@@ -1,0 +1,114 @@
+{
+  "recordedUtc": "2026-10-29T07:12:36.1513507Z",
+  "platform": "Windows x64",
+  "configuration": "Debug",
+  "scope": "Phase 1 scene settings and presentation interpolation follow-up",
+  "tests": [
+    {
+      "target": "NullusPhysicsTests",
+      "tests": 47,
+      "failures": 0,
+      "skipped": 0,
+      "exitCode": 0,
+      "xml": "D:/Code/Nullus/build/physics-validation/phase1/Debug/NullusPhysicsTests-interpolation.xml",
+      "log": "D:/Code/Nullus/build/physics-validation/phase1/Debug/NullusPhysicsTests-interpolation.log"
+    },
+    {
+      "target": "NullusPhysicsSceneTests",
+      "tests": 40,
+      "failures": 0,
+      "skipped": 0,
+      "exitCode": 0,
+      "xml": "D:/Code/Nullus/build/physics-validation/phase1/Debug/NullusPhysicsSceneTests-interpolation.xml",
+      "log": "D:/Code/Nullus/build/physics-validation/phase1/Debug/NullusPhysicsSceneTests-interpolation.log"
+    },
+    {
+      "target": "NullusPlayModeTests",
+      "tests": 37,
+      "failures": 0,
+      "skipped": 0,
+      "exitCode": 0,
+      "xml": "D:/Code/Nullus/build/physics-validation/phase1/Debug/NullusPlayModeTests-interpolation.xml",
+      "log": "D:/Code/Nullus/build/physics-validation/phase1/Debug/NullusPlayModeTests-interpolation.log"
+    },
+    {
+      "target": "NullusPlayLoopNoUiTests",
+      "tests": 1,
+      "failures": 0,
+      "skipped": 0,
+      "exitCode": 0,
+      "xml": "D:/Code/Nullus/build/physics-validation/phase1/Debug/NullusPlayLoopNoUiTests-interpolation.xml",
+      "log": "D:/Code/Nullus/build/physics-validation/phase1/Debug/NullusPlayLoopNoUiTests-interpolation.log"
+    }
+  ],
+  "totalTests": 125,
+  "failures": 0,
+  "skipped": 0,
+  "modules": [
+    {
+      "name": "NLS_Physicsd.dll",
+      "built": "D:/Code/Nullus/build/physics-validation/phase1/Debug/lib/NLS_Physicsd.dll",
+      "loaded": "D:/Code/Nullus/build/physics-validation/phase1/Debug/run/NLS_Physicsd.dll",
+      "sha256": "777EE5B8A8B1DD01CC2AD22DD2B15EBA23F00122A8A262E5BE0F0EA720BD0468",
+      "matchesBuilt": true
+    },
+    {
+      "name": "NLS_Engined.dll",
+      "built": "D:/Code/Nullus/build/physics-validation/phase1/Debug/lib/NLS_Engined.dll",
+      "loaded": "D:/Code/Nullus/build/physics-validation/phase1/Debug/run/NLS_Engined.dll",
+      "sha256": "8049F75FFC4330883C1C689902069E55A4A68935941F10D37B6DB58482965BDC",
+      "matchesBuilt": true
+    },
+    {
+      "name": "NLS_Scriptingd.dll",
+      "built": "D:/Code/Nullus/build/physics-validation/phase1/Debug/lib/NLS_Scriptingd.dll",
+      "loaded": "D:/Code/Nullus/build/physics-validation/phase1/Debug/run/NLS_Scriptingd.dll",
+      "sha256": "911CB0AA7CBDEF7F5F19FC218040525196B6986B72DE65FDA8B190E5E5786093",
+      "matchesBuilt": true
+    },
+    {
+      "name": "NLS_ECSd.dll",
+      "built": "D:/Code/Nullus/build/physics-validation/phase1/Debug/lib/NLS_ECSd.dll",
+      "loaded": "D:/Code/Nullus/build/physics-validation/phase1/Debug/run/NLS_ECSd.dll",
+      "sha256": "2F0CD8BAF02F205D458A2BCDE8FBEDFD75E8B446C5E0C118E2642F466E681C84",
+      "matchesBuilt": true
+    }
+  ],
+  "validated": [
+    "Versioned scene physics settings and legacy defaults",
+    "Scene cloning and text round trip",
+    "Partial project timing overrides",
+    "Native pose revision metadata",
+    "Real 2D/3D presentation poses",
+    "Parent-first mixed-dimension writeback",
+    "Frozen light proxy extraction and camera capture",
+    "Direct native teleport/restore through both RenderScene caches",
+    "Pause and TimeScale-zero step with retained ordinary debt"
+  ],
+  "build": {
+    "native": "Scoped NLS_Physics build passed",
+    "engineAndScripting": "Scoped builds passed with isolated DLL output",
+    "tests": "Scoped builds passed; public-directory post-build deployment disabled for locked shared files",
+    "playerLibrary": "GameProject static library built against the final renderer headers; no packaged Player acceptance",
+    "editor": "Full Editor not accepted; concurrent PCH owner prevented the attempted shared-object build",
+    "managed": "Normal scripting custom build encountered MSB3027/MSB3021: Editor held Nullus.Managed.dll; scoped native ClCompile/_Link completed without replacing it",
+    "logs": [
+      "build/physics-validation/phase1/interpolation-revision-build.log",
+      "build/physics-validation/phase1/interpolation-render-cache-build.log",
+      "build/physics-validation/phase1/interpolation-scripting-native-link.log",
+      "build/physics-validation/phase1/interpolation-final-link-build.log",
+      "build/physics-validation/phase1/interpolation-player-editor-build.log",
+      "build/physics-validation/phase1/interpolation-player-final-build.log"
+    ]
+  },
+  "documentation": "python Tools/Docs/nullus_docs.py check passed (19 chapters, 92 pages)",
+  "unverified": [
+    "Visible Editor and Physics Debugger interaction",
+    "GPU pixel validation of interpolation",
+    "Complete Editor/Player build and packaged Player Cook",
+    "Linux and macOS",
+    "CUDA hardware",
+    "Remaining phase 1 structural commands and phases 2-10 completion"
+  ],
+  "workspace": "Unrelated dirty source and running processes were preserved; no default-output runtime DLL was replaced for this validation"
+}

@@ -20,6 +20,7 @@ struct EditorGridShaders
 std::shared_ptr<const EditorGridShaders> CaptureEditorGridShaders(const Render::Resources::Shader& shader,
     Render::RHI::NativeBackendType backend);
 std::array<Render::Debug::DebugDrawPrimitive,3> BuildEditorOriginAxes(const Maths::Vector3& eye,float extent = 5000.0f);
+Maths::Matrix4 BuildEditorGridModelMatrix(const Maths::Vector3& eye, bool planarXY, float extent = 5000.0f);
 
 // Shared by Scene/Asset View grid passes and embedded asset previews.
 class EditorGridRenderer final
@@ -32,7 +33,7 @@ public:
         const std::shared_ptr<const EditorGridShaders>& shaders,
         const Render::RHI::RHIRenderTargetLayoutDesc& targets,
         const Maths::Matrix4& viewProjection,const Maths::Vector3& eye,
-        const Maths::Vector3& color,std::string& error);
+        const Maths::Vector3& color,std::string& error,bool planarXY = false);
     std::optional<std::array<Render::Context::RecordedDrawCommandInput,3>> PrepareAxes(
         std::shared_ptr<Render::RHI::RHIDevice> device,
         const std::shared_ptr<const EditorGridShaders>& shaders,
@@ -46,7 +47,7 @@ private:
     std::optional<Render::Context::RecordedDrawCommandInput> PrepareHelper(
         std::unique_ptr<State>& state,bool axes,std::shared_ptr<Render::RHI::RHIDevice> device,
         const std::shared_ptr<const EditorGridShaders>& shaders,const Render::RHI::RHIRenderTargetLayoutDesc& targets,
-        const Maths::Matrix4& viewProjection,const Maths::Vector3& eye,std::span<const std::byte> material,std::string& error);
+        const Maths::Matrix4& viewProjection,const Maths::Vector3& eye,std::span<const std::byte> material,std::string& error,bool planarXY = false);
     std::unique_ptr<State> m_state,m_axesState;
 };
 }

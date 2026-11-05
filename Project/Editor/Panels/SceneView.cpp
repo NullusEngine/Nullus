@@ -1,6 +1,8 @@
 #include "ImGui/imgui.h"
+#include "ImGui/imgui_internal.h"
 
 #include "Rendering/DebugSceneRenderer.h"
+#include "Rendering/GridRenderPass.h"
 #include "Rendering/Assets/DistanceFieldArtifact.h"
 #include "Rendering/PickingRenderPass.h"
 #include "Rendering/SceneRendererFactory.h"
@@ -10,6 +12,8 @@
 #include "Assets/EditorAssetDragDropBridge.h"
 #include "Assets/EditorAssetDragPayload.h"
 #include "Assets/EditorAssetPathUtils.h"
+#include "Assets/AssetImporterFacade.h"
+#include "Project/Editor/Assets/DistanceFieldBuildService.h"
 #include "Components/MeshFilter.h"
 #include "Components/MeshRenderer.h"
 #include "Engine/Assets/PrefabAsset.h"
@@ -23,6 +27,12 @@
 #include "Core/EditorInteractionBlocker.h"
 #include "Core/RendererResourceStreamingBudget.h"
 #include "Core/SceneCameraFocus.h"
+#include "Core/EditorGuiInput.h"
+#include "Shortcuts/EditorInputActions.h"
+#include "Inspector/EditorSelectionService.h"
+#include "Core/SceneSelection.h"
+#include <Components/CameraComponent.h>
+#include <Components/LightComponent.h>
 #include "Undo/EditorUndoMutationContext.h"
 #include "Undo/EditorUndoService.h"
 #include "Undo/SceneObjectUndoTarget.h"
@@ -52,6 +62,7 @@
 #include <chrono>
 #include <cmath>
 #include <cstring>
+#include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <mutex>
@@ -68,8 +79,13 @@ namespace NLS::Editor::Panels
 struct SceneViewGizmoEditState
 {
     std::optional<Core::SceneViewGizmoMatrix> pendingModelMatrix;
+    std::optional<Core::RectToolTransform> pendingLocalTransform;
     Core::EGizmoOperation operation = Core::EGizmoOperation::TRANSLATE;
     Core::SceneViewGizmoPivot pivot = Core::SceneViewGizmoPivot::Pivot;
+    Core::SceneViewGizmoSpace space = Core::SceneViewGizmoSpace::Global;
+    Core::SceneViewGizmoMatrix initialModelMatrix{};
+    uint64_t selectionRevision = 0;
+    bool multi = false;
 };
 }
 
@@ -83,23 +99,7 @@ constexpr size_t kSceneViewImportedPrefabPreloadGateCapacity = 256u;
 constexpr size_t kSceneViewValidationMinimumVisibleSceneLoadObjects = 32u;
 constexpr auto kSceneViewImportedPrefabPreloadGateTtl = std::chrono::seconds(3);
 
-struct SceneViewTransformSnapshot
-{
-    Maths::Vector3 localPosition {};
-    Maths::Quaternion localRotation {};
-    Maths::Vector3 localScale {1.0f, 1.0f, 1.0f};
-};
-
-bool operator==(const SceneViewTransformSnapshot& left, const SceneViewTransformSnapshot& right)
-{
-    // Quaternion::operator== currently compares one component incorrectly.
-    return left.localPosition == right.localPosition &&
-        left.localRotation.x == right.localRotation.x &&
-        left.localRotation.y == right.localRotation.y &&
-        left.localRotation.z == right.localRotation.z &&
-        left.localRotation.w == right.localRotation.w &&
-        left.localScale == right.localScale;
-}
+using SceneViewTransformSnapshot = Editor::Core::RectToolTransform;
 
 Editor::Undo::UndoScopeId BuildSceneViewUndoScope(const Engine::GameObject& gameObject);
 
@@ -256,16 +256,25 @@ public:
         auto* gameObject = ResolveSceneViewGizmoTarget(m_target);
         if (gameObject == nullptr || gameObject->GetTransform() == nullptr)
             return Editor::Undo::UndoStartResult::Failed("The transformed GameObject is no longer valid in this Scene.");
-        if (!m_state || !m_state->pendingModelMatrix.has_value())
+        if (!m_state || (!m_state->pendingModelMatrix.has_value() && !m_state->pendingLocalTransform.has_value()))
             return Editor::Undo::UndoStartResult::Failed("The Scene View gizmo has no pending transform.");
+        if (m_state->pendingModelMatrix && !std::all_of(m_state->pendingModelMatrix->begin(), m_state->pendingModelMatrix->end(),
+            [](const float value) { return std::isfinite(value); }))
+            return Editor::Undo::UndoStartResult::Failed("The Scene View gizmo produced an invalid transform.");
 
         // PreviewEditSession establishes the mutation context before this runs.
-        // The panel only captures ImGuizmo's matrix; the edit owns the write.
-        NLS::Editor::Core::ApplyGameObjectWorldGizmoMatrix(
-            *gameObject,
-            *m_state->pendingModelMatrix,
-            m_state->operation,
-            m_state->pivot);
+        // Both gizmos only calculate a candidate; the edit owns the actual write.
+        if (m_state->pendingLocalTransform)
+        {
+            if (!ApplySceneViewTransform(m_target, *m_state->pendingLocalTransform))
+                return Editor::Undo::UndoStartResult::Failed("The Rect tool target is no longer valid.");
+        }
+        else
+            NLS::Editor::Core::ApplyGameObjectWorldGizmoMatrix(
+                *gameObject,
+                *m_state->pendingModelMatrix,
+                m_state->operation,
+                m_state->pivot);
         const auto current = ReadSceneViewTransform(*gameObject);
         if (!current.has_value())
             return Editor::Undo::UndoStartResult::Failed("The transformed GameObject is no longer valid in this Scene.");
@@ -299,6 +308,114 @@ private:
     SceneViewGizmoTarget m_target;
     SceneViewTransformSnapshot m_before;
     std::optional<SceneViewTransformSnapshot> m_after;
+    std::shared_ptr<Editor::Panels::SceneViewGizmoEditState> m_state;
+};
+
+struct SceneViewGroupTransformEntry
+{
+    SceneViewGizmoTarget target;
+    SceneViewTransformSnapshot before, after;
+    Editor::Core::SceneSelectionTransform worldBefore;
+};
+
+Editor::Undo::UndoValidationResult ValidateGroupTransforms(const std::vector<SceneViewGroupTransformEntry>& entries)
+{
+    for (const auto& entry : entries)
+        if (!ReadSceneViewTransform(entry.target))
+            return Editor::Undo::UndoValidationResult::Stale("A transformed object no longer belongs to the working Scene.");
+    return Editor::Undo::UndoValidationResult::Ready();
+}
+
+class SceneViewGroupTransformCommand final : public Editor::Undo::IEditorUndoCommand
+{
+public:
+    SceneViewGroupTransformCommand(Editor::Undo::UndoCommandInfo info, std::vector<SceneViewGroupTransformEntry> entries)
+        : m_info(std::move(info)), m_entries(std::move(entries)) {}
+    Editor::Undo::UndoCommandInfo GetInfo() const override { return m_info; }
+    Editor::Undo::UndoValidationResult Validate(Editor::Undo::UndoDirection, const Editor::Undo::UndoExecutionContext&) const override
+    { return ValidateGroupTransforms(m_entries); }
+    Editor::Undo::UndoStartResult Apply(Editor::Undo::UndoDirection direction, const Editor::Undo::UndoExecutionContext&, Editor::Undo::UndoCompletion) override
+    {
+        if (ValidateGroupTransforms(m_entries).state != Editor::Undo::UndoValidationState::Ready)
+            return Editor::Undo::UndoStartResult::Failed("A transformed object no longer exists.");
+        size_t applied = 0;
+        for (; applied < m_entries.size(); ++applied)
+        {
+            const auto& entry = m_entries[applied];
+            if (!ApplySceneViewTransform(entry.target, direction == Editor::Undo::UndoDirection::Undo ? entry.before : entry.after))
+            {
+                bool rollbackFailed = false;
+                while (applied > 0)
+                {
+                    const auto& previous = m_entries[--applied];
+                    rollbackFailed |= !ApplySceneViewTransform(previous.target,
+                        direction == Editor::Undo::UndoDirection::Undo ? previous.after : previous.before);
+                }
+                return Editor::Undo::UndoStartResult::Failed("The group transform could not be applied.", rollbackFailed);
+            }
+        }
+        return Editor::Undo::UndoStartResult::Completed();
+    }
+    bool TryMergeFrom(const Editor::Undo::IEditorUndoCommand&) override { return false; }
+private:
+    Editor::Undo::UndoCommandInfo m_info;
+    std::vector<SceneViewGroupTransformEntry> m_entries;
+};
+
+class SceneViewGroupTransformEdit final : public Editor::Undo::IEditorUndoEdit
+{
+public:
+    SceneViewGroupTransformEdit(Editor::Undo::UndoCommandInfo info, std::vector<SceneViewGroupTransformEntry> entries,
+        std::shared_ptr<Editor::Panels::SceneViewGizmoEditState> state)
+        : m_info(std::move(info)), m_entries(std::move(entries)), m_state(std::move(state)) {}
+    Editor::Undo::UndoValidationResult Validate(const Editor::Undo::UndoExecutionContext&) const override
+    { return ValidateGroupTransforms(m_entries); }
+    Editor::Undo::UndoStartResult Preview(const Editor::Undo::UndoExecutionContext&, Editor::Undo::UndoCompletion) override
+    {
+        if (!m_state || !m_state->pendingModelMatrix || ValidateGroupTransforms(m_entries).state != Editor::Undo::UndoValidationState::Ready)
+            return Editor::Undo::UndoStartResult::Failed("The group transform is no longer available.");
+        std::vector<Editor::Core::SceneSelectionTransform> candidates;
+        for (const auto& entry : m_entries)
+        {
+            auto candidate = Editor::Core::TransformSceneSelection(entry.worldBefore,
+                Editor::Core::FromImGuizmoMatrix(m_state->initialModelMatrix),
+                Editor::Core::FromImGuizmoMatrix(*m_state->pendingModelMatrix),
+                m_state->operation, m_state->pivot, m_state->space);
+            for (const float value : {candidate.worldPosition.x, candidate.worldPosition.y, candidate.worldPosition.z,
+                candidate.localScale.x, candidate.localScale.y, candidate.localScale.z,
+                candidate.worldRotation.x, candidate.worldRotation.y, candidate.worldRotation.z, candidate.worldRotation.w})
+                if (!std::isfinite(value)) return Editor::Undo::UndoStartResult::Failed("The group transform is not finite.");
+            candidates.push_back(candidate);
+        }
+        for (size_t index = 0; index < m_entries.size(); ++index)
+        {
+            auto& entry = m_entries[index];
+            auto* object = ResolveSceneViewGizmoTarget(entry.target);
+            if (!object) return Editor::Undo::UndoStartResult::Failed("A transformed object no longer exists.");
+            auto& transform = *object->GetTransform();
+            transform.SetWorldPosition(candidates[index].worldPosition);
+            transform.SetWorldRotation(candidates[index].worldRotation);
+            transform.SetLocalScale(candidates[index].localScale);
+            entry.after = *ReadSceneViewTransform(*object);
+            EDITOR_EXEC(MarkOwningSceneDirty(*object));
+        }
+        return Editor::Undo::UndoStartResult::Completed();
+    }
+    Editor::Undo::UndoStartResult Cancel(const Editor::Undo::UndoExecutionContext&, Editor::Undo::UndoCompletion) override
+    {
+        for (const auto& entry : m_entries)
+            if (ReadSceneViewTransform(entry.target)) static_cast<void>(ApplySceneViewTransform(entry.target, entry.before));
+        return Editor::Undo::UndoStartResult::Completed();
+    }
+    bool HasChanges() const override
+    { return std::any_of(m_entries.begin(), m_entries.end(), [](const auto& entry) { return entry.before != entry.after; }); }
+    Editor::Undo::UndoCommandPtr BuildCommand() override
+    {
+        return HasChanges() ? std::make_unique<SceneViewGroupTransformCommand>(m_info, m_entries) : nullptr;
+    }
+private:
+    Editor::Undo::UndoCommandInfo m_info;
+    std::vector<SceneViewGroupTransformEntry> m_entries;
     std::shared_ptr<Editor::Panels::SceneViewGizmoEditState> m_state;
 };
 
@@ -751,6 +868,7 @@ Editor::Panels::SceneView::SceneView(
     }
 
     m_camera.SetFar(5000.0f);
+    if (EDITOR_CONTEXT(projectSettings).GetOrDefault<bool>("scene_view_2d", false)) Set2D(true);
     m_image->AddPlugin<ViewportDragDropTarget>(*this);
 
 	    m_destroyedListener = Engine::GameObject::DestroyedEvent += [this](const Engine::GameObject& actor)
@@ -768,6 +886,9 @@ Editor::Panels::SceneView::SceneView(
 
 Editor::Panels::SceneView::~SceneView()
 {
+    CancelSceneSelectionGesture(false);
+    if (m_toolbarSettingsDirty && NLS::Core::ServiceLocator::Contains<Editor::Core::EditorActions>())
+        SaveSceneToolbarSettings();
     CancelGizmoEditSession();
     CancelActivePrefabDragInstance();
     Engine::GameObject::DestroyedEvent -= m_destroyedListener;
@@ -788,6 +909,19 @@ void Editor::Panels::SceneView::HandleViewportAssetDragDrop()
         payloadView.data != nullptr)
     {
         const auto payload = *static_cast<const NLS::Editor::Assets::EditorAssetDragPayload*>(payloadView.data);
+        if (const auto spritePayload = NLS::Editor::Assets::ResolveSpriteDragPayload(payload))
+        {
+            CancelActivePrefabDragInstance();
+            if (payloadView.delivered && GetScene() && NLS::Core::ServiceLocator::Contains<Editor::Undo::EditorUndoService>())
+            {
+                const auto result = HierarchyUndo::CreateGameObjectFromAsset(
+                    NLS::Core::ServiceLocator::Get<Editor::Undo::EditorUndoService>(), *spritePayload, *GetScene(), nullptr,
+                    BuildSceneViewUndoScope(*GetScene()), ResolveActivePrefabDragPlacement(EDITOR_CONTEXT(inputManager)->GetMousePosition()));
+                if (!result.Succeeded()) NLS_LOG_WARNING("Sprite drop: " + result.message);
+            }
+            UI::EndDragDropTarget();
+            return;
+        }
         UpdateActivePrefabDragInstance(payload);
         if (payloadView.delivered)
         {
@@ -1230,32 +1364,21 @@ std::optional<Maths::Vector3> Editor::Panels::SceneView::ResolveActivePrefabDrag
     if (!localPosition.has_value() || safeWidth == 0u || safeHeight == 0u)
         return m_camera.GetPosition() + m_camera.transform->GetWorldForward() * kSceneViewPrefabDragFallbackDistance;
 
-    const float width = std::max(1.0f, static_cast<float>(safeWidth));
-    const float height = std::max(1.0f, static_cast<float>(safeHeight));
-    const float ndcX = (localPosition->x / width) * 2.0f - 1.0f;
-    const float ndcY = 1.0f - (localPosition->y / height) * 2.0f;
-    const float aspect = width / height;
-    const float tanHalfFov = std::tan(Maths::DegreesToRadians(m_camera.GetFov()) * 0.5f);
-    const float screenRightNdcX = -ndcX;
-
-    auto rayDirection =
-        m_camera.transform->GetWorldForward() +
-        m_camera.transform->GetWorldRight() * (screenRightNdcX * tanHalfFov * aspect) +
-        m_camera.transform->GetWorldUp() * (ndcY * tanHalfFov);
-    rayDirection.Normalise();
-
-    const auto cameraPosition = m_camera.GetPosition();
-    if (std::fabs(rayDirection.y) > Maths::SMALL_NUMBER)
+    const auto ray = Core::BuildSceneViewPlacementRay(m_camera, *localPosition,
+        {static_cast<float>(safeWidth), static_cast<float>(safeHeight)});
+    const auto normal = m_is2D ? Maths::Vector3::Forward : Maths::Vector3::Up;
+    const float denominator = Maths::Vector3::Dot(ray.direction, normal);
+    if (std::fabs(denominator) > Maths::SMALL_NUMBER)
     {
-        const float distanceToGround = -cameraPosition.y / rayDirection.y;
+        const float distanceToGround = -Maths::Vector3::Dot(ray.origin, normal) / denominator;
         if (distanceToGround > 0.0f && distanceToGround < m_camera.GetFar())
-            return cameraPosition + rayDirection * distanceToGround;
+            return ray.origin + ray.direction * distanceToGround;
     }
 
     const float fallbackDistance = m_cameraFocus.hasFocus
         ? std::max(1.0f, m_cameraFocus.focusDistance)
         : kSceneViewPrefabDragFallbackDistance;
-    return cameraPosition + rayDirection * fallbackDistance;
+    return ray.origin + ray.direction * fallbackDistance;
 }
 
 #if defined(NLS_ENABLE_TEST_HOOKS)
@@ -1385,7 +1508,23 @@ void Editor::Panels::SceneView::EnsureRenderer()
 void Editor::Panels::SceneView::ApplyViewSettings()
 {
     const auto& viewSettings = Settings::EditorSettings::GetViewSettingsObject();
+    const auto& sceneSettings = Settings::EditorSettings::GetSceneViewSettingsObject();
+    m_cameraController.SetNavigationOptions(sceneSettings.cameraEasing, sceneSettings.cameraAcceleration,
+        sceneSettings.cameraMinSpeed, sceneSettings.cameraMaxSpeed);
     m_cameraController.SetSpeed(viewSettings.sceneViewCameraSpeed);
+    m_camera.SetFov(std::clamp(sceneSettings.cameraFov, 1.0f, 179.0f));
+    if (sceneSettings.cameraDynamicClipping)
+    {
+        const float extent = std::max({1.0f, m_cameraFocus.focusDistance,
+            m_camera.GetProjectionMode() == Render::Settings::EProjectionMode::ORTHOGRAPHIC ? m_camera.GetSize() : 0.0f});
+        m_camera.SetFar(std::max(1000.0f, extent * 100.0f));
+        m_camera.SetNear(std::max(0.001f, m_camera.GetFar() / 100000.0f));
+    }
+    else
+    {
+        m_camera.SetNear(std::max(0.001f, sceneSettings.cameraNear));
+        m_camera.SetFar(std::max(m_camera.GetNear() + 0.01f, sceneSettings.cameraFar));
+    }
     m_gridColor = Maths::Vector3(
         viewSettings.sceneViewGrid.r,
         viewSettings.sceneViewGrid.g,
@@ -1396,27 +1535,37 @@ void Editor::Panels::SceneView::ApplyViewSettings()
         viewSettings.sceneViewBackground.b));
 }
 
-void Editor::Panels::SceneView::Update(float p_deltaTime)
+void Editor::Panels::SceneView::UpdateCameraInputContext()
 {
     using namespace Windowing::Inputs;
-    if (NLS::Editor::Core::GetPendingSceneLoadRendererResourceResolutionTaskCount() == 0u)
-        m_hasRenderedSceneLoadResourcePlaceholder = false;
-
-    const auto previousCameraPosition = m_camera.GetPosition();
-    const auto previousCameraRotation = m_camera.GetRotation();
     const Maths::Vector2 mousePosition = EDITOR_CONTEXT(inputManager)->GetMousePosition();
-    const bool shortcutsWindowOpen = Editor::Core::DoesShortcutSettingsWindowBlockSceneInput();
+    const bool shortcutsWindowOpen = Editor::Core::DoesShortcutSettingsWindowBlockSceneInput() || IsToolbarInteractionActive();
     const bool viewportInputAvailable = HasViewportImageInputBounds();
+    auto& input = *EDITOR_CONTEXT(inputManager);
+    const auto& gui = *ImGui::GetCurrentContext();
+    const bool navigationPress = Shortcuts::GetEditorInputState(Shortcuts::EditorInputAction::CameraFly).pressed ||
+        Shortcuts::GetEditorInputState(Shortcuts::EditorInputAction::CameraPan).pressed ||
+        Shortcuts::GetEditorInputState(Shortcuts::EditorInputAction::CameraOrbit).pressed;
+    const bool pointerOwnerHeld = gui.ActiveId != 0 &&
+        (input.GetMouseButtonState(EMouseButton::MOUSE_BUTTON_LEFT) == EMouseButtonState::MOUSE_DOWN ||
+         (gui.ActiveIdSource == ImGuiInputSource_Mouse && gui.ActiveIdMouseButton >= 0 && gui.ActiveIdMouseButton < 8 &&
+          input.GetMouseButtonState(static_cast<EMouseButton>(gui.ActiveIdMouseButton)) == EMouseButtonState::MOUSE_DOWN));
+    if (!shortcutsWindowOpen && viewportInputAvailable && IsMouseWithinView(mousePosition))
+        Core::TryFocusViewportForNavigation(ImGui::FindWindowByName((name + GetPanelID()).c_str()),
+            {mousePosition.x, mousePosition.y}, navigationPress, pointerOwnerHeld);
     const bool mouseOverSceneView = viewportInputAvailable && IsMouseHoveringView(mousePosition);
     const bool sceneViewActive = !shortcutsWindowOpen && (IsFocused() || IsHovered() || mouseOverSceneView);
     const bool isAnyItemActive = NLS_SERVICE(UI::UIManager).IsAnyItemActive();
-    const bool blockCameraInput = ShouldSceneViewBlockCameraInput(
+    if (m_rectDrag && (ImGui::GetIO().AppFocusLost || !IsOpened())) CancelGizmoEditSession();
+    if (m_selectionGesture && (ImGui::GetIO().AppFocusLost || !IsOpened())) CancelSceneSelectionGesture(true);
+    const bool blockCameraInput = m_rectDrag.has_value() || ShouldSceneViewBlockCameraInput(
         shortcutsWindowOpen,
         isAnyItemActive,
         mouseOverSceneView,
-        ImGui::GetIO().WantTextInput);
+        Core::IsEditorTextInputActive());
     const bool sceneViewInputContextActive = sceneViewActive && !(isAnyItemActive && !mouseOverSceneView);
-    m_cameraController.SetInputBlocked(blockCameraInput);
+    m_cameraController.SetInputBlocked(!enabled || !IsOpened() || blockCameraInput ||
+        (m_selectionGesture && !m_selectionGesture->waitingForPick));
     if (shortcutsWindowOpen)
     {
         m_cameraController.ResetMouseInteractionState();
@@ -1436,6 +1585,22 @@ void Editor::Panels::SceneView::Update(float p_deltaTime)
         const auto imageMax = GetViewportImageMax();
         m_cameraController.SetViewportHeight(std::max(1.0f, imageMax.y - imageMin.y));
     }
+}
+
+void Editor::Panels::SceneView::RefreshCameraInputAfterUi()
+{
+    UpdateCameraInputContext();
+    m_cameraController.RefreshPointerCaptureAfterUi();
+}
+
+void Editor::Panels::SceneView::Update(float p_deltaTime)
+{
+    if (NLS::Editor::Core::GetPendingSceneLoadRendererResourceResolutionTaskCount() == 0u)
+        m_hasRenderedSceneLoadResourcePlaceholder = false;
+    const auto previousCameraPosition = m_camera.GetPosition();
+    const auto previousCameraRotation = m_camera.GetRotation();
+    const float previousCameraSize = m_camera.GetSize();
+    UpdateCameraInputContext();
 
     AViewControllable::Update(p_deltaTime);
     if (m_activeDraggedPrefabPayload.has_value())
@@ -1454,8 +1619,14 @@ void Editor::Panels::SceneView::Update(float p_deltaTime)
         previousCameraRotation,
         m_camera.GetPosition(),
         m_camera.GetRotation());
+    m_cameraMovedForPresentation |= previousCameraSize != m_camera.GetSize();
     if (ShouldLogSceneCameraInputDiagnostics())
     {
+        const auto mousePosition = EDITOR_CONTEXT(inputManager)->GetMousePosition();
+        const bool shortcutsWindowOpen = Editor::Core::DoesShortcutSettingsWindowBlockSceneInput() || IsToolbarInteractionActive();
+        const bool mouseOverSceneView = HasViewportImageInputBounds() && IsMouseHoveringView(mousePosition);
+        const bool sceneViewActive = !shortcutsWindowOpen && (IsFocused() || IsHovered() || mouseOverSceneView);
+        const bool blockCameraInput = m_cameraController.IsInputBlocked();
         std::ostringstream stream;
         stream << "dt=" << p_deltaTime
             << " focused=" << IsFocused()
@@ -1481,7 +1652,20 @@ Editor::Core::EGizmoOperation Editor::Panels::SceneView::GetCurrentGizmoOperatio
 
 void Editor::Panels::SceneView::SetCurrentGizmoOperation(const Editor::Core::EGizmoOperation p_operation)
 {
+    if (m_currentOperation == p_operation) return;
+    CancelGizmoEditSession();
+    if (m_savedRectSpace)
+    {
+        m_currentSpace = *m_savedRectSpace;
+        m_savedRectSpace.reset();
+    }
+    if (p_operation == Core::EGizmoOperation::RECT)
+    {
+        m_savedRectSpace = m_currentSpace;
+        m_currentSpace = Core::SceneViewGizmoSpace::Local;
+    }
     m_currentOperation = p_operation;
+    InvalidateStaticFrameCache();
 }
 
 Editor::Core::SceneViewGizmoPivot Editor::Panels::SceneView::GetCurrentGizmoPivot() const
@@ -1491,12 +1675,13 @@ Editor::Core::SceneViewGizmoPivot Editor::Panels::SceneView::GetCurrentGizmoPivo
 
 void Editor::Panels::SceneView::SetCurrentGizmoPivot(const Editor::Core::SceneViewGizmoPivot p_pivot)
 {
+    if (m_gizmoEditSession && m_currentPivot != p_pivot) CancelGizmoEditSession();
     m_currentPivot = p_pivot;
 }
 
 void Editor::Panels::SceneView::ToggleCurrentGizmoPivot()
 {
-    m_currentPivot = Core::ToggleGizmoPivot(m_currentPivot);
+    SetCurrentGizmoPivot(Core::ToggleGizmoPivot(m_currentPivot));
 }
 
 Editor::Core::SceneViewGizmoSpace Editor::Panels::SceneView::GetCurrentGizmoSpace() const
@@ -1506,17 +1691,26 @@ Editor::Core::SceneViewGizmoSpace Editor::Panels::SceneView::GetCurrentGizmoSpac
 
 void Editor::Panels::SceneView::SetCurrentGizmoSpace(const Editor::Core::SceneViewGizmoSpace p_space)
 {
+    if (m_currentOperation == Core::EGizmoOperation::RECT) return;
+    if (m_gizmoEditSession && m_currentSpace != p_space) CancelGizmoEditSession();
     m_currentSpace = p_space;
 }
 
 void Editor::Panels::SceneView::ToggleCurrentGizmoSpace()
 {
-    m_currentSpace = Core::ToggleGizmoSpace(m_currentSpace);
+    SetCurrentGizmoSpace(Core::ToggleGizmoSpace(m_currentSpace));
 }
 
 void Editor::Panels::SceneView::InitFrame()
 {
     AViewControllable::InitFrame();
+
+    auto grid = m_renderer->GetDescriptor<Rendering::GridRenderPass::GridDescriptor>();
+    const auto& sceneSettings = Settings::EditorSettings::GetSceneViewSettingsObject();
+    grid.enabled = sceneSettings.showGrid;
+    grid.planarXY = m_is2D;
+    m_renderer->RemoveDescriptor<Rendering::GridRenderPass::GridDescriptor>();
+    m_renderer->AddDescriptor<Rendering::GridRenderPass::GridDescriptor>(std::move(grid));
 
     auto* debugRenderer = dynamic_cast<Editor::Rendering::DebugSceneRenderer*>(m_renderer.get());
     if (debugRenderer == nullptr)
@@ -1526,7 +1720,7 @@ void Editor::Panels::SceneView::InitFrame()
 
     if (EDITOR_EXEC(IsAnyGameObjectSelected()))
     {
-        selectedGameObject = EDITOR_EXEC(GetSelectedGameObject());
+        selectedGameObject = EDITOR_EXEC(GetActiveGameObject());
     }
 
     m_requestPickingFrameForClick = ShouldRequestHitProxyPickingFrameForClick(
@@ -1548,7 +1742,10 @@ void Editor::Panels::SceneView::InitFrame()
             m_activeDraggedPrefabProxyPlacement,
             m_activeDraggedPrefabPayload.has_value(),
             m_activeDraggedPrefabRoot,
-            !m_activeDraggedPrefabRootAwaitingRendererResources)});
+            !m_activeDraggedPrefabRootAwaitingRendererResources),
+        BuildSceneViewDebugDrawSettings(sceneSettings),
+        sceneSettings.showSelectionOutline,
+        EDITOR_EXEC(GetSelectedGameObjects())});
 }
 
 Engine::SceneSystem::Scene* Editor::Panels::SceneView::GetScene()
@@ -1562,6 +1759,36 @@ Engine::SceneSystem::Scene* Editor::Panels::SceneView::GetScene()
 Engine::Rendering::BaseSceneRenderer::SceneDescriptor Editor::Panels::SceneView::CreateSceneDescriptor()
 {
     auto descriptor = AViewControllable::CreateSceneDescriptor();
+    const auto& viewSettings = Settings::EditorSettings::GetSceneViewSettingsObject();
+    // Skybox visibility is its own Scene View setting.  Keep it independent of
+    // the optional effects toggle so disabling particles/post effects does not
+    // silently turn the shaded viewport background black.
+    descriptor.includeSkyboxes = viewSettings.showSkybox;
+    m_sceneVisibility.BindScene(GetScene(), GetScene() ? GetScene()->GetInstanceID() : 0);
+    std::vector<int32_t> objectIds;
+    if (const auto* scene = GetScene())
+        for (auto* object : scene->GetGameObjects()) if (object) objectIds.push_back(object->GetInstanceID());
+    descriptor.viewOptions.hiddenObjectIds = m_sceneVisibility.CaptureHiddenIds(objectIds, viewSettings.sceneVisibility);
+    if (viewSettings.showSelectionWire)
+        for (auto* selected : Core::GetSceneSelectionRoots(EDITOR_EXEC(GetSelectedGameObjects())))
+        {
+            const auto collect = [&](const auto& self, const Engine::GameObject& object) -> void
+            {
+                descriptor.viewOptions.selectionWireIds.push_back(object.GetInstanceID());
+                for (const auto* child : object.GetChildren()) if (child) self(self, *child);
+            };
+            collect(collect, *selected);
+            std::sort(descriptor.viewOptions.selectionWireIds.begin(), descriptor.viewOptions.selectionWireIds.end());
+            descriptor.viewOptions.selectionWireIds.erase(std::unique(descriptor.viewOptions.selectionWireIds.begin(), descriptor.viewOptions.selectionWireIds.end()), descriptor.viewOptions.selectionWireIds.end());
+        }
+    descriptor.viewOptions.postProcessing = viewSettings.effectsEnabled && viewSettings.postProcessing;
+    Core::ApplySceneViewDrawMode(Core::DecodeSceneViewDrawMode(viewSettings.drawMode), descriptor.viewOptions);
+    descriptor.viewOptions.debugParameters = m_drawModeParameters;
+    descriptor.viewOptions.previewLighting = !viewSettings.sceneLighting;
+    descriptor.viewOptions.includeParticles = viewSettings.effectsEnabled && viewSettings.showParticles;
+    const auto& viewColors = Settings::EditorSettings::GetViewSettingsObject();
+    descriptor.viewOptions.backgroundColor = {viewColors.sceneViewBackground.r, viewColors.sceneViewBackground.g,
+        viewColors.sceneViewBackground.b, 1.0f};
     const size_t pendingSceneLoadResourceTasks =
         NLS::Editor::Core::GetPendingSceneLoadRendererResourceResolutionTaskCount();
     const size_t visibleSceneLoadResourceObjects =
@@ -1577,7 +1804,8 @@ Engine::Rendering::BaseSceneRenderer::SceneDescriptor Editor::Panels::SceneView:
     descriptor.suppressVisibleMaterialTextureRequests =
         pendingSceneLoadResourceTasks > 0u;
     descriptor.suppressHZBOcclusion =
-        pendingSceneLoadResourceTasks > 0u;
+        pendingSceneLoadResourceTasks > 0u || viewSettings.drawMode == 1 ||
+        descriptor.viewOptions.debugMode == Engine::Rendering::SceneDisplayDebugMode::Overdraw || !viewSettings.cameraOcclusionCulling;
     descriptor.suppressLightGridCompute =
         ShouldSuppressSceneViewLightGridComputeForPendingSceneLoadResources(
             pendingSceneLoadResourceTasks,
@@ -1596,9 +1824,15 @@ bool Editor::Panels::SceneView::ShouldUseStaticFrameCache() const
 {
     // Scene render revisions are part of the cache key and are raised by
     // render-affecting component changes, including runtime script updates.
-    return m_distanceFieldDebug.visualization == Render::DistanceField::DistanceFieldVisualization::Off &&
-        !Render::DistanceField::DistanceFieldSystem::HasPendingWork() &&
-        Settings::EditorSettings::GetRenderingSettingsObject().enableSceneViewStaticFrameCache;
+    if (Render::DistanceField::DistanceFieldSystem::HasPendingWork()) return false;
+    if (m_distanceFieldDebug.visualization != Render::DistanceField::DistanceFieldVisualization::Off)
+    {
+        const auto* renderer = dynamic_cast<Engine::Rendering::BaseSceneRenderer*>(m_renderer.get());
+        return renderer && renderer->GetDistanceFieldStats().CanReuseVisualization();
+    }
+    return (Settings::EditorSettings::GetRenderingSettingsObject().enableSceneViewStaticFrameCache ||
+            !Settings::EditorSettings::GetSceneViewSettingsObject().effectsEnabled ||
+            !Settings::EditorSettings::GetSceneViewSettingsObject().alwaysRefresh);
 }
 
 uint64_t Editor::Panels::SceneView::BuildStaticFrameCacheKey(
@@ -1630,7 +1864,7 @@ uint64_t Editor::Panels::SceneView::BuildStaticFrameCacheKey(
     if (NLS::Core::ServiceLocator::Contains<NLS::Editor::Core::EditorActions>())
     {
         HashSceneViewCacheValue(selectionKey, EDITOR_EXEC(IsAnyGameObjectSelected()) ? 1u : 0u);
-        HashSceneViewCachePointer(selectionKey, EDITOR_EXEC(GetSelectedGameObject()));
+        HashSceneViewCacheValue(selectionKey, NLS::Editor::Inspector::EditorSelectionService::Get().GetSelection().revision);
         HashSceneViewCacheValue(
             selectionKey,
             EDITOR_EXEC(GetContext()).activePrefabStage.has_value() ? 1u : 0u);
@@ -1671,6 +1905,33 @@ uint64_t Editor::Panels::SceneView::BuildStaticFrameCacheKey(
     HashSceneViewCacheValue(seed, Render::DistanceField::DistanceFieldSystem::RuntimeRevision());
     HashSceneViewCacheValue(seed, Render::DistanceField::GetDistanceFieldSourceRevision());
     HashSceneViewCacheValue(seed, m_distanceFieldDebugRevision);
+    const auto& toolbar = Settings::EditorSettings::GetSceneViewSettingsObject();
+    HashSceneViewCacheValue(seed, static_cast<uint64_t>(toolbar.drawMode));
+    HashSceneViewCacheFloat(seed, m_drawModeParameters.overdrawMax);
+    for (const auto& range : {m_drawModeParameters.albedoRange, m_drawModeParameters.specularRange})
+        for (float value : {range.x, range.y, range.z, range.w}) HashSceneViewCacheFloat(seed, value);
+    HashSceneViewCacheValue(seed, toolbar.effectsEnabled);
+    HashSceneViewCacheValue(seed, toolbar.postProcessing);
+    HashSceneViewCacheValue(seed, toolbar.alwaysRefresh);
+    HashSceneViewCacheValue(seed, toolbar.sceneVisibility);
+    HashSceneViewCacheValue(seed, m_sceneVisibility.Revision());
+    HashSceneViewCacheValue(seed, toolbar.cameraOcclusionCulling);
+    HashSceneViewCacheValue(seed, toolbar.showGrid);
+    HashSceneViewCacheValue(seed, toolbar.sceneLighting);
+    HashSceneViewCacheValue(seed, toolbar.showSkybox);
+    HashSceneViewCacheValue(seed, toolbar.showParticles);
+    HashSceneViewCacheValue(seed, toolbar.showGizmos);
+    HashSceneViewCacheValue(seed, toolbar.showCameras);
+    HashSceneViewCacheValue(seed, toolbar.showLights);
+    HashSceneViewCacheValue(seed, toolbar.showBounds);
+    HashSceneViewCacheValue(seed, toolbar.showCameraIcons);
+    HashSceneViewCacheValue(seed, toolbar.showLightIcons);
+    HashSceneViewCacheValue(seed, toolbar.icons3D);
+    HashSceneViewCacheValue(seed, toolbar.fadeGizmos);
+    HashSceneViewCacheValue(seed, toolbar.showSelectionWire);
+    HashSceneViewCacheValue(seed, toolbar.showSelectionOutline);
+    HashSceneViewCacheFloat(seed, toolbar.lightBillboardScale);
+    HashSceneViewCacheValue(seed, m_is2D);
     return seed;
 }
 
@@ -1785,7 +2046,6 @@ void Editor::Panels::SceneView::DrawPreRenderViewportOverlay()
 {
     if (ShouldApplySceneMutationFromViewportOverlay(ViewportOverlayLifecyclePhase::BeforeViewRender))
         DrawViewportOverlay();
-    DrawDistanceFieldControls();
 }
 
 void Editor::Panels::SceneView::DrawDistanceFieldControls()
@@ -1793,39 +2053,26 @@ void Editor::Panels::SceneView::DrawDistanceFieldControls()
     namespace df = Render::DistanceField;
     auto* renderer = dynamic_cast<Engine::Rendering::BaseSceneRenderer*>(m_renderer.get());
     if (!renderer) return;
-    const auto imageMin = HasViewportImageBounds() ? GetViewportImageMin() : GetCurrentViewportImageMin();
-    const auto cursor = ImGui::GetCursorScreenPos();
-    ImGui::SetCursorScreenPos(ImVec2(imageMin.x + 8, imageMin.y + 8));
-    ImGui::BeginChild("##DistanceFieldToolbar", ImVec2(145, 28), ImGuiChildFlags_None,
-        ImGuiWindowFlags_NoBackground | ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
-    if (ImGui::Button("Distance Fields")) ImGui::OpenPopup("Distance Fields Settings");
-    m_gizmoInteraction.isHovered = m_gizmoInteraction.isHovered || ImGui::IsWindowHovered() || ImGui::IsPopupOpen("Distance Fields Settings");
     bool changed = false;
-    m_distanceFieldDebug.forceRebuild = false;
-    if (ImGui::BeginPopup("Distance Fields Settings"))
     {
-        int visualization = static_cast<int>(m_distanceFieldDebug.visualization);
         int channel = static_cast<int>(m_distanceFieldDebug.channel);
-        if (ImGui::Combo("View", &visualization, "Scene\0Mesh Distance Field\0Global Distance Field\0"))
-        { m_distanceFieldDebug.visualization = static_cast<df::DistanceFieldVisualization>(visualization); changed = true; }
         if (ImGui::Combo("Display", &channel, "Surface\0Trace Steps\0Signed Slice\0Normals\0Clipmaps\0Pages\0Residency\0"))
         { m_distanceFieldDebug.channel = static_cast<df::DistanceFieldDebugChannel>(channel); changed = true; }
+        if (m_distanceFieldDebug.channel == df::DistanceFieldDebugChannel::Steps)
+        {
+            int maximum = m_distanceFieldDebug.traceStepsMax;
+            if (ImGui::SliderInt("Red at steps", &maximum, 8, 512))
+            { m_distanceFieldDebug.traceStepsMax = static_cast<uint16_t>(maximum); changed = true; }
+            ImGui::TextWrapped("Blue to red: fewer to more steps. Surface lighting preserves shape; missed rays stay dark.");
+        }
         if (m_distanceFieldDebug.channel == df::DistanceFieldDebugChannel::SignedSlice ||
             (m_distanceFieldDebug.channel == df::DistanceFieldDebugChannel::Residency &&
              m_distanceFieldDebug.visualization == df::DistanceFieldVisualization::Global))
             changed = ImGui::DragFloat("Slice Height", &m_distanceFieldDebug.slicePosition, .05f) || changed;
         changed = ImGui::Checkbox("Mostly Static Cache", &m_distanceFieldDebug.mostlyStaticOnly) || changed;
-        if (ImGui::Button("Rebuild Distance Fields"))
+        if (ImGui::Button("Rebuild Global Pages"))
         { m_distanceFieldDebug.forceRebuild = true; changed = true; }
-        auto& project = EDITOR_CONTEXT(projectSettings);
-        bool generation = project.GetOrDefault<bool>("generate_mesh_distance_fields", false);
-        if (ImGui::Checkbox("Generate Mesh Distance Fields", &generation))
-        {
-            if (project.IsKeyExisting("generate_mesh_distance_fields")) project.Set<bool>("generate_mesh_distance_fields", generation);
-            else project.Add<bool>("generate_mesh_distance_fields", generation);
-            project.Rewrite();
-        }
-        ImGui::TextDisabled("Reimport models after changing generation settings.");
+        DrawDistanceFieldBuildControls();
         const auto stats = renderer->GetDistanceFieldStats();
         ImGui::Separator();
         ImGui::Text("Objects: %llu  Bricks: %llu", static_cast<unsigned long long>(stats.objects), static_cast<unsigned long long>(stats.residentBricks));
@@ -1838,25 +2085,35 @@ void Editor::Panels::SceneView::DrawDistanceFieldControls()
         ImGui::Text("Prepare: %.2f ms", stats.updateCpuMs);
         if (stats.gpuUpdateMs) ImGui::Text("GPU (last update): %.3f ms", *stats.gpuUpdateMs);
         else ImGui::TextDisabled("GPU (last update): --");
+        ImGui::TextDisabled("View image: %s", GetLastStaticFrameCacheDecisionReason() == StaticFrameCacheDecisionReason::Hit
+            ? "cached" : "updating");
         if (!stats.diagnostic.empty()) ImGui::TextWrapped("%s", stats.diagnostic.c_str());
-        ImGui::EndPopup();
     }
-    ImGui::EndChild();
-    ImGui::SetCursorScreenPos(cursor);
     if (changed) ++m_distanceFieldDebugRevision;
     renderer->SetDistanceFieldDebugSettings(m_distanceFieldDebug);
 }
 
 void Editor::Panels::SceneView::OnAfterDrawWidgets()
 {
+    DrawSceneSelectionGesture();
     if (ShouldResolveViewportPicking(ViewportOverlayLifecyclePhase::AfterWidgetDraw))
         HandleGameObjectPicking();
     EndViewportOverlayDrawListChannels();
+    DrawDistanceFieldStatusOverlay();
     MarkViewportImageInputBoundsForLastDraw();
 }
 
 void Editor::Panels::SceneView::CancelGizmoEditSession()
 {
+    if (m_gizmoEditSession) { ImGuizmo::Enable(false); ImGuizmo::Enable(true); }
+    m_rectDrag.reset();
+    if (m_rectActiveId != 0 && ImGui::GetCurrentContext())
+    {
+        if (ImGui::GetKeyOwner(ImGuiKey_MouseLeft) == m_rectActiveId)
+            ImGui::SetKeyOwner(ImGuiKey_MouseLeft, ImGuiKeyOwner_NoOwner);
+        if (ImGui::GetActiveID() == m_rectActiveId) ImGui::ClearActiveID();
+    }
+    m_rectActiveId = 0;
     if (!m_gizmoEditSession.has_value())
     {
         m_gizmoEditTarget.reset();
@@ -1873,6 +2130,61 @@ void Editor::Panels::SceneView::CancelGizmoEditSession()
     m_gizmoEditSession.reset();
     m_gizmoEditTarget.reset();
     m_gizmoEditState.reset();
+}
+
+bool Editor::Panels::SceneView::BeginGizmoEditSession(Engine::GameObject& object)
+{
+    if (m_gizmoEditSession) return true;
+    if (!NLS::Core::ServiceLocator::Contains<Editor::Undo::EditorUndoService>()) return false;
+    const auto selected = EDITOR_EXEC(GetSelectedGameObjects());
+    if (selected.size() > 1 && m_currentOperation != Core::EGizmoOperation::RECT)
+    {
+        Editor::Undo::UndoCommandInfo info;
+        info.label = "Transform GameObjects"; info.sourceModule = "Scene View";
+        info.scopes = {BuildSceneViewUndoScope(object)};
+        std::vector<SceneViewGroupTransformEntry> entries;
+        for (auto* root : Core::GetSceneSelectionRoots(selected))
+        {
+            auto target = CaptureSceneViewGizmoTarget(*root, info.scopes.front());
+            auto before = ReadSceneViewTransform(*root);
+            if (!target || !before) return false;
+            const auto* transform = root->GetTransform();
+            entries.push_back({*target, *before, *before,
+                {transform->GetWorldPosition(), transform->GetWorldRotation(), transform->GetLocalScale()}});
+            info.affected.push_back(target->object.GetAffectedKey());
+        }
+        auto activeTarget = CaptureSceneViewGizmoTarget(object, info.scopes.front());
+        if (!activeTarget || entries.empty()) return false;
+        info.estimatedBytes = entries.size() * sizeof(SceneViewGroupTransformEntry);
+        auto state = std::make_shared<SceneViewGizmoEditState>();
+        state->multi = true; state->space = m_currentSpace; state->pivot = m_currentPivot; state->operation = m_currentOperation;
+        state->selectionRevision = NLS::Editor::Inspector::EditorSelectionService::Get().GetSelection().revision;
+        state->initialModelMatrix = Core::ToImGuizmoMatrix(Core::BuildSceneSelectionGizmoMatrix(selected, object, m_currentPivot, m_currentSpace));
+        auto begin = NLS::Core::ServiceLocator::Get<Editor::Undo::EditorUndoService>().BeginEditSession({info,
+            std::make_unique<SceneViewGroupTransformEdit>(info, std::move(entries), state)});
+        if (begin.result.state != Editor::Undo::UndoRequestState::Completed || !begin.session.IsValid()) return false;
+        m_gizmoEditSession.emplace(std::move(begin.session)); m_gizmoEditTarget = activeTarget->object; m_gizmoEditState = std::move(state);
+        return true;
+    }
+    const auto before = ReadSceneViewTransform(object);
+    auto target = CaptureSceneViewGizmoTarget(object, BuildSceneViewUndoScope(object));
+    if (!before || !target) return false;
+    Editor::Undo::UndoCommandInfo info;
+    info.label = m_currentOperation == Core::EGizmoOperation::RECT ? "Rect Transform" : "Transform";
+    info.sourceModule = "Scene View";
+    info.scopes = {target->object.GetScope()};
+    info.affected = {target->object.GetAffectedKey()};
+    info.estimatedBytes = sizeof(SceneViewTransformSnapshot) * 2u;
+    const auto targetForPanel = target->object;
+    auto state = std::make_shared<SceneViewGizmoEditState>();
+    state->selectionRevision = NLS::Editor::Inspector::EditorSelectionService::Get().GetSelection().revision;
+    auto begin = NLS::Core::ServiceLocator::Get<Editor::Undo::EditorUndoService>().BeginEditSession({
+        info, std::make_unique<SceneViewTransformEdit>(info, std::move(*target), *before, state)});
+    if (begin.result.state != Editor::Undo::UndoRequestState::Completed || !begin.session.IsValid()) return false;
+    m_gizmoEditSession.emplace(std::move(begin.session));
+    m_gizmoEditTarget = targetForPanel;
+    m_gizmoEditState = std::move(state);
+    return true;
 }
 
 void Editor::Panels::SceneView::AfterRenderFrame()
@@ -1899,6 +2211,18 @@ void Editor::Panels::SceneView::TryWriteValidationReadback()
         ++m_validationReadbackWarmupFrames;
         return;
     }
+
+    if (m_distanceFieldDebug.visualization != Render::DistanceField::DistanceFieldVisualization::Off &&
+        (Render::DistanceField::DistanceFieldSystem::HasPendingWork() ||
+            EDITOR_CONTEXT(importProgressTracker).HasRunningJobs() ||
+            std::any_of(m_distanceFieldBuildAssets.begin(), m_distanceFieldBuildAssets.end(),
+                [&](const auto& path) { return Editor::Assets::DistanceFieldBuildService::IsBuilding(EDITOR_CONTEXT(projectPath),path); })))
+        return;
+#if defined(NLS_ENABLE_TEST_HOOKS)
+    if (const auto* action = std::getenv("NLS_EDITOR_TOOLBAR_VALIDATION_ACTION");
+        action && std::string_view(action) == "build-distance-fields" && m_distanceFieldBuildAssets.empty())
+        return;
+#endif
 
     const size_t pendingSceneLoadResourceTasks =
         NLS::Editor::Core::GetPendingSceneLoadRendererResourceResolutionTaskCount();
@@ -1932,7 +2256,7 @@ void Editor::Panels::SceneView::TryWriteValidationReadback()
     if (!diagnostics.editorValidationCreateAsset.empty())
     {
         auto* selectedGameObject = EDITOR_EXEC(GetSelectedGameObject());
-        if (selectedGameObject == nullptr)
+        if (selectedGameObject == nullptr || (Settings::EditorSettings::GetSceneViewSettingsObject().sceneVisibility && IsObjectHidden(*selectedGameObject)))
         {
             m_validationReadbackReadyFrames = 0u;
             return;
@@ -2031,10 +2355,13 @@ void Editor::Panels::SceneView::TryWriteValidationReadback()
         : 0.0;
     const size_t pendingSceneLoadTextureLoads =
         NLS::Editor::Core::GetPendingSceneLoadRendererResourceResolutionTextureLoadCount();
-    const auto readbackStatus = BuildSceneViewValidationReadbackStatus(
+    auto readbackStatus = BuildSceneViewValidationReadbackStatus(
         nonBlackPixels,
         static_cast<uint32_t>(maxChannel),
         pendingSceneLoadTextureLoads);
+    if (m_distanceFieldDebug.visualization != Render::DistanceField::DistanceFieldVisualization::Off &&
+        m_distanceFieldDebug.channel == Render::DistanceField::DistanceFieldDebugChannel::Surface && maxChannel <= 32u)
+        readbackStatus = "empty-distance-field-visualization";
 
     std::string pngError;
     if (!diagnostics.editorValidationSceneReadbackOutput.empty())
@@ -2066,6 +2393,16 @@ void Editor::Panels::SceneView::TryWriteValidationReadback()
     summary << "maxChannel=" << static_cast<uint32_t>(maxChannel) << "\n";
     summary << "pendingSceneLoadTextureLoads=" << pendingSceneLoadTextureLoads << "\n";
     summary << "readbackStatus=" << readbackStatus << "\n";
+    if (m_distanceFieldDebug.visualization != Render::DistanceField::DistanceFieldVisualization::Off)
+        if (const auto* renderer = dynamic_cast<Engine::Rendering::BaseSceneRenderer*>(m_renderer.get()))
+        {
+            const auto stats = renderer->GetDistanceFieldStats();
+            summary << "distanceFieldObjects=" << stats.objects << "\n";
+            summary << "distanceFieldBricks=" << stats.residentBricks << "\n";
+            summary << "distanceFieldPages=" << stats.residentPages << "\n";
+            summary << "distanceFieldFailedLoads=" << stats.failedLoads << "\n";
+            summary << "distanceFieldDiagnostic=" << stats.diagnostic << "\n";
+        }
 
     if (readbackStatus == "success")
         NLS_LOG_INFO("Scene View validation readback: " + summary.str());
@@ -2087,6 +2424,110 @@ void Editor::Panels::SceneView::TryWriteValidationReadback()
     EDITOR_CONTEXT(window)->SetShouldClose(true);
 }
 
+void Editor::Panels::SceneView::DrawRectTool(Engine::GameObject& object, const Core::RectToolView& view,
+    const bool snapEnabled)
+{
+    using Core::RectToolHandle;
+    auto& io = ImGui::GetIO();
+    const Maths::Vector2 mouse {io.MousePos.x, io.MousePos.y};
+    const float uiScale = NLS_SERVICE(UI::UIManager).GetScale();
+    std::optional<Core::RectToolFrame> frame;
+    RectToolHandle hovered = RectToolHandle::None;
+
+    if (m_rectDrag)
+    {
+        const auto& initial = m_rectDrag->frame;
+        bool environmentChanged = view.min != initial.view.min || view.max != initial.view.max;
+        const auto* parent = object.GetParent();
+        const auto parentWorld = parent && parent->GetTransform()
+            ? parent->GetTransform()->GetWorldMatrix() : Maths::Matrix4::Identity;
+        for (int i = 0; i < 16; ++i)
+            environmentChanged |= parentWorld.data[i] != initial.target.parentWorld.data[i] ||
+                view.viewProjection.data[i] != initial.view.viewProjection.data[i];
+        if (environmentChanged || io.AppFocusLost || !ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows) ||
+            ImGui::GetActiveID() != m_rectActiveId)
+        {
+            CancelGizmoEditSession();
+            return;
+        }
+        // The scoped Command cancels after UI routing. External interruption
+        // above still cancels immediately, even when Escape arrives with it.
+        if (Shortcuts::GetEditorInputState(Shortcuts::EditorInputAction::SceneCancel).pressed) return;
+        ImGui::KeepAliveID(m_rectActiveId);
+        m_gizmoInteraction.isUsing = true;
+        auto& undoService = NLS::Core::ServiceLocator::Get<Editor::Undo::EditorUndoService>();
+        if (io.MouseDown[0])
+        {
+            const auto& settings = Settings::EditorSettings::GetSceneToolSettingsObject();
+            const Core::RectToolSnap snap {snapEnabled, settings.translationSnapUnit,
+                settings.rotationSnapUnit, settings.scalingSnapUnit};
+            const auto candidate = Core::UpdateRectToolDrag(*m_rectDrag, mouse, snap);
+            if (!candidate || !m_gizmoEditState)
+            {
+                CancelGizmoEditSession();
+                return;
+            }
+            const auto previous = m_gizmoEditState->pendingLocalTransform.value_or(initial.target.transform);
+            if (*candidate != previous)
+            {
+                m_gizmoEditState->pendingLocalTransform = *candidate;
+                const auto preview = undoService.PreviewEditSession(*m_gizmoEditSession);
+                if (preview.state != Editor::Undo::UndoRequestState::Completed)
+                {
+                    CancelGizmoEditSession();
+                    return;
+                }
+            }
+            auto visualTarget = initial.target;
+            visualTarget.transform = *candidate;
+            frame = Core::BuildRectToolFrame(visualTarget, view, initial.pivot, initial.plane);
+        }
+        else
+        {
+            const auto commit = undoService.CommitEditSession(*m_gizmoEditSession);
+            if (commit.state == Editor::Undo::UndoRequestState::Completed || !undoService.HasActiveEditSession())
+            {
+                m_gizmoEditSession.reset();
+                CancelGizmoEditSession();
+            }
+        }
+    }
+
+    if (!m_rectDrag)
+    {
+        frame = Core::BuildRectToolFrame(Core::CaptureRectToolTarget(object), view, m_currentPivot);
+        const bool inputAvailable = !io.AppFocusLost && !Shortcuts::GetEditorInputState(Shortcuts::EditorInputAction::SceneSuspendSelection).actuated &&
+            !Shortcuts::GetEditorInputState(Shortcuts::EditorInputAction::CameraFly).actuated &&
+            !Shortcuts::GetEditorInputState(Shortcuts::EditorInputAction::CameraPan).actuated &&
+            !Shortcuts::GetEditorInputState(Shortcuts::EditorInputAction::CameraOrbit).actuated &&
+            !m_gizmoInteraction.isViewHovered && !m_gizmoInteraction.isViewUsing &&
+            !ImGui::GetCurrentContext()->DragDropActive && ImGui::GetActiveID() == 0 && IsMouseHoveringView(mouse);
+        if (frame && inputAvailable)
+        {
+            hovered = Core::HitTestRectTool(*frame, mouse, uiScale);
+            m_gizmoInteraction.isHovered = hovered != RectToolHandle::None;
+            if (m_gizmoInteraction.isHovered && ImGui::IsMouseClicked(ImGuiMouseButton_Left))
+            {
+                auto drag = Core::BeginRectToolDrag(*frame, hovered, mouse);
+                if (drag && BeginGizmoEditSession(object))
+                {
+                    m_rectDrag = std::move(drag);
+                    m_rectActiveId = ImGui::GetID("##SceneRectTool");
+                    auto* window = ImGui::GetCurrentWindow();
+                    ImGui::FocusWindow(window);
+                    ImGui::SetActiveID(m_rectActiveId, window);
+                    ImGui::SetKeyOwner(ImGuiKey_MouseLeft, m_rectActiveId, ImGuiInputFlags_LockUntilRelease);
+                    m_gizmoInteraction.isUsing = true;
+                    m_pendingClickPickRenderPos.reset();
+                    m_pendingClickPickingSignature.reset();
+                }
+            }
+        }
+    }
+    if (frame) Core::DrawRectToolOverlay(*ImGui::GetWindowDrawList(), *frame, hovered,
+        m_rectDrag ? m_rectDrag->handle : RectToolHandle::None, uiScale);
+}
+
 void Editor::Panels::SceneView::DrawViewportOverlay()
 {
     m_gizmoInteraction = {};
@@ -2095,11 +2536,9 @@ void Editor::Panels::SceneView::DrawViewportOverlay()
 		 !NLS::Core::ServiceLocator::Get<Editor::Undo::EditorUndoService>().HasActiveEditSession()))
 	{
 		// A global Undo (or Escape) may have cancelled this continuous edit.
-		m_gizmoEditSession.reset();
-		m_gizmoEditTarget.reset();
-		m_gizmoEditState.reset();
+		CancelGizmoEditSession();
 	}
-    if (Editor::Core::DoesShortcutSettingsWindowBlockSceneInput())
+    if (Editor::Core::DoesShortcutSettingsWindowBlockSceneInput() || IsToolbarInteractionActive())
     {
         CancelGizmoEditSession();
         return;
@@ -2127,13 +2566,15 @@ void Editor::Panels::SceneView::DrawViewportOverlay()
 
     ImGuizmo::SetDrawlist(ImGui::GetWindowDrawList());
     ImGuizmo::SetRect(imageMin.x, imageMin.y, imageWidth, imageHeight);
+    ImGuizmo::SetOrthographic(m_camera.GetProjectionMode() == Render::Settings::EProjectionMode::ORTHOGRAPHIC);
 
     const auto viewGizmoRect = Core::GetSceneViewViewGizmoRect(imageMin, imageMax);
     auto viewGizmoModelMatrix = Core::ToImGuizmoMatrix(Maths::Matrix4::Identity);
-    ImGuizmo::ViewManipulate(
+    if (!m_is2D) ImGuizmo::ViewManipulate(
         viewMatrix.data(),
         projectionMatrix.data(),
-        ToNativeImGuizmoOperation(m_currentOperation),
+        ToNativeImGuizmoOperation(m_currentOperation == Core::EGizmoOperation::RECT
+            ? Core::EGizmoOperation::TRANSLATE : m_currentOperation),
         ToNativeImGuizmoMode(m_currentSpace),
         viewGizmoModelMatrix.data(),
         kSceneViewGizmoCameraLength,
@@ -2141,8 +2582,8 @@ void Editor::Panels::SceneView::DrawViewportOverlay()
         ImVec2(viewGizmoRect.size.x, viewGizmoRect.size.y),
         IM_COL32(0, 0, 0, 0));
 
-    m_gizmoInteraction.isViewHovered = ImGuizmo::IsViewManipulateHovered();
-    m_gizmoInteraction.isViewUsing = ImGuizmo::IsUsingViewManipulate();
+    m_gizmoInteraction.isViewHovered = !m_is2D && ImGuizmo::IsViewManipulateHovered();
+    m_gizmoInteraction.isViewUsing = !m_is2D && ImGuizmo::IsUsingViewManipulate();
     if (Core::ShouldCancelViewGizmoCameraTransform(cameraControlActive, m_gizmoInteraction.isViewUsing))
     {
         ImGuizmo::CancelViewManipulate();
@@ -2181,6 +2622,13 @@ void Editor::Panels::SceneView::DrawViewportOverlay()
         m_cameraMovedForPresentation = true;
     }
 
+    if (m_selectionGesture && !m_selectionGesture->waitingForPick)
+    {
+        // Keep the view cube visible while selection owns the mouse.
+        CancelGizmoEditSession();
+        return;
+    }
+
     auto* undoService = NLS::Core::ServiceLocator::Contains<Editor::Undo::EditorUndoService>()
         ? &NLS::Core::ServiceLocator::Get<Editor::Undo::EditorUndoService>()
         : nullptr;
@@ -2191,27 +2639,47 @@ void Editor::Panels::SceneView::DrawViewportOverlay()
         return;
     }
 
-    auto* selectedGameObject = EDITOR_EXEC(GetSelectedGameObject());
+    auto* selectedGameObject = EDITOR_EXEC(GetActiveGameObject());
     if (selectedGameObject == nullptr || selectedGameObject->GetTransform() == nullptr)
     {
         CancelGizmoEditSession();
         return;
     }
 
-    if (m_gizmoEditTarget.has_value() && !m_gizmoEditTarget->Matches(*selectedGameObject))
+    if ((m_gizmoEditTarget.has_value() && !m_gizmoEditTarget->Matches(*selectedGameObject)) ||
+        (m_gizmoEditState && m_gizmoEditState->selectionRevision != NLS::Editor::Inspector::EditorSelectionService::Get().GetSelection().revision))
     {
         CancelGizmoEditSession();
     }
 
-    const auto transformBeforeManipulation = m_gizmoEditSession.has_value()
-        ? std::optional<SceneViewTransformSnapshot> {}
-        : ReadSceneViewTransform(*selectedGameObject);
-    auto modelMatrix = Core::GetGameObjectWorldGizmoMatrix(*selectedGameObject, m_currentPivot);
+    const auto selectedObjects = EDITOR_EXEC(GetSelectedGameObjects());
+    auto modelMatrix = selectedObjects.size() > 1
+        ? (m_gizmoEditState && m_gizmoEditState->multi && m_gizmoEditState->pendingModelMatrix
+            ? *m_gizmoEditState->pendingModelMatrix
+            : Core::ToImGuizmoMatrix(Core::BuildSceneSelectionGizmoMatrix(selectedObjects, *selectedGameObject, m_currentPivot, m_currentSpace)))
+        : Core::GetGameObjectWorldGizmoMatrix(*selectedGameObject, m_currentPivot);
 
     using namespace Windowing::Inputs;
-    const bool snapEnabled = Core::IsSnapModifierActive(
-        EDITOR_CONTEXT(inputManager)->GetKeyState(EKey::KEY_LEFT_CONTROL),
-        EDITOR_CONTEXT(inputManager)->GetKeyState(EKey::KEY_RIGHT_CONTROL));
+    const bool snapEnabled = Settings::EditorSettings::GetSceneViewSettingsObject().snapEnabled ||
+        Shortcuts::GetEditorInputState(Shortcuts::EditorInputAction::SceneSnap).actuated;
+    if (m_currentOperation == Core::EGizmoOperation::RECT)
+    {
+        if (cameraControlActive || selectedObjects.size() > 1)
+        {
+            CancelGizmoEditSession();
+            return;
+        }
+        Core::RectToolView view;
+        view.viewProjection = overlayMatrices.projection * overlayMatrices.view;
+        view.cameraPosition = m_camera.GetPosition();
+        view.cameraForward = m_camera.GetRotation() * Maths::Vector3::Forward;
+        view.min = imageMin;
+        view.max = imageMax;
+        view.orthographic = m_camera.GetProjectionMode() == Render::Settings::EProjectionMode::ORTHOGRAPHIC;
+        view.is2D = m_is2D;
+        DrawRectTool(*selectedGameObject, view, snapEnabled);
+        return;
+    }
     const float snapValue = Core::GetSnapValue(m_currentOperation);
     float snap[3] { snapValue, snapValue, snapValue };
 
@@ -2227,38 +2695,8 @@ void Editor::Panels::SceneView::DrawViewportOverlay()
     m_gizmoInteraction.isHovered = !cameraControlActive && ImGuizmo::IsOver();
     m_gizmoInteraction.isUsing = !cameraControlActive && ImGuizmo::IsUsing();
 
-    if (!cameraControlActive && undoService != nullptr &&
-        !m_gizmoEditSession.has_value() && m_gizmoInteraction.isUsing &&
-        transformBeforeManipulation.has_value())
-    {
-        const auto scope = BuildSceneViewUndoScope(*selectedGameObject);
-        auto target = CaptureSceneViewGizmoTarget(*selectedGameObject, scope);
-        if (!target.has_value())
-            return;
 
-        Editor::Undo::UndoCommandInfo info;
-        info.label = "Transform";
-        info.sourceModule = "Scene View";
-        info.scopes = {target->object.GetScope()};
-        info.affected = {target->object.GetAffectedKey()};
-        info.estimatedBytes = sizeof(SceneViewTransformSnapshot) * 2u;
-
-        const auto targetForPanel = target->object;
-        auto state = std::make_shared<SceneViewGizmoEditState>();
-        auto begin = undoService->BeginEditSession({
-            info,
-            std::make_unique<SceneViewTransformEdit>(
-                info,
-                std::move(*target),
-                *transformBeforeManipulation,
-                state)});
-        if (begin.result.state == Editor::Undo::UndoRequestState::Completed && begin.session.IsValid())
-        {
-            m_gizmoEditSession.emplace(std::move(begin.session));
-            m_gizmoEditTarget = targetForPanel;
-            m_gizmoEditState = std::move(state);
-        }
-    }
+    if (!cameraControlActive && m_gizmoInteraction.isUsing && !BeginGizmoEditSession(*selectedGameObject)) return;
 
     if (!cameraControlActive && manipulated && undoService != nullptr && m_gizmoEditSession.has_value())
     {
@@ -2333,6 +2771,246 @@ bool IsResizing()
     return cursor == ImGuiMouseCursor_ResizeEW || cursor == ImGuiMouseCursor_ResizeNS || cursor == ImGuiMouseCursor_ResizeNWSE || cursor == ImGuiMouseCursor_ResizeNESW || cursor == ImGuiMouseCursor_ResizeAll;
 }
 
+std::vector<Engine::GameObject*> Editor::Panels::SceneView::QueryMarqueeObjects(
+    const std::optional<Core::SceneSelectionRect>& rectangle)
+{
+    std::vector<Engine::GameObject*> result;
+    auto* scene = GetScene();
+    if (!scene) return result;
+    const auto matrices = GetViewportOverlayCameraMatrices();
+    const auto viewProjection = matrices.projection * matrices.view;
+    const Core::SceneSelectionRect viewport{GetViewportImageMin(), GetViewportImageMax()};
+    const auto& settings = Settings::EditorSettings::GetSceneViewSettingsObject();
+    const auto collect = [&](auto&& self, Engine::GameObject& object) -> void
+    {
+        if (object.IsEditorTransient()) return;
+        if (object.IsActive() && m_camera.IsLayerVisible(object.GetLayer()) && object.GetTag() != "EditorOnly" &&
+            (!settings.sceneVisibility || !IsObjectHidden(object)))
+        {
+            bool hit = false;
+            std::array objects{&object};
+            if (auto bounds = Core::GetSceneSelectionBounds(objects, false))
+            {
+                if (!rectangle) hit = true;
+                else if (auto projected = Core::ProjectSceneSelectionBounds(*bounds, viewProjection, viewport))
+                    hit = projected->Intersects(*rectangle);
+            }
+            const bool hasIcon = settings.showGizmos &&
+                ((settings.showCameraIcons && settings.showCameras && object.GetComponent<Engine::Components::CameraComponent>()) ||
+                 (settings.showLightIcons && settings.showLights && object.GetComponent<Engine::Components::LightComponent>()));
+            if (!hit && hasIcon && object.GetTransform())
+            {
+                if (!rectangle) hit = true;
+                else
+                {
+                    const auto position = object.GetTransform()->GetWorldPosition();
+                    if (auto projected = Core::ProjectSceneSelectionBounds({position, position}, viewProjection, viewport))
+                    {
+                        const float radius = ImGui::GetFrameHeight() * .75f * settings.lightBillboardScale;
+                        projected->min.x -= radius; projected->min.y -= radius;
+                        projected->max.x += radius; projected->max.y += radius;
+                        hit = projected->Intersects(*rectangle);
+                    }
+                }
+            }
+            if (hit) result.push_back(&object);
+        }
+        for (auto* child : object.GetChildren()) if (child) self(self, *child);
+    };
+    for (auto* object : scene->GetGameObjects()) if (object && !object->HasParent()) collect(collect, *object);
+    return result;
+}
+
+void Editor::Panels::SceneView::SelectAll()
+{
+    CancelSceneSelectionGesture(false);
+    EDITOR_EXEC(SelectGameObjects(QueryMarqueeObjects(std::nullopt)));
+}
+
+void Editor::Panels::SceneView::FocusSelection()
+{
+    const auto objects = EDITOR_EXEC(GetSelectedGameObjects());
+    if (objects.empty()) return;
+    auto bounds = Core::GetSceneSelectionBounds(objects);
+    if (!bounds)
+    {
+        for (const auto* object : objects)
+            if (object->GetTransform())
+            {
+                const auto position = object->GetTransform()->GetWorldPosition();
+                if (!bounds) bounds = Core::SceneSelectionBounds{position, position};
+                else for (int axis = 0; axis < 3; ++axis)
+                { bounds->min[axis] = (std::min)(bounds->min[axis], position[axis]); bounds->max[axis] = (std::max)(bounds->max[axis], position[axis]); }
+            }
+    }
+    if (!bounds) return;
+    const auto center = (bounds->min + bounds->max) * .5f;
+    const auto size = bounds->max - bounds->min;
+    const float radius = (std::max)(1.f, std::sqrt(size.x * size.x + size.y * size.y + size.z * size.z) * .5f);
+    const float distance = radius / (std::max)(.1f, std::sin(m_camera.GetFov() * .00872664626f));
+    if (m_camera.GetProjectionMode() == Render::Settings::EProjectionMode::ORTHOGRAPHIC) m_camera.SetSize(radius * 1.2f);
+    m_cameraController.MoveToPoint(center, distance * 1.2f);
+}
+
+bool Editor::Panels::SceneViewSelectionCapture::CanBegin() const
+{
+    return !m_id && ImGui::GetCurrentContext() && ImGui::GetActiveID() == 0 &&
+        ImGui::IsMouseClicked(ImGuiMouseButton_Left, ImGuiInputFlags_None, ImGuiKeyOwner_NoOwner);
+}
+
+void Editor::Panels::SceneViewSelectionCapture::Begin()
+{
+    m_id = ImGui::GetID("##SceneSelectionMarquee");
+    auto* window = ImGui::GetCurrentWindow();
+    ImGui::FocusWindow(window);
+    ImGui::SetActiveID(m_id, window);
+    ImGui::SetKeyOwner(ImGuiKey_MouseLeft, m_id, ImGuiInputFlags_LockUntilRelease);
+    ImGui::KeepAliveID(m_id);
+}
+
+Editor::Panels::SceneViewSelectionCaptureState Editor::Panels::SceneViewSelectionCapture::Poll() const
+{
+    if (!m_id || !ImGui::GetCurrentContext() ||
+        !ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows) ||
+        ImGui::GetActiveID() != m_id || ImGui::GetKeyOwner(ImGuiKey_MouseLeft) != m_id)
+        return SceneViewSelectionCaptureState::Lost;
+    ImGui::KeepAliveID(m_id);
+    if (ImGui::IsMouseReleased(ImGuiMouseButton_Left, m_id))
+        return SceneViewSelectionCaptureState::Released;
+    return ImGui::GetIO().MouseDown[ImGuiMouseButton_Left]
+        ? SceneViewSelectionCaptureState::Held : SceneViewSelectionCaptureState::Lost;
+}
+
+void Editor::Panels::SceneViewSelectionCapture::Reset()
+{
+    if (m_id && ImGui::GetCurrentContext())
+    {
+        if (ImGui::GetActiveID() == m_id) ImGui::ClearActiveID();
+        if (ImGui::GetKeyOwner(ImGuiKey_MouseLeft) == m_id)
+            ImGui::SetKeyOwner(ImGuiKey_MouseLeft, ImGuiKeyOwner_NoOwner);
+    }
+    m_id = 0;
+}
+
+void Editor::Panels::SceneView::CancelSceneSelectionGesture(const bool restore)
+{
+    if (restore && m_selectionGesture && GetScene() &&
+        m_selectionGesture->scope == BuildSceneViewUndoScope(*GetScene()) &&
+        NLS::Editor::Inspector::EditorSelectionService::Get().GetSelection().revision == m_selectionGesture->expectedRevision)
+        NLS::Editor::Inspector::EditorSelectionService::Get().SetSelection(m_selectionGesture->before);
+    m_selectionCapture.Reset();
+    m_selectionGesture.reset();
+    m_pendingClickPickRenderPos.reset(); m_pendingClickPickingSignature.reset(); m_pendingClickMinReadablePickingFrameSerial = 0;
+}
+
+bool Editor::Panels::SceneView::HasActiveInputGesture() const
+{
+    return m_rectDrag.has_value() || m_gizmoEditSession.has_value() || m_selectionGesture.has_value();
+}
+
+void Editor::Panels::SceneView::CancelInputGesture()
+{
+    CancelGizmoEditSession();
+    CancelSceneSelectionGesture(true);
+}
+
+void Editor::Panels::SceneView::CompleteSceneClickSelection(Engine::GameObject* object)
+{
+    if (!m_selectionGesture || !m_selectionGesture->waitingForPick) return;
+    auto& service = NLS::Editor::Inspector::EditorSelectionService::Get();
+    const auto gesture = *m_selectionGesture;
+    if (!GetScene() || gesture.scope != BuildSceneViewUndoScope(*GetScene()) || service.GetSelection().revision != gesture.expectedRevision)
+    { CancelSceneSelectionGesture(false); return; }
+    NLS::Editor::Inspector::InspectorTargetSet picked;
+    if (object && object->GetScene() == GetScene() && !object->IsEditorTransient())
+        picked.targets.push_back(NLS::Editor::Inspector::InspectorTargetHandle::FromObject(*object, NLS::Editor::Inspector::InspectorTargetKind::GameObject));
+    auto operation = NLS::Editor::Inspector::SelectionOperation::Replace;
+    if (gesture.action) operation = NLS::Editor::Inspector::SelectionOperation::Toggle;
+    else if (gesture.shift)
+    {
+        operation = NLS::Editor::Inspector::SelectionOperation::Add;
+        if (!picked.Empty() && gesture.before.Active() && *gesture.before.Active() == picked.targets.front())
+            operation = NLS::Editor::Inspector::SelectionOperation::Remove;
+    }
+    const auto before = Core::FilterSceneSelection(gesture.before, *GetScene());
+    service.SetSelection(NLS::Editor::Inspector::ComposeSelection(before, std::move(picked), operation));
+    CancelSceneSelectionGesture(false);
+}
+
+void Editor::Panels::SceneView::DrawSceneSelectionGesture()
+{
+    auto& service = NLS::Editor::Inspector::EditorSelectionService::Get();
+    const auto& io = ImGui::GetIO();
+    auto* scene = GetScene();
+    if (m_selectionGesture && (!scene || io.AppFocusLost || !IsOpened() ||
+        m_selectionGesture->scope != BuildSceneViewUndoScope(*scene) ||
+        service.GetSelection().revision != m_selectionGesture->expectedRevision ||
+        Shortcuts::GetEditorInputState(Shortcuts::EditorInputAction::SceneSuspendSelection).actuated ||
+        Shortcuts::GetEditorInputState(Shortcuts::EditorInputAction::CameraFly).actuated ||
+        Shortcuts::GetEditorInputState(Shortcuts::EditorInputAction::CameraPan).actuated ||
+        Shortcuts::GetEditorInputState(Shortcuts::EditorInputAction::CameraOrbit).actuated || IsCameraControlActive() || IsToolbarInteractionActive()))
+    { CancelSceneSelectionGesture(true); return; }
+    if (m_selectionGesture && Shortcuts::GetEditorInputState(Shortcuts::EditorInputAction::SceneCancel).pressed) return;
+    const Maths::Vector2 mouse{io.MousePos.x, io.MousePos.y};
+    if (m_selectionCapture.CanBegin() && scene && HasViewportImageBounds() && IsMouseHoveringView(mouse) &&
+        !Shortcuts::GetEditorInputState(Shortcuts::EditorInputAction::SceneSuspendSelection).actuated && !IsCameraControlActive() && !IsToolbarInteractionActive() &&
+        !Core::ShouldSuppressScenePicking(m_gizmoInteraction) && !ImGui::IsDragDropActive())
+    {
+        CancelSceneSelectionGesture(false);
+        SelectionGesture gesture;
+        gesture.drag.start = gesture.drag.current = mouse;
+        gesture.before = service.GetSelection(); gesture.expectedRevision = gesture.before.revision;
+        gesture.scope = BuildSceneViewUndoScope(*scene);
+        m_selectionGesture = std::move(gesture);
+        m_selectionCapture.Begin();
+    }
+    if (!m_selectionGesture) return;
+    auto& gesture = *m_selectionGesture;
+    if (gesture.waitingForPick)
+    {
+        if (!m_pendingClickPickRenderPos) CancelSceneSelectionGesture(false);
+        return;
+    }
+    const auto captureState = m_selectionCapture.Poll();
+    if (captureState == SceneViewSelectionCaptureState::Lost)
+    { CancelSceneSelectionGesture(true); return; }
+    gesture.drag.Update(mouse, io.MouseDragThreshold);
+    gesture.action = Shortcuts::GetEditorInputState(Shortcuts::EditorInputAction::SceneToggleSelection).actuated;
+    gesture.shift = Shortcuts::GetEditorInputState(Shortcuts::EditorInputAction::SceneAddSelection).actuated;
+    if (gesture.drag.marquee)
+    {
+        const auto min = GetViewportImageMin(), max = GetViewportImageMax();
+        const Maths::Vector2 clipped{std::clamp(mouse.x, min.x, max.x), std::clamp(mouse.y, min.y, max.y)};
+        const auto rectangle = Core::MakeSceneSelectionRect(gesture.drag.start, clipped);
+        const auto objects = QueryMarqueeObjects(rectangle);
+        NLS::Editor::Inspector::InspectorTargetSet candidates;
+        for (auto* object : objects) candidates.targets.push_back(NLS::Editor::Inspector::InspectorTargetHandle::FromObject(*object, NLS::Editor::Inspector::InspectorTargetKind::GameObject));
+        const auto operation = gesture.action ? NLS::Editor::Inspector::SelectionOperation::Remove : gesture.shift ? NLS::Editor::Inspector::SelectionOperation::Add : NLS::Editor::Inspector::SelectionOperation::Replace;
+        service.SetSelection(NLS::Editor::Inspector::ComposeSelection(Core::FilterSceneSelection(gesture.before, *scene), std::move(candidates), operation, true));
+        gesture.expectedRevision = service.GetSelection().revision;
+        auto* draw = ImGui::GetWindowDrawList();
+        draw->PushClipRect({min.x,min.y}, {max.x,max.y}, true);
+        draw->AddRectFilled({rectangle.min.x,rectangle.min.y}, {rectangle.max.x,rectangle.max.y}, IM_COL32(70,145,235,35));
+        draw->AddRect({rectangle.min.x,rectangle.min.y}, {rectangle.max.x,rectangle.max.y}, IM_COL32(90,170,255,230));
+        draw->PopClipRect();
+    }
+    if (captureState != SceneViewSelectionCaptureState::Released) return;
+    m_selectionCapture.Reset();
+    if (gesture.drag.marquee) { m_selectionGesture.reset(); return; }
+    const auto local = GetLocalViewPosition(gesture.drag.start);
+    auto* renderer = dynamic_cast<Rendering::DebugSceneRenderer*>(m_renderer.get());
+    if (!local || !renderer) { CancelSceneSelectionGesture(false); return; }
+    auto& picking = renderer->GetPass<Rendering::PickingRenderPass>("Picking");
+    if (!picking.SupportsPickingReadback()) { CancelSceneSelectionGesture(false); return; }
+    const auto [width,height] = GetSafeSize();
+    m_pendingClickPickRenderPos = Maths::Vector2{std::clamp(local->x, 0.f, (std::max)(0.f, float(width) - 1)),
+        NLS_SERVICE(UI::UIManager).UsesBottomLeftRenderTargetOrigin()
+            ? std::clamp(float(height) - 1 - local->y, 0.f, (std::max)(0.f, float(height) - 1))
+            : std::clamp(local->y, 0.f, (std::max)(0.f, float(height) - 1))};
+    m_pendingClickPickingSignature.reset(); m_pendingClickMinReadablePickingFrameSerial = picking.GetSubmittedPickingFrameSerial() + 1;
+    m_hasPickingSample = false; gesture.waitingForPick = true;
+}
+
 bool Editor::Panels::SceneView::ShouldRequestPickingFrame() const
 {
     using namespace Windowing::Inputs;
@@ -2340,7 +3018,7 @@ bool Editor::Panels::SceneView::ShouldRequestPickingFrame() const
         return false;
 
     const bool pickingSuppressedByGizmo = Core::ShouldSuppressScenePicking(m_gizmoInteraction);
-    if (pickingSuppressedByGizmo)
+    if (pickingSuppressedByGizmo && !m_pendingClickPickRenderPos.has_value())
     {
         if (EDITOR_CONTEXT(inputManager)->IsMouseButtonPressed(EMouseButton::MOUSE_BUTTON_LEFT) ||
             m_pendingClickPickRenderPos.has_value())
@@ -2361,7 +3039,7 @@ bool Editor::Panels::SceneView::ShouldRequestPickingFrame() const
     auto& inputManager = *EDITOR_CONTEXT(inputManager);
     const Maths::Vector2 screenMousePos = inputManager.GetMousePosition();
     const bool mouseOverView = IsMouseHoveringView(screenMousePos);
-    if (!mouseOverView || IsResizing())
+    if ((!mouseOverView && !m_pendingClickPickRenderPos.has_value()) || IsResizing())
     {
         if (inputManager.IsMouseButtonPressed(EMouseButton::MOUSE_BUTTON_LEFT) ||
             m_pendingClickPickRenderPos.has_value())
@@ -2378,18 +3056,21 @@ bool Editor::Panels::SceneView::ShouldRequestPickingFrame() const
     }
 
     const auto localMousePos = GetLocalViewPosition(screenMousePos);
-    if (!localMousePos.has_value())
+    if (!localMousePos.has_value() && !m_pendingClickPickRenderPos.has_value())
         return false;
 
-    auto mousePos = localMousePos.value();
+    auto mousePos = m_pendingClickPickRenderPos.has_value() ? *m_pendingClickPickRenderPos : *localMousePos;
     const auto [safeWidth, safeHeight] = GetSafeSize();
     const float maxRenderX = std::max(0.0f, static_cast<float>(safeWidth) - 1.0f);
     const float maxRenderY = std::max(0.0f, static_cast<float>(safeHeight) - 1.0f);
 
-    mousePos.x = std::clamp(mousePos.x, 0.0f, maxRenderX);
-    mousePos.y = NLS_SERVICE(UI::UIManager).UsesBottomLeftRenderTargetOrigin()
-        ? std::clamp(static_cast<float>(safeHeight) - 1.0f - mousePos.y, 0.0f, maxRenderY)
-        : std::clamp(mousePos.y, 0.0f, maxRenderY);
+    if (!m_pendingClickPickRenderPos.has_value())
+    {
+        mousePos.x = std::clamp(mousePos.x, 0.0f, maxRenderX);
+        mousePos.y = NLS_SERVICE(UI::UIManager).UsesBottomLeftRenderTargetOrigin()
+            ? std::clamp(static_cast<float>(safeHeight) - 1.0f - mousePos.y, 0.0f, maxRenderY)
+            : std::clamp(mousePos.y, 0.0f, maxRenderY);
+    }
 
     const auto now = std::chrono::steady_clock::now();
     const bool mouseMoved =
@@ -2419,7 +3100,7 @@ bool Editor::Panels::SceneView::ShouldRequestPickingFrame() const
     }
 
     const bool request = ShouldRenderScenePickingFrame(
-        mouseOverView,
+        mouseOverView || m_pendingClickPickRenderPos.has_value(),
         false,
         false,
         m_pendingClickPickRenderPos.has_value() && !m_pendingClickPickingSignature.has_value(),
@@ -2471,7 +3152,7 @@ bool Editor::Panels::SceneView::ShouldRequestPickingFrame() const
 
 void Editor::Panels::SceneView::HandleGameObjectPicking()
 {
-    if (Editor::Core::DoesShortcutSettingsWindowBlockSceneInput())
+    if (Editor::Core::DoesShortcutSettingsWindowBlockSceneInput() || IsToolbarInteractionActive())
     {
         m_highlightedGameObject = nullptr;
         m_hasPickingSample = false;
@@ -2497,7 +3178,7 @@ void Editor::Panels::SceneView::HandleGameObjectPicking()
         m_gizmoInteraction.isUsing = false;
     }
 
-    if (Core::ShouldSuppressScenePicking(m_gizmoInteraction))
+    if (Core::ShouldSuppressScenePicking(m_gizmoInteraction) && !m_pendingClickPickRenderPos.has_value())
     {
         if (inputManager.IsMouseButtonPressed(EMouseButton::MOUSE_BUTTON_LEFT) ||
             m_pendingClickPickRenderPos.has_value())
@@ -2516,7 +3197,7 @@ void Editor::Panels::SceneView::HandleGameObjectPicking()
         return;
     }
 
-    if (mouseOverView && !IsResizing())
+    if ((mouseOverView || m_pendingClickPickRenderPos.has_value()) && !IsResizing())
     {
         auto& gameObjectPickingFeature = debugRenderer->GetPass<Rendering::PickingRenderPass>("Picking");
         if (!gameObjectPickingFeature.SupportsPickingReadback())
@@ -2534,22 +3215,25 @@ void Editor::Panels::SceneView::HandleGameObjectPicking()
         }
 
         const auto localMousePos = GetLocalViewPosition(screenMousePos);
-        if (!localMousePos.has_value())
+        if (!localMousePos.has_value() && !m_pendingClickPickRenderPos.has_value())
         {
             m_highlightedGameObject = nullptr;
             m_hasPickingSample = false;
             return;
         }
 
-        auto mousePos = localMousePos.value();
+        auto mousePos = m_pendingClickPickRenderPos.has_value() ? *m_pendingClickPickRenderPos : *localMousePos;
         const auto [safeWidth, safeHeight] = GetSafeSize();
         const float maxRenderX = std::max(0.0f, static_cast<float>(safeWidth) - 1.0f);
         const float maxRenderY = std::max(0.0f, static_cast<float>(safeHeight) - 1.0f);
 
-        mousePos.x = std::clamp(mousePos.x, 0.0f, maxRenderX);
-        mousePos.y = NLS_SERVICE(UI::UIManager).UsesBottomLeftRenderTargetOrigin()
-            ? std::clamp(static_cast<float>(safeHeight) - 1.0f - mousePos.y, 0.0f, maxRenderY)
-            : std::clamp(mousePos.y, 0.0f, maxRenderY);
+        if (!m_pendingClickPickRenderPos.has_value())
+        {
+            mousePos.x = std::clamp(mousePos.x, 0.0f, maxRenderX);
+            mousePos.y = NLS_SERVICE(UI::UIManager).UsesBottomLeftRenderTargetOrigin()
+                ? std::clamp(static_cast<float>(safeHeight) - 1.0f - mousePos.y, 0.0f, maxRenderY)
+                : std::clamp(mousePos.y, 0.0f, maxRenderY);
+        }
 
         const auto now = std::chrono::steady_clock::now();
         const bool mouseMoved =
@@ -2572,7 +3256,7 @@ void Editor::Panels::SceneView::HandleGameObjectPicking()
             m_pendingClickPickingSignature.reset();
             m_pendingClickMinReadablePickingFrameSerial = 0u;
         }
-        const bool queuedClickPickThisFrame = leftClicked && !cameraControlActive;
+        const bool queuedClickPickThisFrame = false; // Clicks are queued on release after drag classification.
         if (queuedClickPickThisFrame)
         {
             m_pendingClickPickRenderPos = mousePos;
@@ -2599,7 +3283,7 @@ void Editor::Panels::SceneView::HandleGameObjectPicking()
         }
 
         const bool shouldRepick = ShouldRenderScenePickingFrame(
-            mouseOverView,
+            mouseOverView || m_pendingClickPickRenderPos.has_value(),
             false,
             false,
             m_pendingClickPickRenderPos.has_value(),
@@ -2697,20 +3381,9 @@ void Editor::Panels::SceneView::HandleGameObjectPicking()
                 m_pendingClickPickingSignature.value());
         if (resolvePendingClickPick)
         {
-            if (m_highlightedGameObject)
-            {
-                LogScenePickingDiagnostics("select GameObject=" + m_highlightedGameObject->GetName());
-                EDITOR_EXEC(SelectGameObject(*m_highlightedGameObject));
-                m_pendingClickPickRenderPos.reset();
-                m_pendingClickPickingSignature.reset();
-            }
-            else if (gameObjectPickingFeature.HasReadablePickingFrame())
-            {
-                LogScenePickingDiagnostics("unselect GameObject from click");
-                EDITOR_EXEC(UnselectGameObject());
-                m_pendingClickPickRenderPos.reset();
-                m_pendingClickPickingSignature.reset();
-            }
+            CompleteSceneClickSelection(m_highlightedGameObject);
+            m_pendingClickPickRenderPos.reset();
+            m_pendingClickPickingSignature.reset();
             m_pendingClickMinReadablePickingFrameSerial = 0u;
         }
         else if (m_pendingClickPickRenderPos.has_value() &&

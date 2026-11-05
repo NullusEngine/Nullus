@@ -16,7 +16,7 @@ cbuffer ObjectConstants : register(b0, space3)
 cbuffer MaterialConstants : register(b0, space2)
 {
     float3 u_Color;
-    float u_Padding0;
+    float u_PlaneXY;
 };
 
 struct GridVSOutput
@@ -31,7 +31,7 @@ GridVSOutput VSMain(VSInput input)
     GridVSOutput output;
     const float4 worldPosition = mul(u_Model, float4(input.Position, 1.0f));
     output.PositionWS = worldPosition.xyz;
-    output.TexCoords = output.PositionWS.xz;
+    output.TexCoords = u_PlaneXY > 0.5f ? output.PositionWS.xy : output.PositionWS.xz;
     output.PositionCS = mul(u_ViewProjection, worldPosition);
     return output;
 }
@@ -73,10 +73,10 @@ float SingleAxisMask(float coordinate, float spacing)
 
 float4 PSMain(GridVSOutput input) : SV_Target0
 {
-    const float height = distance(u_CameraWorldPos.y, input.PositionWS.y);
-    const float viewDistance = length(u_CameraWorldPos.xz - input.PositionWS.xz);
+    const float height = u_PlaneXY > 0.5f ? abs(u_CameraWorldPos.z - input.PositionWS.z) : abs(u_CameraWorldPos.y - input.PositionWS.y);
+    const float viewDistance = u_PlaneXY > 0.5f ? length(u_CameraWorldPos.xy - input.PositionWS.xy) : length(u_CameraWorldPos.xz - input.PositionWS.xz);
     const float3 viewDir = normalize(u_CameraWorldPos - input.PositionWS);
-    const float angleFade = smoothstep(0.05f, 0.16f, abs(viewDir.y));
+    const float angleFade = smoothstep(0.05f, 0.16f, u_PlaneXY > 0.5f ? abs(viewDir.z) : abs(viewDir.y));
 
     const float minorGrid = GridLod(input.TexCoords, height, 1.0f, 2.0f, 4.0f);
     const float midGrid = GridLod(input.TexCoords, height, 5.0f, 10.0f, 20.0f);

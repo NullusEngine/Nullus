@@ -658,6 +658,8 @@ bool ProjectCreationWizard::ValidateConfig()
 bool ProjectCreationWizard::CreateProjectFiles()
 {
     std::filesystem::path projectRoot = std::filesystem::path(m_config.projectLocation) / m_config.projectName;
+    bool create2D = false;
+    std::string startScene;
 
     std::error_code ec;
     std::filesystem::create_directory(projectRoot, ec);
@@ -676,6 +678,8 @@ bool ProjectCreationWizard::CreateProjectFiles()
     {
         const auto& selectedTemplate = m_templates[m_selectedTemplateIndex];
         m_config.templateId = selectedTemplate.id;
+        create2D = selectedTemplate.is2D;
+        startScene = selectedTemplate.startScene;
         auto contentPath = selectedTemplate.GetContentPath();
         if (selectedTemplate.HasContent() && std::filesystem::exists(contentPath))
         {
@@ -711,7 +715,9 @@ bool ProjectCreationWizard::CreateProjectFiles()
     ofs << "gravity=-9.810000\n";
     ofs << "x_resolution=" << m_config.windowWidth << "\n";
     ofs << "y_resolution=" << m_config.windowHeight << "\n";
-    ofs << "start_scene=\n";
+    ofs << "start_scene=" << startScene << "\n";
+    ofs << "scene_view_2d=" << (create2D ? "true" : "false") << "\n";
+    if (create2D) ofs << "fixed_delta_time=0.016666667\nmaximum_fixed_steps=8\n";
     ofs << "fullscreen=false\n";
     ofs << "multi_sampling=" << (m_config.multiSampling ? "true" : "false") << "\n";
     ofs << "vsync=" << (m_config.vsync ? "true" : "false") << "\n";

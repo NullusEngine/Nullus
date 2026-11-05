@@ -11,7 +11,30 @@ internal static partial class MetaParserTool
         }
     }
 
-    private static ReflectionTypeCatalog BuildReflectionTypeCatalog(string rootDir, PrecompileParams config, IReadOnlyList<ReflectTypeInfo> types)
+    private static Dictionary<string, string> ReadRuntimeReflectionHeaders(string rootDir)
+    {
+        var headers = new Dictionary<string, string>(PathComparer);
+        var runtimeRoot = Path.Combine(rootDir, "Runtime");
+        if (!Directory.Exists(runtimeRoot))
+            return headers;
+
+        foreach (var headerPath in Directory.EnumerateFiles(runtimeRoot, "*.*", SearchOption.AllDirectories)
+                     .Where(path => string.Equals(Path.GetExtension(path), ".h", StringComparison.OrdinalIgnoreCase)
+                                 || string.Equals(Path.GetExtension(path), ".hpp", StringComparison.OrdinalIgnoreCase)))
+        {
+            var headerText = File.ReadAllText(headerPath);
+            if (ContainsReflectedDeclaration(headerText))
+                headers.Add(Path.GetFullPath(headerPath), headerText);
+        }
+
+        return headers;
+    }
+
+    private static ReflectionTypeCatalog BuildReflectionTypeCatalog(
+        string rootDir,
+        IReadOnlyList<ReflectTypeInfo> types,
+        IReadOnlyDictionary<string, string> runtimeHeaders,
+        IReadOnlyDictionary<string, List<ReflectTypeInfo>> parsedHeaders)
     {
         var catalog = new ReflectionTypeCatalog();
         var reflectedTypes = new List<ReflectTypeInfo>();
@@ -33,25 +56,15 @@ internal static partial class MetaParserTool
             reflectedTypes.Add(type);
         }
 
-        var runtimeRoot = Path.Combine(rootDir, "Runtime");
-        if (Directory.Exists(runtimeRoot))
+        foreach (var (headerPath, headerText) in runtimeHeaders)
         {
-            foreach (var headerPath in Directory.EnumerateFiles(runtimeRoot, "*.*", SearchOption.AllDirectories)
-                         .Where(path => string.Equals(Path.GetExtension(path), ".h", StringComparison.OrdinalIgnoreCase)
-                                     || string.Equals(Path.GetExtension(path), ".hpp", StringComparison.OrdinalIgnoreCase)))
+            foreach (var externalTypeName in ExtractExternalReflectionTypeNames(headerText))
+                AddSupportedReflectionType(catalog, externalTypeName);
+
+            foreach (var reflectedType in parsedHeaders[headerPath])
             {
-                var headerText = File.ReadAllText(headerPath);
-                if (!ContainsReflectedDeclaration(headerText))
-                    continue;
-
-                foreach (var externalTypeName in ExtractExternalReflectionTypeNames(headerText))
-                    AddSupportedReflectionType(catalog, externalTypeName);
-
-                foreach (var reflectedType in ParseHeader(rootDir, headerPath, config))
-                {
-                    AddSupportedReflectionType(catalog, reflectedType.QualifiedName);
-                    reflectedTypes.Add(reflectedType);
-                }
+                AddSupportedReflectionType(catalog, reflectedType.QualifiedName);
+                reflectedTypes.Add(reflectedType);
             }
         }
 

@@ -38,14 +38,15 @@ bool HasWindowsRootNameSyntax(const std::string& path)
     return std::isalpha(first) && path[1] == ':';
 }
 
-bool IsEditorHostTexturePlatform(const NLS::Core::Assets::ArtifactType type, const std::string& platform, const std::string& target)
+bool IsEditorHostImagePlatform(const NLS::Core::Assets::ArtifactType type, const std::string& platform, const std::string& target)
 {
-    // Standalone texture imports contain native compression and use a concrete
+    // Standalone texture imports and their Sprite siblings use a concrete
     // host target. Editor programs/materials are portable and use "editor".
     // Permit only the current editor's texture target in that dependency closure;
     // packaged platform builds still require an exact target match.
 #if defined(_WIN32)
-    return target == "editor" && type == NLS::Core::Assets::ArtifactType::Texture && platform == "win64-dx12";
+    return target == "editor" && (type == NLS::Core::Assets::ArtifactType::Texture ||
+        type == NLS::Core::Assets::ArtifactType::Sprite) && platform == "win64-dx12";
 #else
     return false;
 #endif
@@ -196,8 +197,8 @@ bool ValidateRuntimeArtifact(
     const std::string& targetPlatform,
     NLS::Core::Assets::ImportDiagnosticList& diagnostics)
 {
-    if (!artifact.targetPlatform.empty() && artifact.targetPlatform != targetPlatform &&
-        !IsEditorHostTexturePlatform(artifact.artifactType,artifact.targetPlatform,targetPlatform))
+    if (!artifact.targetPlatform.empty() &&
+        !IsRuntimeAssetPlatformCompatible(artifact.artifactType,artifact.targetPlatform,targetPlatform))
     {
         diagnostics.Add({
             NLS::Core::Assets::ImportDiagnosticSeverity::Error,
@@ -244,6 +245,8 @@ void AddDistanceFieldRuntimeDependencies(const NLS::Core::Assets::ArtifactManife
     std::queue<RuntimeAssetRef>& pending)
 {
     std::vector<std::string> keys;
+    if (artifact.artifactType == NLS::Core::Assets::ArtifactType::Sprite)
+        keys.push_back(manifest.primarySubAssetKey);
     if (artifact.artifactType == NLS::Core::Assets::ArtifactType::Mesh)
     {
         keys.push_back(NLS::Render::DistanceField::DistanceFieldSubAssetKey(artifact.subAssetKey));
@@ -321,7 +324,11 @@ RuntimeAssetDatabase::RuntimeAssetDatabase(RuntimeAssetManifest manifest)
 
 bool IsRuntimeAssetPlatformCompatible(Core::Assets::ArtifactType type, const std::string& platform, const std::string& target)
 {
-    return platform == target || IsEditorHostTexturePlatform(type,platform,target);
+    // Audio artifacts retain the encoded WAV/MP3/OGG bytes and decode at runtime;
+    // unlike GPU textures, their editor artifact is portable across targets.
+    const bool portable = type == Core::Assets::ArtifactType::Audio || type == Core::Assets::ArtifactType::InputActions || type == Core::Assets::ArtifactType::InputProfile || type == Core::Assets::ArtifactType::Sprite;
+    return platform == target || (portable && platform=="editor" && !target.empty()) ||
+        IsEditorHostImagePlatform(type,platform,target);
 }
 
 const RuntimeAssetManifestEntry* RuntimeAssetDatabase::Resolve(
@@ -421,13 +428,15 @@ const NLS::Core::Assets::ArtifactManifest* RuntimeManifestBuilder::FindManifest(
     NLS::Core::Assets::AssetId assetId,
     const std::string& targetPlatform) const
 {
-    for (const auto& manifest : m_manifests)
+    for(int pass=0;pass<2;++pass)for (const auto& manifest : m_manifests)
     {
-        const bool hostTextures = !manifest.subAssets.empty() && std::all_of(manifest.subAssets.begin(),manifest.subAssets.end(),[&](const auto& artifact)
-        { return IsEditorHostTexturePlatform(artifact.artifactType,manifest.targetPlatform,targetPlatform); });
-        if (manifest.sourceAssetId == assetId && (manifest.targetPlatform == targetPlatform || hostTextures))
+        const bool exact=manifest.targetPlatform==targetPlatform;
+        if((pass==0)!=exact)continue;
+        const bool compatible = !manifest.subAssets.empty() && std::all_of(manifest.subAssets.begin(),manifest.subAssets.end(),[&](const auto& artifact)
+        { return IsRuntimeAssetPlatformCompatible(artifact.artifactType,manifest.targetPlatform,targetPlatform); });
+        if (manifest.sourceAssetId == assetId && (exact || compatible))
             return &manifest;
-        if (manifest.targetPlatform != targetPlatform && !hostTextures)
+        if (!exact && !compatible)
             continue;
         const auto found = std::find_if(
             manifest.subAssets.begin(),

@@ -1,12 +1,19 @@
 #include "BuildPipelineStaging.h"
 
 #include "BuildFileUtils.h"
+#include <Core/Assets/AssetMeta.h>
 #include "BuildPipelineInternal.h"
 
 #include "Assets/ContentSource.h"
 #include "Assets/NpakArchive.h"
 #include "Engine/Assets/PlayerDescriptor.h"
+#include "Plugins/RuntimeDeployment.h"
 #include "Engine/Assets/RuntimeManifestSerialization.h"
+#include "Engine/Assets/PrefabSceneExpansion.h"
+#include "Engine/Assets/PrefabAsset.h"
+#include "Engine/Serialize/ObjectGraphReader.h"
+#include "Engine/Serialize/ObjectGraphWriter.h"
+#include "Assets/NativeArtifactContainer.h"
 
 #include <algorithm>
 #include <fstream>
@@ -17,6 +24,13 @@ namespace NLS::Build::Detail
 {
 namespace
 {
+std::string StartSceneAssetPath(std::string value)
+{
+    value = ToForwardSlashes(std::move(value));
+    if (value.rfind("Assets/", 0u) == 0u) value.erase(0u, 7u);
+    return value;
+}
+
 std::string PortableArtifactKey(const std::string& artifactPath)
 {
     const auto portable = NLS::Core::Assets::TryMakePortableContentArtifactPath(artifactPath);
@@ -56,14 +70,29 @@ bool WriteRuntimeManifest(
     return output.good();
 }
 
-bool WriteGameIni(const BuildContext& context, std::string* error)
+bool WriteGameIni(const BuildContext& context, const DependencyCollectionResult& collection, std::string* error)
 {
     const auto destination = context.stagingRoot / "Data" / "User" / "Game.ini";
     if (!EnsureDirectory(destination.parent_path(), error))
         return false;
 
     auto text = ReadTextFileOrEmpty(context.projectFile);
-    text = SetIniValue(std::move(text), "start_scene", context.profile.startScene);
+    text = SetIniValue(std::move(text), "start_scene", StartSceneAssetPath(context.profile.startScene));
+    std::string startSceneAsset, startSceneSubasset;
+    if (NLS::Core::Assets::InferAssetType(context.profile.startScene) == NLS::Core::Assets::AssetType::ECSScene)
+    {
+        const auto id = BuildDependencyCollector::LoadAssetIdForPath(context.projectAssetsPath, context.profile.startScene, error);
+        const auto found = id ? std::find_if(collection.manifest.entries.begin(), collection.manifest.entries.end(),
+            [&](const auto& entry) { return entry.assetId == *id && entry.artifactType == NLS::Core::Assets::ArtifactType::ECSScene; }) : collection.manifest.entries.end();
+        if (found == collection.manifest.entries.end())
+        {
+            if (error) *error = "The ECS start scene is absent from the collected runtime manifest";
+            return false;
+        }
+        startSceneAsset = found->assetId.ToString(); startSceneSubasset = found->subAssetKey;
+    }
+    text = SetIniValue(std::move(text), "start_scene_asset", startSceneAsset);
+    text = SetIniValue(std::move(text), "start_scene_subasset", startSceneSubasset);
     text = SetIniValue(
         std::move(text),
         "graphics_backend",
@@ -123,7 +152,7 @@ bool WriteRawAssets(const BuildContext& context, std::string* error)
             return static_cast<char>(std::tolower(character));
         });
         return value;
-    }(context.profile.startScene);
+    }(StartSceneAssetPath(context.profile.startScene));
 
     return CopyTreeFiltered(
         context.projectAssetsPath,
@@ -135,7 +164,7 @@ bool WriteRawAssets(const BuildContext& context, std::string* error)
             {
                 return static_cast<char>(std::tolower(character));
             });
-            if (lowered == startScene)
+            if (lowered == startScene && NLS::Core::Assets::InferAssetType(relative) != NLS::Core::Assets::AssetType::ECSScene)
                 return true;
             const auto dot = lowered.find_last_of('.');
             if (dot == std::string::npos)
@@ -187,6 +216,13 @@ bool WritePackages(
             }
         }
 
+        if (packageName == "base")
+        {
+            for (const auto& raw : collection.rawFiles)
+                if (raw.relativePath.rfind("Assets/Plugins/",0) == 0 && !writer.AddFileFromDisk(raw.relativePath,raw.hostPath,error)) return false;
+            const auto sorting = context.projectAssetsPath / "Settings" / "SpriteSortingLayers.json";
+            if (std::filesystem::exists(sorting) && !writer.AddFileFromDisk("Assets/Settings/SpriteSortingLayers.json", sorting, error)) return false;
+        }
         const auto packagePath = packagesDirectory / packageFileName;
         NLS::Core::Assets::NpakWriteOptions options;
         options.blockSize = 256u * 1024u;
@@ -271,8 +307,10 @@ bool WritePlayerDescriptor(
     descriptor.companyName = context.product.companyName;
     descriptor.productVersion = context.product.version;
     descriptor.buildNumber = context.product.buildNumber;
-    descriptor.startScene = context.profile.startScene;
+    descriptor.startScene = StartSceneAssetPath(context.profile.startScene);
     descriptor.runtimeManifestPath = "Data/User/RuntimeAssetManifest.json";
+    descriptor.pluginManifestPath = "Plugins/runtime-plugins.json";
+    descriptor.pluginManifestHash = NLS::Plugins::HashPluginFile(context.stagingRoot / descriptor.pluginManifestPath);
     descriptor.contentRoot = "Data/User";
     for (const auto& package : contentPackages)
         descriptor.contentPackages.push_back("Data/User/Packages/" + package);
@@ -309,6 +347,62 @@ bool WritePlayerDescriptor(
 }
 } // namespace
 
+bool ExpandStagedPrefabScenes(
+    const BuildContext& context,
+    const DependencyCollectionResult& collection,
+    std::string* error)
+{
+    namespace S = NLS::Engine::Serialize;
+    namespace A = NLS::Core::Assets;
+    const auto assets = context.stagingRoot / "Data/User/Assets";
+    const NLS::Engine::Assets::PrefabGraphResolver resolver = [&](const S::ObjectIdentifier& reference, std::string& message)
+        -> std::optional<S::ObjectGraphDocument>
+    {
+        const auto hint = NLS::Engine::Assets::ExtractPrefabAssetReferenceSubAssetKeyHint(reference.filePath);
+        const auto found = std::find_if(collection.manifest.entries.begin(), collection.manifest.entries.end(), [&](const auto& entry)
+        {
+            return entry.assetId.GetGuid() == reference.guid && entry.artifactType == A::ArtifactType::Prefab &&
+                ((reference.localIdentifierInFile && S::MakeLocalIdentifierInFile(reference.guid, entry.subAssetKey) == reference.localIdentifierInFile) ||
+                 (!hint.empty() && entry.subAssetKey == hint) || (!reference.localIdentifierInFile && hint.empty()));
+        });
+        if (found == collection.manifest.entries.end())
+        { message = "Prefab is absent from the cooked dependency closure: " + reference.guid.ToString() + "#" + hint; return {}; }
+        const auto collected = std::find_if(collection.artifacts.begin(), collection.artifacts.end(), [&](const auto& artifact)
+        { return artifact.artifactPath == found->artifactPath; });
+        const auto path = collected == collection.artifacts.end()
+            ? BuildDependencyCollector::ResolveArtifactHostPath(context.projectRoot, found->artifactPath) : collected->hostPath;
+        std::ifstream input(path, std::ios::binary);
+        if (!input) { message = "Cannot read cooked Prefab: " + path.string(); return {}; }
+        const std::vector<uint8_t> bytes(std::istreambuf_iterator<char>(input), {});
+        const auto native = A::ReadNativeArtifactContainer(bytes, A::ArtifactType::Prefab, 1u);
+        if (!native || native->metadata.sourceAssetId != found->assetId || native->metadata.subAssetKey != found->subAssetKey)
+        { message = "Invalid cooked Prefab identity or payload: " + path.string(); return {}; }
+        auto document = S::ObjectGraphReader::Read(std::string(native->payload.begin(), native->payload.end()));
+        if (!document) message = "Invalid cooked Prefab graph: " + path.string();
+        return document;
+    };
+    std::error_code filesystemError;
+    for (const auto& file : std::filesystem::recursive_directory_iterator(assets, filesystemError))
+    {
+        if (filesystemError) { if (error) *error = filesystemError.message(); return false; }
+        if (!file.is_regular_file()) continue;
+        auto extension = file.path().extension().string();
+        std::transform(extension.begin(), extension.end(), extension.begin(), [](unsigned char value) { return char(std::tolower(value)); });
+        if (extension != ".scene") continue;
+        auto document = S::ObjectGraphReader::Read(ReadTextFileOrEmpty(file.path()));
+        if (!document) { if (error) *error = "Invalid staged scene: " + file.path().string(); return false; }
+        if (document->prefabInstances.empty()) continue;
+        std::string message;
+        if (!NLS::Engine::Assets::ExpandPrefabInstances(*document, resolver, message))
+        { if (error) *error = file.path().string() + ": " + message; return false; }
+        std::ofstream output(file.path(), std::ios::binary | std::ios::trunc);
+        output << S::ObjectGraphWriter::Write(*document);
+        if (!output) { if (error) *error = "Cannot write expanded runtime scene: " + file.path().string(); return false; }
+    }
+    if (filesystemError) { if (error) *error = filesystemError.message(); return false; }
+    return true;
+}
+
 bool StageContent(
     const BuildContext& context,
     const DependencyCollectionResult& collection,
@@ -318,9 +412,11 @@ bool StageContent(
 {
     if (!WriteRawAssets(context, error))
         return false;
+    if (!ExpandStagedPrefabScenes(context, collection, error))
+        return false;
     if (!WriteRuntimeManifest(context, collection, error))
         return false;
-    if (!WriteGameIni(context, error))
+    if (!WriteGameIni(context, collection, error))
         return false;
     if (!WritePackages(context, collection, report, contentPackages, error))
         return false;
@@ -334,6 +430,12 @@ bool WritePlayerDescriptorFile(
     BuildReport& report,
     std::string* error)
 {
+    const auto pluginPlatform = context.profile.target.platform == PlatformFamily::Windows ? "Windows" :
+        context.profile.target.platform == PlatformFamily::Linux ? "Linux" :
+        context.profile.target.platform == PlatformFamily::MacOS ? "macOS" : "unsupported";
+    if (!NLS::Plugins::StageRuntimePlugins(context.projectRoot, context.stagingRoot,
+        pluginPlatform, ToString(context.profile.target.architecture), error,BuildModeConfiguration(context.profile.mode)))
+        return false;
     return WritePlayerDescriptor(context, player, contentPackages, report, error);
 }
 
@@ -380,6 +482,21 @@ bool VerifyStagedContent(
             *error = "runtime manifest verification failed: " + manifestError;
         return false;
     }
+    if (NLS::Core::Assets::InferAssetType(context.profile.startScene) == NLS::Core::Assets::AssetType::ECSScene)
+    {
+        const auto ini = ReadTextFileOrEmpty(context.stagingRoot / "Data/User/Game.ini");
+        const auto id = NLS::Guid::TryParse(ReadIniValue(ini, "start_scene_asset", ""));
+        const auto key = ReadIniValue(ini, "start_scene_subasset", "");
+        const auto found = id ? std::find_if(manifest->entries.begin(), manifest->entries.end(), [&](const auto& entry)
+            { return entry.assetId == NLS::Core::Assets::AssetId(*id) && entry.subAssetKey == key &&
+                entry.artifactType == NLS::Core::Assets::ArtifactType::ECSScene && entry.loaderId == "ecs-scene"; }) : manifest->entries.end();
+        if (found == manifest->entries.end())
+        {
+            if (error) *error = "ECS start-scene identity does not resolve to a scene in the runtime manifest";
+            return false;
+        }
+        report.cachedStages.push_back("ecs-start-scene-present");
+    }
     size_t missingArtifacts = 0u;
     for (const auto& entry : manifest->entries)
     {
@@ -407,7 +524,7 @@ bool VerifyStagedContent(
     }
     if (!context.profile.startScene.empty() &&
         std::filesystem::exists(context.stagingRoot / "Data" / "User" / "Assets" /
-            std::filesystem::path(ToForwardSlashes(context.profile.startScene))))
+            std::filesystem::path(StartSceneAssetPath(context.profile.startScene))))
     {
         report.cachedStages.push_back("start-scene-present");
     }

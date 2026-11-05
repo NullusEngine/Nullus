@@ -53,7 +53,8 @@ public:
         const BuildProfile& profile,
         const std::filesystem::path& artifactDatabasePath,
         DependencyCollectionResult& result,
-        BuildReport& report);
+        BuildReport& report,
+        const std::filesystem::path& additionalAssetsRoot = {});
 
     // Maps an artifact storage path ("Library/Artifacts/ab/<hash>") onto the
     // host file the project stores.

@@ -34,6 +34,7 @@ target_link_libraries(
   PUBLIC
     NLS_Engine
     NLS_Scripting
+    NLS_Plugins
 )
 
 target_compile_definitions(GameProject PUBLIC
@@ -45,6 +46,7 @@ nls_target_precompile_headers(GameProject "${NLS_ROOT_DIR}/Project/NullusProject
 add_executable(Game ${GAME_ENTRY_SOURCE})
 nls_add_windows_app_icon(Game)
 nls_copy_editor_resources_to_target(Game)
+nls_copy_script_api_to_target(Game)
 
 # 指定输出路径
 ###############################################################################
@@ -64,6 +66,7 @@ target_link_libraries(
     GameProject
 )
 nls_copy_shared_runtime_to_target(Game)
+nls_attach_source_plugins(Game Game)
 
 # The player template carries the managed assemblies produced by the shared
 # scripting build. Shipping validation rejects C# projects when this payload

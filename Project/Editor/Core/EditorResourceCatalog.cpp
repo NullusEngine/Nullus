@@ -56,9 +56,9 @@ const std::vector<EditorResourceRecord>& EditorResourceCatalog::DefaultRecords()
     {
         std::vector<EditorResourceRecord> result {
             MakeRecord("editor.brand.logo.mark", EditorResourceType::Brand, EditorResourceScope::Editor,
-                "Editor/Brand/NullusLogoMark.png", "editor/brand/logo-mark.png"),
+                "Editor/Brand/NullusLogoMark.svg", "editor/brand/logo-mark.svg"),
             MakeRecord("engine.brand.logo.mark", EditorResourceType::Brand, EditorResourceScope::RuntimeBuiltin,
-                "Engine/Brand/NullusLogoMark.png", "engine/brand/logo-mark.png"),
+                "Engine/Brand/NullusLogoMark.svg", "engine/brand/logo-mark.svg"),
 
             MakeRecord("editor.font.ui.default", EditorResourceType::Font, EditorResourceScope::Editor,
                 "Editor/Fonts/Ruda-Bold.ttf", "editor/fonts/ruda-bold.ttf"),

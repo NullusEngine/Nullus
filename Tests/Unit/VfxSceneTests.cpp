@@ -671,8 +671,15 @@ static void ValidateTransparentEmitterOrdering(bool vulkan, bool gpuEmitters = f
     ASSERT_FALSE(observed.empty());
 
     const auto& package = observed.back();
-    const auto pass = std::find_if(package.passCommandInputs.begin(),package.passCommandInputs.end(),
-        [](const auto& input) { return input.debugName == "VfxSceneSprites"; });
+    // Unified transparent submission may merge and rename the producer pass.
+    // Identify its actual particle draws, then retain the count/order/pixel checks.
+    const auto isParticlePass = [](const auto& input)
+    {
+        return input.kind == context::RenderPassCommandKind::Transparent &&
+            std::any_of(input.recordedDrawCommands.begin(),input.recordedDrawCommands.end(),
+                [](const auto& draw) { return draw.indirectArguments != nullptr; });
+    };
+    const auto pass = std::find_if(package.passCommandInputs.begin(),package.passCommandInputs.end(),isParticlePass);
     ASSERT_NE(pass,package.passCommandInputs.end());
     ASSERT_EQ(pass->recordedDrawCommands.size(),2u);
     // The far emitter owns two particles and must be submitted first.
@@ -691,7 +698,7 @@ static void ValidateTransparentEmitterOrdering(bool vulkan, bool gpuEmitters = f
     {
         const auto& firstPackage = observed.front();
         const auto firstPass = std::find_if(firstPackage.passCommandInputs.begin(),firstPackage.passCommandInputs.end(),
-            [](const auto& input) { return input.debugName == "VfxSceneSprites"; });
+            isParticlePass);
         ASSERT_NE(firstPass,firstPackage.passCommandInputs.end());
         ASSERT_EQ(firstPass->recordedDrawCommands.size(),2u);
         const auto fallbackFirst = particleCountOf(firstPass->recordedDrawCommands[0]);

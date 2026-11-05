@@ -1,5 +1,7 @@
 #include "ParticleSceneRenderer.h"
+#include "Assets/SpriteProjectSettings.h"
 
+#include <Math/Vector4.h>
 #include <algorithm>
 #include <cmath>
 #include <iterator>
@@ -16,6 +18,7 @@ struct ParticleSceneRenderer::State
         std::weak_ptr<const VFX::CompiledSystem> system;
         uint64_t device = 0;
         size_t emitter = 0;
+        uint32_t debugMode = 0;
         Render::RHI::RHIRenderTargetLayoutDesc targets;
         std::shared_ptr<VFX::ParticleRenderer> renderer;
     };
@@ -32,27 +35,23 @@ namespace
  * decides how those independent streams interleave, which is what this key
  * restores.
  *
- * The plane uses the same camera-forward convention as the per-emitter sort, so
- * a larger key is farther away and therefore drawn first. CPU emitters publish
+ * The key uses the same camera space as mesh and Sprite submission, so a larger
+ * key is farther away and therefore drawn first. CPU emitters publish
  * their bounds with the frame. GPU emitters publish the latest completed
  * asynchronous readback, so ordering can trail simulation by a few frames. The
  * component origin remains the fallback before the first successful readback.
  */
-float EmitterViewDepth(const VFX::SpriteView& camera, const Maths::Matrix4& localToWorld,
+float EmitterViewDepth(const Maths::Matrix4& worldToView, const Maths::Matrix4& localToWorld,
     const std::optional<VFX::ParticleBounds>& bounds)
 {
-    VFX::Value center{};
+    Maths::Vector4 center{0,0,0,1};
     if (bounds.has_value() && !bounds->Empty())
-        for (size_t component = 0; component < 3; ++component)
-            center[component] = (bounds->minimum[component]+bounds->maximum[component])*0.5f;
-    float depth = 0;
-    for (size_t row = 0; row < 3; ++row)
     {
-        float world = localToWorld.data[row*4+3];
-        for (size_t column = 0; column < 3; ++column)
-            world += localToWorld.data[row*4+column]*center[column];
-        depth += world*camera.cameraForward[row];
+        center.x = (bounds->minimum[0]+bounds->maximum[0])*0.5f;
+        center.y = (bounds->minimum[1]+bounds->maximum[1])*0.5f;
+        center.z = (bounds->minimum[2]+bounds->maximum[2])*0.5f;
     }
+    const float depth = -(worldToView * (localToWorld * center)).z;
     return std::isfinite(depth) ? depth : 0.0f;
 }
 }
@@ -60,10 +59,12 @@ ParticleSceneRenderer::ParticleSceneRenderer() : m_state(std::make_unique<State>
 ParticleSceneRenderer::~ParticleSceneRenderer() = default;
 
 bool ParticleSceneRenderer::AppendPass(std::shared_ptr<Render::RHI::RHIDevice> device, Render::Context::RenderScenePackage& package,
-    const Render::FrameGraph::FrozenFrameDescriptor& view, const std::vector<ParticleViewInput>& particles, std::string& error)
+    const Render::FrameGraph::FrozenFrameDescriptor& view, const std::vector<ParticleViewInput>& particles, std::string& error,
+    const SceneRenderOptions& options)
 {
     namespace rhi = Render::RHI;
     namespace context = Render::Context;
+    const uint32_t debugMode = options.geometryMode == SceneGeometryDrawMode::Wireframe ? 11u : static_cast<uint32_t>(options.debugMode);
     if (particles.empty()) { error.clear(); return true; }
     if (!device || !view.descriptor.camera) { error = "Particle scene rendering requires a device and frozen camera"; return false; }
     std::erase_if(m_state->pipelines,[](const auto& pipeline) { return pipeline.system.expired(); });
@@ -95,6 +96,10 @@ bool ParticleSceneRenderer::AppendPass(std::shared_ptr<Render::RHI::RHIDevice> d
     for (const bool solid : {true,false})
     {
         size_t insertionPass = package.passCommandInputs.size();
+        for (size_t i = 0; i < package.passCommandInputs.size(); ++i)
+            if (package.passCommandInputs[i].kind == context::RenderPassCommandKind::UIOverlay ||
+                package.passCommandInputs[i].kind == context::RenderPassCommandKind::SwapchainOutput)
+            { insertionPass = i; break; }
         if (solid)
             for (size_t i = 0; i < package.passCommandInputs.size(); ++i)
                 if (package.passCommandInputs[i].kind == context::RenderPassCommandKind::Transparent)
@@ -134,7 +139,7 @@ bool ParticleSceneRenderer::AppendPass(std::shared_ptr<Render::RHI::RHIDevice> d
             access.access = pass.writesDepthStencilAttachment ? rhi::AccessMask::DepthStencilRead|rhi::AccessMask::DepthStencilWrite : rhi::AccessMask::DepthStencilRead;
             pass.textureResourceAccesses.push_back(access);
         }
-        const auto viewProjection = view.descriptor.camera->GetProjectionMatrix()*view.descriptor.camera->GetViewMatrix();
+        const auto viewProjection = view.descriptor.camera->GetGpuProjectionMatrix()*view.descriptor.camera->GetViewMatrix();
         const auto& cameraView = view.descriptor.camera->GetViewMatrix();
         struct DrawOwner
         {
@@ -158,7 +163,7 @@ bool ParticleSceneRenderer::AppendPass(std::shared_ptr<Render::RHI::RHIDevice> d
                     : program->asset.emitters[index].sprite;
                 if (solid != (settings.blend == VFX::SpriteBlendMode::Masked || settings.blend == VFX::SpriteBlendMode::Opaque)) continue;
                 auto found = std::find_if(m_state->pipelines.begin(),m_state->pipelines.end(),[&](const auto& pipeline)
-                { return pipeline.system.lock() == program && pipeline.device == device->GetCacheIdentity() && pipeline.emitter == index && sameTargets(pipeline.targets,targets); });
+                { return pipeline.system.lock() == program && pipeline.device == device->GetCacheIdentity() && pipeline.emitter == index && pipeline.debugMode == debugMode && sameTargets(pipeline.targets,targets); });
                 if (found == m_state->pipelines.end())
                 {
                     auto renderer = std::make_shared<VFX::ParticleRenderer>();
@@ -166,9 +171,9 @@ bool ParticleSceneRenderer::AppendPass(std::shared_ptr<Render::RHI::RHIDevice> d
                         shaders->emitters[index].spriteFragment,targets,error,
                         program->asset.emitters[index].sortByViewDepth ? &shaders->emitters[index].sort : nullptr,
                         &shaders->emitters[index].visibility,&shaders->emitters[index].simulation.bounds,settings,
-                        program->asset.emitters[index].renderer == VFX::RendererType::Mesh ? &program->asset.emitters[index].mesh : nullptr)) return false;
+                        program->asset.emitters[index].renderer == VFX::RendererType::Mesh ? &program->asset.emitters[index].mesh : nullptr, debugMode)) return false;
                     if (m_state->pipelines.size() >= 256) m_state->pipelines.erase(m_state->pipelines.begin());
-                    m_state->pipelines.push_back({program,device->GetCacheIdentity(),index,targets,std::move(renderer)});
+                    m_state->pipelines.push_back({program,device->GetCacheIdentity(),index,debugMode,targets,std::move(renderer)});
                     found = std::prev(m_state->pipelines.end());
                 }
                 VFX::SpriteView camera;
@@ -179,12 +184,13 @@ bool ParticleSceneRenderer::AppendPass(std::shared_ptr<Render::RHI::RHIDevice> d
                 camera.cameraForward = {-cameraView.data[8],-cameraView.data[9],-cameraView.data[10],0};
                 camera.frustumCulling = program->asset.emitters[index].frustumCulling;
                 const auto& orderingBounds = data->orderingBounds ? data->orderingBounds : data->cpuBounds;
-                const float emitterDepth = EmitterViewDepth(camera,input.localToWorld,orderingBounds);
+                const float emitterDepth = EmitterViewDepth(cameraView,input.localToWorld,orderingBounds);
                 VFX::SpriteDrawContext drawContext;
+                drawContext.debugMode = debugMode;
                 if (index < input.materials.size() && !input.materials[index].empty()) drawContext.material = input.materials[index][0];
                 if (index < input.materials.size()) drawContext.meshMaterials = input.materials[index];
                 if (index < input.meshes.size()) drawContext.meshes = input.meshes[index];
-                const auto& projection = view.descriptor.camera->GetProjectionMatrix();
+                const auto projection = view.descriptor.camera->GetGpuProjectionMatrix();
                 drawContext.depthProjection = {projection.data[10],projection.data[11],projection.data[14],projection.data[15]};
                 if (settings.softDistance > 0 && depth && !pass.writesDepthStencilAttachment && depth->GetTexture()->GetDesc().sampleCount == 1 &&
                     rhi::HasTextureUsage(depth->GetTexture()->GetDesc().usage,rhi::TextureUsageFlags::Sampled))
@@ -210,6 +216,8 @@ bool ParticleSceneRenderer::AppendPass(std::shared_ptr<Render::RHI::RHIDevice> d
                 }
                 context::RecordedDrawCommandInput command;
                 command.pipeline = draw->pipeline; command.passBindingSet = draw->bindings;
+                if (!solid) command.transparentSortKey = Render::Sprites::SpriteSortKey{
+                    input.sortingLayerRank,0,emitterDepth,input.ownerId};
                 command.materialBindingSet = draw->materialBindings;
                 for (const auto& slot : draw->meshSlots)
                     for (const auto& buffer : {slot.mesh->GetVertexBuffer(),slot.mesh->GetIndexBuffer()})

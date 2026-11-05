@@ -88,6 +88,7 @@ bool IsInspectorReferenceableSubAsset(const NLS::Core::Assets::ArtifactType p_ty
     return p_type == ArtifactType::Mesh ||
            p_type == ArtifactType::Material ||
            p_type == ArtifactType::Texture ||
+           p_type == ArtifactType::Sprite ||
            p_type == ArtifactType::Font ||
            p_type == ArtifactType::Shader ||
            p_type == ArtifactType::UIDocument;
@@ -101,6 +102,7 @@ bool IsGridVisibleGeneratedSubAsset(const NLS::Core::Assets::ArtifactType p_type
 bool AssetTypeCanHaveGeneratedSubAssets(const AssetBrowserItemType type)
 {
     return type == AssetBrowserItemType::Model ||
+           type == AssetBrowserItemType::Texture ||
            type == AssetBrowserItemType::Prefab;
 }
 
@@ -186,6 +188,7 @@ std::string PrettyTypeName(const NLS::Core::Assets::ArtifactType type)
     case ArtifactType::Mesh: return "Mesh";
     case ArtifactType::Material: return "Material";
     case ArtifactType::Texture: return "Texture";
+    case ArtifactType::Sprite: return "Sprite";
     case ArtifactType::Shader: return "Shader";
     case ArtifactType::Scene: return "Scene";
     default: return "Sub Asset";
@@ -764,6 +767,7 @@ AssetBrowserItemType TypeFromArtifactType(const NLS::Core::Assets::ArtifactType 
     case ArtifactType::Material:
         return AssetBrowserItemType::Material;
     case ArtifactType::Texture:
+    case ArtifactType::Sprite:
         return AssetBrowserItemType::Texture;
     case ArtifactType::Shader:
         return AssetBrowserItemType::Shader;
@@ -1834,6 +1838,7 @@ std::optional<AssetBrowserItemType> AssetBrowserGeneratedArtifactItemType(
     case ArtifactType::Prefab: return AssetBrowserItemType::Prefab;
     case ArtifactType::Mesh: return AssetBrowserItemType::Mesh;
     case ArtifactType::Material: return AssetBrowserItemType::Material;
+    case ArtifactType::Sprite: return AssetBrowserItemType::Texture;
     case ArtifactType::Texture:
         // Imported textures are implementation dependencies of generated materials,
         // not browsable children of the source model/prefab.

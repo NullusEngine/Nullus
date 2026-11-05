@@ -2,6 +2,9 @@
 
 #include <filesystem>
 #include <optional>
+#include <vector>
+#include <utility>
+#include <Platform/Process/Process.h>
 
 namespace NLS::Editor::Scripting
 {
@@ -13,7 +16,8 @@ struct ManagedScriptProjectPaths
 };
 
 inline std::optional<ManagedScriptProjectPaths> ResolveManagedScriptProject(
-    const std::filesystem::path& projectRoot)
+    const std::filesystem::path& projectRoot,
+    std::filesystem::path sdkRoot = NLS::Platform::Process::ResolveInstallResourceRoots().installRoot)
 {
     if (projectRoot.empty())
         return std::nullopt;
@@ -25,7 +29,20 @@ inline std::optional<ManagedScriptProjectPaths> ResolveManagedScriptProject(
     if (normalizedRoot.empty())
         return std::nullopt;
 
-    for (auto candidate = normalizedRoot; !candidate.empty(); candidate = candidate.parent_path())
+    // A project can carry its own SDK. Otherwise build with the SDK belonging
+    // to this Editor before considering an unrelated containing checkout.
+    std::vector<std::filesystem::path> probes {normalizedRoot};
+    const auto appendAncestors = [&probes](std::filesystem::path candidate)
+    {
+        for (; !candidate.empty(); candidate = candidate.parent_path())
+        {
+            probes.push_back(candidate);
+            if (candidate == candidate.parent_path()) break;
+        }
+    };
+    appendAncestors(std::move(sdkRoot));
+    appendAncestors(normalizedRoot.parent_path());
+    for (const auto& candidate : probes)
     {
         const auto projectFile =
             candidate / "Managed" / "Nullus.GameScripts" / "Nullus.GameScripts.csproj";
@@ -37,8 +54,6 @@ inline std::optional<ManagedScriptProjectPaths> ResolveManagedScriptProject(
                 projectFile
             };
         }
-        if (candidate == candidate.parent_path())
-            break;
     }
     return std::nullopt;
 }

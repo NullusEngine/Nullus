@@ -1,6 +1,9 @@
 #include "Core/Game.h"
+#include <Scripting/ProjectPhysicsTiming.h>
+#include "ECSSceneStartup.h"
 
 #include <Rendering/UI/UIFontAtlas.h>
+#include <ImGui/imgui.h>
 
 #include <algorithm>
 #include <filesystem>
@@ -40,17 +43,30 @@
 
 using namespace NLS;
 
+void NLS::Game::Core::GameUiContextDeleter::operator()(ImGuiContext* context) const
+{
+    if (context) ImGui::DestroyContext(context);
+}
+
 Game::Core::Game::Game(
 	Context& p_context,
-	std::optional<Launch::MaterialValidationLaunchSettings> materialValidation) :
+	std::optional<Launch::MaterialValidationLaunchSettings> materialValidation,
+    Scripting::RuntimePlaySession::ECSSetup registerECS) :
 	m_context(p_context),
 	m_sceneRenderer(Engine::Rendering::CreateSceneRenderer(
 		*p_context.driver,
-			materialValidation.has_value()&&(!materialValidation->animationValidation||materialValidation->animationForward)
+				materialValidation.has_value()&&!materialValidation->spriteTemplateValidation&&
+                    (!materialValidation->animationValidation||materialValidation->animationForward)
 			? Engine::Rendering::SceneRendererKind::Forward
 			: Engine::Rendering::GetDefaultSceneRendererKind())),
 	m_materialValidation(std::move(materialValidation))
 {
+#if defined(NLS_ENABLE_GAME_UI)
+    // The standalone host has no editor UI manager, but the retained UI
+    // renderer still uses ImGui's atlas for solid-color geometry.
+    if (ImGui::GetCurrentContext() == nullptr)
+        m_ownedUiContext.reset(ImGui::CreateContext());
+#endif
 	if (m_materialValidation.has_value())
 	{
 		auto diagnostics = Render::Context::DriverRendererAccess::GetDiagnosticsSettings(*m_context.driver);
@@ -62,7 +78,24 @@ Game::Core::Game::Game(
 
 	const auto startScene = m_context.projectSettings.Get<std::string>("start_scene");
 	const auto startScenePath = m_context.projectAssetsPath + startScene;
-	if (!startScene.empty() && std::filesystem::exists(startScenePath))
+        const bool ecsStart = RuntimeAssets::IsECSStartScene(startScene);
+        if (ecsStart)
+        {
+            if (!m_context.runtimeAssetDatabase) throw std::runtime_error("ECS startup has no runtime asset manifest");
+            auto relative = std::filesystem::path(startScene).generic_string();
+            if (relative.rfind("Assets/", 0) == 0) relative.erase(0, 7);
+            const auto reference = RuntimeAssets::ResolveECSStartSceneAsset(
+                m_context.projectSettings.GetOrDefault<std::string>("start_scene_asset", ""),
+                m_context.projectSettings.GetOrDefault<std::string>("start_scene_subasset", ""),
+                m_context.packagedContent ? std::filesystem::path{} : std::filesystem::path(m_context.projectAssetsPath) / relative);
+            RuntimeAssets::ConfigureECSStartScene(m_runtimePlaySession,
+                std::make_shared<const Engine::Assets::RuntimeAssetDatabase>(*m_context.runtimeAssetDatabase),
+                m_context.runtimeContentRoot, reference, std::move(registerECS));
+            // The existing host Scene owns the camera and traditional subsystem
+            // lifecycle; ECS scene data loads into its optional RuntimeWorld.
+            m_context.sceneManager.LoadEmptyLightedScene();
+        }
+		else if (!startScene.empty() && std::filesystem::exists(startScenePath))
 	{
 		m_context.sceneManager.LoadScene(startScenePath, true);
 	}
@@ -75,6 +108,15 @@ Game::Core::Game::Game(
 
 	if (auto* scene = m_context.sceneManager.GetCurrentScene())
 	{
+        std::string timingError;
+        if(!Scripting::ConfigureProjectPhysicsTiming(m_runtimePlaySession,m_context.projectSettings,timingError))throw std::runtime_error(timingError);
+        m_runtimePlaySession.ConfigureInput(m_context.inputManager->GetInputSystem(), &m_context.inputManager->GetPlatformBackend());
+        const auto begun = m_runtimePlaySession.Begin(m_context.scriptRuntime, m_context.sceneManager, 1, m_context.audioDevice);
+        if (!begun.Succeeded()) throw std::runtime_error(begun.message);
+        if (ecsStart) NLS_LOG_INFO("ECS start scene loaded: " + startScene + " entities=" +
+            std::to_string(m_runtimePlaySession.GetECS()->GetWorld().GetEntityCount()));
+		const auto playOutput=m_context.window->GetFramebufferSize();
+        m_runtimePlaySession.ConfigureUI(m_context.projectAssetsPath,uint32_t(std::max(1.f,playOutput.x)),uint32_t(std::max(1.f,playOutput.y)));
 		scene->Play();
             if(m_materialValidation&&m_materialValidation->animationValidation)
             {
@@ -87,6 +129,10 @@ Game::Core::Game::Game(
 
 Game::Core::Game::~Game()
 {
+    const auto ended=m_runtimePlaySession.End();
+    if (!ended.Succeeded()) NLS_LOG_ERROR("Failed to end the game script session: "+ended.message);
+	if (m_ownedUiContext && m_context.driver)
+		(void)Render::Context::DriverRendererAccess::TryDrainThreadedRendering(*m_context.driver);
 	m_context.sceneManager.UnloadCurrentScene();
 }
 
@@ -146,7 +192,7 @@ void Game::Core::Game::PreUpdate()
 		{
 			if (auto camera = currentScene->FindMainCamera())
 			{
-				auto windowSize = p_context.window->GetSize();
+				auto windowSize = p_context.window->GetFramebufferSize();
 
 				p_renderer.AddDescriptor<Engine::Rendering::BaseSceneRenderer::SceneDescriptor>({
 					*currentScene,
@@ -157,7 +203,10 @@ void Game::Core::Game::PreUpdate()
 				NLS::Render::Data::FrameDescriptor frameDescriptor;
 				frameDescriptor.renderWidth = windowSize.x;
 				frameDescriptor.renderHeight = windowSize.y;
-				frameDescriptor.camera = camera->GetCamera();
+				frameDescriptor.camera = camera->GetRenderCamera();
+                frameDescriptor.gameTime=Scripting::ScriptEngineApi::GetFrameContext().time;
+                frameDescriptor.playSessionId=Scripting::ScriptEngineApi::GetPlaySessionId();
+                frameDescriptor.simulationFrame=Scripting::ScriptEngineApi::GetFrameContext().frameIndex;
 
 				p_renderer.BeginFrame(frameDescriptor);
 				p_renderer.DrawFrame();
@@ -186,7 +235,7 @@ void Game::Core::Game::PreUpdate()
 		{
 			if (auto camera = currentScene->FindMainCamera())
 			{
-				auto windowSize = p_context.window->GetSize();
+					auto windowSize = p_context.window->GetFramebufferSize();
 				outputFramebuffer.Resize(
 					static_cast<uint16_t>(windowSize.x),
 					static_cast<uint16_t>(windowSize.y));
@@ -200,7 +249,10 @@ void Game::Core::Game::PreUpdate()
 				NLS::Render::Data::FrameDescriptor frameDescriptor;
 				frameDescriptor.renderWidth = static_cast<uint16_t>(windowSize.x);
 				frameDescriptor.renderHeight = static_cast<uint16_t>(windowSize.y);
-				frameDescriptor.camera = camera->GetCamera();
+				frameDescriptor.camera = camera->GetRenderCamera();
+                    frameDescriptor.gameTime=Scripting::ScriptEngineApi::GetFrameContext().time;
+                    frameDescriptor.playSessionId=Scripting::ScriptEngineApi::GetPlaySessionId();
+                    frameDescriptor.simulationFrame=Scripting::ScriptEngineApi::GetFrameContext().frameIndex;
 				NLS::Render::FrameGraph::SetExternalSceneOutputFramebuffer(frameDescriptor, &outputFramebuffer);
 
 				p_renderer.BeginFrame(frameDescriptor);
@@ -236,14 +288,19 @@ void Game::Core::Game::PreUpdate()
 
 void Game::Core::Game::Update(float p_deltaTime)
 {
-	const float unscaledDelta = std::max(0.0f, p_deltaTime);
-	NLS::Scripting::ScriptEngineApi::SetInputManager(m_context.inputManager.get());
-	NLS::Scripting::ScriptEngineApi::SetSceneManager(&m_context.sceneManager);
-	const float delta = NLS::Scripting::ScriptEngineApi::ScaleDeltaTime(unscaledDelta);
-	NLS::Scripting::ScriptEngineApi::AdvanceFrame(unscaledDelta);
-	m_unscaledTime += unscaledDelta;
-	m_time += delta;
-	++m_frameIndex;
+    const float unscaledDelta = std::max(0.0f, p_deltaTime);
+    m_frameIndex = m_runtimePlaySession.GetFrame().frameIndex + 1;
+    auto gameInput=NLS::Scripting::GameInputFrame::Capture(*m_context.inputManager);
+    gameInput.sessionId=m_runtimePlaySession.GetSessionId();
+    const auto inputSize=m_context.window->GetSize();
+    const auto outputSize=m_context.window->GetFramebufferSize();
+    gameInput.width=static_cast<uint32_t>(std::max(0.0f,outputSize.x));
+    gameInput.height=static_cast<uint32_t>(std::max(0.0f,outputSize.y));
+    gameInput.position={gameInput.position.x*outputSize.x/std::max(1.f,inputSize.x),gameInput.position.y*outputSize.y/std::max(1.f,inputSize.y)};
+    gameInput.focused=m_context.window->IsFocused();
+    gameInput.pointerAvailable=gameInput.focused;
+    m_runtimePlaySession.NotifyFocus(gameInput.focused);
+    NLS::Scripting::ScriptEngineApi::SetGameInputFrame(std::move(gameInput));
 	if (m_context.inputManager->IsKeyPressed(Windowing::Inputs::EKey::KEY_F11))
 	{
 		if (m_context.inputManager->GetKeyState(Windowing::Inputs::EKey::KEY_LEFT_CONTROL) == Windowing::Inputs::EKeyState::KEY_DOWN)
@@ -255,148 +312,8 @@ void Game::Core::Game::Update(float p_deltaTime)
 	if (auto currentScene = m_context.sceneManager.GetCurrentScene())
 	{
 		NLS::Scripting::ScriptEngineApi::SetScene(currentScene);
-		#if defined(NLS_ENABLE_GAME_UI)
-		m_uiRuntimeService.SyncCanvases(currentScene->GetFastAccessComponents().uiCanvases);
-		ResolvePendingUIDocuments(m_uiRuntimeService, m_context.projectAssetsPath);
-		const auto windowSize = m_context.window->GetSize();
-		const Engine::UI::UIVector2 uiViewport {
-			std::max(0.0f, windowSize.x),
-			std::max(0.0f, windowSize.y) };
-		const auto mousePosition = m_context.inputManager->GetMousePosition();
-		for (auto* canvas : m_uiRuntimeService.GetCanvases())
-		{
-			if (canvas && canvas->IsRenderable())
-				// Establish layout before hit testing. The normal frame tick below
-				// reuses the same tree after scene/script updates.
-				canvas->Tick(0.0f, uiViewport, 1.0f, m_frameIndex);
-		}
-		Engine::UI::InputEventQueue inputEvents;
-		inputEvents.Push({
-			Engine::UI::UIEventType::PointerMove,
-			Engine::UI::UIInputDevice::Mouse,
-			m_frameIndex,
-			0u,
-			0u,
-			0u,
-			0u,
-			{ mousePosition.x, mousePosition.y },
-			{},
-			0.0f,
-			{},
-			false });
-		if (m_context.inputManager->IsMouseButtonPressed(Windowing::Inputs::EMouseButton::MOUSE_BUTTON_LEFT))
-		{
-			inputEvents.Push({
-				Engine::UI::UIEventType::PointerDown,
-				Engine::UI::UIInputDevice::Mouse,
-				m_frameIndex,
-				0u,
-				0u,
-				0u,
-				0u,
-				{ mousePosition.x, mousePosition.y },
-				{},
-				0.0f,
-				{},
-				false });
-		}
-		if (m_context.inputManager->IsMouseButtonReleased(Windowing::Inputs::EMouseButton::MOUSE_BUTTON_LEFT))
-		{
-			inputEvents.Push({
-				Engine::UI::UIEventType::PointerUp,
-				Engine::UI::UIInputDevice::Mouse,
-				m_frameIndex,
-				0u,
-				0u,
-				0u,
-				0u,
-				{ mousePosition.x, mousePosition.y },
-				{},
-				0.0f,
-				{},
-				false });
-		}
-		std::vector<std::pair<uint32_t, Windowing::Inputs::EKeyState>> keyEvents;
-		keyEvents.reserve(m_context.inputManager->GetKeyEvents().size());
-		for (const auto& [key, state] : m_context.inputManager->GetKeyEvents())
-			keyEvents.emplace_back(static_cast<uint32_t>(key), state);
-		std::sort(keyEvents.begin(), keyEvents.end(), [](const auto& lhs, const auto& rhs) {
-			return lhs.first < rhs.first;
-		});
-		for (const auto& [keyCode, state] : keyEvents)
-		{
-			inputEvents.Push({
-				state == Windowing::Inputs::EKeyState::KEY_DOWN
-					? Engine::UI::UIEventType::KeyDown
-					: Engine::UI::UIEventType::KeyUp,
-				Engine::UI::UIInputDevice::Keyboard,
-				m_frameIndex,
-				0u,
-				0u,
-				keyCode,
-				0u,
-				{},
-				{},
-				0.0f,
-				{},
-				false });
-		}
-		const auto wheel = m_context.inputManager->GetWheelMovement();
-		if (wheel.y != 0.0f)
-		{
-			inputEvents.Push({
-				Engine::UI::UIEventType::Scroll,
-				Engine::UI::UIInputDevice::Mouse,
-				m_frameIndex,
-				0u,
-				0u,
-				0u,
-				0u,
-				{ mousePosition.x, mousePosition.y },
-				{},
-				wheel.y,
-				{},
-				false });
-		}
-		m_uiRuntimeService.DispatchInputQueue(inputEvents);
-		NLS::Scripting::ScriptFrameContext scriptFrame;
-		scriptFrame.deltaTime = delta;
-		scriptFrame.unscaledDeltaTime = unscaledDelta;
-		scriptFrame.time = m_time;
-		scriptFrame.unscaledTime = m_unscaledTime;
-		scriptFrame.frameIndex = m_frameIndex;
-		scriptFrame.fixedDeltaTime = NLS::Scripting::ScriptEngineApi::GetFixedDeltaTime();
-		scriptFrame.timeScale = NLS::Scripting::ScriptEngineApi::GetTimeScale();
-		m_fixedAccumulator += delta;
-		while (m_fixedAccumulator + 1e-6f >= scriptFrame.fixedDeltaTime)
-		{
-			NLS::Scripting::ScriptFrameContext fixedFrame = scriptFrame;
-			fixedFrame.deltaTime = scriptFrame.fixedDeltaTime * scriptFrame.timeScale;
-			fixedFrame.unscaledDeltaTime = scriptFrame.fixedDeltaTime;
-			fixedFrame.fixedFrameIndex = ++m_fixedFrameIndex;
-			const auto fixedSchedule = m_context.scriptRuntime.BeginScheduledFrame(
-				NLS::Scripting::ScriptCallback::FixedUpdate,
-				fixedFrame);
-			currentScene->FixedUpdate(fixedFrame.deltaTime);
-			if (fixedSchedule.Succeeded())
-			{
-				const auto flushStatus = m_context.scriptRuntime.FlushScheduledFrame();
-				if (!flushStatus.Succeeded())
-					NLS_LOG_WARNING("Script FixedUpdate batch failed: " + flushStatus.message);
-			}
-			m_fixedAccumulator -= scriptFrame.fixedDeltaTime;
-		}
-		const auto updateSchedule = m_context.scriptRuntime.BeginScheduledFrame(
-			NLS::Scripting::ScriptCallback::Update,
-			scriptFrame);
-			currentScene->UpdateGameplay(delta);
-		if (updateSchedule.Succeeded())
-		{
-			const auto flushStatus = m_context.scriptRuntime.FlushScheduledFrame();
-			if (!flushStatus.Succeeded())
-				NLS_LOG_WARNING("Script Update batch failed: " + flushStatus.message);
-		}
-			currentScene->UpdateAnimations(delta);
+        m_runtimePlaySession.ConfigureUI(m_context.projectAssetsPath,static_cast<uint32_t>(std::max(1.0f,outputSize.x)),static_cast<uint32_t>(std::max(1.0f,outputSize.y)));
+        m_runtimePlaySession.Tick(unscaledDelta);
 			if(m_materialValidation.has_value()&&(m_frameIndex==1||m_presentedFrames+1==m_materialValidation->captureAfterFrames))
 			{
 				for(auto* object:currentScene->GetGameObjects())
@@ -415,33 +332,13 @@ void Game::Core::Game::Update(float p_deltaTime)
 					}
 				}
 			}
-
-		const auto lateSchedule = m_context.scriptRuntime.BeginScheduledFrame(
-			NLS::Scripting::ScriptCallback::LateUpdate,
-			scriptFrame);
-		currentScene->LateUpdate(delta);
-		if (lateSchedule.Succeeded())
-		{
-			const auto flushStatus = m_context.scriptRuntime.FlushScheduledFrame();
-			if (!flushStatus.Succeeded())
-				NLS_LOG_WARNING("Script LateUpdate batch failed: " + flushStatus.message);
-		}
-		m_uiRuntimeService.Tick(delta, uiViewport, 1.0f, m_frameIndex);
-		// Publish the glyph atlas before the snapshot so text quads have pixels to
-		// sample; the upload itself completes on the render thread.
-		(void)m_uiFontAtlasUploader.Pump(
-			*m_context.driver,
-			NLS::Render::UI::GetSharedUIFontAtlas());
-		m_uiSnapshot = m_uiRuntimeService.GetLatestSnapshot();
-		// Publish only the immutable render snapshot. The RHI overlay keeps
-		// ownership until the corresponding frame has retired, so neither the
-		// UI tree nor script-owned elements cross the render-thread boundary.
-		Render::Context::DriverUIAccess::PublishUiDrawDataSnapshot(
-			*m_context.driver,
-			Render::UI::AdaptUIDrawSnapshot(m_uiSnapshot));
-		#else
-		m_uiSnapshot.reset();
-		#endif
+        #if defined(NLS_ENABLE_GAME_UI)
+        (void)m_uiFontAtlasUploader.Pump(*m_context.driver,NLS::Render::UI::GetSharedUIFontAtlas());
+        m_uiSnapshot=m_runtimePlaySession.GetUI().GetLatestSnapshot();
+        Render::Context::DriverUIAccess::PublishUiDrawDataSnapshot(*m_context.driver,Render::UI::AdaptUIDrawSnapshot(m_uiSnapshot));
+        #else
+        m_uiSnapshot.reset();
+        #endif
 		if (m_materialValidation.has_value() &&
 			!m_materialValidationCaptured &&
 			m_presentedFrames + 1u >= std::max(1u, m_materialValidation->captureAfterFrames))
@@ -556,15 +453,28 @@ void Game::Core::Game::PostUpdate()
 			const uint32_t height = m_materialValidationReadbackHeight;
 			const uint32_t channels = 4u;
 			const auto& pixels = *m_materialValidationReadbackPixels;
+            if (m_materialValidation->spriteTemplateValidation)
+            {
+                const auto stats = m_sceneRenderer->GetSpriteStatistics();
+                const auto resources = m_context.resourceLifetimeRegistry.CreateDiagnosticSnapshot();
+                NLS_LOG_INFO("[SpriteValidation] submitted=" + std::to_string(stats.submitted) +
+                    " visible=" + std::to_string(stats.visible) + " culled=" + std::to_string(stats.culled) +
+                    " batches=" + std::to_string(stats.batches) + " drawCalls=" + std::to_string(stats.drawCalls) +
+                    " cpuExpanded=" + std::to_string(stats.cpuExpanded) + " prepared=" + std::to_string(stats.prepared) +
+                    " activeLeases=" + std::to_string(resources.activeLeaseCount));
+            }
             const std::vector<Render::Tooling::MaterialVisualProbe> animationProbes={
                 {"Cooked animation silhouette",{.25f,.1f,.75f,.9f},Render::Tooling::MaterialVisualChannel::Blue}};
+            const std::vector<Render::Tooling::MaterialVisualProbe> spriteProbes={
+                {"TwoD template Sprite",{.4f,.3f,.6f,.7f},Render::Tooling::MaterialVisualChannel::Blue}};
 			const auto evidence = Render::Tooling::AnalyzeMaterialVisualEvidence(
 			pixels.data(),
 			width,
 			height,
 			channels,
 			width * channels,
-				m_materialValidation->animationValidation?animationProbes:Render::Tooling::BuildDefaultImportedMaterialVisualProbes());
+					m_materialValidation->spriteTemplateValidation?spriteProbes:
+                    m_materialValidation->animationValidation?animationProbes:Render::Tooling::BuildDefaultImportedMaterialVisualProbes());
 
 		std::string writeError;
 		if (!outputPath.empty() && !Render::Tooling::WriteMaterialVisualEvidencePng(

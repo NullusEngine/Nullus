@@ -1,6 +1,7 @@
 #pragma once
 
 #include <memory>
+#include <Scripting/RuntimePlaySession.h>
 #include <vector>
 
 #include <Engine/Rendering/BaseSceneRenderer.h>
@@ -14,8 +15,11 @@
 #include "Core/Context.h"
 #include "LaunchArgs.h"
 
+struct ImGuiContext;
+
 namespace NLS::Game::Core
 {
+    struct GameUiContextDeleter { void operator()(ImGuiContext* context) const; };
 	/**
 	* Handle the game logic
 	*/
@@ -28,7 +32,8 @@ namespace NLS::Game::Core
 		*/
 		Game(
 			Context& p_context,
-			std::optional<Launch::MaterialValidationLaunchSettings> materialValidation = std::nullopt);
+				std::optional<Launch::MaterialValidationLaunchSettings> materialValidation = std::nullopt,
+                Scripting::RuntimePlaySession::ECSSetup registerECS = {});
 
 		/**
 		* Destroy the game
@@ -58,6 +63,8 @@ namespace NLS::Game::Core
 
 	private:
 		Context& m_context;
+        std::unique_ptr<ImGuiContext, GameUiContextDeleter> m_ownedUiContext;
+        NLS::Scripting::RuntimePlaySession m_runtimePlaySession;
 
 		std::unique_ptr<Engine::Rendering::BaseSceneRenderer> m_sceneRenderer;
 		std::unique_ptr<Render::Buffers::Framebuffer> m_materialValidationFramebuffer;

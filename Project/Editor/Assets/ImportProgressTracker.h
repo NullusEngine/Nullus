@@ -68,7 +68,15 @@ struct ImportProgressEvent
     bool cancellationRequested = false;
     ImportJobTerminalStatus terminalStatus = ImportJobTerminalStatus::None;
     NLS::Core::Assets::AssetDiagnostics diagnostics;
+    // Per-job progress; normalizedProgress retains its existing target-batch meaning.
+    double localProgress = 0.0;
 };
+
+inline bool IsImportCancellable(const ImportProgressEvent& event)
+{
+    return event.terminalStatus == ImportJobTerminalStatus::None &&
+        event.sourcePath != "Startup Scene" && event.sourcePath != "Asset Browser";
+}
 
 struct ImportBatchProgress
 {

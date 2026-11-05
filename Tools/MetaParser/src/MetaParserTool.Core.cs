@@ -79,8 +79,9 @@ internal static partial class MetaParserTool
         return string.Join(", ", routes);
     }
 
-    private static IEnumerable<ReflectTypeInfo> ParseHeader(string rootDir, string headerPath, PrecompileParams config)
-        => MergeReflectTypes(ParseHeaderWithCppAst(rootDir, headerPath, config));
+    private static IEnumerable<ReflectTypeInfo> ParseHeader(
+        string rootDir, string headerPath, PrecompileParams config, List<CppSourceFile>? sourceFiles = null)
+        => MergeReflectTypes(ParseHeaderWithCppAst(rootDir, headerPath, config, sourceFiles));
 
     private static List<ReflectTypeInfo> MergeReflectTypes(IEnumerable<ReflectTypeInfo> types)
     {

@@ -41,6 +41,7 @@ namespace CppAst
         [Language("NamedParameter.CppAst", "0.1", "Grammer for named parameter")]
         public class NamedParameterGrammer : Irony.Parsing.Grammar
         {
+            [ThreadStatic]
             static NamedParameterGrammer sGrammer;
             public static NamedParameterGrammer Instance
             {
@@ -186,6 +187,13 @@ namespace CppAst
         #endregion
 
 
+        // Irony mutates grammar data while constructing a parser. Neither that
+        // construction nor a parser's parse context may be shared by workers.
+        // Reuse a fully initialized parser on each thread instead of rebuilding
+        // its grammar tables for every reflected annotation.
+        [ThreadStatic]
+        private static Irony.Parsing.Parser sParser;
+
         public static bool ParseNamedParameters(string content, Dictionary<string, object> outNamedParameterDic, out string errorMessage)
         {
             errorMessage = "";
@@ -195,7 +203,7 @@ namespace CppAst
                 return true;
             }
 
-            Irony.Parsing.Parser parser = new Irony.Parsing.Parser(NamedParameterGrammer.Instance);
+            var parser = sParser ?? (sParser = new Irony.Parsing.Parser(NamedParameterGrammer.Instance));
             var ast = parser.Parse(content);
 
             if (!ast.HasErrors())

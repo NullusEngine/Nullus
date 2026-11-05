@@ -12306,6 +12306,79 @@ TEST(RendererFrameObjectBindingTests, DeferredThreadedOffscreenPackageCarriesExt
     }
 }
 
+TEST(RendererFrameObjectBindingTests, SceneViewWireframeSwitchSkipsShadedPassesAndPreservesCurrentDepth)
+{
+    using namespace NLS::Engine::Rendering;
+    using namespace NLS::Render::Context;
+    NLS::Render::Settings::DriverSettings settings;
+    settings.graphicsBackend = NLS::Render::Settings::EGraphicsBackend::NONE;
+    settings.enableExplicitRHI = false;
+    settings.framesInFlight = 1u;
+    Driver driver(settings);
+    const ScopedDriverService driverService(driver);
+    DriverTestAccess::PauseThreadedRenderingWorkers(driver);
+    DriverTestAccess::SetExplicitDevice(driver, std::make_shared<TestExplicitDevice>());
+
+    NLS::Render::Buffers::Framebuffer output(128u, 96u);
+    DeferredSceneRenderer renderer(driver);
+    auto* shader = DeferredSceneRendererTestAccess::GetGBufferShader(renderer);
+    ASSERT_NE(shader, nullptr);
+    NLS_FRAME_OBJECT_BINDING_SKIP_IF_NATIVE_DXC_UNAVAILABLE();
+    NLS::Render::Resources::Material material(shader);
+    NLS::Render::Resources::Mesh mesh(MakeTriangleVertices(), {}, 0u,
+        NLS::Render::Resources::MeshBufferUploadMode::CpuToGpu,
+        {{0.0f, 0.0f, 0.0f}, 1.0f});
+    NLS::Engine::SceneSystem::Scene scene;
+    auto& object = scene.CreateGameObject("Wireframe switch regression");
+    object.AddComponent<NLS::Engine::Components::MeshFilter>()->SetMesh(&mesh);
+    object.AddComponent<NLS::Engine::Components::MeshRenderer>()->FillWithMaterial(material);
+    object.GetTransform()->SetWorldPosition({0.0f, 0.0f, -6.0f});
+    NLS::Render::Entities::Camera camera;
+    NLS::Render::Data::FrameDescriptor frame;
+    frame.renderWidth = 128u;
+    frame.renderHeight = 96u;
+    frame.camera = &camera;
+    frame.outputBuffer = &output;
+
+    std::shared_ptr<NLS::Render::RHI::RHIGraphicsPipeline> previousWirePipeline;
+    for (const auto mode : {SceneGeometryDrawMode::Shaded, SceneGeometryDrawMode::Wireframe,
+        SceneGeometryDrawMode::Wireframe, SceneGeometryDrawMode::Shaded})
+    {
+        SCOPED_TRACE(static_cast<int>(mode));
+        BaseSceneRenderer::SceneDescriptor descriptor{scene, std::nullopt, nullptr};
+        descriptor.viewOptions.geometryMode = mode;
+        descriptor.suppressHZBOcclusion = true;
+        renderer.AddDescriptor<BaseSceneRenderer::SceneDescriptor>(std::move(descriptor));
+        auto observed = NLS::Tests::ObserveNextRenderSceneForTest(driver);
+        renderer.BeginFrame(frame);
+        const auto helperDepth = renderer.GetDeferredPreparedSceneDepthViewForEditorHelpers();
+        renderer.EndFrame();
+        ASSERT_TRUE(DriverTestAccess::TryDrainThreadedRendering(driver));
+        ASSERT_EQ(observed.wait_for(std::chrono::seconds::zero()), std::future_status::ready);
+        const auto package = observed.get();
+        const bool wire = mode == SceneGeometryDrawMode::Wireframe;
+        size_t shadedPasses = 0u, diagnosticDraws = 0u;
+        for (const auto& pass : package.passCommandInputs)
+        {
+            if (pass.kind == RenderPassCommandKind::GBuffer || pass.kind == RenderPassCommandKind::Lighting)
+                ++shadedPasses;
+            if (pass.debugName == "SceneDebugGeometry")
+            {
+                diagnosticDraws += pass.recordedDrawCommands.size();
+                EXPECT_EQ(pass.depthStencilAttachmentView, helperDepth);
+                ASSERT_EQ(pass.recordedDrawCommands.size(), 1u);
+                EXPECT_TRUE(pass.recordedDrawCommands.front().pipeline->GetDesc().rasterState.wireframe);
+                if (previousWirePipeline)
+                    EXPECT_EQ(pass.recordedDrawCommands.front().pipeline, previousWirePipeline)
+                        << "An unchanged wireframe frame must reuse its graphics pipeline.";
+                previousWirePipeline = pass.recordedDrawCommands.front().pipeline;
+            }
+        }
+        EXPECT_EQ(shadedPasses, wire ? 0u : 2u);
+        EXPECT_EQ(diagnosticDraws, wire ? 1u : 0u);
+    }
+}
+
 TEST(RendererFrameObjectBindingTests, DeferredRenderCommandHandlesMissingDescriptor)
 {
     using namespace NLS::Render::Context;

@@ -454,6 +454,15 @@ const char* ToString(ScriptCallback callback)
     case ScriptCallback::FixedUpdate: return "FixedUpdate";
     case ScriptCallback::LateUpdate: return "LateUpdate";
     case ScriptCallback::OnDestroy: return "OnDestroy";
+    case ScriptCallback::OnCollisionEnter: return "OnCollisionEnter";
+    case ScriptCallback::OnCollisionStay: return "OnCollisionStay";
+    case ScriptCallback::OnCollisionExit: return "OnCollisionExit";
+    case ScriptCallback::OnTriggerEnter: return "OnTriggerEnter";
+    case ScriptCallback::OnTriggerStay: return "OnTriggerStay";
+    case ScriptCallback::OnTriggerExit: return "OnTriggerExit";
+    case ScriptCallback::OnApplicationFocus: return "OnApplicationFocus";
+    case ScriptCallback::OnApplicationPause: return "OnApplicationPause";
+    case ScriptCallback::OnApplicationQuit: return "OnApplicationQuit";
     case ScriptCallback::Count: break;
     }
     return "Unknown";

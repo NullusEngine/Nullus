@@ -218,19 +218,19 @@ jobs:
           # The exclusion list keeps the slow and the known-failing tests out of
           # the CI run; they still run in a local test run. The filter uses a
           # single leading '-': gtest splits the filter at the first '-' only.
+          # The environment variable applies to every gtest binary of the step.
           $excludedTests = Get-Content "Tools/CI/unit_test_exclusions.txt" |
             Where-Object { -not [string]::IsNullOrWhiteSpace($_) -and -not $_.TrimStart().StartsWith('#') } |
             ForEach-Object { $_.Trim() }
-          $unitFilter = '-' + ($excludedTests -join ':')
-          Write-Output "NullusUnitTests filter: $unitFilter"
-          # The filter is longer than the cmd.exe command line limit, so the test
-          # executable is started directly instead of through cmd. The engine
-          # writes diagnostics to stderr, and the runner treats a redirected
-          # stderr record as a terminating error, so the preference is relaxed
-          # for this step and the exit code of the test binary is used instead.
+          $env:GTEST_FILTER = '-' + ($excludedTests -join ':')
+          Write-Output "GTEST_FILTER: $($env:GTEST_FILTER)"
+          # The engine writes diagnostics to stderr, and the runner treats a
+          # redirected stderr record as a terminating error, so the preference
+          # is relaxed for this step and the exit code of the test binary is
+          # used instead.
           $previousErrorActionPreference = $ErrorActionPreference
           $ErrorActionPreference = 'Continue'
-          & $unitExe "--gtest_filter=$unitFilter" 2>&1 | Tee-Object -FilePath $unitLog
+          & $unitExe 2>&1 | Tee-Object -FilePath $unitLog
           $unitExit = $LASTEXITCODE
           $ErrorActionPreference = $previousErrorActionPreference
           if ($unitExit -ne 0) {

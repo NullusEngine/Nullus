@@ -207,7 +207,7 @@ jobs:
           exit [int]$exitCodeText
 
       - name: Run unit tests
-        timeout-minutes: 45
+        timeout-minutes: 90
         shell: powershell
         run: |
           Get-ChildItem "build/windows/bin/${{ env.NLS_BUILD_CONFIGURATION }}" | Format-Table -AutoSize

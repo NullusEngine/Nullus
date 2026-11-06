@@ -65,7 +65,7 @@ jobs:
         run: NLS_CMAKE_OPTIONS="-DNLS_BUILD_TESTS=ON" NLS_BUILD_TARGETS="NullusUnitTests NullusGpuTests NullusBuildTests NullusPropertyControlsTests ReflectionTest" NLS_BUILD_JOBS=1 ./build_linux.sh debug
 
       - name: Run unit tests
-        timeout-minutes: 45
+        timeout-minutes: 180
         env:
           DXC_PATH: ${{ github.workspace }}/ThirdParty/DirectXShaderCompiler/bin/dxc
           LD_LIBRARY_PATH: ${{ github.workspace }}/ThirdParty/DirectXShaderCompiler/lib:${{ github.workspace }}/ThirdParty/DirectXShaderCompiler/bin

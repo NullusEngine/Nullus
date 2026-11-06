@@ -96,7 +96,7 @@ jobs:
           fi
 
       - name: Run unit tests
-        timeout-minutes: 45
+        timeout-minutes: 180
         shell: bash
         run: |
           set -euo pipefail

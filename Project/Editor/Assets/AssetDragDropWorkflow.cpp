@@ -4,6 +4,7 @@
 #include "Components/MeshRenderer.h"
 #include "Serialize/ObjectGraphWriter.h"
 
+#include <algorithm>
 #include <filesystem>
 #include <string_view>
 #include <utility>

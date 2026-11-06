@@ -2,6 +2,7 @@
 #include "VfxStructuredTestAsset.h"
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <functional>
 #include <iostream>
 #include <Guid.h>

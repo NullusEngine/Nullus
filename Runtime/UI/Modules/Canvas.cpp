@@ -5,6 +5,7 @@
 #include "ImGui/imgui.h"
 #include "Profiling/Profiler.h"
 
+#include <algorithm>
 #include <chrono>
 #include <string_view>
 

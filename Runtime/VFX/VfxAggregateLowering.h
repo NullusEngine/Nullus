@@ -1,5 +1,6 @@
 #pragma once
 #include "VfxDataInterface.h"
+#include <algorithm>
 #include <map>
 
 namespace NLS::VFX

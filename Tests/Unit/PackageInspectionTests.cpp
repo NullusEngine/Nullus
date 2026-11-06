@@ -11,6 +11,7 @@
 #include "Engine/Assets/RuntimeManifestSerialization.h"
 #include "Guid.h"
 
+#include <algorithm>
 #include <filesystem>
 #include <fstream>
 

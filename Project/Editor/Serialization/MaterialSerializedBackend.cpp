@@ -1,5 +1,6 @@
 #include "Serialization/MaterialSerializedBackend.h"
 
+#include <algorithm>
 #include <any>
 #include <cstdint>
 #include <memory>

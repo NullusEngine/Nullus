@@ -2,6 +2,7 @@
 
 #include "Assets/ArtifactManifest.h"
 
+#include <algorithm>
 #include <Json/json.hpp>
 
 #include <chrono>

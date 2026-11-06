@@ -1,4 +1,5 @@
-﻿#include <array>
+﻿#include <algorithm>
+#include <array>
 
 #include <Utils/PathParser.h>
 

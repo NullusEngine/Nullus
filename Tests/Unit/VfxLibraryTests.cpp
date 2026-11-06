@@ -1,5 +1,6 @@
 #include "VfxTestExecution.h"
 #include <gtest/gtest.h>
+#include <algorithm>
 #include <array>
 #include <Guid.h>
 #include <VFX/Authoring/VfxLibrary.h>

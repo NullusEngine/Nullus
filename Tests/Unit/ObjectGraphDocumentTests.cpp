@@ -1,4 +1,5 @@
 #include <gtest/gtest.h>
+#include <algorithm>
 
 #include <Reflection/ExternalReflectionRegistration.h>
 #include <Reflection/ReflectionDatabase.h>

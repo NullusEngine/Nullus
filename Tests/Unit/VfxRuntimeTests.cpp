@@ -1,6 +1,7 @@
 #include "VfxTestExecution.h"
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <cmath>
 #include <filesystem>
 #include <limits>

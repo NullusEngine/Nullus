@@ -1,6 +1,7 @@
 #include "AnimationPreview.h"
 #include "Core/EditorActions.h"
 #include "Rendering/GridRenderPass.h"
+#include <algorithm>
 #include <Rendering/SceneRendererFactory.h>
 #include <Components/LightComponent.h>
 #include <Components/MeshFilter.h>

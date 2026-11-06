@@ -1,4 +1,5 @@
 #include <gtest/gtest.h>
+#include <algorithm>
 #include <AnimationCompiler/GltfAnimationImporter.h>
 #include <Animation/Graph.h>
 #include <Rendering/Assets/SceneModelReader.h>

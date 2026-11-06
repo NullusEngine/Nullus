@@ -1,4 +1,5 @@
 #include "AnimationAsset.h"
+#include <algorithm>
 #include <AnimationCompiler/AnimationCompiler.h>
 #include <Assets/NativeArtifactContainer.h>
 #include <Assets/ContentSource.h>

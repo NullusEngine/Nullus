@@ -13,6 +13,7 @@
 #include "Guid.h"
 #include "Rendering/Assets/ShaderArtifact.h"
 
+#include <algorithm>
 #include <filesystem>
 #include <fstream>
 #include <memory>

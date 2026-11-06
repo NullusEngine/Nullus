@@ -7,6 +7,7 @@
 #include <filesystem>
 #include <cstdlib>
 #include <cmath>
+#include <functional>
 #include <UI/Controls/ScalarControl.h>
 
 namespace

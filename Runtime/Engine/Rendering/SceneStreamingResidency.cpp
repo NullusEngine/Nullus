@@ -1,5 +1,6 @@
 #include "Rendering/SceneStreamingResidency.h"
 
+#include <algorithm>
 #include <limits>
 
 namespace NLS::Engine::Rendering

@@ -1,4 +1,5 @@
 #include <gtest/gtest.h>
+#include <algorithm>
 #include <GLFW/glfw3.h>
 #include <Animation/Animation.h>
 #include <Rendering/Animation/SkinnedMeshRenderProxy.h>

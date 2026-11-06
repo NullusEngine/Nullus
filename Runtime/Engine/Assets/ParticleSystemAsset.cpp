@@ -1,5 +1,6 @@
 #include "ParticleSystemAsset.h"
 
+#include <algorithm>
 #include <mutex>
 #include <unordered_map>
 #include <Core/ResourceManagement/ShaderManager.h>

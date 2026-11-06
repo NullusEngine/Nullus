@@ -10,8 +10,10 @@
 #include "Assets/ArtifactManifest.h"
 #include "Guid.h"
 
+#include <algorithm>
 #include <array>
 #include <filesystem>
+#include <optional>
 #include <fstream>
 #include <sstream>
 

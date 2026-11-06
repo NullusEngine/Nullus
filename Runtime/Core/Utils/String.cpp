@@ -1,4 +1,5 @@
 #include "String.h"
+#include <algorithm>
 #include <cstdint>
 #include <sstream>
 #include <iostream>

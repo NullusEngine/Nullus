@@ -144,7 +144,9 @@ public:
         { lua_getfield(state,-1,name); lua_setfield(state,-3,name); }
         lua_pop(state,1); lua_setfield(state,environment,"coroutine");
         lua_newtable(state);
-        for (auto entry : {std::pair{"register_extension",LuaPluginState::Register},std::pair{"start_coroutine",LuaPluginState::StartCoroutine},std::pair{"log",LuaPluginState::Log}})
+        // The entry points are taken by address: a bare member function would
+        // deduce a function type, which cannot be a pair member.
+        for (auto entry : {std::pair{"register_extension",&LuaPluginState::Register},std::pair{"start_coroutine",&LuaPluginState::StartCoroutine},std::pair{"log",&LuaPluginState::Log}})
         { lua_pushlightuserdata(state,self.get()); lua_pushcclosure(state,entry.second,1); lua_setfield(state,-2,entry.first); }
         lua_setfield(state,environment,"host");
         lua_pushvalue(state,environment); self->environment = luaL_ref(state,LUA_REGISTRYINDEX);

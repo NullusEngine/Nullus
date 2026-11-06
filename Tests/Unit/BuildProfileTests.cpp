@@ -3,6 +3,7 @@
 #include "Build/BuildProfileIO.h"
 #include "Build/IBuildPlatform.h"
 
+#include <algorithm>
 #include <filesystem>
 #include <fstream>
 

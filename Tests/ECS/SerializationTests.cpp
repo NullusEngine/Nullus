@@ -2,6 +2,7 @@
 #include <ECS/Core/World.h>
 #include <ECS/Commands/EntityCommandBuffer.h>
 #include <gtest/gtest.h>
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <fstream>

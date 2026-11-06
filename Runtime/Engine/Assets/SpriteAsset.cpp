@@ -4,6 +4,7 @@
 #include <Core/ServiceLocator.h>
 #include <Core/ResourceManagement/ShaderManager.h>
 #include <Rendering/Assets/ArtifactFileReader.h>
+#include <algorithm>
 #include <mutex>
 #include <unordered_map>
 

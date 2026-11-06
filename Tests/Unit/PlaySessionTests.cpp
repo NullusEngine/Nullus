@@ -1,3 +1,4 @@
+#include <algorithm>
 #include <gtest/gtest.h>
 #include "Core/PlayModeController.h"
 #include "Scripting/RuntimePlaySession.h"

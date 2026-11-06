@@ -1,3 +1,4 @@
+#include <algorithm>
 #include <gtest/gtest.h>
 #include <Components/PhysicsColliderComponent.h>
 #include <Components/RigidbodyComponent.h>

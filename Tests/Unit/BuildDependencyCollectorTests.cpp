@@ -9,6 +9,7 @@
 #include "Assets/AssetMeta.h"
 #include "Guid.h"
 
+#include <algorithm>
 #include <filesystem>
 #include <fstream>
 #include <sstream>

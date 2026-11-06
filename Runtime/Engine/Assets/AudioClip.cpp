@@ -4,6 +4,7 @@
 #include <Rendering/Assets/ArtifactFileReader.h>
 #include <Core/ServiceLocator.h>
 #include <Core/ResourceManagement/ShaderManager.h>
+#include <algorithm>
 #include <mutex>
 #include <unordered_map>
 namespace NLS::Engine::Assets

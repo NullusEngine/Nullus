@@ -11,6 +11,7 @@
 #include <Core/ServiceLocator.h>
 #include <Platform/Process/Process.h>
 #include <Rendering/Assets/ArtifactFileReader.h>
+#include <algorithm>
 #include <mutex>
 #include <optional>
 #include <unordered_map>

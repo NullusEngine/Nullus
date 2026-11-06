@@ -3,6 +3,7 @@
 #include <Shortcuts/EditorShortcutAdapter.h>
 #include <Input/InputSystem.h>
 #include <Core/Inputs/InputSerialization.h>
+#include <algorithm>
 #include <fstream>
 #include "EditorInputTestSupport.h"
 using namespace NLS;

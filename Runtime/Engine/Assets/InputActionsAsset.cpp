@@ -5,6 +5,7 @@
 #include <Core/ServiceLocator.h>
 #include <Core/ResourceManagement/ShaderManager.h>
 #include "RuntimeAssetDatabase.h"
+#include <algorithm>
 #include <mutex>
 #include <unordered_map>
 

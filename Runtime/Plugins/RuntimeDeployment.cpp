@@ -7,6 +7,7 @@
 #include "Platform/Process/InterprocessFileLock.h"
 #include "Platform/Modules/NativeLibrary.h"
 #include <Json/json.hpp>
+#include <algorithm>
 #include <array>
 #include <cstdio>
 #include <fstream>

@@ -96,7 +96,7 @@ TEST(UnifiedPropertyPanel, NarrowIntegerTypesUseNativeByteStreams)
         ASSERT_TRUE(bytes);
         const auto restored = bytes->Resolve(type);
         ASSERT_TRUE(restored);
-        EXPECT_EQ(restored->GetValue<Value>(), value);
+        EXPECT_EQ(restored->template GetValue<Value>(), value);
     };
     verify(int8_t{-128});
     verify(uint8_t{255});

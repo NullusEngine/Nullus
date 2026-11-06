@@ -456,13 +456,21 @@ struct SpriteSceneRenderer::State
         std::shared_ptr<rhi::RHIGraphicsPipeline> pipeline;
     };
     std::vector<Pipeline> pipelines;
-    std::atomic<std::shared_ptr<const Statistics>> published {std::make_shared<const Statistics>()};
+    // libc++ has no std::atomic<std::shared_ptr<T>> specialisation, so the
+    // published snapshot is guarded by a mutex. Loads and stores happen a few
+    // times per frame, where the lock is not measurable.
+    mutable std::mutex publishedMutex;
+    std::shared_ptr<const Statistics> published {std::make_shared<const Statistics>()};
     Render::Sprites::SpriteBatchResult stats;
     bool hadVisibleSprites = false;
 };
 SpriteSceneRenderer::SpriteSceneRenderer() : m_state(std::make_unique<State>()) {}
 SpriteSceneRenderer::~SpriteSceneRenderer() = default;
-SpriteSceneRenderer::Statistics SpriteSceneRenderer::GetStatistics() const { return *m_state->published.load(); }
+SpriteSceneRenderer::Statistics SpriteSceneRenderer::GetStatistics() const
+{
+    std::lock_guard lock(m_state->publishedMutex);
+    return *m_state->published;
+}
 
 bool SpriteSceneRenderer::AppendPass(std::shared_ptr<rhi::RHIDevice> device, context::RenderScenePackage& package,
     const Render::FrameGraph::FrozenFrameDescriptor& view, const std::vector<std::shared_ptr<const SpriteRenderProxy>>& sprites,
@@ -482,7 +490,11 @@ bool SpriteSceneRenderer::AppendPass(std::shared_ptr<rhi::RHIDevice> device, con
             value->materialBreaks=source.materialBreaks;value->textureBreaks=source.textureBreaks;
             value->stateBreaks=source.stateBreaks;value->capacityBreaks=source.capacityBreaks;value->orderingBreaks=source.orderingBreaks;
             value->cpuExpanded=cpuExpanded;value->prepared=prepared;
-            state.hadVisibleSprites=prepared && !source.sorted.empty();state.published.store(std::move(value));
+            state.hadVisibleSprites=prepared && !source.sorted.empty();
+            {
+                std::lock_guard lock(state.publishedMutex);
+                state.published=std::move(value);
+            }
         }
     } publication{*m_state,cpuExpanded};
     const bool hasScenePass = std::any_of(package.passCommandInputs.begin(), package.passCommandInputs.end(), [](const auto& pass)

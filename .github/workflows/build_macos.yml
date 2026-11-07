@@ -149,9 +149,10 @@ jobs:
           # the CI run; they still run in a local test run. The filter uses a
           # single leading '-': gtest splits the filter at the first '-' only.
           # The environment variable applies to every gtest binary of the step.
-          # The rendering suites are skipped as well, because they wait for a
-          # frame or a readback that the shared runner does not reach.
-          export GTEST_FILTER="-$(cat Tools/CI/unit_test_exclusions.txt Tools/CI/unit_test_exclusions_rendering.txt | grep -v -e '^[[:space:]]*#' -e '^[[:space:]]*$' | paste -sd: -)"
+          # The rendering and the asset import suites are skipped as well,
+          # because they wait for a frame, a readback, or a model import that
+          # the shared runner does not reach.
+          export GTEST_FILTER="-$(cat Tools/CI/unit_test_exclusions.txt Tools/CI/unit_test_exclusions_shared_runners.txt | grep -v -e '^[[:space:]]*#' -e '^[[:space:]]*$' | paste -sd: -)"
           echo "GTEST_FILTER: ${GTEST_FILTER}"
           run_test "NullusUnitTests" nullus_unit_tests.log "${NULLUS_UNIT_TESTS}"
           ctest --test-dir build/macos -C Release --output-on-failure \

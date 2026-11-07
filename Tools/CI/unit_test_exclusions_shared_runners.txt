@@ -1,8 +1,10 @@
 # Unit tests that the Linux and macOS workflows do not run.
 #
-# The rendering suites wait for a frame, a fence, or a readback with a one to
-# three second budget, which the shared Linux and macOS runners do not reach.
-# They either fail on the timeout or keep the step busy until it ends.
+# The shared runners are slower than a developer machine. The rendering suites
+# wait for a frame, a fence, or a readback with a one to three second budget,
+# and the asset import tests wait for a model import, which those runners do
+# not reach in time. They either fail on the timeout or keep the step busy
+# until it ends.
 #
 # The Windows workflow runs these suites, so the rendering coverage stays in
 # the CI.
@@ -19,6 +21,7 @@ DriverNullDeviceReadinessTests.*
 DriverRhiThreadModeTests.*
 DriverSwapchainResizeTests.*
 ECSRenderGpu.*
+EditorAssetDatabaseTests.BlockingStartupPreimport*
 EditorGridRenderer.*
 EditorOriginAxes.*
 MaterialGpuTests.*

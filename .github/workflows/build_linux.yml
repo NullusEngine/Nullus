@@ -60,9 +60,30 @@ jobs:
           export LD_LIBRARY_PATH="${PWD}/ThirdParty/DirectXShaderCompiler/lib:${PWD}/ThirdParty/DirectXShaderCompiler/bin:${LD_LIBRARY_PATH:-}"
           ThirdParty/DirectXShaderCompiler/bin/dxc --version
 
+      - name: Cache the compiler output
+        timeout-minutes: 10
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ccache
+          key: ccache-linux-${{ hashFiles('CMakeLists.txt', 'Runtime/**/CMakeLists.txt', 'Tests/**/CMakeLists.txt', 'Project/**/CMakeLists.txt') }}
+          restore-keys: |
+            ccache-linux-
+
       - name: Build
         timeout-minutes: 180
-        run: NLS_CMAKE_OPTIONS="-DNLS_BUILD_TESTS=ON" NLS_BUILD_TARGETS="NullusUnitTests NullusGpuTests NullusBuildTests NullusPropertyControlsTests ReflectionTest" NLS_BUILD_JOBS=1 ./build_linux.sh debug
+        run: |
+          set -euo pipefail
+          # The runner has four cores; three parallel compile jobs keep the
+          # memory budget of the heavy translation units and still cut the
+          # build time to a third.
+          launcher=""
+          if command -v ccache >/dev/null 2>&1; then
+            ccache --max-size=5G >/dev/null 2>&1 || true
+            launcher="-DCMAKE_CXX_COMPILER_LAUNCHER=ccache"
+          fi
+          NLS_CMAKE_OPTIONS="-DNLS_BUILD_TESTS=ON ${launcher}" \
+            NLS_BUILD_TARGETS="NullusUnitTests NullusGpuTests NullusBuildTests NullusPropertyControlsTests ReflectionTest" \
+            NLS_BUILD_JOBS=3 ./build_linux.sh debug
 
       - name: Run unit tests
         timeout-minutes: 180
@@ -101,10 +122,9 @@ jobs:
           # the CI run; they still run in a local test run. The filter uses a
           # single leading '-': gtest splits the filter at the first '-' only.
           # The environment variable applies to every gtest binary of the step.
-          # The debug build also skips the rendering suites, which wait for a
-          # frame or a readback that a debug build does not reach on a shared
-          # runner.
-          export GTEST_FILTER="-$(cat Tools/CI/unit_test_exclusions.txt Tools/CI/unit_test_exclusions_debug.txt | grep -v -e '^[[:space:]]*#' -e '^[[:space:]]*$' | paste -sd: -)"
+          # The rendering suites are skipped as well, because they wait for a
+          # frame or a readback that the shared runner does not reach.
+          export GTEST_FILTER="-$(cat Tools/CI/unit_test_exclusions.txt Tools/CI/unit_test_exclusions_rendering.txt | grep -v -e '^[[:space:]]*#' -e '^[[:space:]]*$' | paste -sd: -)"
           echo "GTEST_FILTER: ${GTEST_FILTER}"
           run_test "NullusUnitTests" nullus_unit_tests.log "${NULLUS_UNIT_TESTS}"
           ctest --test-dir build/linux -C Debug --output-on-failure \

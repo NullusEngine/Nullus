@@ -155,7 +155,7 @@ jobs:
             "--config", "${{ env.NLS_BUILD_CONFIGURATION }}",
             "--target", "NullusUnitTests", "NullusGpuTests", "NullusBuildTests", "NullusPropertyControlsTests", "ReflectionTest",
             "--",
-            "/m:1",
+            "/m:3",
             "/flp:logfile=build_windows_${{ env.NLS_BUILD_CONFIGURATION }}_msbuild.log;verbosity=diagnostic",
             "/bl:build_windows_${{ env.NLS_BUILD_CONFIGURATION }}.binlog"
           )

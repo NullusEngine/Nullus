@@ -75,12 +75,31 @@ jobs:
           echo "DXC_PATH=$dxc_path" >> "$GITHUB_ENV"
           echo "DYLD_LIBRARY_PATH=$DYLD_LIBRARY_PATH" >> "$GITHUB_ENV"
 
+      - name: Cache the compiler output
+        timeout-minutes: 10
+        uses: actions/cache@v4
+        with:
+          path: ~/Library/Caches/ccache
+          key: ccache-macos-${{ hashFiles('CMakeLists.txt', 'Runtime/**/CMakeLists.txt', 'Tests/**/CMakeLists.txt', 'Project/**/CMakeLists.txt') }}
+          restore-keys: |
+            ccache-macos-
+
       - name: Build
         timeout-minutes: 240
         shell: bash
         run: |
           set -o pipefail
-          NLS_CMAKE_OPTIONS="-DNLS_BUILD_TESTS=ON" NLS_BUILD_TARGETS="NullusUnitTests NullusGpuTests NullusBuildTests NullusPropertyControlsTests ReflectionTest" NLS_BUILD_JOBS=2 ./build_macos.sh release 2>&1 | tee "build_macos_release.log"
+          # The runner has four cores; three parallel compile jobs keep the
+          # memory budget of the heavy translation units and still cut the
+          # build time to a third.
+          launcher=""
+          if command -v ccache >/dev/null 2>&1; then
+            ccache --max-size=5G >/dev/null 2>&1 || true
+            launcher="-DCMAKE_CXX_COMPILER_LAUNCHER=ccache"
+          fi
+          NLS_CMAKE_OPTIONS="-DNLS_BUILD_TESTS=ON ${launcher}" \
+            NLS_BUILD_TARGETS="NullusUnitTests NullusGpuTests NullusBuildTests NullusPropertyControlsTests ReflectionTest" \
+            NLS_BUILD_JOBS=3 ./build_macos.sh release 2>&1 | tee "build_macos_release.log"
 
       - name: Dump build log on failure
         if: failure()

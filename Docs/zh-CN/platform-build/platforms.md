@@ -33,7 +33,7 @@
 | `RelWithDebInfo` | 优化并保留调试信息，用于性能测量 |
 | `Release` | 优化构建，CI 与发布使用 |
 
-Windows 上 CI 只保留 Release 配置，Debug 覆盖由 Linux 与 macOS 工作流承担。这意味着 Windows 的 Debug 回归需要本地执行，见[调试与测试](../quality/debugging.md)。
+Windows 与 macOS 上 CI 只保留 Release 配置，Debug 覆盖由 Linux 工作流承担。这意味着其他平台的 Debug 回归需要本地执行，见[调试与测试](../quality/debugging.md)。
 
 ## 依赖的版本固定
 

@@ -1,12 +1,11 @@
-# Unit tests that the debug CI workflows do not run.
+# Unit tests that the Linux and macOS workflows do not run.
 #
-# The Linux and macOS workflows build the tests in the debug configuration on a
-# shared runner. The rendering suites wait for a frame, a fence, or a readback
-# with a one to three second budget, which a debug build does not reach there.
+# The rendering suites wait for a frame, a fence, or a readback with a one to
+# three second budget, which the shared Linux and macOS runners do not reach.
 # They either fail on the timeout or keep the step busy until it ends.
 #
-# The Windows workflow builds the release configuration and runs these suites,
-# so the rendering coverage stays in the CI.
+# The Windows workflow runs these suites, so the rendering coverage stays in
+# the CI.
 #
 # One gtest pattern per line. Blank lines and lines starting with '#' are
 # ignored. The patterns are added to the list in

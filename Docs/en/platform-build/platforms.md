@@ -33,7 +33,7 @@ Gated backends are never enabled as a fallback path. The full capability matrix 
 | `RelWithDebInfo` | Optimized with debug info; used for performance measurements |
 | `Release` | Optimized; used by CI and releases |
 
-Windows CI keeps only the Release configuration, so Debug coverage comes from the Linux and macOS workflows. Windows Debug regressions must therefore be run locally; see [Debugging and Testing](../quality/debugging.md).
+Windows and macOS CI keep only the Release configuration, so Debug coverage comes from the Linux workflow. Debug regressions on the other platforms must therefore be run locally; see [Debugging and Testing](../quality/debugging.md).
 
 ## Pinned dependency versions
 

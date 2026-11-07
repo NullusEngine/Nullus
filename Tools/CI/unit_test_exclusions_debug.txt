@@ -1,0 +1,59 @@
+# Unit tests that the debug CI workflows do not run.
+#
+# The Linux and macOS workflows build the tests in the debug configuration on a
+# shared runner. The rendering suites wait for a frame, a fence, or a readback
+# with a one to three second budget, which a debug build does not reach there.
+# They either fail on the timeout or keep the step busy until it ends.
+#
+# The Windows workflow builds the release configuration and runs these suites,
+# so the rendering coverage stays in the CI.
+#
+# One gtest pattern per line. Blank lines and lines starting with '#' are
+# ignored. The patterns are added to the list in
+# Tools/CI/unit_test_exclusions.txt.
+AnimationGpu.*
+CompositeRendererExplicitDrawOrderTests.*
+DeferredSceneRendererMaterialCacheTests.*
+DistanceFieldGpuTests.*
+DriverFlushTests.*
+DriverNullDeviceReadinessTests.*
+DriverRhiThreadModeTests.*
+DriverSwapchainResizeTests.*
+ECSRenderGpu.*
+EditorGridRenderer.*
+EditorOriginAxes.*
+MaterialGpuTests.*
+PlayOutputGpuTests.*
+RenderCommandAsyncPipeTests.*
+RenderCommandEventTests.*
+RenderCommandFenceTests.*
+RenderCommandPipeTests.*
+RenderFrameExecutionTests.*
+RenderFrameworkContractTests.*
+RenderPassProfileScopeTests.*
+RenderSceneCacheTests.*
+RenderSceneHandoffTests.*
+RendererFrameObjectBindingTests.*
+RendererStatsTests.*
+RenderingThreadLifecycleTests.*
+RenderingThreadPipelineTests.*
+RenderingThreadSystemLifecycleTests.*
+RenderingThreadSystemTests.*
+RhiCommandListExecutorTests.*
+RhiCommandListRecorderTests.*
+RHIUiOverlayPassTests.*
+RHIUiTextureRegistryTests.*
+SceneRenderStoreShutdownTests.*
+SceneViewRendererGpuTests.*
+SpriteGpu.*
+SpriteMixedGpu.*
+ThumbnailRendererRegistryTests.*
+TimelineProfilerGpuLifecycleTests.*
+UE5RenderArchitectureContractTests.*
+VfxGpuTests.*
+VfxMeshTests.*
+VfxSceneTests.*
+VfxSimulationAuthoringDevice.*
+VfxSpriteTests.*
+VfxTimingDevice.*
+VfxTypedValuesDevice.*

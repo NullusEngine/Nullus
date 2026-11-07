@@ -130,7 +130,10 @@ jobs:
           # the CI run; they still run in a local test run. The filter uses a
           # single leading '-': gtest splits the filter at the first '-' only.
           # The environment variable applies to every gtest binary of the step.
-          export GTEST_FILTER="-$(grep -v -e '^[[:space:]]*#' -e '^[[:space:]]*$' Tools/CI/unit_test_exclusions.txt | paste -sd: -)"
+          # The debug build also skips the rendering suites, which wait for a
+          # frame or a readback that a debug build does not reach on a shared
+          # runner.
+          export GTEST_FILTER="-$(cat Tools/CI/unit_test_exclusions.txt Tools/CI/unit_test_exclusions_debug.txt | grep -v -e '^[[:space:]]*#' -e '^[[:space:]]*$' | paste -sd: -)"
           echo "GTEST_FILTER: ${GTEST_FILTER}"
           run_test "NullusUnitTests" nullus_unit_tests.log "${NULLUS_UNIT_TESTS}"
           ctest --test-dir build/macos -C Debug --output-on-failure \
